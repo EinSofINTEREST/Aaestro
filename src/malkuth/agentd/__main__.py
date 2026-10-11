@@ -42,6 +42,7 @@ if TYPE_CHECKING:
     from fastapi import FastAPI
 
     from malkuth.core.agent import TaskRequest
+    from malkuth.core.manifest import ModelConfig
 
 CONTROL_PORT = 8080
 """Control port — 컨테이너 내부 고정 (02 Network). A2A 포트는 runtime 이 할당한다."""
@@ -283,13 +284,8 @@ async def build_executor(manifest: AgentManifest, *, metrics: Metrics | None = N
 async def _standard_executor(
     manifest: AgentManifest, registry: Any, mcp: Any, *, metrics: Metrics | None
 ) -> Any:
-    from malkuth.agentd.executor import (
-        MODEL_RETRY_POLICIES,
-        Executor,
-        ExecutorConfig,
-        ExecutorServices,
-    )
-    from malkuth.agentd.providers.anthropic import AnthropicModel
+    from malkuth.agentd.executor import Executor, ExecutorServices
+    from malkuth.agentd.models import ModelChains
 
     binding = await load_modules(
         manifest,
@@ -300,16 +296,18 @@ async def _standard_executor(
         peers=build_peer_client(manifest),
         mcp=mcp,
     )
+    # 05 Retry Layering — 모델 호출의 재시도 주체는 agentd 다. 체인이 기본 정책
+    # (MODEL_RETRY_POLICIES) 을 들고 온다 — 선언의 retry 가 있으면 그것을 쓴다
+    chains = ModelChains(
+        agent=manifest.name, factory=_anthropic_factory(manifest.name), metrics=metrics
+    )
     executor = Executor(
         agent=manifest.name,
-        model=AnthropicModel(config=manifest.spec.model, agent=manifest.name),
+        model=chains.for_config(manifest.spec.model),
         tools=binding.tools,
         render=binding.render,
         tool_schemas=binding.tool_schemas,
         system=binding.system,
-        # 05 Retry Layering — 모델 호출의 재시도 주체는 agentd 다.
-        # 여기서 켜지 않으면 정책은 정의만 되고 아무 일도 하지 않는다
-        config=ExecutorConfig(retry_policies=MODEL_RETRY_POLICIES),
         services=ExecutorServices(
             telemetry=_telemetry_for(manifest, metrics),
             artifacts=_artifact_store(manifest),
@@ -317,6 +315,8 @@ async def _standard_executor(
             # 이것이 없으면 memoryset 의 recall 선언이 아무 일도 하지 않는다
             recall=_task_recall(manifest, registry, binding.tools.memory),
             output_keys=binding.output_keys,
+            # 그래프가 해석한 태스크의 모델 선언(#358) — 없으면 노드·배포 override 가 무시된다
+            chains=chains.for_config,
         ),
     )
     # 기동 묶음을 통째로 건다 — 생성자는 일부 필드만 받아, 뜨지 못한 optional 서버(degraded)가
@@ -535,6 +535,22 @@ def _memory_access(agent: str) -> Any:
     from malkuth.runtime.memory_http import HttpMemoryAccess
 
     return HttpMemoryAccess(base_url=url, token=token)
+
+
+def _anthropic_factory(agent: str) -> Callable[[ModelConfig], Any]:
+    """provider 이름으로 어댑터를 고르는 팩토리 — 지금 묶인 provider 는 anthropic 하나다.
+
+    체인을 만드는 시점에 검사한다: 기동이면 기동 실패, 태스크가 실어 온 선언이면 그 태스크 실패.
+    """
+    from malkuth.agentd.models import unsupported_provider
+    from malkuth.agentd.providers.anthropic import AnthropicModel
+
+    def build(config: ModelConfig) -> Any:
+        if config.provider != ANTHROPIC_PROVIDER:
+            raise unsupported_provider(agent, config.provider)
+        return AnthropicModel(config=config, agent=agent)
+
+    return build
 
 
 def _telemetry_for(manifest: AgentManifest, metrics: Metrics | None) -> ExecutorTelemetry | None:

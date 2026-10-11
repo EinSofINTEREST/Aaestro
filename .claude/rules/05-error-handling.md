@@ -475,7 +475,7 @@ malkuth_agent_tasks_total{agent, group, graph, status}   # Counter â€” graph: ê·
 malkuth_agent_task_duration_seconds{agent, group, graph} # Histogram
 
 # Model metrics
-malkuth_model_requests_total{agent, provider, model, status}
+malkuth_model_requests_total{agent, provider, model, status, fallback_index}
 malkuth_model_tokens_total{agent, model, direction}      # direction: input|output
 
 # Decision metrics (01 Decision Models)

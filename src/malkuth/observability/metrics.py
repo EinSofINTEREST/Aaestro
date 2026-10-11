@@ -55,7 +55,7 @@ METRIC_SPECS: Final[tuple[MetricSpec, ...]] = (
     MetricSpec(
         "malkuth_model_requests_total",
         "counter",
-        ("agent", "provider", "model", "status"),
+        ("agent", "provider", "model", "status", "fallback_index"),
         "Model API requests by status",
     ),
     MetricSpec(

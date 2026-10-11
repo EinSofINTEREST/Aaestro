@@ -188,6 +188,7 @@ async def test_each_model_turn_is_counted():
             provider="anthropic",
             model="claude-sonnet-5",
             status="completed",
+            fallback_index="0",
         )
         == 2.0
     )
@@ -208,6 +209,7 @@ async def test_model_failure_is_counted_before_it_propagates():
             provider="anthropic",
             model="claude-sonnet-5",
             status="failed",
+            fallback_index="0",
         )
         == 1.0
     )
@@ -232,6 +234,7 @@ async def test_rate_limit_is_counted_under_its_own_status():
             provider="anthropic",
             model="claude-sonnet-5",
             status="rate_limited",
+            fallback_index="0",
         )
         == 1.0
     )
@@ -252,6 +255,7 @@ async def test_rate_limit_does_not_also_count_as_failed():
             provider="anthropic",
             model="claude-sonnet-5",
             status="failed",
+            fallback_index="0",
         )
         == 0.0
     )

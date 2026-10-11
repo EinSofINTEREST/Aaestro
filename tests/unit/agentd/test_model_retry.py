@@ -126,4 +126,5 @@ async def test_the_production_assembly_turns_retry_on(monkeypatch):
 
     built = await build_executor(load_manifest(REPO_ROOT / "agents/researcher/manifest.yaml"))
 
-    assert built._config.retry_policies == MODEL_RETRY_POLICIES
+    # 재시도 정책은 모델 체인이 들고 온다 (#359) — 선언에 retry 가 없으면 기본 정책이다
+    assert built._chain.retry_policies == MODEL_RETRY_POLICIES
