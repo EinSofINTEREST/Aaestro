@@ -13,6 +13,7 @@ from malkuth.authoring import Author
 from malkuth.catalog import Catalog
 from malkuth.core.agent import HealthState, HealthStatus
 from malkuth.core.errors import ErrorCategory, ErrorCode, MalkuthError
+from malkuth.core.manifest import ModelOverride
 from malkuth.runtime.control import ControlClient
 from malkuth.runtime.deployments import (
     DeploymentManager,
@@ -887,9 +888,85 @@ def test_the_sqlite_store_opens_a_database_from_before_the_new_columns(tmp_path)
 
     assert record is not None and record.status == DeploymentStatus.READY
     assert record.a2a_secret == "" and record.declared == ()
+    assert record.model_overrides == {}
     store.upsert(DeploymentRecord(**{**record.__dict__, "declared": ("alpha",), "a2a_secret": "s"}))
     assert store.get("dep-old").declared == ("alpha",)
     assert [r.deployment_id for r in store.list()] == ["dep-old"]
+
+
+def test_the_sqlite_store_adds_model_overrides_to_a_database_without_it(tmp_path):
+    """#358 이전 DB — `a2a_secret`/`declared` 는 있고 `model_overrides` 만 없다."""
+    import sqlite3
+
+    path = tmp_path / "deployments.db"
+    with sqlite3.connect(path) as old:
+        old.execute(
+            "CREATE TABLE deployments (deployment_id TEXT PRIMARY KEY, graph TEXT NOT NULL, "
+            "version TEXT NOT NULL, status TEXT NOT NULL, agents TEXT NOT NULL, error TEXT, "
+            "updated_at TEXT NOT NULL, a2a_secret TEXT NOT NULL DEFAULT '', "
+            "declared TEXT NOT NULL DEFAULT '[]')"
+        )
+        old.execute(
+            "INSERT INTO deployments VALUES (?,?,?,?,?,?,?,?,?)",
+            ("dep-old", "two", "1.0.0", "ready", "[]", None, "t", "s", '["alpha"]'),
+        )
+
+    store = SqliteDeploymentStore(path=path)
+    record = store.get("dep-old")
+
+    assert record is not None and record.model_overrides == {}
+    store.upsert(DeploymentRecord(**{**record.__dict__, "model_overrides": {"n0": {"name": "m"}}}))
+    assert store.get("dep-old").model_overrides == {"n0": {"name": "m"}}
+
+
+# --- 배포의 모델 override (#358) ----------------------------------------------------
+
+
+async def test_deploy_records_the_model_overrides_as_declared(tmp_path, manager):
+    manager.store = SqliteDeploymentStore(path=str(tmp_path / "dep.db"))
+
+    record = await manager.deploy(
+        "two",
+        model_overrides={
+            "n0": ModelOverride(name="claude-haiku-4-5"),
+            "n1": ModelOverride.model_validate({"effort": None}),
+        },
+    )
+
+    # 명시하지 않은 키는 싣지 않는다 — 다시 입힐 때 아래 계층을 지우면 안 된다
+    expected = {"n0": {"name": "claude-haiku-4-5"}, "n1": {"effort": None}}
+    assert record.model_overrides == expected
+    reopened = SqliteDeploymentStore(path=str(tmp_path / "dep.db"))
+    assert reopened.get(record.deployment_id).model_overrides == expected
+    await manager.launcher.stop_all()
+
+
+async def test_deploy_without_overrides_records_an_empty_map(manager):
+    record = await manager.deploy("two")
+
+    assert record.model_overrides == {}
+    await manager.launcher.stop_all()
+
+
+async def test_a_model_override_for_an_unknown_node_launches_nothing(manager, docker):
+    with pytest.raises(MalkuthError) as excinfo:
+        await manager.deploy("two", model_overrides={"ghost": ModelOverride(name="m")})
+
+    assert excinfo.value.code == ErrorCode.VAL_002
+    assert docker.created == []
+    assert manager.deployments() == []
+
+
+async def test_validation_sees_the_deployment_overrides(manager, docker):
+    """override 를 검증 **전에** 입히지 않으면 manifest 밖 provider 로의 교체가 통과한다."""
+    override = ModelOverride(provider="openai-compat", name="gpt-5")
+
+    with pytest.raises(MalkuthError) as excinfo:
+        await manager.deploy("two", model_overrides={"n0": override})
+
+    assert excinfo.value.code == ErrorCode.VAL_001
+    assert any("provider" in f for f in excinfo.value.details["findings"])
+    assert docker.created == []
 
 
 # --- 배포 게이트: 굽지 않은 커스텀 에이전트는 기동하지 않는다 (#266) ----------------------

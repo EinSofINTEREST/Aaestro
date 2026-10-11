@@ -14,6 +14,7 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from malkuth.core.agent import TaskResult
 from malkuth.core.errors import ErrorCategory, ErrorCode, MalkuthError
+from malkuth.core.manifest import ModelConfig
 from malkuth.graphs.schemas import ResearchState
 from malkuth.orchestrator.builder import GraphBuilder, build_channel_schema, build_graph
 from tests.fixtures.fake_runtime import FakeRuntime
@@ -148,6 +149,36 @@ async def test_task_carries_run_and_node_identity():
     assert task.node_id == "planner"
     assert task.trace.trace_id == "trace-9"
     assert task.is_direct is False
+
+
+async def test_task_carries_the_model_the_resolver_chose_per_node():
+    runtime = (
+        FakeRuntime()
+        .script("planner", output={"plan": "P"})
+        .script("researcher", output={"findings": []})
+    )
+    models = {
+        "planner": ModelConfig(provider="anthropic", name="claude-haiku-4-5"),
+        "researcher": ModelConfig(provider="anthropic", name="claude-opus-5"),
+    }
+
+    await build_graph(linear_topology(), runtime, models=lambda node: models[node.id]).ainvoke(
+        {"query": "q"}
+    )
+
+    assert {t.node_id: t.config.model for t in runtime.tasks} == models
+
+
+async def test_without_a_resolver_the_task_carries_no_model():
+    runtime = (
+        FakeRuntime()
+        .script("planner", output={"plan": "P"})
+        .script("researcher", output={"findings": []})
+    )
+
+    await build_graph(linear_topology(), runtime).ainvoke({"query": "q"})
+
+    assert [t.config.model for t in runtime.tasks] == [None, None]
 
 
 # --- 조건부 라우팅 ----------------------------------------------------------

@@ -48,7 +48,7 @@ if TYPE_CHECKING:
     from malkuth.access.registry import AccessRegistry
     from malkuth.authoring import Author
     from malkuth.catalog import Catalog
-    from malkuth.core.manifest import AgentManifest
+    from malkuth.core.manifest import AgentManifest, ModelOverride
     from malkuth.orchestrator.topology import GraphTopology
     from malkuth.runtime.launcher import AgentLauncher
     from malkuth.runtime.sidecars import ProxyAttachment
@@ -108,6 +108,9 @@ class DeploymentRecord:
     declared: tuple[str, ...] = ()
     """이 배포가 쓰는 에이전트 이름 — 컨테이너가 서기 **전에** 적는다. `agents` 는
     Ready 가 되어야 채워지므로 그것만 보면 기동 중인 선언을 덮어쓸 수 있다."""
+    model_overrides: dict[str, dict[str, Any]] = field(default_factory=dict)
+    """배포 요청의 노드별 모델 override — ``exclude_unset`` 으로 덤프한 JSON 형태.
+    run 이 토폴로지에 다시 입힐 때 "명시한 키만 덮는다" 가 유지되어야 한다."""
 
 
 @runtime_checkable
@@ -155,13 +158,15 @@ CREATE TABLE IF NOT EXISTS deployments (
     error         TEXT,
     updated_at    TEXT NOT NULL,
     a2a_secret    TEXT NOT NULL DEFAULT '',
-    declared      TEXT NOT NULL DEFAULT '[]'
+    declared      TEXT NOT NULL DEFAULT '[]',
+    model_overrides TEXT NOT NULL DEFAULT '{}'
 );
 """
 
 _ADDED_COLUMNS = {
     "a2a_secret": "TEXT NOT NULL DEFAULT ''",
     "declared": "TEXT NOT NULL DEFAULT '[]'",
+    "model_overrides": "TEXT NOT NULL DEFAULT '{}'",
 }
 """첫 스키마 이후 더해진 컬럼 — `_migrate` 가 옛 DB 에 채운다. 새로 더할 때 여기에도 적는다."""
 
@@ -197,11 +202,12 @@ class SqliteDeploymentStore:
         try:
             with self._lock:
                 self._connect().execute(
-                    "INSERT INTO deployments VALUES (?,?,?,?,?,?,?,?,?) "
+                    "INSERT INTO deployments VALUES (?,?,?,?,?,?,?,?,?,?) "
                     "ON CONFLICT(deployment_id) DO UPDATE SET "
                     "graph=excluded.graph, version=excluded.version, status=excluded.status, "
                     "agents=excluded.agents, error=excluded.error, updated_at=excluded.updated_at, "
-                    "a2a_secret=excluded.a2a_secret, declared=excluded.declared",
+                    "a2a_secret=excluded.a2a_secret, declared=excluded.declared, "
+                    "model_overrides=excluded.model_overrides",
                     (
                         record.deployment_id,
                         record.graph,
@@ -212,6 +218,7 @@ class SqliteDeploymentStore:
                         record.updated_at,
                         record.a2a_secret,
                         json.dumps(list(record.declared)),
+                        json.dumps(record.model_overrides),
                     ),
                 )
         except sqlite3.Error as err:
@@ -260,6 +267,7 @@ def _row(row: sqlite3.Row) -> DeploymentRecord:
         updated_at=row["updated_at"],
         a2a_secret=row["a2a_secret"],
         declared=tuple(json.loads(row["declared"])),
+        model_overrides=json.loads(row["model_overrides"]),
     )
 
 
@@ -400,13 +408,23 @@ class DeploymentManager:
 
     # --- 배포 --------------------------------------------------------------
 
-    async def deploy(self, graph_name: str) -> DeploymentRecord:
+    async def deploy(
+        self, graph_name: str, *, model_overrides: Mapping[str, ModelOverride] | None = None
+    ) -> DeploymentRecord:
         """Validate, launch every agent, wait for health, record.
 
         01 Deploy: 검증 실패 시 아무것도 기동하지 않는다. 기동 중 하나라도 실패하면
         띄운 것을 전부 되감는다 — 유령 컨테이너는 05 Consistency 3 위반이다.
+
+        ``model_overrides`` (노드 id → 부분 모델 선언) 는 **검증 전에** 토폴로지에 입힌다 —
+        override 가 manifest 밖 provider 로 바꾸는 것을 검증이 보고 거절해야 한다.
+
+        Raises:
+            MalkuthError: VALIDATION/``VAL_002`` if an override names an unknown node,
+                ``VAL_001`` if the graph fails deployment validation.
         """
-        topology = self.catalog.graph(graph_name)
+        overrides = dict(model_overrides or {})
+        topology = self.catalog.graph(graph_name).with_model_overrides(overrides)
         report = self.author.validate(graphs=[topology], with_saved_graphs=False)
         if not report.ok:
             raise MalkuthError(
@@ -430,6 +448,10 @@ class DeploymentManager:
             a2a_secret=secrets.token_urlsafe(32),
             # 첫 await 전에 적는다 — 기동 중에도 authoring 이 이 선언을 못 건드리게
             declared=tuple(m.name for m in manifests),
+            model_overrides={
+                node_id: o.model_dump(mode="json", exclude_unset=True)
+                for node_id, o in overrides.items()
+            },
         )
         self.store.upsert(record)
         bound = self._bind_log(record)

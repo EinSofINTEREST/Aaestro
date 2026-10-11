@@ -22,7 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
 from malkuth.core.errors import ErrorCategory, ErrorCode, MalkuthError
-from malkuth.core.manifest import AgentManifest
+from malkuth.core.manifest import AgentManifest, ModelOverride
 from malkuth.http_auth import require_token
 from malkuth.http_errors import status_for
 from malkuth.materials import Materials
@@ -491,6 +491,7 @@ def _deployment_view(record: DeploymentRecord) -> dict[str, Any]:
         "status": record.status,
         "error": record.error,
         "updated_at": record.updated_at,
+        "model_overrides": record.model_overrides,
         "agents": [
             {
                 "name": a.name,
@@ -507,6 +508,8 @@ def _deployment_view(record: DeploymentRecord) -> dict[str, Any]:
 
 class DeployRequest(BaseModel):
     graph: str
+    model_overrides: dict[str, ModelOverride] = Field(default_factory=dict)
+    """노드 id → 부분 모델 선언. 모르는 노드 id 는 배포가 ``VAL_002`` 로 거절한다."""
 
 
 def _mount_deployments(api: APIRouter, deployments: DeploymentManager) -> None:
@@ -518,7 +521,9 @@ def _mount_deployments(api: APIRouter, deployments: DeploymentManager) -> None:
     @api.post("/v1/deployments", status_code=status.HTTP_201_CREATED)
     async def create_deployment(body: Annotated[Any, Body()]) -> dict[str, Any]:
         request = _parsed(body, DeployRequest)
-        return _deployment_view(await deployments.deploy(request.graph))
+        return _deployment_view(
+            await deployments.deploy(request.graph, model_overrides=request.model_overrides)
+        )
 
     @api.get("/v1/deployments")
     async def list_deployments() -> dict[str, Any]:

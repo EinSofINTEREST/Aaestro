@@ -112,6 +112,50 @@ def test_a_progress_update_does_not_erase_a_drain_request(store):
 # --- 프로세스 경계 --------------------------------------------------------------
 
 
+def test_model_overrides_are_read_back(store):
+    overrides = {"researcher": {"name": "claude-haiku-4-5", "fallbacks": []}}
+    store.upsert(record(model_overrides=overrides))
+
+    assert store.get("run-1").model_overrides == overrides
+
+
+def test_a_handle_update_does_not_erase_the_model_overrides(store):
+    """슬롯 · iteration 갱신은 핸들만 안다 — 그 갱신이 지우면 resume 이 다른 모델로 돈다."""
+    overrides = {"researcher": {"name": "claude-haiku-4-5"}}
+    store.upsert(record(model_overrides=overrides))
+
+    store.upsert(record(status="failed"))
+
+    assert store.get("run-1").status == "failed"
+    assert store.get("run-1").model_overrides == overrides
+
+
+def test_the_sqlite_store_opens_a_database_from_before_model_overrides(tmp_path):
+    """#358 이전 DB 에는 컬럼이 없다 — 열 때 더해야 기동이 죽지 않는다 (#254 와 같은 사정)."""
+    import sqlite3
+
+    path = tmp_path / "runs.db"
+    with sqlite3.connect(path) as old:
+        old.execute(
+            "CREATE TABLE runs (run_id TEXT PRIMARY KEY, graph TEXT NOT NULL, "
+            "mode TEXT NOT NULL, status TEXT NOT NULL, iteration INTEGER NOT NULL DEFAULT 0, "
+            "failure_streak INTEGER NOT NULL DEFAULT 0, drain INTEGER NOT NULL DEFAULT 0, "
+            "updated_at TEXT NOT NULL)"
+        )
+        old.execute(
+            "INSERT INTO runs VALUES (?,?,?,?,?,?,?,?)",
+            ("run-old", GRAPH, "mission", "failed", 0, 0, 0, "t"),
+        )
+
+    store = SqliteRunStore(path=path)
+    try:
+        assert store.get("run-old").model_overrides == {}
+        store.upsert(record("run-old", model_overrides={"planner": {"name": "m"}}))
+        assert store.get("run-old").model_overrides == {"planner": {"name": "m"}}
+    finally:
+        store.close()
+
+
 def test_another_process_sees_the_run(tmp_path):
     """#123 완료 조건 — 별개의 연결이 같은 run 을 본다."""
     path = tmp_path / "runs.db"

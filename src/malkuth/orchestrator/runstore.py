@@ -9,11 +9,12 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from malkuth.core.errors import ErrorCategory, ErrorCode, MalkuthError
 
@@ -30,9 +31,15 @@ CREATE TABLE IF NOT EXISTS runs (
     iteration      INTEGER NOT NULL DEFAULT 0,
     failure_streak INTEGER NOT NULL DEFAULT 0,
     drain          INTEGER NOT NULL DEFAULT 0,
-    updated_at     TEXT NOT NULL
+    updated_at     TEXT NOT NULL,
+    model_overrides TEXT NOT NULL DEFAULT '{}'
 );
 """
+
+_ADDED_COLUMNS = {
+    "model_overrides": "TEXT NOT NULL DEFAULT '{}'",
+}
+"""첫 스키마 이후 더해진 컬럼 — `_migrate` 가 옛 DB 에 채운다. 새로 더할 때 여기에도 적는다."""
 
 
 def _storage_error(message: str, **details: str) -> MalkuthError:
@@ -61,6 +68,12 @@ class RunRecord:
     failure_streak: int = 0
     drain: bool = False
     updated_at: str = ""
+    model_overrides: dict[str, dict[str, Any]] = field(default_factory=dict)
+    """제출 시 배포에서 **복사**한 노드별 모델 override — resume 이 같은 모델로 잇는다.
+    배포 기록을 다시 찾지 않으므로 배포가 사라져도 run 은 시작할 때의 모델을 쓴다.
+
+    한 번 정해지면 바뀌지 않는다: 빈 값으로 갱신하면 기존 값을 보존한다. run 기록은
+    핸들만 아는 여러 곳(슬롯 · iteration 진행)이 다시 쓰므로, 그 갱신이 지우면 안 된다."""
 
 
 @runtime_checkable
@@ -99,8 +112,14 @@ class InMemoryRunStore:
         # 구동 프로세스의 갱신이 다른 프로세스의 drain 요청을 지우면
         # 그 요청은 영원히 전달되지 않는다
         drain = record.drain or (existing.drain if existing else False)
+        overrides = record.model_overrides or (existing.model_overrides if existing else {})
         self._records[record.run_id] = RunRecord(
-            **{**record.__dict__, "drain": drain, "updated_at": _now()}
+            **{
+                **record.__dict__,
+                "drain": drain,
+                "model_overrides": overrides,
+                "updated_at": _now(),
+            }
         )
 
     def get(self, run_id: str) -> RunRecord | None:
@@ -145,6 +164,7 @@ class SqliteRunStore:
             )
             self._conn.row_factory = sqlite3.Row
             self._conn.execute(_SCHEMA)
+            _migrate(self._conn)
         except sqlite3.Error as err:
             raise _storage_error("run store could not be opened", path=str(self.path)) from err
 
@@ -155,8 +175,8 @@ class SqliteRunStore:
                 self._conn.execute(
                     """
                 INSERT INTO runs (run_id, graph, mode, status, iteration,
-                                  failure_streak, drain, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                  failure_streak, drain, updated_at, model_overrides)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(run_id) DO UPDATE SET
                     status = excluded.status,
                     iteration = excluded.iteration,
@@ -164,6 +184,10 @@ class SqliteRunStore:
                     -- 구동 프로세스의 갱신이 다른 프로세스의 drain 요청을
                     -- 덮어쓰면 그 요청은 영원히 전달되지 않는다
                     drain = MAX(runs.drain, excluded.drain),
+                    -- 핸들만 아는 갱신(슬롯 · iteration)이 제출 때 복사한 override 를 지우면
+                    -- resume 이 다른 모델로 이어진다
+                    model_overrides = CASE WHEN excluded.model_overrides = '{}'
+                        THEN runs.model_overrides ELSE excluded.model_overrides END,
                     updated_at = excluded.updated_at
                 """,
                     (
@@ -175,6 +199,7 @@ class SqliteRunStore:
                         record.failure_streak,
                         int(record.drain),
                         _now(),
+                        json.dumps(record.model_overrides),
                     ),
                 )
         except sqlite3.Error as err:
@@ -221,7 +246,16 @@ def _record(row: sqlite3.Row) -> RunRecord:
         failure_streak=row["failure_streak"],
         drain=bool(row["drain"]),
         updated_at=row["updated_at"],
+        model_overrides=json.loads(row["model_overrides"]),
     )
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """있는 DB 에 빠진 컬럼을 더한다 — `CREATE TABLE IF NOT EXISTS` 는 그러지 않는다 (#254)."""
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(runs)")}
+    for name, declaration in _ADDED_COLUMNS.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE runs ADD COLUMN {name} {declaration}")  # noqa: S608 — 상수
 
 
 def _now() -> str:

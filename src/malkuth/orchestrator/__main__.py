@@ -263,6 +263,7 @@ def _run_service(
 ) -> RunService:
     """이 프로세스가 run 을 구동한다 — 노드 호출은 배포된 컨테이너로 라우팅된다 (#244)."""
     from malkuth.orchestrator.checkpoint import build_checkpointer
+    from malkuth.orchestrator.models import CatalogModels
     from malkuth.orchestrator.run import RunManager
     from malkuth.orchestrator.runs import RoutedClients, RunService
     from malkuth.orchestrator.submit import RunSubmitter
@@ -281,6 +282,7 @@ def _run_service(
         ),
         node_timeout_s=orchestrator.node_timeout_s,
         metrics=metrics,
+        models=CatalogModels(catalog),
     )
     return RunService(catalog=catalog, deployments=deployments, submitter=submitter, store=store)
 

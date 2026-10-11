@@ -15,6 +15,8 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from pydantic import ValidationError
+
 from malkuth.authoring import Author
 from malkuth.catalog import Catalog, load_yaml
 from malkuth.cli.control import CONTROL_TOKEN_ENV, DEFAULT_CONTROL_URL
@@ -27,6 +29,7 @@ from malkuth.config import DEFAULT_CONFIG_DIR, ENVIRONMENT_ENV, load_config, res
 from malkuth.core.errors import MalkuthError
 from malkuth.deploy import ValidationReport
 from malkuth.observability.logging import configure
+from malkuth.orchestrator.models import CatalogModels, resolve_node_model
 from malkuth.orchestrator.topology import GraphTopology
 
 if TYPE_CHECKING:
@@ -65,6 +68,55 @@ def validate_root(
     )
 
 
+def node_models(catalog: Catalog, topologies: Sequence[GraphTopology]) -> list[dict[str, Any]]:
+    """Resolve each agent node's model, for display.
+
+    에이전트 노드마다 해석된 모델 (manifest 기본값 위에 노드 override). 매니페스트가 없거나
+    해석 결과가 무효인 노드는 건너뛴다 — 검증이 그 이유를 보고한다.
+    """
+    resolved: list[dict[str, Any]] = []
+    for topology in topologies:
+        for node in topology.spec.nodes:
+            try:
+                model = resolve_node_model(catalog, node)
+            except (MalkuthError, ValidationError):
+                continue
+            if model is None:
+                continue
+            resolved.append(
+                {
+                    "graph": topology.metadata.name,
+                    "node_id": node.id,
+                    "agent": node.agent,
+                    "provider": model.provider,
+                    "name": model.name,
+                    "fallbacks": [
+                        {"provider": f.provider, "name": f.name, "on": list(f.on)}
+                        for f in model.fallbacks
+                    ],
+                    "source": "manifest" if node.model is None else "node",
+                }
+            )
+    return resolved
+
+
+def _model_line(entry: dict[str, Any]) -> str:
+    """`graph/node: provider/name → fallback, ... (출처)` — 사람이 읽는 한 줄."""
+    line = f"{entry['graph']}/{entry['node_id']}: {entry['provider']}/{entry['name']}"
+    if entry["fallbacks"]:
+        line += " → " + ", ".join(f"{f['provider']}/{f['name']}" for f in entry["fallbacks"])
+    source = "node override" if entry["source"] == "node" else "manifest"
+    return f"{line} ({source})"
+
+
+def models_entry(
+    catalog: Catalog, topologies: Sequence[GraphTopology], *, as_json: bool
+) -> list[Any]:
+    """`models` payload 항목 — JSON 은 구조화된 목록, 텍스트는 노드마다 한 줄."""
+    resolved = node_models(catalog, topologies)
+    return resolved if as_json else [_model_line(entry) for entry in resolved]
+
+
 def emit(payload: dict[str, Any], *, as_json: bool) -> None:
     """Print a command result.
 
@@ -91,7 +143,8 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     """
     root = Path(args.root)
     topology = GraphTopology.model_validate(load_yaml(Path(args.graph)))
-    manifests = Catalog.under(root).agents().items
+    catalog = Catalog.under(root)
+    manifests = catalog.agents().items
 
     report = validate_root(root, [topology], a2a_port_range=args.a2a_port_range)
 
@@ -101,6 +154,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
             "validated": len(manifests),
             "status": "ok" if report.ok else "failed",
             "failures": [f"{f.check}: {f.message}" for f in report.findings],
+            "models": models_entry(catalog, [topology], as_json=args.json),
         },
         as_json=args.json,
     )
@@ -113,7 +167,8 @@ def cmd_validate(args: argparse.Namespace) -> int:
     저장소의 모든 그래프를 검증합니다 — 배포 전 일괄 점검용입니다.
     """
     root = Path(args.root)
-    manifests = Catalog.under(root).agents().items
+    catalog = Catalog.under(root)
+    manifests = catalog.agents().items
     topologies = [
         GraphTopology.model_validate(load_yaml(path))
         for path in sorted((root / "graphs").glob("*.yaml"))
@@ -127,6 +182,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
             "agents": len(manifests),
             "status": "ok" if report.ok else "failed",
             "failures": [f"{f.check}: {f.message}" for f in report.findings],
+            "models": models_entry(catalog, topologies, as_json=args.json),
         },
         as_json=args.json,
     )
@@ -289,6 +345,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         manager=run_manager_for(args),
         checkpointer=checkpointer,
         metrics=Metrics(),
+        models=CatalogModels(Catalog.under(root)),
     )
 
     if getattr(args, "service", False):

@@ -631,3 +631,28 @@ def test_the_entrypoint_checks_host_reachability(tmp_path, monkeypatch):
     _serve_with(tmp_path, monkeypatch, {})
 
     assert calls == ["127.0.0.1"]
+
+
+def test_the_served_run_service_resolves_node_models_from_the_catalog(tmp_path):
+    """resolver 를 물리지 않으면 배포의 model_overrides 가 기록만 되고 태스크에 닿지 않는다."""
+    from types import SimpleNamespace
+
+    from malkuth.catalog import Catalog
+    from malkuth.orchestrator.models import CatalogModels
+
+    catalog = Catalog.under(tmp_path)
+    config = SimpleNamespace(
+        orchestrator=SimpleNamespace(
+            max_concurrent_runs=1,
+            max_service_runs=1,
+            checkpointer="memory",
+            checkpointer_url=None,
+            node_timeout_s=30.0,
+        )
+    )
+
+    runs = entrypoint._run_service(
+        config, catalog, SimpleNamespace(launcher=None), store=SqliteRunStore()
+    )
+
+    assert runs.submitter.models == CatalogModels(catalog)
