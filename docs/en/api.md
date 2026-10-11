@@ -361,8 +361,8 @@ curl -X POST -H "Authorization: Bearer $TOKEN" -H 'content-type: application/jso
 ```
 
 Optionally pass `model_overrides` (node id → partial `spec.model`) to swap models without editing
-any declaration; see [Agents — model resilience](modules.md#agents--model-resilience). The call
-still uses the manifest's model until the failover-loop work (#359) lands:
+any declaration; see [Agents — model resilience](modules.md#agents--model-resilience). agentd runs
+the task with that model:
 
 ```bash
 curl -X POST -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \

@@ -95,7 +95,7 @@ class MalkuthError(Exception):
 | `runtime/control.py` 의 Agent Control API 호출 결과 | `NETWORK`, `TIMEOUT`, `RUNTIME` |
 | `protocols/a2a/` 의 원격 호출 결과 | `A2A`, `NETWORK`, `TIMEOUT` |
 | `protocols/mcp/` 의 세션/tool 호출 결과 | `MCP`, `TIMEOUT` |
-| `agentd/executor.py` 의 모델 호출 결과 | `MODEL`, `RATE_LIMIT`, `TIMEOUT` |
+| `agentd/executor.py` 의 모델 호출 결과 | `MODEL`, `RATE_LIMIT`, `TIMEOUT`, `NETWORK` |
 | `decision/providers/` 의 결정 호출 결과 | `DECISION`, `RATE_LIMIT`, `TIMEOUT` |
 | `orchestrator/` 의 node 실행/state 병합 결과 | `GRAPH` |
 | `modules/registry.py` 의 ref 해석/로드 결과 | `MODULE`, `CONFIG` |
@@ -277,7 +277,7 @@ DECISION_RETRY = RetryPolicy(
 
 | 호출 | 재시도 주체 |
 |---|---|
-| 모델 API 호출 | agentd (provider SDK 재시도는 비활성화) |
+| 모델 API 호출 | agentd (provider SDK 재시도는 비활성화) — 재시도 소진 뒤 선언된 fallback 모델로의 전환도 agentd (02 Model Resilience Declaration) |
 | 결정 모델 호출 | agentd — `DECISION_RETRY` (network·timeout·rate limit 모두 1회 재시도, 총 대기 < `decision.timeout_s`). 소진하면 `unavailable` 로 원래 경로 — RATE_LIMIT_RETRY 의 수십 초 백오프는 판정에 맞지 않는다 |
 | MCP tool 호출 | agentd — 단 `MCP_004` (transport) 는 재연결 후 1회만 |
 | A2A 호출 | caller 에이전트 |
@@ -288,7 +288,7 @@ DECISION_RETRY = RetryPolicy(
 
 외부 의존 대상별로 circuit breaker 를 적용한다:
 
-- 모델 provider (에이전트별)
+- 모델 (provider/name 별 — fallback 포함)
 - 결정 provider (에이전트별) — open 이면 호출 없이 `unavailable`: 장애 중 판정마다 timeout 을
   기다리면 태스크가 결정 수만큼 느려진다
 - MCP external/sidecar 서버 (서버별)
@@ -475,7 +475,7 @@ malkuth_agent_tasks_total{agent, group, graph, status}   # Counter — graph: �
 malkuth_agent_task_duration_seconds{agent, group, graph} # Histogram
 
 # Model metrics
-malkuth_model_requests_total{agent, provider, model, status}
+malkuth_model_requests_total{agent, provider, model, status, fallback_index}
 malkuth_model_tokens_total{agent, model, direction}      # direction: input|output
 
 # Decision metrics (01 Decision Models)

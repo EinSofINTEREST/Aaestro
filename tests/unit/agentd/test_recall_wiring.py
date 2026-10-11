@@ -52,7 +52,7 @@ async def test_recalled_memory_is_appended_to_the_prompt():
 
     await executor.execute(make_task())
 
-    _, conversation, _ = executor._model.requests[0]  # type: ignore[attr-defined]
+    _, conversation, _ = executor._chain.links[0].model.requests[0]  # type: ignore[attr-defined]
     # 기억은 태스크 텍스트와 다른 블록 — 모델이 참고 자료와 지시를 구분할 수 있게
     context, prompt = conversation[0].parts
     assert prompt.startswith("prompt:")
@@ -66,8 +66,8 @@ async def test_recall_runs_once_per_task_not_per_turn():
 
     await executor.execute(make_task())
 
-    assert executor._model.calls  # type: ignore[attr-defined]
-    assert len(executor._model.calls) == 3  # type: ignore[attr-defined]
+    assert executor._chain.links[0].model.calls  # type: ignore[attr-defined]
+    assert len(executor._chain.links[0].model.calls) == 3  # type: ignore[attr-defined]
     assert recall.calls == 1
 
 
@@ -87,7 +87,7 @@ async def test_empty_recall_leaves_the_prompt_untouched():
 
     await executor.execute(make_task())
 
-    assert executor._model.calls[0][0] == "prompt:planner"  # type: ignore[attr-defined]
+    assert executor._chain.links[0].model.calls[0][0] == "prompt:planner"  # type: ignore[attr-defined]
 
 
 async def test_execution_works_without_recall():

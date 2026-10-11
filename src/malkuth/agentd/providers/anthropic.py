@@ -45,10 +45,10 @@ def _model_error(
 ) -> MalkuthError:
     """provider 실패를 구조화 에러로 변환한다.
 
-    기본은 MODEL 이지만 rate limit 은 **RATE_LIMIT** 으로 분리한다 —
-    05 Layer Rules 는 모델 호출 boundary 가 MODEL/RATE_LIMIT/TIMEOUT 셋을
-    낸다고 규정하고, RATE_LIMIT_RETRY 는 그 카테고리만 본다. 뭉개면
-    정책이 겨냥한 유일한 상황에 정책이 닿지 않는다.
+    기본은 MODEL 이지만 rate limit 은 **RATE_LIMIT**, 연결 실패·타임아웃은 **NETWORK**·**TIMEOUT**
+    으로 분리한다 — 05 Layer Rules 는 모델 호출 boundary 가 MODEL/RATE_LIMIT/TIMEOUT/NETWORK 를
+    낸다고 규정하고, RATE_LIMIT_RETRY·NETWORK_RETRY 는 각자의 카테고리만 본다. 뭉개면
+    정책이 겨냥한 상황에 정책이 닿지 않는다.
     """
     return MalkuthError(
         category=category,
@@ -88,7 +88,7 @@ class AnthropicModel:
     ) -> ModelResponse:
         """Run one model turn.
 
-        한 턴을 실행합니다. 재시도·라우팅 판단이 걸린 실패는 ``MODEL``
+        한 턴을 실행합니다. 재시도·라우팅 판단이 걸린 실패는 그 판단이 보는
         카테고리로 변환합니다.
 
         대화는 provider 의 구조 그대로 보낸다: 운영자 지시는 ``system``, 도구 호출은 assistant 의
@@ -106,9 +106,11 @@ class AnthropicModel:
             The model's response — tool 호출이 없으면 최종 응답입니다.
 
         Raises:
-            MalkuthError: MODEL/``LLM_001`` rate limited, ``LLM_002`` context
-                exceeded, ``LLM_003`` provider server error, ``LLM_004`` if the
-                response cannot be interpreted.
+            MalkuthError: RATE_LIMIT/``LLM_001`` rate limited, MODEL/``LLM_002``
+                context exceeded, MODEL/``LLM_003`` provider server error (5xx),
+                TIMEOUT/``NET_002`` request timed out, NETWORK/``NET_001``
+                connection failed, MODEL/``LLM_004`` if the response cannot be
+                interpreted.
             anthropic.APIStatusError: Configuration errors (unknown model,
                 invalid arguments) propagate unchanged — 프레임워크가 고칠 수
                 있는 실패가 아닙니다.
@@ -149,13 +151,33 @@ class AnthropicModel:
                 retryable=False,
                 cause=type(err).__name__,
             ) from err
-        except (anthropic.InternalServerError, anthropic.APIConnectionError) as err:
+        except anthropic.InternalServerError as err:
             raise _model_error(
                 ErrorCode.LLM_003,
                 "provider server error",
                 agent=self.agent,
                 retryable=True,
                 cause=type(err).__name__,
+            ) from err
+        # APITimeoutError 는 APIConnectionError 의 하위 클래스라 먼저 잡는다
+        except anthropic.APITimeoutError as err:
+            raise _model_error(
+                ErrorCode.NET_002,
+                "provider request timed out",
+                agent=self.agent,
+                retryable=True,
+                cause=type(err).__name__,
+                category=ErrorCategory.TIMEOUT,
+            ) from err
+        except anthropic.APIConnectionError as err:
+            # MODEL 로 덮으면 NETWORK_RETRY 와 선언 retry.network 가 한 번도 동작하지 않는다
+            raise _model_error(
+                ErrorCode.NET_001,
+                "provider connection failed",
+                agent=self.agent,
+                retryable=True,
+                cause=type(err).__name__,
+                category=ErrorCategory.NETWORK,
             ) from err
 
         return self._interpret(message)

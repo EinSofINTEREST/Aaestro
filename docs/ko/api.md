@@ -348,8 +348,8 @@ curl -X POST -H "Authorization: Bearer $TOKEN" -H 'content-type: application/jso
 ```
 
 선택으로 `model_overrides`(노드 id → 부분 `spec.model`)를 넘기면 선언 파일을 바꾸지 않고 모델을
-교체합니다. [에이전트 — 모델 회복력](modules.md#에이전트--모델-회복력) 참조. 실제 호출은 전환 루프 작업(#359)이
-들어갈 때까지 manifest 의 모델을 씁니다:
+교체합니다. [에이전트 — 모델 회복력](modules.md#에이전트--모델-회복력) 참조. agentd 는 그 모델로 태스크를
+실행합니다:
 
 ```bash
 curl -X POST -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \

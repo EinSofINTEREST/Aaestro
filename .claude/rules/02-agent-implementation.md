@@ -210,7 +210,8 @@ spec:
    선언이며 명시한 빈 값 · null 은 아래 계층 값을 지운다 (`provider` 를 적으면 `name` 도 적는다).
    노드 · 배포 override 는 manifest 가 선언한 provider 집합 안에서만 provider 를 바꾼다 — 이그레스
    판정 기본값이 manifest 에서 도출된다. 배포 검증은 모르는 provider 와
-   `runtime.egress_proxy.providers` 에 없는 provider 를 `VAL_002` 로 거절한다
+   `runtime.egress_proxy.providers` 에 없는 provider 를 `VAL_002` 로 거절한다.
+   해석된 선언은 태스크 시작 시 고정된다 (Hot Reload 와 같은 규칙)
 
 ## Docker Isolation Rules
 
@@ -397,6 +398,9 @@ async def execute(self, task: TaskRequest) -> TaskResult:
 3. **Parallel Tools**: 독립 tool call 은 `asyncio.gather` 로 병렬 실행
 4. **Usage Tracking**: 매 모델 호출의 토큰 사용량 누적 → TaskResult.usage
 5. **Event Emission**: 스트리밍 모드에서 turn 별 tool_call/tool_result 이벤트 발행
+6. **Model Failover**: 모델 호출의 재시도가 소진되면 `spec.model.fallbacks` 중 실패 부류가
+   `on` 에 든 다음 모델로 같은 턴을 보낸다 — 전환 주체는 agentd (05 Retry Layering).
+   circuit open 인 모델은 건너뛴다
 
 ### Decision Hooks — 루프 안의 결정 모델
 

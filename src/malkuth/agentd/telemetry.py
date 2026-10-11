@@ -75,10 +75,28 @@ class ExecutorTelemetry:
             agent=self._agent, group=self._group, graph=label
         ).observe(duration_s)
 
-    def model_called(self, *, status: str, usage: ModelUsage | None = None) -> None:
-        """모델 호출 한 턴 — 요청 카운터와 방향별 토큰."""
+    def model_called(
+        self,
+        *,
+        status: str,
+        usage: ModelUsage | None = None,
+        provider: str | None = None,
+        model: str | None = None,
+        fallback_index: int = 0,
+    ) -> None:
+        """모델 호출 한 시도 — 요청 카운터와 방향별 토큰.
+
+        ``provider`` / ``model`` 은 **실제로 부른** 모델이다 (fallback 이면 그 모델). 생략하면
+        생성 시 받은 기본 라벨을 쓴다. ``fallback_index`` 0 이 primary 다 (#359).
+        """
+        provider = provider if provider is not None else self._provider
+        model = model if model is not None else self._model
         self._metrics.counter("malkuth_model_requests_total").labels(
-            agent=self._agent, provider=self._provider, model=self._model, status=status
+            agent=self._agent,
+            provider=provider,
+            model=model,
+            status=status,
+            fallback_index=str(fallback_index),
         ).inc()
         if usage is None:
             return
@@ -88,7 +106,7 @@ class ExecutorTelemetry:
             (DIRECTION_OUTPUT, usage.output_tokens),
         ):
             if count:
-                tokens.labels(agent=self._agent, model=self._model, direction=direction).inc(count)
+                tokens.labels(agent=self._agent, model=model, direction=direction).inc(count)
 
     def tool_called(self, *, tool: str, status: str) -> None:
         """tool 호출 — skillset/mcp 를 source 라벨로 구분한다."""

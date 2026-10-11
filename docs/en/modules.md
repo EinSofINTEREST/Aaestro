@@ -138,9 +138,8 @@ spec:
 ## Agents — model resilience
 
 An agent's `spec.model` may declare what to do when the primary model fails. Every field below is
-optional; leave them out and behavior is unchanged. This is **declared now, acted on by later
-work**: validation and resolution ship first, the failover loop, key rotation and non-Anthropic
-adapters follow (#359, #360, #361).
+optional; leave them out and behavior is unchanged. Validation, resolution and the runtime failover
+loop are in place. Key rotation within a provider (#360) and non-Anthropic adapters (#361) follow.
 
 ```yaml
 spec:
@@ -190,10 +189,44 @@ nodes:
       fallbacks: []                # no fallback on this node
 ```
 
-The resolved result is delivered to agentd as `TaskRequest.config.model`. **Switching agentd's
-calls to that model arrives with the failover-loop work (#359)** — until then node and deployment
-overrides are recorded, validated and delivered, but the actual call uses the manifest's model.
-Direct requests (outside any graph) use the manifest defaults.
+The resolved result is delivered to agentd as `TaskRequest.config.model`. agentd **pins the model
+chain from that declaration when the task starts** and calls that model from the primary onward; a
+reload never mixes into a running task (the same rule as the module bundle). Without a
+declaration — direct requests outside any graph — it uses the manifest defaults.
+
+### Failover at runtime
+
+Failover is per **turn**. When the primary's retry policy is exhausted (the `retry` declaration, or
+the defaults: rate limit starts at 10 s for 5 attempts, network at 1 s for 3), agentd sends the
+**same conversation** to the next fallback whose `on` contains the failure class. If the class is
+not in `on`, the task fails without switching. When the last fallback is exhausted too, the last
+error is returned.
+
+| `on` class | Failure it covers |
+|---|---|
+| `rate_limit` | provider rate limit (`LLM_001`) |
+| `server_error` | provider 5xx (`LLM_003`), and network errors or timeouts (the provider could not answer; the adapter maps connection failures to `NET_001` and request timeouts to `NET_002`, which the `network` retry policy retries before the switch) |
+| `context_overflow` | `LLM_002` — switches immediately without retrying ("the same request to a model with a longer context") |
+
+An unparseable response (`LLM_004`) and configuration errors never trigger a switch.
+
+- **`circuit`**: every model (provider/name) has its own circuit breaker. A model whose breaker is
+  open is **skipped without a call**. The skipped slot counts as the failure class that opened
+  that breaker (`rate_limit` if it opened on rate limits, otherwise `server_error`), so a fallback
+  whose `on` holds the same class takes over. If a breaker opens mid-retry, the remaining retries
+  are not sent and the call goes straight to the next candidate. The same model shares one breaker
+  across tasks and chains. When all candidates are open the call fails with the failure that
+  opened the last breaker (`LLM_001` or `LLM_003`), retryable. State is exported as
+  `malkuth_circuit_state{target="model:<provider>/<name>"}`.
+- A fallback inherits `max_tokens` and `effort` from the primary.
+- **Observability**: `TaskResult.usage.model` / `.provider` name the model that **actually
+  answered the **last** turn; token totals are summed across turns. Per-attempt accuracy lives in
+  the `malkuth_model_requests_total` / `malkuth_model_tokens_total` labels.
+  `malkuth_model_requests_total` carries a `fallback_index` label (0 = primary). Each
+  switch logs a WARN with `model`, `provider`, `fallback_index`, `error_code`, `next_model`,
+  `next_provider`. Skipping an open circuit also logs a WARN with `opened_by`.
+- Out of scope: switching to a non-Anthropic provider needs the adapters (#361) — until then the
+  chain is refused with `CFG_001` when it is built. Rotating keys within one provider is #360.
 
 ### Deploy-time checks (`model_providers`)
 

@@ -13,12 +13,13 @@ import json
 import time
 from collections import OrderedDict
 from contextvars import ContextVar
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Final, Protocol
+from dataclasses import dataclass, field, replace
+from typing import TYPE_CHECKING, Any, Final, Protocol, TypedDict
 
 import structlog
 
 from malkuth.agentd.health import ModelHealth
+from malkuth.agentd.models import MODEL_RETRY_POLICIES, ModelChain, ModelLink
 from malkuth.agentd.telemetry import (
     DIRECT_GRAPH,
     STATUS_COMPLETED,
@@ -33,8 +34,6 @@ from malkuth.core.agent import (
     TaskResult,
 )
 from malkuth.core.errors import (
-    NETWORK_RETRY,
-    RATE_LIMIT_RETRY,
     ErrorCategory,
     ErrorCode,
     MalkuthError,
@@ -50,13 +49,13 @@ from malkuth.core.events import (
 )
 from malkuth.core.skill import SkillContext
 from malkuth.core.tools import is_mcp_tool
-from malkuth.resilience import retrying_any
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 
     from malkuth.agentd.telemetry import ExecutorTelemetry
     from malkuth.core.errors import RetryPolicy
+    from malkuth.core.manifest import ModelConfig
     from malkuth.core.skill import ArtifactStore
 
     TaskRecall = Callable[[TaskRequest], Awaitable[str]]
@@ -65,19 +64,11 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 
 
-MODEL_RETRY_POLICIES: Final = (RATE_LIMIT_RETRY, NETWORK_RETRY)
 REMEMBERED_RESULTS: Final = 1024
 """멱등 캐시가 기억하는 완료 결과 수 — 넘치면 오래된 것부터 잊는다.
 
 상주 컨테이너는 수명이 길어 상한이 없으면 모든 태스크 결과(output 포함)를 끝까지 쥔다 (#315).
 재시도 창(05 NETWORK_RETRY: 최대 30s × 3)에 드는 태스크 수보다 넉넉하면 된다.
-"""
-"""모델 호출이 내는 두 실패에 각각의 backoff — rate limit 을 1초 간격으로
-두드리면 상황이 악화된다. 순서가 곧 우선순위다.
-
-**기본값이 아니다**: 재시도는 실제로 기다리므로, 조립하는 쪽(`build_executor`)
-이 명시적으로 켠다. 기본으로 켜면 fake model 로 실패를 스크립트하는 모든
-테스트가 초 단위로 기다리게 된다 (06 Async 2).
 """
 
 
@@ -211,7 +202,10 @@ class ExecutorConfig:
     max_turns: int = DEFAULT_MAX_TURNS
     tool_timeout_s: float = DEFAULT_TOOL_TIMEOUT_S
     retry_policies: tuple[RetryPolicy, ...] = ()
-    """비어 있으면 재시도하지 않는다 — 조립하는 쪽이 켠다."""
+    """비어 있으면 재시도하지 않는다 — 조립하는 쪽이 켠다.
+
+    ``Model`` 하나를 받았을 때만 쓴다. ``ModelChain`` 은 자기 정책을 들고 온다
+    (선언의 ``retry``)."""
     retry_sleep: Callable[[float], Awaitable[None]] | None = None
 
 
@@ -234,6 +228,10 @@ class ExecutorServices:
     """태스크마다 다르다 — 같은 에이전트가 노드마다 다른 템플릿을 쓰고,
     계약은 그 템플릿에 붙어 있다 (#150)."""
     on_cleanup: Callable[[], None] | None = None
+    chains: Callable[[ModelConfig], ModelChain] | None = None
+    """태스크가 실어 온 모델 선언(``TaskConfig.model``)으로 체인을 만든다.
+
+    없으면 그 선언을 쓸 수 없다 — 기본 체인으로 돌고 WARN 을 남긴다."""
 
 
 def _tool_error(name: str, task: TaskRequest, agent: str, err: BaseException) -> MalkuthError:
@@ -296,7 +294,7 @@ class Executor:
         self,
         *,
         agent: str,
-        model: Model,
+        model: Model | ModelChain,
         tools: ToolRegistry,
         render: Callable[[TaskRequest], str],
         tool_schemas: Sequence[Any] = (),
@@ -305,8 +303,16 @@ class Executor:
         system: str = "",
     ) -> None:
         self._agent = agent
-        self._model = model
         self._config = config or ExecutorConfig()
+        # 단일 Model 은 라벨 없는 링크 하나짜리 체인 — 텔레메트리는 생성자 기본 라벨을 쓴다
+        self._chain = (
+            model
+            if isinstance(model, ModelChain)
+            else ModelChain(
+                links=(ModelLink(model=model, provider="", name=""),),
+                retry_policies=self._config.retry_policies,
+            )
+        )
         self._services = services or ExecutorServices()
         # health 는 provider 를 부르지 않고 최근 호출 결과로 판정한다 (#311)
         self.model_health = ModelHealth()
@@ -536,18 +542,18 @@ class Executor:
         raise AssertionError("event loop ended without a terminal event")  # pragma: no cover
 
     async def _call_model(
-        self, messages: Sequence[Message], binding: ModuleBinding
+        self, link: ModelLink, messages: Sequence[Message], binding: ModuleBinding
     ) -> ModelResponse:
         """모델 한 번 — 실패도 메트릭에 남겨야 하므로 여기서 감싼다.
 
         **재시도 안쪽**이라 시도마다 계수된다: 05 의 rate limit 알림은
         발생 빈도를 보므로, 재시도로 성공한 호출의 rate limit 이 지워지면
-        provider 압박이 지표에서 사라진다.
+        provider 압박이 지표에서 사라진다. 라벨은 **실제로 부른** 모델이다.
         """
         tools = list(binding.tool_schemas)
         telemetry = self._services.telemetry
         try:
-            response = await self._model.run(binding.system, list(messages), tools)
+            response = await link.model.run(binding.system, list(messages), tools)
         except asyncio.CancelledError:
             # 마감에 잘린 것인지 사용자 취소인지는 execute 가 안다 — 여기서는 표시만 한다
             watch = _MODEL_WATCH.get()
@@ -557,32 +563,50 @@ class Executor:
         except Exception as err:
             self.model_health.failed(err.code if isinstance(err, MalkuthError) else "INTERNAL_001")
             if telemetry is not None:
-                telemetry.model_called(status=_model_status(err))
+                telemetry.model_called(status=_model_status(err), **_labels(link))
             raise
 
         self.model_health.succeeded()
+        response = _answered_by(response, link)
         if telemetry is not None:
-            telemetry.model_called(status=STATUS_COMPLETED, usage=response.usage)
+            telemetry.model_called(status=STATUS_COMPLETED, usage=response.usage, **_labels(link))
         return response
 
     async def _model_turn(
-        self, messages: Sequence[Message], binding: ModuleBinding
+        self, messages: Sequence[Message], binding: ModuleBinding, chain: ModelChain
     ) -> ModelResponse:
-        """모델 한 턴 — 정책이 허용하는 실패는 재시도한다.
+        """모델 한 턴 — 정책이 허용하는 실패는 재시도하고, 소진되면 fallback 으로 넘어간다.
 
         **재시도 주체는 agentd 다** (05 Retry Layering). provider SDK 재시도는
-        어댑터가 꺼 두었으므로 backoff 가 곱해지지 않는다.
-
-        rate limit 은 다른 정책을 쓴다 — 10초에서 시작해 5회. 네트워크 실패의
-        1초 backoff 로 rate limit 을 두드리면 상황을 악화시킨다.
+        어댑터가 꺼 두었으므로 backoff 가 곱해지지 않는다. 다음 모델을 고르는 것도
+        재시도의 일부라 같은 곳이 맡는다 (#359).
         """
 
-        async def attempt() -> ModelResponse:
-            return await self._call_model(messages, binding)
+        async def call(link: ModelLink) -> ModelResponse:
+            return await self._call_model(link, messages, binding)
 
-        return await retrying_any(
-            self._config.retry_policies, attempt, sleep=self._config.retry_sleep, agent=self._agent
-        )
+        return await chain.turn(call, sleep=self._config.retry_sleep, agent=self._agent)
+
+    def _chain_for(self, task: TaskRequest) -> ModelChain:
+        """이 태스크가 끝까지 쓸 모델 체인 — 그래프가 해석한 선언이 있으면 그것.
+
+        Raises:
+            MalkuthError: CONFIG/``CFG_001`` if the declaration names an unbound provider.
+        """
+        declared = task.config.model
+        if declared is None:
+            return self._chain
+        if self._services.chains is None:
+            # 조용히 기본 모델로 떨어지면 override 가 효과 없는 이유를 찾을 수 없다
+            log.warning(
+                "task model declaration ignored, no model factory bound",
+                agent=self._agent,
+                task_id=task.task_id,
+                model=declared.name,
+                provider=declared.provider,
+            )
+            return self._chain
+        return self._services.chains(declared)
 
     def _tool_timeout(self, name: str, task: TaskRequest, binding: ModuleBinding) -> float:
         """tool 실행 상한 — per-tool 선언이 있으면 그것, 없으면 더 엄격한 쪽."""
@@ -734,8 +758,9 @@ class Executor:
         Raises:
             MalkuthError: When a turn fails or the turn ceiling is reached.
         """
-        # 이 태스크가 끝까지 쓸 모듈 묶음 — 리로드가 도중에 갈아 끼워도 섞이지 않는다
+        # 이 태스크가 끝까지 쓸 모듈 묶음과 모델 체인 — 리로드가 도중에 갈아 끼워도 섞이지 않는다
         binding = self._binding
+        chain = self._chain_for(task)
         messages: list[Message] = [await self._opening(task, binding)]
         usage = ModelUsage()
         max_turns = self._max_turns(task)
@@ -743,7 +768,7 @@ class Executor:
 
         try:
             for turn in range(max_turns):
-                response = await self._model_turn(messages, binding)
+                response = await self._model_turn(messages, binding, chain)
                 usage = usage.merge(response.usage)
 
                 if response.content:
@@ -883,6 +908,34 @@ class Executor:
         return paired
 
 
+class _ModelLabels(TypedDict):
+    provider: str | None
+    model: str | None
+    fallback_index: int
+
+
+def _labels(link: ModelLink) -> _ModelLabels:
+    """메트릭 라벨 — 빈 문자열 링크는 None 이라 텔레메트리가 생성자 기본 라벨을 쓴다."""
+    return {
+        "provider": link.provider or None,
+        "model": link.name or None,
+        "fallback_index": link.index,
+    }
+
+
+def _answered_by(response: ModelResponse, link: ModelLink) -> ModelResponse:
+    """응답의 usage 에 실제로 답한 모델을 적는다 — 어댑터가 이미 적었으면 그대로 둔다.
+
+    라벨을 모르는 단일 모델(빈 문자열 링크)은 적을 것이 없다.
+    """
+    usage = response.usage
+    model = usage.model or link.name or None
+    provider = usage.provider or link.provider or None
+    if model == usage.model and provider == usage.provider:
+        return response
+    return replace(response, usage=usage.model_copy(update={"model": model, "provider": provider}))
+
+
 def tool_outcome(call: ToolCall, result: Any) -> ToolOutcome:
     """Turn a tool's return value into what the model reads back.
 
@@ -900,6 +953,7 @@ def tool_outcome(call: ToolCall, result: Any) -> ToolOutcome:
 
 
 __all__ = [
+    "MODEL_RETRY_POLICIES",
     "AssistantTurn",
     "Executor",
     "ExecutorConfig",

@@ -101,7 +101,7 @@ def test_metric_contract_snapshot():
         },
         "malkuth_model_requests_total": {
             "kind": "counter",
-            "labels": ["agent", "provider", "model", "status"],
+            "labels": ["agent", "provider", "model", "status", "fallback_index"],
         },
         "malkuth_model_tokens_total": {
             "kind": "counter",

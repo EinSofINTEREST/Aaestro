@@ -13,6 +13,7 @@ import pytest
 from malkuth.agentd.executor import AssistantTurn, ToolCall, ToolOutcome, ToolTurn, UserTurn
 from malkuth.agentd.providers.anthropic import DEFAULT_MAX_TOKENS, AnthropicModel
 from malkuth.core.errors import (
+    NETWORK_RETRY,
     RATE_LIMIT_RETRY,
     ErrorCategory,
     ErrorCode,
@@ -233,7 +234,7 @@ async def test_rate_limit_is_retryable_llm_001():
 async def test_rate_limit_carries_its_own_category():
     """MODEL 로 뭉개면 RATE_LIMIT_RETRY 가 겨냥한 유일한 상황에 닿지 못한다.
 
-    05 Layer Rules 는 모델 호출 boundary 가 MODEL/RATE_LIMIT/TIMEOUT 셋을
+    05 Layer Rules 는 모델 호출 boundary 가 MODEL/RATE_LIMIT/TIMEOUT/NETWORK 를
     낸다고 규정한다.
     """
     provider = model(api_error(anthropic.RateLimitError))
@@ -286,14 +287,45 @@ async def test_server_error_is_retryable_llm_003():
     assert exc_info.value.retryable
 
 
-async def test_connection_error_is_retryable_llm_003():
-    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
-    provider = model(anthropic.APIConnectionError(request=request))
+def sdk_request() -> httpx.Request:
+    return httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+
+
+async def test_server_error_is_not_claimed_by_the_network_policy():
+    """5xx 는 provider 장애다 — 연결 실패의 짧은 backoff 로 두드리지 않는다."""
+    provider = model(api_error(anthropic.InternalServerError))
 
     with pytest.raises(MalkuthError) as exc_info:
         await provider.run("", OPENING, [])
 
-    assert exc_info.value.code == ErrorCode.LLM_003
+    assert exc_info.value.category is ErrorCategory.MODEL
+    assert not NETWORK_RETRY.should_retry(exc_info.value)
+
+
+async def test_connection_error_is_retryable_network_net_001():
+    """MODEL 로 뭉개면 NETWORK_RETRY 와 선언 retry.network 가 한 번도 동작하지 않는다."""
+    provider = model(anthropic.APIConnectionError(request=sdk_request()))
+
+    with pytest.raises(MalkuthError) as exc_info:
+        await provider.run("", OPENING, [])
+
+    assert exc_info.value.category is ErrorCategory.NETWORK
+    assert exc_info.value.code == ErrorCode.NET_001
+    assert exc_info.value.retryable
+    assert NETWORK_RETRY.should_retry(exc_info.value)
+
+
+async def test_timeout_is_retryable_timeout_net_002():
+    """APITimeoutError 는 APIConnectionError 의 하위 클래스다 — 순서가 틀리면 NET_001 로 묻힌다."""
+    provider = model(anthropic.APITimeoutError(request=sdk_request()))
+
+    with pytest.raises(MalkuthError) as exc_info:
+        await provider.run("", OPENING, [])
+
+    assert exc_info.value.category is ErrorCategory.TIMEOUT
+    assert exc_info.value.code == ErrorCode.NET_002
+    assert exc_info.value.retryable
+    assert NETWORK_RETRY.should_retry(exc_info.value)
 
 
 # --- 재시도 계층 --------------------------------------------------------------

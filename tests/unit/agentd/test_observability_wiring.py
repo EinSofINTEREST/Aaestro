@@ -172,4 +172,4 @@ async def test_the_assembly_turns_on_model_retry(monkeypatch):
 
     executor = await build_executor(load_manifest(RESEARCHER))
 
-    assert executor._config.retry_policies, "재시도 정책이 정의만 되고 켜지지 않았다"
+    assert executor._chain.retry_policies, "재시도 정책이 정의만 되고 켜지지 않았다"

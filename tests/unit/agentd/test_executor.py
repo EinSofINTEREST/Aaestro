@@ -21,6 +21,7 @@ from malkuth.agentd.executor import (
     UserTurn,
     tool_outcome,
 )
+from malkuth.agentd.models import ModelChain, ModelLink
 from malkuth.core.agent import TaskConfig, TaskStatus
 from malkuth.core.errors import ErrorCategory, MalkuthError
 from malkuth.core.events import DoneEvent, ErrorEvent, ToolCallEvent, ToolResultEvent
@@ -416,10 +417,13 @@ async def test_retryable_failures_are_not_cached():
     assert first.error.retryable is True
 
     # 같은 task_id 로 재시도하면 다시 실행돼야 한다
-    executor._model = FakeModel([text("recovered")])
+    executor._chain = ModelChain(
+        links=(ModelLink(model=FakeModel([text("recovered")]), provider="", name=""),)
+    )
     second = await executor.execute(task)
 
     assert second.status is TaskStatus.COMPLETED
+    assert second.output == {"content": "recovered"}
 
 
 async def test_permanent_failures_stay_cached():
