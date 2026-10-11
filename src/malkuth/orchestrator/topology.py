@@ -18,9 +18,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from malkuth.core.conditions import Predicate, is_import_ref, parse_condition
 from malkuth.core.errors import ErrorCategory, ErrorCode, MalkuthError
-from malkuth.core.manifest import AgentName, MemorySpec, SemVer
+from malkuth.core.manifest import AgentName, MemorySpec, ModelOverride, SemVer
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from malkuth.modules.registry import ModuleRegistry
 
 START = "START"
@@ -71,6 +73,8 @@ class NodeSpec(BaseModel):
     output_map: dict[str, str] = Field(default_factory=dict)
     retry: int = 0
     timeout_s: float | None = None
+    model: ModelOverride | None = None
+    """이 노드에서만 에이전트 manifest 의 ``spec.model`` 을 덮는 부분 선언."""
 
     @field_validator("retry")
     @classmethod
@@ -103,6 +107,9 @@ class NodeSpec(BaseModel):
         """노드는 에이전트 또는 서브그래프 중 하나만 참조한다."""
         if (self.agent is None) == (self.graph is None):
             raise ValueError("node requires exactly one of 'agent' or 'graph'")
+        if self.graph is not None and self.model is not None:
+            # 서브그래프 노드에는 모델을 고를 에이전트가 없다 — 적어도 아무 효과가 없다
+            raise ValueError("subgraph node must not declare 'model'")
         return self
 
     @property
@@ -362,6 +369,43 @@ class GraphTopology(BaseModel):
     def node_ids(self) -> frozenset[str]:
         """선언된 노드 id 집합."""
         return frozenset(n.id for n in self.spec.nodes)
+
+    def with_model_overrides(self, overrides: Mapping[str, ModelOverride]) -> GraphTopology:
+        """Layer deployment model overrides onto agent nodes.
+
+        배포 계층의 모델 override 를 노드에 입힌 새 토폴로지를 돌려줍니다.
+        노드에 이미 override 가 있으면 그 위에 덮습니다 (배포가 노드를 이긴다).
+
+        Args:
+            overrides: Node id to the override for that node.
+
+        Raises:
+            MalkuthError: VALIDATION/``VAL_002`` if a key is not an agent node of this graph.
+        """
+        if not overrides:
+            return self
+        agent_nodes = {n.id for n in self.spec.nodes if not n.is_subgraph}
+        unknown = sorted(set(overrides) - agent_nodes)
+        if unknown:
+            raise MalkuthError(
+                category=ErrorCategory.VALIDATION,
+                code=ErrorCode.VAL_002,
+                message="model override names a node this graph does not have",
+                details={"graph": self.name, "node_ids": unknown},
+            )
+        nodes = tuple(
+            node
+            if node.id not in overrides
+            else node.model_copy(
+                update={
+                    "model": overrides[node.id]
+                    if node.model is None
+                    else node.model.merged(overrides[node.id])
+                }
+            )
+            for node in self.spec.nodes
+        )
+        return self.model_copy(update={"spec": self.spec.model_copy(update={"nodes": nodes})})
 
     def node(self, node_id: str) -> NodeSpec:
         """Look up a node by id.

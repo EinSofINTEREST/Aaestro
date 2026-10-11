@@ -13,7 +13,9 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import structlog
+from pydantic import ValidationError
 
+from malkuth.access.baselines import PROVIDER_HOSTS, EgressBaseline
 from malkuth.core.errors import ErrorCategory, ErrorCode, MalkuthError
 from malkuth.core.manifest import RESERVED_GLOBAL_GROUP, agent_name, agent_ref_parts
 from malkuth.modules.compatibility import check_promptset_templates
@@ -128,11 +130,17 @@ class DeployValidator:
     host_cpu_cores: float | None = None
     host_memory_bytes: int | None = None
     a2a_port_range: tuple[int, int] | None = None
+    providers: frozenset[str] | None = None
+    """이그레스 프록시 upstream 이름.
+
+    None 이면 프록시가 없다 — 논리 호스트가 알려진 provider 면 통과한다.
+    """
 
     def validate(self, topologies: Sequence[GraphTopology]) -> ValidationReport:
-        """Run all eight checks across the graphs being deployed.
+        """Run every contract check across the graphs being deployed.
 
-        배포 대상 그래프 전체에 8항목 검증을 수행합니다.
+        배포 대상 그래프 전체에 10항목 검증을 수행합니다 — 01 의 8항목에 노드 템플릿
+        (#260) 과 모델 provider (#358) 검사를 더한 것입니다.
 
         Args:
             topologies: The graph topologies about to be deployed.
@@ -153,6 +161,7 @@ class DeployValidator:
         findings.extend(self._check_env_allowlists())
         findings.extend(self._check_a2a_ports(topologies))
         findings.extend(self._check_quotas())
+        findings.extend(self._check_model_providers(topologies))
 
         report = ValidationReport(findings=tuple(findings))
         if report.ok:
@@ -510,6 +519,85 @@ class DeployValidator:
             )
         return findings
 
+    # --- 10. 모델 provider -------------------------------------------------
+
+    def _check_model_providers(self, topologies: Sequence[GraphTopology]) -> list[Finding]:
+        """Every model provider — primary and fallback — must be reachable.
+
+        manifest 의 모든 provider 가 알려진 논리 호스트를 갖고 프록시 upstream 에 있는지,
+        노드 override 로 해석된 모델도 같은지 본다. 런타임에 fallback 을 시도했다가
+        프록시가 거절하는 것은 조용한 실패다 — 그것을 배포로 앞당긴다.
+        """
+        findings = []
+        for name, manifest in self.manifests.items():
+            for provider in sorted(manifest.spec.model.providers()):
+                problem = self._provider_problem(provider)
+                if problem is not None:
+                    findings.append(
+                        Finding(
+                            check="model_providers",
+                            code=ErrorCode.VAL_002,
+                            message=problem,
+                            details={"agent": name, "provider": provider},
+                        )
+                    )
+        for topology in topologies:
+            findings.extend(self._check_node_models(topology))
+        return findings
+
+    def _provider_problem(self, provider: str) -> str | None:
+        """provider 하나가 배포 가능한지 — 문제가 있으면 그 메시지."""
+        if provider not in PROVIDER_HOSTS:
+            return f"unknown model provider: {provider}"
+        if self.providers is not None and provider not in self.providers:
+            return f"model provider is not an egress proxy upstream: {provider}"
+        return None
+
+    def _check_node_models(self, topology: GraphTopology) -> list[Finding]:
+        """노드 override 로 해석된 모델의 provider 가 manifest 선언 안에 있는지."""
+        findings = []
+        for node in topology.spec.nodes:
+            if node.agent is None or node.model is None:
+                continue  # override 가 없으면 manifest 검사가 이미 본 것과 같다
+            bound = agent_name(node.agent)
+            manifest = self.manifests.get(bound)
+            if manifest is None:
+                continue  # agent_refs 가 이미 보고했다
+            details = {"graph": topology.metadata.name, "node_id": node.id, "agent": bound}
+            try:
+                resolved = manifest.spec.model.overridden(node.model)
+            except ValidationError as err:
+                reasons = "; ".join(str(e["msg"]) for e in err.errors())
+                findings.append(
+                    Finding(
+                        check="model_providers",
+                        code=ErrorCode.VAL_002,
+                        message=f"node model override does not resolve to a valid model: {reasons}",
+                        details=details,
+                    )
+                )
+                continue
+            # 이그레스 baseline 은 manifest 에서만 도출된다 — manifest 밖 provider 로 바꾸면
+            # 배포는 되지만 프록시가 그 호출을 거부해 run 에서 조용히 실패한다
+            declared = EgressBaseline.declared(manifest)
+            for provider in sorted(resolved.providers()):
+                problem = self._provider_problem(provider)
+                if problem is None and PROVIDER_HOSTS[provider] not in declared:
+                    problem = (
+                        "node model override uses a provider the agent manifest "
+                        f"does not declare: {provider}"
+                    )
+                if problem is not None:
+                    findings.append(
+                        Finding(
+                            check="model_providers",
+                            code=ErrorCode.VAL_002,
+                            message=problem,
+                            details={**details, "provider": provider},
+                        )
+                    )
+        return findings
+
 
 def validate_deployment(
     topologies: Iterable[GraphTopology],
@@ -523,10 +611,11 @@ def validate_deployment(
     host_cpu_cores: float | None = None,
     host_memory_bytes: int | None = None,
     a2a_port_range: tuple[int, int] | None = None,
+    providers: frozenset[str] | None = None,
 ) -> ValidationReport:
-    """Validate a deployment against all eight contract checks.
+    """Validate a deployment against every contract check.
 
-    배포를 8항목 계약 검증으로 확인합니다.
+    배포를 10항목 계약 검증으로 확인합니다.
 
     Args:
         topologies: Graphs about to be deployed.
@@ -539,6 +628,7 @@ def validate_deployment(
         host_cpu_cores: Host CPU ceiling.
         host_memory_bytes: Host memory ceiling.
         a2a_port_range: The runtime's allocatable A2A port range.
+        providers: Egress proxy upstream names — None when there is no proxy.
 
     Returns:
         The validation report.
@@ -553,6 +643,7 @@ def validate_deployment(
         host_cpu_cores=host_cpu_cores,
         host_memory_bytes=host_memory_bytes,
         a2a_port_range=a2a_port_range,
+        providers=providers,
     )
     return validator.validate(list(topologies))
 

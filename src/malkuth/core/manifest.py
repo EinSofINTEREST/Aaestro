@@ -149,24 +149,181 @@ class Metadata(BaseModel):
         return value
 
 
+Effort = Literal["low", "medium", "high", "xhigh", "max"]
+"""출력 품질/비용 조절 단계 — ``output_config.effort`` 로 실린다."""
+
+FallbackTrigger = Literal["rate_limit", "server_error", "context_overflow"]
+"""fallback 으로 넘어가는 실패 부류 — 05 의 에러 카테고리(LLM_001/LLM_003/LLM_002)에 대응한다."""
+
+
+class FallbackModel(BaseModel):
+    """A backup model tried when the primary fails in a declared way.
+
+    주 모델이 ``on`` 에 적힌 부류로 실패할 때 시도하는 백업 모델.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    provider: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    on: tuple[FallbackTrigger, ...]
+
+    @field_validator("on")
+    @classmethod
+    def _non_empty_unique_triggers(
+        cls, value: tuple[FallbackTrigger, ...]
+    ) -> tuple[FallbackTrigger, ...]:
+        """빈 ``on`` 은 영원히 시도되지 않는 fallback 이다 — 선언 실수를 드러낸다."""
+        if not value:
+            raise ValueError("fallback 'on' must name at least one trigger")
+        if len(set(value)) != len(value):
+            raise ValueError("fallback 'on' has duplicate triggers")
+        return value
+
+
+class RetryDeclaration(BaseModel):
+    """Backoff for one retryable failure class.
+
+    재시도 가능한 실패 부류 하나의 backoff 선언.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    start_s: float = Field(gt=0)
+    attempts: int = Field(ge=1)
+    max_s: float | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def _max_not_below_start(self) -> RetryDeclaration:
+        """상한이 시작값보다 작으면 첫 대기부터 상한에 잘려 선언 의도와 어긋난다."""
+        if self.max_s is not None and self.max_s < self.start_s:
+            raise ValueError("retry max_s must be >= start_s")
+        return self
+
+
+class ModelRetry(BaseModel):
+    """Retry declarations per failure class.
+
+    실패 부류별 재시도 선언. 생략한 부류는 프레임워크 기본 정책을 쓴다.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    rate_limit: RetryDeclaration | None = None
+    network: RetryDeclaration | None = None
+
+
+class CircuitDeclaration(BaseModel):
+    """Circuit breaker thresholds for the model provider.
+
+    모델 provider 에 대한 circuit breaker 임계값 (05 Circuit Breaker).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    max_failures: int = Field(ge=1)
+    reset_s: float = Field(gt=0)
+
+
 class ModelConfig(BaseModel):
     """Model provider configuration.
 
-    모델 설정 — 코드가 아니라 manifest 가 모델을 결정한다.
+    모델 설정 — 코드가 아니라 manifest 가 모델을 결정한다. ``fallbacks`` /
+    ``retry`` / ``circuit`` 는 선택이며, 생략하면 단일 모델 선언과 같다.
     """
 
-    model_config = ConfigDict(frozen=True)
+    # 모르는 키는 거부한다 — `fallback:` 같은 오타가 조용히 무시되면 백업이 없는 채로 돈다
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     provider: str
     name: str
     max_tokens: int | None = None
-    effort: Literal["low", "medium", "high", "xhigh", "max"] | None = None
+    effort: Effort | None = None
     """출력 품질/비용 조절.
 
     최신 모델은 sampling 파라미터(``temperature``/``top_p``/``top_k``)를
     받지 않는다 — 보내면 호출이 실패한다. 의도(품질과 비용의 균형)는
     ``output_config.effort`` 가 이어받는다.
     """
+    fallbacks: tuple[FallbackModel, ...] = ()
+    retry: ModelRetry | None = None
+    circuit: CircuitDeclaration | None = None
+
+    @model_validator(mode="after")
+    def _distinct_models(self) -> ModelConfig:
+        """주 모델과 같은 fallback, 같은 fallback 두 번은 같은 실패를 되풀이할 뿐이다."""
+        seen = {(self.provider, self.name)}
+        for fallback in self.fallbacks:
+            key = (fallback.provider, fallback.name)
+            if key in seen:
+                raise ValueError(
+                    f"fallback repeats the primary or another fallback: {key[0]}/{key[1]}"
+                )
+            seen.add(key)
+        return self
+
+    def providers(self) -> frozenset[str]:
+        """Every provider this declaration may call — primary and fallbacks.
+
+        이 선언이 부를 수 있는 provider 전부 (주 모델 + fallback).
+        """
+        return frozenset({self.provider, *(f.provider for f in self.fallbacks)})
+
+    def overridden(self, *layers: ModelOverride | None) -> ModelConfig:
+        """Apply override layers in order, nearest last.
+
+        override 계층을 순서대로 적용합니다 (manifest 기본값 → 노드 → 배포).
+        각 계층은 **명시한 키만** 덮으며, 명시한 null/빈 값은 아래 계층을 지웁니다.
+        결과는 다시 검증되므로 fallback 중복 규칙이 override 뒤에도 지켜집니다.
+
+        Raises:
+            pydantic.ValidationError: If the resolved declaration is invalid.
+        """
+        data: dict[str, Any] = {name: getattr(self, name) for name in type(self).model_fields}
+        for layer in layers:
+            if layer is None:
+                continue
+            for key in layer.model_fields_set:
+                data[key] = getattr(layer, key)
+        if data["fallbacks"] is None:
+            data["fallbacks"] = ()
+        return type(self).model_validate(data)
+
+
+class ModelOverride(BaseModel):
+    """A partial model declaration from a node or a deployment.
+
+    노드 · 배포 계층의 부분 선언. 키가 **있으면** 아래 계층을 덮는다 (null 포함).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    provider: str | None = None
+    name: str | None = None
+    max_tokens: int | None = None
+    effort: Effort | None = None
+    fallbacks: tuple[FallbackModel, ...] | None = None
+    retry: ModelRetry | None = None
+    circuit: CircuitDeclaration | None = None
+
+    @model_validator(mode="after")
+    def _provider_carries_name(self) -> ModelOverride:
+        """모델 이름은 provider 에 속한다 — provider 만 바꾸면 남의 이름이 딸려 온다."""
+        for key in ("provider", "name"):
+            if key in self.model_fields_set and getattr(self, key) is None:
+                raise ValueError(f"model override {key} must not be null")
+        if "provider" in self.model_fields_set and "name" not in self.model_fields_set:
+            raise ValueError("model override that sets provider must also set name")
+        return self
+
+    def merged(self, other: ModelOverride) -> ModelOverride:
+        """Layer ``other`` on top of this override.
+
+        ``other`` 가 명시한 키가 이 override 를 덮습니다.
+        """
+        data = {key: getattr(self, key) for key in self.model_fields_set}
+        data.update({key: getattr(other, key) for key in other.model_fields_set})
+        return type(self).model_validate(data)
 
 
 class ModuleRef(BaseModel):

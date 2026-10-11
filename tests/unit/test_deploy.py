@@ -661,3 +661,131 @@ def test_the_check_is_silent_without_promptsets():
     )
 
     assert report.ok
+
+
+# --- 10. 모델 provider (#358) --------------------------------------------------
+
+OPENAI = {"provider": "openai-compat", "name": "gpt-5"}
+
+
+@pytest.fixture
+def openai_known(monkeypatch):
+    """논리 호스트가 알려진 두 번째 provider — 지금 저장소에는 anthropic 뿐이다."""
+    from malkuth.access import baselines
+
+    monkeypatch.setitem(baselines.PROVIDER_HOSTS, "openai-compat", "api.openai.com")
+
+
+def with_fallback(name: str, fallback: dict) -> object:
+    return agent(
+        name,
+        model={
+            "provider": "anthropic",
+            "name": "claude-sonnet-5",
+            "fallbacks": [{**fallback, "on": ["server_error"]}],
+        },
+    )
+
+
+def model_findings(report):
+    return [f for f in report.findings if f.check == "model_providers"]
+
+
+def test_an_unknown_fallback_provider_is_rejected():
+    report = run(manifests={"planner": with_fallback("planner", {"provider": "x", "name": "y"})})
+
+    [finding] = model_findings(report)
+    assert finding.code == ErrorCode.VAL_002
+    assert "unknown model provider" in finding.message
+
+
+@pytest.mark.usefixtures("openai_known")
+def test_a_fallback_provider_the_proxy_does_not_terminate_is_rejected():
+    planner = with_fallback("planner", OPENAI)
+
+    report = run(manifests={"planner": planner}, providers=frozenset({"anthropic"}))
+    accepted = run(
+        manifests={"planner": planner}, providers=frozenset({"anthropic", "openai-compat"})
+    )
+
+    [finding] = model_findings(report)
+    assert "not an egress proxy upstream" in finding.message
+    assert finding.details["provider"] == "openai-compat"
+    assert accepted.ok
+
+
+@pytest.mark.usefixtures("openai_known")
+def test_a_node_override_to_an_undeclared_provider_is_rejected():
+    """이그레스 baseline 은 manifest 에서만 나온다 — 노드가 바꾼 provider 는 프록시가 거부한다."""
+    topology = make_topology(["planner"])
+    topology = topology.with_model_overrides({"planner": _override(OPENAI)})
+
+    report = run([topology])
+
+    [finding] = model_findings(report)
+    assert finding.code == ErrorCode.VAL_002
+    assert "does not declare" in finding.message
+    assert finding.details["node_id"] == "planner"
+
+
+@pytest.mark.usefixtures("openai_known")
+def test_a_node_override_to_a_declared_fallback_provider_passes():
+    topology = make_topology(["planner"]).with_model_overrides({"planner": _override(OPENAI)})
+    planner = with_fallback("planner", {"provider": "openai-compat", "name": "gpt-5-mini"})
+
+    assert run([topology], manifests={"planner": planner}).ok
+
+
+def test_a_node_override_that_does_not_resolve_is_reported():
+    planner = with_fallback("planner", {"provider": "anthropic", "name": "claude-haiku-4-5"})
+    topology = make_topology(["planner"]).with_model_overrides(
+        {"planner": _override({"name": "claude-haiku-4-5"})}
+    )
+
+    [finding] = model_findings(run([topology], manifests={"planner": planner}))
+    assert "does not resolve" in finding.message
+
+
+def _override(data: dict):
+    from malkuth.core.manifest import ModelOverride
+
+    return ModelOverride.model_validate(data)
+
+
+def test_deploy_overrides_layer_on_top_of_node_overrides():
+    raw = mission_dict(
+        nodes=[{"id": "planner", "agent": "agents/planner@0.1.0", "model": {"max_tokens": 1}}],
+        edges=[{"from": "START", "to": "planner"}, {"from": "planner", "to": "END"}],
+    )
+    topology = GraphTopology.model_validate(raw)
+
+    layered = topology.with_model_overrides({"planner": _override({"name": "claude-opus-5"})})
+
+    node_model = layered.node("planner").model
+    assert node_model is not None
+    assert (node_model.name, node_model.max_tokens) == ("claude-opus-5", 1)
+    assert topology.node("planner").model == _override({"max_tokens": 1})  # 원본은 그대로
+
+
+def test_a_deploy_override_for_an_unknown_node_is_rejected():
+    with pytest.raises(MalkuthError) as exc_info:
+        make_topology(["planner"]).with_model_overrides({"ghost": _override({"max_tokens": 1})})
+
+    assert exc_info.value.code == ErrorCode.VAL_002
+    assert exc_info.value.details["node_ids"] == ["ghost"]
+
+
+def test_empty_deploy_overrides_return_the_same_topology():
+    topology = make_topology(["planner"])
+
+    assert topology.with_model_overrides({}) is topology
+
+
+def test_a_subgraph_node_must_not_declare_a_model():
+    raw = mission_dict(
+        nodes=[{"id": "sub", "graph": "graphs/sub@1.0.0", "model": {"max_tokens": 1}}],
+        edges=[{"from": "START", "to": "sub"}, {"from": "sub", "to": "END"}],
+    )
+
+    with pytest.raises(ValueError, match="subgraph node must not declare"):
+        GraphTopology.model_validate(raw)
