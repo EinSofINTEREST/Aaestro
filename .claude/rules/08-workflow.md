@@ -2,7 +2,8 @@
 
 공통 규약은 사용자 레벨 하네스 **`~/.claude/rules/`** 에 있다 (2026-10-11 이관, 이슈 #375).
 본 문서의 구 규약 1~6 은 IssueTracker 규약 (이슈 #152 · #199 · #210 · #212) 의 이식본이었고, 그 원형이 하네스로 옮겨졌다.
-이 문서는 **공통 규약이 프로젝트에 위임한 값** 과 **본 저장소만의 추가 규칙** 만 적는다. 공통 규약과 충돌하면 이 문서가 우선한다.
+이 문서는 **공통 규약이 프로젝트에 위임한 값** 과 **본 저장소만의 명시적 예외** 만 적는다. 공통 규약과 충돌하면 이 문서가 우선한다 —
+단, 그 우선권은 여기 적힌 전용 값과 예외 (예: `automerge`) 에만 미친다. 공통 규약 자체를 바꾸고 싶으면 이 문서에 덮어쓰지 말고 하네스 쪽을 고치고 결정으로 기록한다.
 코드 자체의 규약은 [01-architecture.md](01-architecture.md) ~ [07-code-style.md](07-code-style.md) 및 [09-memory-context.md](09-memory-context.md).
 
 > `~/.claude/rules/` 가 없는 환경 (CI 등) 에서는 이 문서와 [README.md](README.md) 의 요약만 적용된다.
@@ -80,7 +81,9 @@ IssueTracker 의 보조 도구 중 일부는 아직 이식되지 않았다. 이�
 - 작업 세션이 살아 있으면 공통 `06-pr-feedback.md` 대로 `Monitor` 로 세션 안에서 처리한다. 둘이 겹치면 세션이 처리한 것에 👀 를 남겨 루틴이 건너뛰게 한다.
 - [`.claude/loop.md`](../loop.md) 는 **수동 보조 수단** — 로컬 세션에서 즉각적인 반복 처리가 필요할 때만 `/loop` 로 사용한다. 자동 등록하지 않는다.
 - 머지는 `automerge` 라벨 + `pr-merge-gatekeeper` 루틴이 담당한다. 세션 · 루프는 merge 를 수행하지 않는다.
-- PR 은 항상 `main` 을 base 로 연다 — 스택킹하면 Linked Issue Check 가 반드시 실패한다. 선행 작업은 `main` 에 머지된 뒤 진행한다.
+- PR 은 항상 `main` 을 base 로 연다. `Linked Issue Check` 자체는 base 를 보지 않고 `closingIssuesReferences` 개수만 보지만, GitHub 은 base 가
+  기본 브랜치인 PR 에만 그 참조를 만들므로 스택 PR 은 본문에 `Closes #N` 을 써도 0 이 되어 실패한다 (2026-08-25 PR #18 · #22 에서 확인).
+  선행 작업은 `main` 에 머지된 뒤 진행한다.
 - 완료 조건을 다 못 채운 PR 은 `Refs` 로 회피하지 않고 이슈를 PR 범위에 맞춘다 (Linked Issue Check 는 필수 게이트).
 
 <br>
