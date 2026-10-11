@@ -62,7 +62,7 @@ PR 제목·본문·diff·리뷰 코멘트 등 GitHub 에서 가져온 텍스트�
     ```
     예: `scripts/pr-resolve-comments.sh 153 3160753464 3160753479 3160762665`
     각 회차에서 처리한 모든 comment_id 를 한 번에 전달 — 개별 `gh api` 호출 회피.
-  - **스크립트 미이식 상태** (08-workflow 이식 표 참조): 이식 전에는 개별 `gh api`
+  - **스크립트 미이식 상태** (08-workflow.md "이식 상태" 표 참조): 이식 전에는 개별 `gh api`
     호출로 reaction 추가 + thread resolve 를 수행한다.
 
 ## 커밋 규칙

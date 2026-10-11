@@ -150,14 +150,18 @@ Essential for:
 - Team collaboration
 
 ### [08-workflow.md](08-workflow.md)
-**AI Workflow Conventions**
+**AI Workflow Conventions — project-specific part**
 
-Covers:
-- Autonomous progression policy — when AI proceeds without user approval
-- Exception zones (system changes / destructive perms / external impact / ambiguous scope)
-- Issue-first policy, commit-per-TODO policy
-- PR auto-creation policy with template + closing reference
-- Label / Issue Type metadata policy
+The common workflow rules (issue-first, autonomous progression and its four exception zones,
+commit-per-TODO, PR auto-creation, least privilege, label / issue-type mapping, decision records,
+sub-agent orchestration with model tiers) live in the user-level harness `~/.claude/rules/`.
+This file keeps only what the harness delegates to the project:
+
+- Mapping table: legacy "규약 N" numbers → harness files (CI error messages cite the numbers)
+- Porting status of helper tooling from IssueTracker and the fallbacks to use meanwhile
+- `automerge` label exception (`pr-merge-gatekeeper` routine), Docker / real-LLM-cost boundaries
+- Event-driven PR feedback (`pr-review-responder` routine) and `loop.md` as a manual aid
+- Issue Type IDs of this repository and the label / type commands
 
 Essential for:
 - AI-assisted development efficiency
