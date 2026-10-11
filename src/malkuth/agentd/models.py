@@ -83,6 +83,22 @@ def trigger_of(err: BaseException) -> FallbackTrigger | None:
     return None
 
 
+@dataclass
+class ModelBreaker(CircuitBreaker):
+    """A model's circuit breaker that remembers which failure opened it.
+
+    모델 breaker. 마지막으로 실패로 센 부류를 기억한다 — 열린 동안 그 자리를 **그것을 연 부류**로
+    채워야 ``on: [rate_limit]`` 만 선언한 fallback 이 rate limit 으로 열린 primary 를 이어받는다.
+    """
+
+    last_fault: FallbackTrigger | None = field(default=None, init=False)
+
+    def record_fault(self, trigger: FallbackTrigger) -> None:
+        """provider 실패 하나를 그 부류와 함께 센다."""
+        self.last_fault = trigger
+        self.record_failure()
+
+
 @dataclass(frozen=True)
 class ModelLink:
     """One model in a chain — the adapter and what lets the chain reach it.
@@ -96,7 +112,7 @@ class ModelLink:
     name: str
     index: int = 0
     on: frozenset[FallbackTrigger] = frozenset()
-    breaker: CircuitBreaker | None = None
+    breaker: ModelBreaker | None = None
 
 
 @dataclass(frozen=True)
@@ -121,32 +137,26 @@ class ModelChain:
         각 링크는 자기 재시도 정책을 다 쓴 뒤에야 다음으로 넘어간다. fallback 은 직전 실패의
         부류가 그 ``on`` 에 있을 때만 시도한다.
 
-        circuit 이 열린 모델은 호출하지 않고, 그 자리를 **breaker 가 냈을 실패**
-        (MODEL/``LLM_003``, 곧 ``server_error``) 로 채운다 — primary 가 열려 있을 때
-        ``server_error`` fallback 이 이어받게 하기 위해서다. 앞선 실제 실패가 있으면 그것을 남긴다.
+        circuit 이 열린 모델은 호출하지 않고, 그 자리를 **그 circuit 을 연 실패의 부류**로 채운다 —
+        rate limit 으로 열렸으면 RATE_LIMIT/``LLM_001``, 그 밖에는 MODEL/``LLM_003``. 그래야 열린
+        primary 를 같은 부류를 선언한 fallback 이 이어받는다. 앞선 실제 실패가 있으면 그것을 남긴다.
 
         Raises:
             MalkuthError: The last failure when no link succeeds — 모든 후보가 열려 있었다면
-                MODEL/``LLM_003`` ``model circuit open``. 전환 대상이 아닌 실패는 즉시 올린다.
+                ``model circuit open`` (부류는 위와 같다). 전환 대상이 아닌 실패는 즉시 올린다.
         """
         last: MalkuthError | None = None
         for position, link in enumerate(self.links):
             if link.index > 0 and (last is None or trigger_of(last) not in link.on):
                 continue
             if link.breaker is not None and not link.breaker.can_attempt():
-                log.debug(
-                    "model circuit open, skipping",
-                    agent=agent,
-                    model=link.name,
-                    provider=link.provider,
-                    fallback_index=link.index,
-                )
-                last = last or _circuit_open(link.breaker, agent=agent)
+                last = last or _circuit_open(link.breaker, agent=agent, retryable=True)
+                self._warn_skipping(link, last, position=position, agent=agent)
                 continue
             try:
                 return await retrying_any(
                     self.retry_policies,
-                    _guarded(call, link),
+                    _guarded(call, link, agent=agent),
                     sleep=sleep,
                     agent=agent,
                     model=link.name,
@@ -162,53 +172,100 @@ class ModelChain:
             raise AssertionError("model chain has no links")
         raise last
 
+    def _upcoming(self, err: MalkuthError, *, position: int) -> ModelLink | None:
+        """``err`` 를 이어받을 다음 후보 — 부류가 ``on`` 에 있는 첫 fallback."""
+        trigger = trigger_of(err)
+        return next((later for later in self.links[position + 1 :] if trigger in later.on), None)
+
     def _warn_falling_back(
         self, link: ModelLink, err: MalkuthError, *, position: int, agent: str
     ) -> None:
-        """전환 WARN — 어느 모델에서 어디로, 원인 코드. 다음 후보가 없으면 그 사실만 남긴다."""
+        """전환 WARN — 어느 모델에서 어디로, 원인 코드.
+
+        다음 후보가 없으면 남기지 않는다: 전환이 아니라 실패이고, 실패는 executor 가 task failed
+        로 기록한다. 단일 모델의 실패가 "falling back" 으로 찍히면 fallback 이 없던 때와 로그가
+        달라진다.
+        """
+        upcoming = self._upcoming(err, position=position)
+        if upcoming is None:
+            return
+        log.warning(
+            "model call failed, falling back",
+            agent=agent,
+            model=link.name,
+            provider=link.provider,
+            fallback_index=link.index,
+            error_code=err.code,
+            next_model=upcoming.name,
+            next_provider=upcoming.provider,
+        )
+
+    def _warn_skipping(
+        self, link: ModelLink, err: MalkuthError, *, position: int, agent: str
+    ) -> None:
+        """열린 circuit 건너뛰기 WARN — 예상 밖이지만 처리된 상황이다 (05 Log Levels)."""
+        assert link.breaker is not None  # noqa: S101 — 호출자가 열린 breaker 를 확인했다
         fields: dict[str, object] = {
             "agent": agent,
             "model": link.name,
             "provider": link.provider,
             "fallback_index": link.index,
-            "error_code": err.code,
+            "opened_by": link.breaker.last_fault,
         }
-        trigger = trigger_of(err)
-        upcoming = next(
-            (later for later in self.links[position + 1 :] if trigger in later.on), None
-        )
+        upcoming = self._upcoming(err, position=position)
         if upcoming is not None:
             fields["next_model"] = upcoming.name
             fields["next_provider"] = upcoming.provider
-        log.warning("model call failed, falling back", **fields)
+        log.warning("model circuit open, skipping", **fields)
 
 
-def _circuit_open(breaker: CircuitBreaker, *, agent: str) -> MalkuthError:
-    """열린 breaker 가 ``call`` 로 막았다면 냈을 실패 — 같은 카테고리·코드다."""
+def _circuit_open(breaker: ModelBreaker, *, agent: str, retryable: bool) -> MalkuthError:
+    """열린 breaker 가 대신 내는 실패 — 그것을 연 부류로.
+
+    rate limit 으로 열렸는데 ``server_error`` 로 채우면 ``on: [rate_limit]`` fallback 이 후보에서
+    빠진다. 부류를 모르면 provider 장애(MODEL/``LLM_003``)로 본다.
+    """
+    if breaker.last_fault == RATE_LIMIT:
+        category, code = ErrorCategory.RATE_LIMIT, ErrorCode.LLM_001
+    else:
+        category, code = ErrorCategory.MODEL, ErrorCode.LLM_003
     return MalkuthError(
-        category=breaker.open_category,
-        code=breaker.open_code,
+        category=category,
+        code=code,
         message="model circuit open",
         agent=agent,
-        retryable=True,
-        details={"target": breaker.target},
+        retryable=retryable,
+        details={"target": breaker.target, "opened_by": breaker.last_fault},
     )
 
 
 def _guarded(
-    call: Callable[[ModelLink], Awaitable[ModelResponse]], link: ModelLink
+    call: Callable[[ModelLink], Awaitable[ModelResponse]], link: ModelLink, *, agent: str
 ) -> Callable[[], Awaitable[ModelResponse]]:
-    """시도 하나를 breaker 에 기록한다 — 재시도 **안쪽**이라 시도마다 센다."""
+    """시도 하나를 breaker 에 기록한다 — 재시도 **안쪽**이라 시도마다 센다.
+
+    재시도 도중 breaker 가 열리면 남은 시도를 보내지 않는다: 열린 실패를 ``retryable=False`` 로
+    올려 재시도 정책이 멈추게 한다 (05 Retry Rules 2). 부류는 그대로라 fallback 선택은 같다.
+    이 시도가 연 경우엔 그 자리에서 올린다 — 다음 시도 앞에서 막으면 쓸모없는 backoff 를 한 번 더
+    기다린다. 시도 앞의 확인은 대기 중 다른 태스크가 같은 breaker 를 연 경우를 위한 것이다.
+    """
 
     async def attempt() -> ModelResponse:
+        breaker = link.breaker
+        if breaker is not None and not breaker.can_attempt():
+            raise _circuit_open(breaker, agent=agent, retryable=False)
         try:
             response = await call(link)
         except MalkuthError as err:
-            if link.breaker is not None and trigger_of(err) in _PROVIDER_FAULTS:
-                link.breaker.record_failure()
+            trigger = trigger_of(err)
+            if breaker is None or trigger is None or trigger not in _PROVIDER_FAULTS:
+                raise
+            breaker.record_fault(trigger)
+            if not breaker.can_attempt():
+                raise _circuit_open(breaker, agent=agent, retryable=False) from err
             raise
-        if link.breaker is not None:
-            link.breaker.record_success()
+        if breaker is not None:
+            breaker.record_success()
         return response
 
     return attempt
@@ -243,7 +300,7 @@ class ModelChains:
     default_policies: tuple[RetryPolicy, ...] = MODEL_RETRY_POLICIES
     clock: Callable[[], float] | None = None
     _chains: dict[str, ModelChain] = field(default_factory=dict, init=False)
-    _breakers: dict[tuple[str, str], CircuitBreaker] = field(default_factory=dict, init=False)
+    _breakers: dict[tuple[str, str], ModelBreaker] = field(default_factory=dict, init=False)
 
     def for_config(self, config: ModelConfig) -> ModelChain:
         """Return the chain for a resolved declaration, building it once.
@@ -292,7 +349,7 @@ class ModelChains:
             _policy(config.retry.network, NETWORK_RETRY),
         )
 
-    def _breaker(self, config: ModelConfig, provider: str, name: str) -> CircuitBreaker | None:
+    def _breaker(self, config: ModelConfig, provider: str, name: str) -> ModelBreaker | None:
         """선언이 있을 때만 — 이미 있는 (provider, name) 이면 그것을 공유한다.
 
         circuit 을 선언하지 않은 체인에는 공유 breaker 도 걸지 않는다 — 선언이 없는데 건너뛰면
@@ -307,7 +364,7 @@ class ModelChains:
         observer = (
             CircuitTelemetry(self.metrics, target=target) if self.metrics is not None else None
         )
-        breaker = CircuitBreaker(
+        breaker = ModelBreaker(
             max_failures=config.circuit.max_failures,
             reset_timeout_s=config.circuit.reset_s,
             target=target,
@@ -335,6 +392,7 @@ def unsupported_provider(agent: str, provider: str) -> MalkuthError:
 __all__ = [
     "MODEL_RETRY_POLICIES",
     "ModelChain",
+    "ModelBreaker",
     "ModelChains",
     "ModelLink",
     "trigger_of",

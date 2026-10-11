@@ -490,3 +490,174 @@ async def test_the_production_assembly_builds_the_declared_chain(monkeypatch):
     with pytest.raises(MalkuthError) as exc_info:
         built._services.chains(ModelConfig(provider="openai", name="gpt"))
     assert exc_info.value.code == ErrorCode.CFG_001
+
+
+# --- circuit 이 연 부류 · 재시도 중 열림 (#359 QA) ----------------------------------
+
+
+async def test_a_circuit_opened_by_rate_limits_hands_over_to_a_rate_limit_fallback():
+    """rate limit 으로 열린 primary 는 rate limit 부류로 채워진다.
+
+    ``server_error`` 로 채우면 ``on: [rate_limit]`` fallback 이 후보에서 빠진다.
+    """
+    circuit = CircuitDeclaration(max_failures=3, reset_s=60)
+    primary = FakeModel([rate_limited()])
+    spare = FakeModel([text("from backup")])
+    rig = Rig(
+        {"primary": primary, "backup": spare},
+        declared(backup("rate_limit"), circuit=circuit),
+    )
+
+    first = await rig.executor.execute(make_task(task_id="first"))
+    assert first.output == {"content": "from backup"}
+    assert rig.circuit("primary") == 1.0
+    called = primary.turns
+
+    second = await rig.executor.execute(make_task(task_id="second"))
+
+    assert second.output == {"content": "from backup"}
+    assert primary.turns == called, "열린 모델을 다시 불렀다"
+    assert spare.turns == 2
+
+
+async def test_a_circuit_opened_by_server_errors_still_fills_in_as_server_error():
+    primary = FakeModel([server_error()])
+    rig = Rig({"primary": primary}, declared(circuit=OPEN_AFTER_ONE))
+
+    await rig.executor.execute(make_task(task_id="opens"))
+    result = await rig.executor.execute(make_task(task_id="blocked"))
+
+    assert result.error is not None
+    assert result.error.category == ErrorCategory.MODEL
+    assert result.error.details["opened_by"] == "server_error"
+
+
+async def test_a_circuit_opening_mid_retry_stops_the_remaining_attempts():
+    """열린 뒤의 남은 시도는 보내지 않는다 — 열린 provider 를 계속 두드리지 않고 곧장 전환한다."""
+    circuit = CircuitDeclaration(max_failures=2, reset_s=60)
+    primary = FakeModel([rate_limited()])
+    spare = FakeModel([text("from backup")])
+    rig = Rig(
+        {"primary": primary, "backup": spare},
+        declared(
+            backup("rate_limit"),
+            circuit=circuit,
+            retry=ModelRetry(rate_limit=RetryDeclaration(start_s=10, attempts=5)),
+        ),
+    )
+
+    result = await rig.executor.execute(make_task())
+
+    assert result.output == {"content": "from backup"}
+    assert primary.turns == 2
+    assert len(rig.waits) == 1
+    assert spare.turns == 1
+
+
+async def test_a_declared_network_retry_runs_before_falling_back():
+    """어댑터가 NET_001 을 내면 선언 retry.network 의 1초 계열로 기다린 뒤 전환한다."""
+    unreachable = model_error(ErrorCategory.NETWORK, ErrorCode.NET_001)
+    primary = FakeModel([unreachable])
+    spare = FakeModel([text("from backup")])
+    rig = Rig(
+        {"primary": primary, "backup": spare},
+        declared(
+            backup("server_error"),
+            retry=ModelRetry(network=RetryDeclaration(start_s=1, attempts=3)),
+        ),
+    )
+
+    result = await rig.executor.execute(make_task())
+
+    assert result.output == {"content": "from backup"}
+    assert primary.turns == 3
+    assert len(rig.waits) == 2
+    # jitter 는 대기를 최대 25% 줄인다 — 1, 2 초 계열
+    assert 0.75 <= rig.waits[0] <= 1.0
+    assert 1.5 <= rig.waits[1] <= 2.0
+
+
+async def test_a_declared_rate_limit_ceiling_caps_the_waits():
+    """``max_s`` 를 버리면 기본 상한(300초)으로 20·40·80 초를 기다린다."""
+    rig = Rig(
+        {"primary": FakeModel([rate_limited()])},
+        declared(retry=ModelRetry(rate_limit=RetryDeclaration(start_s=10, attempts=5, max_s=12))),
+    )
+
+    await rig.executor.execute(make_task())
+
+    assert len(rig.waits) == 4
+    assert all(wait <= 12 for wait in rig.waits), rig.waits
+
+
+# --- 로그 -------------------------------------------------------------------------
+
+
+async def test_a_single_model_failure_is_not_logged_as_falling_back():
+    """fallback 이 없으면 전환이 아니라 실패다 — 변경 전과 같은 로그."""
+    rig = Rig({"primary": FakeModel([server_error()])}, declared())
+
+    with capture_logs() as logs:
+        result = await rig.executor.execute(make_task())
+
+    assert result.status is TaskStatus.FAILED
+    assert not [entry for entry in logs if entry["event"] == "model call failed, falling back"]
+
+
+async def test_the_fallback_warning_names_the_next_model():
+    rig = Rig(
+        {"primary": FakeModel([server_error()]), "backup": FakeModel([text("ok")])},
+        declared(backup("server_error")),
+    )
+
+    with capture_logs() as logs:
+        await rig.executor.execute(make_task())
+
+    [warning] = [entry for entry in logs if entry["event"] == "model call failed, falling back"]
+    assert warning["log_level"] == "warning"
+    assert warning["model"] == "primary"
+    assert warning["next_model"] == "backup"
+    assert warning["next_provider"] == PROVIDER
+
+
+async def test_skipping_an_open_circuit_is_a_warning_with_its_cause():
+    rig = Rig(
+        {"primary": FakeModel([server_error()]), "backup": FakeModel([text("ok")])},
+        declared(backup("server_error"), circuit=OPEN_AFTER_ONE),
+    )
+    await rig.executor.execute(make_task(task_id="opens"))
+
+    with capture_logs() as logs:
+        await rig.executor.execute(make_task(task_id="skips"))
+
+    [warning] = [entry for entry in logs if entry["event"] == "model circuit open, skipping"]
+    assert warning["log_level"] == "warning"
+    assert warning["model"] == "primary"
+    assert warning["opened_by"] == "server_error"
+    assert warning["next_model"] == "backup"
+
+
+async def test_a_circuit_opened_by_another_task_during_the_wait_stops_the_retry():
+    """대기 중 다른 태스크가 같은 breaker 를 열면 남은 시도는 나가지 않는다."""
+    circuit = CircuitDeclaration(max_failures=5, reset_s=60)
+    primary = FakeModel([rate_limited()])
+    rig = Rig(
+        {"primary": primary, "backup": FakeModel([text("from backup")])},
+        declared(backup("rate_limit"), circuit=circuit),
+    )
+    shared = rig.chains.for_config(declared(backup("rate_limit"), circuit=circuit)).links[0].breaker
+    assert shared is not None
+
+    class OpeningWaits(list[float]):
+        def append(self, delay: float) -> None:
+            super().append(delay)
+            # 다른 태스크가 대기 중에 실패를 쌓아 연 것과 같다
+            for _ in range(circuit.max_failures):
+                shared.record_fault("rate_limit")
+
+    rig.waits = OpeningWaits()
+
+    result = await rig.executor.execute(make_task())
+
+    assert result.output == {"content": "from backup"}
+    assert primary.turns == 1

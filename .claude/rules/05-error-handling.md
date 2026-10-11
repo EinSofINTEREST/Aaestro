@@ -95,7 +95,7 @@ class MalkuthError(Exception):
 | `runtime/control.py` 의 Agent Control API 호출 결과 | `NETWORK`, `TIMEOUT`, `RUNTIME` |
 | `protocols/a2a/` 의 원격 호출 결과 | `A2A`, `NETWORK`, `TIMEOUT` |
 | `protocols/mcp/` 의 세션/tool 호출 결과 | `MCP`, `TIMEOUT` |
-| `agentd/executor.py` 의 모델 호출 결과 | `MODEL`, `RATE_LIMIT`, `TIMEOUT` |
+| `agentd/executor.py` 의 모델 호출 결과 | `MODEL`, `RATE_LIMIT`, `TIMEOUT`, `NETWORK` |
 | `decision/providers/` 의 결정 호출 결과 | `DECISION`, `RATE_LIMIT`, `TIMEOUT` |
 | `orchestrator/` 의 node 실행/state 병합 결과 | `GRAPH` |
 | `modules/registry.py` 의 ref 해석/로드 결과 | `MODULE`, `CONFIG` |

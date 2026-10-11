@@ -227,6 +227,15 @@ _KEYS: list[str] = []
 """받은 ``x-api-key`` — **E2E 전용.** 이그레스 프록시가 신원을 떼고 진짜 키를 붙였는지 본다."""
 
 
+_MODELS: list[str] = []
+"""받은 요청의 ``model`` 필드 — **E2E 전용.** 모델 override 가 실제 호출에 닿았는지 본다."""
+
+
+def _remember_model(model: object) -> None:
+    _MODELS.append(str(model))
+    del _MODELS[:-MAX_SEEN]
+
+
 def _remember_key(key: str) -> None:
     _KEYS.append(key)
     del _KEYS[:-MAX_SEEN]
@@ -258,6 +267,7 @@ class Handler(BaseHTTPRequestHandler):
         else:
             prompt = prompt_of(payload)
             _remember(prompt)
+            _remember_model(payload.get("model", ""))
             answer = tool_use_for(payload, prompt) or respond_to(prompt)
         body = json.dumps(answer).encode()
         self.send_response(200)
@@ -276,6 +286,8 @@ class Handler(BaseHTTPRequestHandler):
             body = json.dumps(_SEEN).encode()
         elif self.path.rstrip("/").endswith("/keys"):
             body = json.dumps(_KEYS).encode()
+        elif self.path.rstrip("/").endswith("/models"):
+            body = json.dumps(_MODELS).encode()
         else:
             body = b'{"status":"healthy"}'
         self.send_response(200)
