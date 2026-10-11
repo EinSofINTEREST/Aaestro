@@ -196,20 +196,25 @@ nodes:
 | `on` 부류 | 대응하는 실패 |
 |---|---|
 | `rate_limit` | provider rate limit (`LLM_001`) |
-| `server_error` | provider 5xx (`LLM_003`), 그리고 네트워크 오류·타임아웃 (provider 가 답하지 못함) |
+| `server_error` | provider 5xx (`LLM_003`), 그리고 네트워크 오류·타임아웃 (provider 가 답하지 못함. 어댑터가 연결 실패는 `NET_001`, 요청 타임아웃은 `NET_002` 로 매핑하며, 전환 전에 `network` 재시도 정책이 먼저 재시도한다) |
 | `context_overflow` | `LLM_002` — 재시도 없이 곧장 전환 ("더 긴 컨텍스트의 모델로 같은 요청") |
 
 해석 불가 응답(`LLM_004`)과 설정 오류는 전환하지 않습니다.
 
 - **`circuit`**: 모델(provider/name)마다 circuit breaker 가 있습니다. open 인 모델은 **호출 없이**
-  건너뜁니다. 같은 모델은 태스크·체인이 달라도 breaker 를 공유합니다. 모든 후보가 open 이면
-  `LLM_003`(retryable) 으로 실패합니다. 상태는 `malkuth_circuit_state{target="model:<provider>/<name>"}`
+  건너뜁니다. 건너뛴 자리는 **그 breaker 를 연 실패 부류**로 채워지므로 (rate limit 으로 열렸으면
+  `rate_limit`, 그 밖에는 `server_error`) 같은 부류를 `on` 에 둔 fallback 이 이어받습니다. 재시도
+  도중 breaker 가 열리면 남은 재시도는 보내지 않고 곧장 다음 후보로 갑니다. 같은 모델은
+  태스크·체인이 달라도 breaker 를 공유합니다. 모든 후보가 open 이면 마지막 breaker 를 연 실패
+  (`LLM_001` 또는 `LLM_003`)로, retryable 하게 실패합니다. 상태는 `malkuth_circuit_state{target="model:<provider>/<name>"}`
   로 노출됩니다.
 - fallback 은 `max_tokens`·`effort` 를 primary 에서 물려받습니다.
-- **관측**: `TaskResult.usage.model` / `.provider` 는 **실제로 응답한** 모델입니다.
+- **관측**: `TaskResult.usage.model` / `.provider` 는 **마지막 턴에 응답한** 모델이고, 토큰
+  합계는 턴을 가로질러 합산됩니다. 시도별 정확한 값은 `malkuth_model_requests_total` /
+  `malkuth_model_tokens_total` 라벨에 있습니다.
   `malkuth_model_requests_total` 에 `fallback_index` 라벨이 붙습니다 (0 = primary). 전환할 때마다
   `model`, `provider`, `fallback_index`, `error_code`, `next_model`, `next_provider` 필드의 WARN
-  로그를 남깁니다.
+  로그를 남기고, open circuit 을 건너뛸 때도 `opened_by` 필드의 WARN 을 남깁니다.
 - 범위 밖: 비-Anthropic provider 로의 전환은 어댑터(#361)가 들어와야 합니다 — 그 전에는 체인을 만들 때
   `CFG_001` 로 거절됩니다. 같은 provider 의 키 교체는 #360 입니다.
 

@@ -205,20 +205,26 @@ error is returned.
 | `on` class | Failure it covers |
 |---|---|
 | `rate_limit` | provider rate limit (`LLM_001`) |
-| `server_error` | provider 5xx (`LLM_003`), and network errors or timeouts (the provider could not answer) |
+| `server_error` | provider 5xx (`LLM_003`), and network errors or timeouts (the provider could not answer; the adapter maps connection failures to `NET_001` and request timeouts to `NET_002`, which the `network` retry policy retries before the switch) |
 | `context_overflow` | `LLM_002` — switches immediately without retrying ("the same request to a model with a longer context") |
 
 An unparseable response (`LLM_004`) and configuration errors never trigger a switch.
 
 - **`circuit`**: every model (provider/name) has its own circuit breaker. A model whose breaker is
-  open is **skipped without a call**. The same model shares one breaker across tasks and chains.
-  When every candidate is open the call fails with `LLM_003` (retryable). State is exported as
+  open is **skipped without a call**. The skipped slot counts as the failure class that opened
+  that breaker (`rate_limit` if it opened on rate limits, otherwise `server_error`), so a fallback
+  whose `on` holds the same class takes over. If a breaker opens mid-retry, the remaining retries
+  are not sent and the call goes straight to the next candidate. The same model shares one breaker
+  across tasks and chains. When all candidates are open the call fails with the failure that
+  opened the last breaker (`LLM_001` or `LLM_003`), retryable. State is exported as
   `malkuth_circuit_state{target="model:<provider>/<name>"}`.
 - A fallback inherits `max_tokens` and `effort` from the primary.
 - **Observability**: `TaskResult.usage.model` / `.provider` name the model that **actually
-  answered**. `malkuth_model_requests_total` carries a `fallback_index` label (0 = primary). Each
+  answered the **last** turn; token totals are summed across turns. Per-attempt accuracy lives in
+  the `malkuth_model_requests_total` / `malkuth_model_tokens_total` labels.
+  `malkuth_model_requests_total` carries a `fallback_index` label (0 = primary). Each
   switch logs a WARN with `model`, `provider`, `fallback_index`, `error_code`, `next_model`,
-  `next_provider`.
+  `next_provider`. Skipping an open circuit also logs a WARN with `opened_by`.
 - Out of scope: switching to a non-Anthropic provider needs the adapters (#361) — until then the
   chain is refused with `CFG_001` when it is built. Rotating keys within one provider is #360.
 
