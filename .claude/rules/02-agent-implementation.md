@@ -123,6 +123,10 @@ spec:
     name: claude-sonnet-5
     max_tokens: 8192
     effort: high              # 품질/비용 조절 — sampling 파라미터는 현재 API 가 받지 않는다
+    # 아래는 전부 선택 — Manifest Rules 9번 (Model Resilience Declaration)
+    # fallbacks: [{provider: anthropic, name: claude-haiku-4-5, on: [rate_limit, server_error]}]
+    # retry: {rate_limit: {start_s: 10, attempts: 5}}
+    # circuit: {max_failures: 5, reset_s: 60}
 
   promptset:
     ref: promptsets/researcher@0.1.0
@@ -198,6 +202,15 @@ spec:
    `recall_filter` / `input_screen` / `tool_gates` 의 질문은 `sets` 의 alias 로 해석돼야 한다
    (배포 검증 `MOD_001`). 질문 종류도 맞아야 한다 — 세 쓰임 모두 `predicate` (`MOD_003`).
    provider 자격증명은 env 에 없다 — 프록시가 주입한다 (Secrets Injection)
+9. **Model Resilience Declaration**: `spec.model` 의 `fallbacks` / `retry` / `circuit` 은 전부
+   선택이며 생략하면 기존 동작이다. `fallbacks[].on` 은 `rate_limit` / `server_error` /
+   `context_overflow` 중에서 비어 있지 않게 선언하고, fallback 의 (provider, name) 은 primary 및
+   다른 fallback 과 달라야 한다. 모르는 키는 거부된다. 해석은 가까운 쪽이 이긴다 —
+   manifest → 그래프 노드 `model` → 배포 요청 `model_overrides` 순으로 덮고, override 는 부분
+   선언이며 명시한 빈 값 · null 은 아래 계층 값을 지운다 (`provider` 를 적으면 `name` 도 적는다).
+   노드 · 배포 override 는 manifest 가 선언한 provider 집합 안에서만 provider 를 바꾼다 — 이그레스
+   판정 기본값이 manifest 에서 도출된다. 배포 검증은 모르는 provider 와
+   `runtime.egress_proxy.providers` 에 없는 provider 를 `VAL_002` 로 거절한다
 
 ## Docker Isolation Rules
 

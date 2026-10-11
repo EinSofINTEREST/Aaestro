@@ -135,6 +135,78 @@ spec:
   point into `malkuth.graphs`, and validation logs a warning for each import-reference
   condition.
 
+## Agents — model resilience
+
+An agent's `spec.model` may declare what to do when the primary model fails. Every field below is
+optional; leave them out and behavior is unchanged. This is **declared now, acted on by later
+work**: validation and resolution ship first, the failover loop, key rotation and non-Anthropic
+adapters follow (#359, #360, #361).
+
+```yaml
+spec:
+  model:
+    provider: anthropic
+    name: claude-sonnet-5
+    max_tokens: 8192
+    effort: high
+    fallbacks:                      # tried in order when the primary fails for a reason in `on`
+      - {provider: anthropic, name: claude-haiku-4-5, on: [rate_limit, server_error]}
+      - {provider: openai-compat, name: gpt-5, on: [server_error]}
+    retry:                          # per-category retry; omitted = framework defaults
+      rate_limit: {start_s: 10, attempts: 5}        # optional max_s (>= start_s)
+      network:    {start_s: 1,  attempts: 3}
+    circuit: {max_failures: 5, reset_s: 60}
+```
+
+- `on` takes `rate_limit`, `server_error`, `context_overflow`; it is required and cannot be empty.
+- A fallback's `(provider, name)` must differ from the primary and from every other fallback.
+  Unknown keys are refused.
+
+### Resolution — the nearest layer wins
+
+Same rule as resource scoping (local > group > global). Later layers override earlier ones:
+
+1. the agent manifest `spec.model` (the default)
+2. a graph node's `nodes[].model` — the same agent can use a different model or fallbacks per node
+3. `model_overrides` on `POST /v1/deployments` (keyed by node id) — an operator swaps models
+   without editing any declaration file
+
+An override is **partial**: only the keys it names replace the layer below. An explicit empty
+value — `fallbacks: []`, `circuit: null` — erases the lower layer's value. Naming `provider`
+requires naming `name` too (a model name belongs to its provider). Subgraph nodes cannot carry
+`model`.
+
+```yaml
+# graphs/research-pipeline.yaml (excerpt)
+nodes:
+  - id: researcher
+    agent: agents/researcher@0.1.0
+    model:
+      name: claude-opus-5
+      fallbacks: []                # no fallback on this node
+```
+
+The result travels to agentd as `TaskRequest.config.model`; agentd does not re-read the manifest.
+Direct requests (outside any graph) use the manifest defaults.
+
+### Deploy-time checks (`model_providers`, `VAL_002`)
+
+If any check fails, nothing is started:
+
+- the provider must be one the framework knows (one with a logical host)
+- with an egress proxy, the provider must appear in `runtime.egress_proxy.providers` — otherwise a
+  fallback would hit a proxy 404 at runtime, silently
+- node and deployment overrides may change the provider only **within the set the manifest
+  declares** (primary + fallbacks): egress decisions derive from the manifest, so a provider
+  outside it would be refused by the proxy. To switch to another provider, declare it in the
+  manifest's `fallbacks` first
+- `model_overrides` naming a node id that is not in the graph is `400 VAL_002`
+- the egress baseline includes the fallback providers' hosts automatically (a manifest
+  declaration is the default permission)
+
+`malkuth validate` and `malkuth deploy` print a `models` entry showing, per node, the resolved
+model layering.
+
 ## Groups
 
 A group scopes resources — quotas, secrets, group memory — for its member agents.

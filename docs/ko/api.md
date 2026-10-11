@@ -347,6 +347,15 @@ curl -X POST -H "Authorization: Bearer $TOKEN" -H 'content-type: application/jso
   -d '{"graph": "research-pipeline"}' http://127.0.0.1:8700/v1/deployments
 ```
 
+선택으로 `model_overrides`(노드 id → 부분 `spec.model`)를 넘기면 선언 파일을 바꾸지 않고 모델을
+교체합니다. [에이전트 — 모델 회복력](modules.md#에이전트--모델-회복력) 참조:
+
+```bash
+curl -X POST -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"graph": "research-pipeline", "model_overrides": {"researcher": {"provider": "anthropic", "name": "claude-haiku-4-5"}}}' \
+  http://127.0.0.1:8700/v1/deployments
+```
+
 모든 에이전트가 healthy 를 보고하면 `201`:
 
 ```json
@@ -357,6 +366,7 @@ curl -X POST -H "Authorization: Bearer $TOKEN" -H 'content-type: application/jso
   "status": "ready",
   "error": null,
   "updated_at": "2026-09-13T11:29:06.391594+00:00",
+  "model_overrides": {},
   "agents": [
     {"name": "planner", "replica": 0, "container_id": "0f2edbe1aa5a",
      "image": "malkuth/agent-base:0.1.0", "control_port": 32852, "a2a_port": 9100}
@@ -383,6 +393,9 @@ curl -X POST -H "Authorization: Bearer $TOKEN" -H 'content-type: application/jso
 - `400` (`VAL_001`) — 그래프가 검증을 통과하지 못했다. 아무것도 기동하지 않았다.
 - `400` (`VAL_002`) — 빌드 재료가 있는 에이전트가 빌드 태그(`malkuth/agent-<name>:<version>`)
   와 다른 `runtime.image` 를 선언했다. 두 곳이 다른 이미지를 가리키면 무엇이 도는지 알 수 없다.
+- `400` (`VAL_002`) — 모델 선언이 거절됐다 (`model_providers` 검사): 모르는 provider,
+  `runtime.egress_proxy.providers` 에 없는 provider, manifest 가 선언한 provider 집합을 벗어나는
+  override, 그래프의 노드가 아닌 `model_overrides` 키. 아무것도 기동하지 않았다.
 - `409` (`RT_012`) — 빌드 재료가 있는 에이전트에 그 버전의 `built` 이미지가 없다: 굽힌 적이
   없거나, 마지막 빌드가 실패했거나, 아직 굽는 중이다. `details` 에 `image`, `build_status`,
   `build_error` 가 실린다. 구운 뒤 다시 배포한다 — 배포는 대신 굽지 않는다. 아무것도 기동하지
@@ -396,7 +409,8 @@ curl -X POST -H "Authorization: Bearer $TOKEN" -H 'content-type: application/jso
 
 ### `GET /v1/deployments`, `GET /v1/deployments/{id}`
 
-목록은 `{"items": [...]}`, 단건 조회는 기록 자체다. 둘 다 **지금 실제로 서 있는**
+목록은 `{"items": [...]}`, 단건 조회는 기록 자체다. 각 기록은 배포 생성 때 받은
+`model_overrides` 를 담는다 (없으면 `{}`). 둘 다 **지금 실제로 서 있는**
 컨테이너를 반영한다 — 감시가 죽은 컨테이너를 다시 세웠다면 기록은 새 id 와 포트를 보여준다.
 
 ### `DELETE /v1/deployments/{id}`
@@ -792,7 +806,10 @@ runtime:
     connect_url: http://malkuth-egress:8080
     providers_url: http://malkuth-egress:8081
     container: malkuth-egress   # MCP 사이드카를 쓸 때만 필요 — 아래 참조
+    providers: [anthropic]      # 프록시가 종단하는 provider — 실제 upstream 구성과 맞춘다 (기본값 [anthropic])
 ```
+
+배포 검증은 `providers` 에 없는 모델 provider(primary·fallback)를 거절한다 (`VAL_002`).
 
 그러면 배포가 에이전트마다 `HTTPS_PROXY`(자기 신원을 자격으로), 프록시를 가리키는 `ANTHROPIC_BASE_URL`,
 그리고 `ANTHROPIC_API_KEY` 자리에 신원을 넣는다. 평문 `http` 는 프록시로 보내지 않는다 — 에이전트
