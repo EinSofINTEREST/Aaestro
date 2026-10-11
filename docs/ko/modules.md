@@ -156,6 +156,7 @@ spec:
 OpenAI 호환 어댑터(#361)와 함께 들어옵니다.
 
 - `on` 값은 `rate_limit`, `server_error`, `context_overflow` 이며 필수이고 비어 있을 수 없습니다.
+- `max_tokens` 를 지정하면 양의 정수여야 합니다.
 - fallback 의 `(provider, name)` 은 primary 와, 그리고 다른 fallback 과 달라야 합니다.
   모르는 키는 거부됩니다.
 

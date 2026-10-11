@@ -161,6 +161,7 @@ Only providers the framework knows (currently `anthropic`) validate; a second pr
 with the OpenAI-compatible adapter (#361).
 
 - `on` takes `rate_limit`, `server_error`, `context_overflow`; it is required and cannot be empty.
+- `max_tokens`, when set, must be a positive integer.
 - A fallback's `(provider, name)` must differ from the primary and from every other fallback.
   Unknown keys are refused.
 

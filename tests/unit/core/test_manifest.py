@@ -689,6 +689,18 @@ def test_an_invalid_resilience_declaration_is_rejected(extra):
         ModelConfig.model_validate({**PRIMARY, **extra})
 
 
+@pytest.mark.parametrize("model_cls", [ModelConfig, ModelOverride])
+@pytest.mark.parametrize("value", [0, -1])
+def test_a_non_positive_max_tokens_is_rejected(model_cls, value):
+    with pytest.raises(ValidationError):
+        model_cls.model_validate({**PRIMARY, "max_tokens": value})
+
+
+@pytest.mark.parametrize("model_cls", [ModelConfig, ModelOverride])
+def test_a_positive_max_tokens_is_accepted(model_cls):
+    assert model_cls.model_validate({**PRIMARY, "max_tokens": 1}).max_tokens == 1
+
+
 def test_overrides_apply_nearest_last():
     """manifest → 노드 → 배포 — 가까운 쪽이 이긴다."""
     base = ModelConfig.model_validate({**PRIMARY, "max_tokens": 100, "fallbacks": [HAIKU]})

@@ -245,7 +245,7 @@ class ModelConfig(BaseModel):
 
     provider: str
     name: str
-    max_tokens: int | None = None
+    max_tokens: int | None = Field(default=None, gt=0)
     effort: Effort | None = None
     """출력 품질/비용 조절.
 
@@ -308,7 +308,7 @@ class ModelOverride(BaseModel):
 
     provider: str | None = None
     name: str | None = None
-    max_tokens: int | None = None
+    max_tokens: int | None = Field(default=None, gt=0)
     effort: Effort | None = None
     fallbacks: tuple[FallbackModel, ...] | None = None
     retry: ModelRetry | None = None

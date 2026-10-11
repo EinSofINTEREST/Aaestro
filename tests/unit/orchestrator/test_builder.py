@@ -14,7 +14,7 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from malkuth.core.agent import TaskResult
 from malkuth.core.errors import ErrorCategory, ErrorCode, MalkuthError
-from malkuth.core.manifest import ModelConfig
+from malkuth.core.manifest import ModelConfig, ModelOverride
 from malkuth.graphs.schemas import ResearchState
 from malkuth.orchestrator.builder import GraphBuilder, build_channel_schema, build_graph
 from tests.fixtures.fake_runtime import FakeRuntime
@@ -186,7 +186,17 @@ async def test_a_model_that_does_not_resolve_fails_the_node_as_graph_002():
     runtime = FakeRuntime().script("planner", output={"plan": "P"})
 
     def broken(node: Any) -> ModelConfig:
-        return ModelConfig.model_validate({"provider": "anthropic", "max_tokens": -1})
+        # 주 모델이 fallback 과 겹치면 override 자체는 유효해도 합친 뒤 재검증에서 거부된다
+        base = ModelConfig.model_validate(
+            {
+                "provider": "anthropic",
+                "name": "claude-sonnet-5",
+                "fallbacks": [
+                    {"provider": "anthropic", "name": "claude-haiku-4-5", "on": ["rate_limit"]}
+                ],
+            }
+        )
+        return base.overridden(ModelOverride.model_validate({"name": "claude-haiku-4-5"}))
 
     with pytest.raises(MalkuthError) as exc_info:
         await build_graph(linear_topology(), runtime, models=broken).ainvoke({"query": "q"})
