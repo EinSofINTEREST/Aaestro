@@ -313,3 +313,48 @@ def test_the_declared_callees_are_the_deployed_connections_and_the_stewards():
     assert listed == [("permission-agent", None), ("planner", None)]
     assert all(declared.allows("researcher", callee, None) for callee, _ in listed)
     assert declared.declared_for("permission-agent") == [], "권한 에이전트가 자신을 부른다"
+
+
+# --- fallback provider 의 이그레스 선언 (#358) ------------------------------------------
+
+
+def _with_fallback(name: str, provider: str) -> dict:
+    document = agent(name)
+    document["spec"]["model"]["fallbacks"] = [
+        {"provider": provider, "name": "m", "on": ["server_error"]}
+    ]
+    return document
+
+
+def test_a_fallback_providers_logical_host_is_declared(tmp_path, monkeypatch):
+    """빠지면 전환한 호출을 프록시가 거부한다 — 선언 목록과 판정 둘 다 본다."""
+    from malkuth.access import baselines
+    from malkuth.access.baselines import EgressBaseline
+
+    monkeypatch.setitem(baselines.PROVIDER_HOSTS, "openai-compat", "api.openai.com")
+    write(
+        tmp_path / "agents" / "planner" / "manifest.yaml",
+        _with_fallback("planner", "openai-compat"),
+    )
+    write(tmp_path / "agents" / "plain" / "manifest.yaml", agent("plain"))
+    catalog = Catalog.under(tmp_path)
+    baseline = EgressBaseline(catalog)
+
+    declared = EgressBaseline.declared(catalog.agent("planner"))
+
+    assert {"api.anthropic.com", "api.openai.com"} <= declared
+    assert baseline.allows("planner", "api.openai.com", None) is True
+    # 남의 fallback 은 내 권한이 아니다
+    assert baseline.allows("plain", "api.openai.com", None) is False
+
+
+def test_an_unknown_fallback_provider_is_silently_left_out_of_the_declaration(tmp_path):
+    """논리 호스트를 모르는 provider 는 선언에서 빠질 뿐 판정이 터지지 않는다 (검증은 배포가)."""
+    from malkuth.access.baselines import EgressBaseline
+
+    write(tmp_path / "agents" / "planner" / "manifest.yaml", _with_fallback("planner", "mystery"))
+    catalog = Catalog.under(tmp_path)
+
+    declared = EgressBaseline.declared(catalog.agent("planner"))
+
+    assert declared == frozenset({"api.anthropic.com"})

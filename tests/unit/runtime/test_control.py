@@ -429,3 +429,49 @@ async def test_cancellation_is_not_converted_to_a_malkuth_error():
 
         with pytest.raises(asyncio.CancelledError):
             await task
+
+
+# --- 프로세스 경계: TaskConfig.model 의 직렬화 (#358) -----------------------------------
+
+
+async def test_a_resolved_model_survives_the_http_hop_into_agentd():
+    """오케스트레이터가 해석한 모델(fallbacks·retry·circuit)이 agentd 에 그대로 도달해야 한다.
+
+    같은 프로세스에서 객체만 넘기면 직렬화에서 필드가 빠져도 초록이다 — 실제 agentd 앱을
+    ASGI 로 태워 ControlClient 가 보낸 본문이 서버에서 같은 TaskRequest 로 복원되는지 본다.
+    """
+    from malkuth.agentd.server import AgentRuntime, create_app
+    from malkuth.core.agent import TaskRequest
+    from malkuth.core.manifest import ModelConfig
+
+    model = ModelConfig.model_validate(
+        {
+            "provider": "anthropic",
+            "name": "claude-sonnet-5",
+            "max_tokens": 1024,
+            "effort": "high",
+            "fallbacks": [
+                {"provider": "anthropic", "name": "claude-haiku-4", "on": ["rate_limit"]}
+            ],
+            "retry": {"rate_limit": {"start_s": 2, "attempts": 4, "max_s": 30}},
+            "circuit": {"max_failures": 3, "reset_s": 20},
+        }
+    )
+    seen: list[TaskRequest] = []
+
+    class Capturing:
+        async def execute(self, task):
+            seen.append(task)
+            return TaskResult.completed(task, output={"content": "ok"})
+
+    app = create_app(AgentRuntime(agent="researcher", executor=Capturing()), token="agent-token")
+    task = make_task(config=TaskConfig(model=model))
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app)) as transport:
+        client = ControlClient(BASE_URL, agent="researcher", token="agent-token", client=transport)
+        result = await client.invoke(task)
+
+    assert result.status == TaskStatus.COMPLETED
+    [received] = seen
+    assert received.config.model == model
+    assert received.config.model.fallbacks[0].name == "claude-haiku-4"
