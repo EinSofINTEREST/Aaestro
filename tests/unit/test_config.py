@@ -447,3 +447,43 @@ def test_the_egress_proxy_container_is_optional():
     base = {"connect_url": "http://egress:8080", "providers_url": "http://egress:8081"}
     assert EgressProxyConfig(**base).container is None
     assert EgressProxyConfig(**base, container="malkuth-egress-1").container == "malkuth-egress-1"
+
+
+# --- 프록시가 종단하는 provider (#358) ---------------------------------------------
+
+
+def test_the_egress_proxy_terminates_anthropic_by_default():
+    from malkuth.config import EgressProxyConfig
+
+    base = {"connect_url": "http://egress:8080", "providers_url": "http://egress:8081"}
+
+    assert EgressProxyConfig(**base).providers == ("anthropic",)
+
+
+@pytest.mark.parametrize("providers", [[], ["anthropic", "anthropic"]])
+def test_egress_proxy_providers_must_be_non_empty_and_unique(providers):
+    """빈 목록은 어떤 모델도 못 부르는 오설정이고, 중복은 대조 집합과 목록이 어긋난다."""
+    from malkuth.config import EgressProxyConfig
+
+    with pytest.raises(ValidationError, match="providers"):
+        EgressProxyConfig(
+            connect_url="http://egress:8080",
+            providers_url="http://egress:8081",
+            providers=providers,
+        )
+
+
+def test_egress_proxy_providers_declared_in_yaml_reach_the_loaded_config(tmp_path):
+    """YAML 값이 load_config 를 통과해 읽혀야 한다 — 기본값만 읽히면 선언이 조용히 무시된다."""
+    write(
+        tmp_path,
+        "runtime:\n"
+        "  egress_proxy:\n"
+        "    connect_url: http://egress:8080\n"
+        "    providers_url: http://egress:8081\n"
+        "    providers: [anthropic, openai-compat]\n",
+    )
+
+    config = load_config("dev", config_dir=tmp_path, environ={})
+
+    assert config.runtime.egress_proxy.providers == ("anthropic", "openai-compat")

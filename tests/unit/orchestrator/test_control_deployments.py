@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from malkuth.core.errors import ErrorCategory, ErrorCode, MalkuthError
+from malkuth.core.manifest import ModelOverride
 from malkuth.orchestrator.control import create_app
 from malkuth.orchestrator.runstore import InMemoryRunStore
 from malkuth.runtime.deployments import DeployedAgent, DeploymentRecord, DeploymentStatus
@@ -18,8 +19,19 @@ class FakeManager:
         self.records: dict[str, DeploymentRecord] = {}
         self.reattached = 0
         self.author = None
+        self.overrides: list[dict[str, ModelOverride] | None] = []
 
-    async def deploy(self, graph: str) -> DeploymentRecord:
+    async def deploy(
+        self, graph: str, *, model_overrides: dict[str, ModelOverride] | None = None
+    ) -> DeploymentRecord:
+        self.overrides.append(model_overrides)
+        if model_overrides and "ghost" in model_overrides:
+            # 실제 manager 는 GraphTopology.with_model_overrides 가 이렇게 거절한다
+            raise MalkuthError(
+                category=ErrorCategory.VALIDATION,
+                code=ErrorCode.VAL_002,
+                message="model override names a node this graph does not have",
+            )
         if graph == "broken":
             raise MalkuthError(
                 category=ErrorCategory.VALIDATION, code=ErrorCode.VAL_001, message="invalid"
@@ -57,6 +69,10 @@ class FakeManager:
                     token="SECRET",
                 ),
             ),
+            model_overrides={
+                node_id: o.model_dump(mode="json", exclude_unset=True)
+                for node_id, o in (model_overrides or {}).items()
+            },
         )
         self.records[record.deployment_id] = record
         return record
@@ -147,6 +163,18 @@ async def test_a_bad_body_is_400_val_002(api):
     assert response.json()["error"]["code"] == ErrorCode.VAL_002
 
 
+async def test_a_misspelled_key_is_refused_rather_than_ignored(api):
+    """모르는 키를 무시하면 override 없이 배포된다 — 오타는 거절해야 드러난다."""
+    response = await api.post(
+        "/v1/deployments", json={"graph": "g", "model_override": {"step": {"name": "m"}}}
+    )
+
+    assert response.status_code == 400
+    error = response.json()["error"]
+    assert error["code"] == ErrorCode.VAL_002
+    assert [e["field"] for e in error["details"]["errors"]] == ["model_override"]
+
+
 async def test_list_and_get(api):
     created = (await api.post("/v1/deployments", json={"graph": "g"})).json()
 
@@ -198,3 +226,59 @@ async def test_deploying_over_a_live_agent_is_409(api):
 
     assert response.status_code == 409
     assert response.json()["error"]["code"] == ErrorCode.RT_010
+
+
+async def test_without_model_overrides_the_response_carries_an_empty_map(api, manager):
+    body = (await api.post("/v1/deployments", json={"graph": "g"})).json()
+
+    assert body["model_overrides"] == {}
+    assert manager.overrides == [{}]
+
+
+async def test_model_overrides_reach_the_manager_and_the_record(api, manager):
+    response = await api.post(
+        "/v1/deployments",
+        json={
+            "graph": "g",
+            "model_overrides": {
+                "researcher": {"provider": "anthropic", "name": "claude-haiku-4-5"},
+                "writer": {"fallbacks": []},
+            },
+        },
+    )
+
+    assert response.status_code == 201
+    passed = manager.overrides[-1]
+    assert passed is not None
+    assert passed["researcher"] == ModelOverride(provider="anthropic", name="claude-haiku-4-5")
+    # 명시한 빈 값은 아래 계층을 지운다 — 설정되지 않은 키와 구분돼야 한다
+    assert passed["writer"].model_fields_set == {"fallbacks"}
+    body = response.json()
+    assert body["model_overrides"] == {
+        "researcher": {"provider": "anthropic", "name": "claude-haiku-4-5"},
+        "writer": {"fallbacks": []},
+    }
+    listed = (await api.get(f"/v1/deployments/{body['deployment_id']}")).json()
+    assert listed["model_overrides"] == body["model_overrides"]
+
+
+async def test_model_override_for_an_unknown_node_is_400_val_002(api):
+    response = await api.post(
+        "/v1/deployments",
+        json={"graph": "g", "model_overrides": {"ghost": {"name": "claude-haiku-4-5"}}},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == ErrorCode.VAL_002
+
+
+async def test_a_malformed_model_override_is_400_val_002(api, manager):
+    # provider 만 바꾸면 남의 모델 이름이 딸려 온다 — 본문 검증이 거절한다
+    response = await api.post(
+        "/v1/deployments",
+        json={"graph": "g", "model_overrides": {"researcher": {"provider": "openai-compat"}}},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == ErrorCode.VAL_002
+    assert manager.overrides == []

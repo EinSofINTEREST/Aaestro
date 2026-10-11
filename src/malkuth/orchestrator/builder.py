@@ -20,6 +20,7 @@ import structlog
 from langgraph.graph import END as LG_END
 from langgraph.graph import START as LG_START
 from langgraph.graph import StateGraph
+from pydantic import ValidationError
 
 from malkuth.core.agent import (
     CONTROL_OVERHEAD_S,
@@ -47,7 +48,11 @@ if TYPE_CHECKING:
     from langgraph.checkpoint.base import BaseCheckpointSaver
     from pydantic import BaseModel
 
+    from malkuth.core.manifest import ModelConfig
     from malkuth.observability.metrics import Metrics
+
+    # 노드 → 그 노드 태스크의 해석된 모델. None 이면 agentd 가 manifest 기본값을 쓴다
+    ModelResolver = Callable[[NodeSpec], ModelConfig | None]
 
 log = structlog.get_logger(__name__)
 
@@ -164,8 +169,10 @@ class GraphBuilder:
         metrics: Metrics | None = None,
         retry_sleep: Callable[[float], Awaitable[None]] | None = None,
         control_overhead_s: float = CONTROL_OVERHEAD_S,
+        models: ModelResolver | None = None,
     ) -> None:
         self._topology = topology
+        self._models = models
         self._control_overhead_s = control_overhead_s
         self._runtime = runtime
         self._schema = state_schema or resolve_graph_state(topology.spec.state, graph=topology.name)
@@ -390,9 +397,28 @@ class GraphBuilder:
             run_id=run_id,
             node_id=node.id,
             input=extract_input(node, state, schema=self._schema),
-            config=TaskConfig(timeout_s=node.timeout_s or self._node_timeout_s),
+            config=TaskConfig(
+                timeout_s=node.timeout_s or self._node_timeout_s,
+                model=self._resolve_model(node),
+            ),
             trace=TraceContext(trace_id=trace_id, graph=self._topology.name),
         )
+
+    def _resolve_model(self, node: NodeSpec) -> ModelConfig | None:
+        """노드의 실효 모델을 해석한다 — 계층을 합친 결과가 모델이 아니면 GRAPH_002."""
+        if self._models is None:
+            return None
+        try:
+            return self._models(node)
+        except ValidationError as err:
+            # 계층 합성의 실패는 노드 실행 실패다 — pydantic 오류가 run 을 날것으로 터뜨리지 않게
+            raise _graph_error(
+                ErrorCode.GRAPH_002,
+                "node model does not resolve to a valid model",
+                graph=self._topology.name,
+                node_id=node.id,
+                reason=err.errors()[0]["msg"],
+            ) from err
 
 
 def build_graph(
@@ -405,6 +431,7 @@ def build_graph(
     metrics: Metrics | None = None,
     retry_sleep: Callable[[float], Awaitable[None]] | None = None,
     control_overhead_s: float = CONTROL_OVERHEAD_S,
+    models: ModelResolver | None = None,
 ) -> Any:
     """Build a runnable graph from a topology.
 
@@ -421,6 +448,8 @@ def build_graph(
             테스트에서 실제로 자는 것을 금지합니다.
         control_overhead_s: 노드 timeout 위에 더 기다리는 여유 — agentd 의 ``TO_001``
             결과가 돌아올 틈이다.
+        models: Resolves each node's model into ``TaskConfig.model`` — 생략하면 모델을
+            싣지 않아 agentd 가 manifest 기본값을 쓴다.
 
     Returns:
         The compiled graph.
@@ -433,5 +462,6 @@ def build_graph(
         retry_sleep=retry_sleep,
         metrics=metrics,
         control_overhead_s=control_overhead_s,
+        models=models,
     )
     return builder.build(checkpointer=checkpointer)

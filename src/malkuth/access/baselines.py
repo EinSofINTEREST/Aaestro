@@ -218,7 +218,7 @@ class EgressBaseline:
     """Declared egress destinations.
 
     - 매니페스트 ``runtime.egress``
-    - 모델 provider 의 논리 호스트 (프록시가 종단해 키를 주입하는 호출)
+    - 모델 provider 의 논리 호스트 (프록시가 종단해 키를 주입하는 호출) — fallback 포함
     - external MCP 서버 ``url`` 의 호스트
 
     선언을 요청마다 읽는다 — 목적지 추가·삭제가 재시작 없이 다음 판정에 반영된다.
@@ -244,9 +244,11 @@ class EgressBaseline:
     @staticmethod
     def declared(manifest: AgentManifest) -> frozenset[str]:
         targets = {_declared_target(entry) for entry in manifest.spec.runtime.egress}
-        provider = PROVIDER_HOSTS.get(manifest.spec.model.provider)
-        if provider is not None:
-            targets.add(provider)
+        # fallback provider 도 선언이다 — 빠지면 전환한 호출을 프록시가 거부한다
+        for provider in manifest.spec.model.providers():
+            host = PROVIDER_HOSTS.get(provider)
+            if host is not None:
+                targets.add(host)
         for server in manifest.spec.mcp.servers:
             target = url_target(server.url) if server.url is not None else None
             if target is not None:

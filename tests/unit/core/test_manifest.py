@@ -12,6 +12,8 @@ from malkuth.core.manifest import (
     GroupQuotas,
     McpServerSpec,
     McpSidecar,
+    ModelConfig,
+    ModelOverride,
     ParsedModuleRef,
     ResourceSpec,
     sidecar_host,
@@ -638,3 +640,120 @@ def test_an_agent_ref_splits_into_name_and_version(ref, expected):
 
     assert agent_ref_parts(ref) == expected
     assert agent_name(ref) == expected[0]
+
+
+# --- 모델 회복력 선언 (#358) ---------------------------------------------------
+
+PRIMARY = {"provider": "anthropic", "name": "claude-sonnet-5"}
+HAIKU = {"provider": "anthropic", "name": "claude-haiku-4-5", "on": ["rate_limit"]}
+
+
+def test_a_model_without_resilience_keys_keeps_its_old_shape():
+    model = make_manifest().spec.model
+
+    assert (model.fallbacks, model.retry, model.circuit) == ((), None, None)
+    assert model.providers() == frozenset({"anthropic"})
+
+
+def test_a_full_resilience_declaration_loads():
+    model = ModelConfig.model_validate(
+        {
+            **PRIMARY,
+            "fallbacks": [HAIKU],
+            "retry": {"rate_limit": {"start_s": 10, "attempts": 5}},
+            "circuit": {"max_failures": 5, "reset_s": 60},
+        }
+    )
+
+    assert model.fallbacks[0].on == ("rate_limit",)
+    assert model.retry is not None and model.retry.rate_limit is not None
+    assert model.circuit is not None and model.circuit.reset_s == 60
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"fallbacks": [{**PRIMARY, "on": ["rate_limit"]}]},  # 주 모델과 같다
+        {"fallbacks": [HAIKU, HAIKU]},  # fallback 중복
+        {"fallbacks": [{**HAIKU, "on": []}]},  # 빈 on
+        {"fallbacks": [{**HAIKU, "on": ["rate_limit", "rate_limit"]}]},
+        {"fallbacks": [{**HAIKU, "on": ["timeout"]}]},  # 모르는 trigger
+        {"retry": {"network": {"start_s": 5, "attempts": 3, "max_s": 1}}},
+        {"retry": {"network": {"start_s": 1, "attempts": 0}}},
+        {"circuit": {"max_failures": 0, "reset_s": 60}},
+        {"fallback": [HAIKU]},  # 오타 — 조용히 무시되면 백업이 없는 채로 돈다
+    ],
+)
+def test_an_invalid_resilience_declaration_is_rejected(extra):
+    with pytest.raises(ValidationError):
+        ModelConfig.model_validate({**PRIMARY, **extra})
+
+
+@pytest.mark.parametrize("model_cls", [ModelConfig, ModelOverride])
+@pytest.mark.parametrize("value", [0, -1])
+def test_a_non_positive_max_tokens_is_rejected(model_cls, value):
+    with pytest.raises(ValidationError):
+        model_cls.model_validate({**PRIMARY, "max_tokens": value})
+
+
+@pytest.mark.parametrize("model_cls", [ModelConfig, ModelOverride])
+def test_a_positive_max_tokens_is_accepted(model_cls):
+    assert model_cls.model_validate({**PRIMARY, "max_tokens": 1}).max_tokens == 1
+
+
+def test_overrides_apply_nearest_last():
+    """manifest → 노드 → 배포 — 가까운 쪽이 이긴다."""
+    base = ModelConfig.model_validate({**PRIMARY, "max_tokens": 100, "fallbacks": [HAIKU]})
+    node = ModelOverride.model_validate({"name": "claude-opus-5", "max_tokens": 200})
+    deploy = ModelOverride.model_validate({"max_tokens": 300})
+
+    resolved = base.overridden(node, None, deploy)
+
+    assert (resolved.provider, resolved.name, resolved.max_tokens) == (
+        "anthropic",
+        "claude-opus-5",
+        300,
+    )
+    assert resolved.fallbacks == base.fallbacks  # 명시하지 않은 키는 아래 계층을 지킨다
+
+
+def test_an_explicit_empty_override_clears_the_lower_layer():
+    base = ModelConfig.model_validate(
+        {**PRIMARY, "fallbacks": [HAIKU], "circuit": {"max_failures": 5, "reset_s": 60}}
+    )
+
+    resolved = base.overridden(ModelOverride.model_validate({"fallbacks": [], "circuit": None}))
+
+    assert (resolved.fallbacks, resolved.circuit) == ((), None)
+
+
+def test_null_fallbacks_override_clears_the_lower_layer():
+    base = ModelConfig.model_validate({**PRIMARY, "fallbacks": [HAIKU]})
+
+    assert base.overridden(ModelOverride.model_validate({"fallbacks": None})).fallbacks == ()
+
+
+def test_an_override_that_collides_with_a_fallback_is_rejected_after_resolution():
+    base = ModelConfig.model_validate({**PRIMARY, "fallbacks": [HAIKU]})
+
+    with pytest.raises(ValidationError):
+        base.overridden(ModelOverride.model_validate({"name": "claude-haiku-4-5"}))
+
+
+@pytest.mark.parametrize(
+    "override",
+    [{"provider": "anthropic"}, {"provider": None, "name": "x"}, {"name": None}, {"temp": 1}],
+)
+def test_an_invalid_override_is_rejected(override):
+    with pytest.raises(ValidationError):
+        ModelOverride.model_validate(override)
+
+
+def test_merged_lets_the_later_override_win_only_where_it_speaks():
+    node = ModelOverride.model_validate({"name": "claude-opus-5", "max_tokens": 200})
+    deploy = ModelOverride.model_validate({"max_tokens": 300})
+
+    merged = node.merged(deploy)
+
+    assert (merged.name, merged.max_tokens) == ("claude-opus-5", 300)
+    assert merged.model_fields_set == {"name", "max_tokens"}

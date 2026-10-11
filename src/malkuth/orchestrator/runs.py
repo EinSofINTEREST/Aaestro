@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from malkuth.core.errors import ErrorCategory, ErrorCode, MalkuthError
+from malkuth.orchestrator.models import with_recorded_overrides
 from malkuth.orchestrator.run import RunStatus
 from malkuth.orchestrator.runstore import RunRecord
 from malkuth.orchestrator.topology import GraphMode
@@ -113,13 +114,17 @@ class RunService:
                 details={"requested": mode, "declared": str(topology.spec.mode)},
             )
         run_id = run_id or f"run-{uuid.uuid4().hex[:12]}"
+        # 배포 기록에서 **복사**한다 — resume 은 배포를 다시 찾지 않고 이 값으로 잇는다
+        overrides = dict(deployment.model_overrides)
+        topology = with_recorded_overrides(topology, overrides)
         bound = log.bind(graph=topology.metadata.name, run_id=run_id, mode=str(topology.spec.mode))
         if topology.spec.mode is GraphMode.SERVICE:
             await self.submitter.start_service(topology, initial_state, run_id=run_id)
+            self._pin_models(run_id, topology, overrides)
         else:
             # 제출 응답이 돌아간 직후의 GET 이 404 면 안 된다 — 드라이버가 기록을
             # 남기기 전이라도 **여기서** 먼저 쓴다 (read-your-writes)
-            self._announce(run_id, topology)
+            self._announce(run_id, topology, model_overrides=overrides)
             self._drive(
                 run_id, lambda: self.submitter.submit(topology, initial_state, run_id=run_id)
             )
@@ -135,9 +140,12 @@ class RunService:
                 message="unknown run",
                 details={"run_id": run_id},
             )
-        topology = self.catalog.graph(record.graph)
+        # 제출 때 복사해 둔 override 로 잇는다 — 배포가 사라졌어도 시작할 때의 모델이다
+        topology = with_recorded_overrides(self.catalog.graph(record.graph), record.model_overrides)
         if topology.spec.mode is GraphMode.SERVICE:
-            await self.submitter.resume_service(topology, run_id)
+            resumed = await self.submitter.resume_service(topology, run_id)
+            # 재개된 run 은 새 id 다 — 그것을 다시 재개할 때도 같은 모델이어야 한다
+            self._pin_models(resumed.run_id, topology, record.model_overrides)
         else:
             self.results.pop(run_id, None)
             self._announce(run_id, topology)
@@ -182,7 +190,14 @@ class RunService:
             )
         return deployment, topology
 
-    def _announce(self, run_id: str, topology: GraphTopology) -> None:
+    def _announce(
+        self,
+        run_id: str,
+        topology: GraphTopology,
+        *,
+        model_overrides: Mapping[str, Mapping[str, Any]] | None = None,
+    ) -> None:
+        # 비워 보내도 저장소가 기존 override 를 보존한다 — resume 의 재공지가 지우지 않는다
         self.store.upsert(
             RunRecord(
                 run_id=run_id,
@@ -190,6 +205,30 @@ class RunService:
                 mode=str(topology.spec.mode),
                 status=str(RunStatus.RUNNING),
                 updated_at=_now(),
+                model_overrides={k: dict(v) for k, v in (model_overrides or {}).items()},
+            )
+        )
+
+    def _pin_models(
+        self,
+        run_id: str,
+        topology: GraphTopology,
+        model_overrides: Mapping[str, Mapping[str, Any]],
+    ) -> None:
+        """service run 기록에 override 를 남긴다 — 기록은 보통 submitter 의 슬롯이 먼저 쓴다."""
+        if not model_overrides:
+            return
+        record = self.store.get(run_id)
+        if record is None:
+            # 슬롯이 다른 저장소를 보면 여기가 첫 기록이다 — 빠뜨리면 resume 이 manifest 모델로 돈다
+            self._announce(run_id, topology, model_overrides=model_overrides)
+            return
+        self.store.upsert(
+            RunRecord(
+                **{
+                    **record.__dict__,
+                    "model_overrides": {k: dict(v) for k, v in model_overrides.items()},
+                }
             )
         )
 

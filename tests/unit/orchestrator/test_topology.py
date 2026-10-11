@@ -684,3 +684,47 @@ def test_input_map_validation_ignores_non_string_literals():
     )
 
     validate_topology(topology, state_fields=frozenset({"query"}))
+
+
+# --- 노드 model override (#358) ------------------------------------------------------
+
+
+def test_a_yaml_node_model_keeps_only_the_keys_it_wrote():
+    """YAML 로드 경로 — 쓴 키만 set 이어야 병합이 아래 계층을 덮지 않는다.
+
+    ``fallbacks: []`` 는 "fallback 을 지운다" 는 명시이고, 안 쓴 키는 아래 계층 그대로다.
+    """
+    import yaml
+
+    document = yaml.safe_load(
+        "apiVersion: malkuth/v1\nkind: Graph\n"
+        "metadata: {name: g, version: 1.0.0}\n"
+        "spec:\n  mode: mission\n  goal: g\n"
+        "  state: {schema: 'malkuth.graphs.schemas:ResearchState'}\n"
+        "  nodes:\n"
+        "    - id: planner\n      agent: agents/planner@0.1.0\n      model: {fallbacks: []}\n"
+        "    - id: writer\n      agent: agents/writer@0.1.0\n"
+        "      model: {name: m, max_tokens: 9}\n"
+        "  edges:\n"
+        "    - {from: START, to: planner}\n    - {from: planner, to: writer}\n"
+        "    - {from: writer, to: END}\n"
+    )
+
+    topology = GraphTopology.model_validate(document)
+
+    assert topology.node("planner").model.model_fields_set == {"fallbacks"}
+    assert topology.node("writer").model.model_fields_set == {"name", "max_tokens"}
+
+
+def test_model_overrides_keep_the_api_version_alias_when_dumped():
+    """model_copy 가 alias 를 보존해야 override 를 입힌 토폴로지가 다시 YAML 로 읽힌다."""
+    from malkuth.core.manifest import ModelOverride
+
+    topology = make_mission().with_model_overrides({"planner": ModelOverride(name="m")})
+
+    # Author 가 파일로 쓰는 것과 같은 덤프
+    dumped = topology.model_dump(mode="json", by_alias=True, exclude_none=True)
+
+    assert dumped["apiVersion"] == "malkuth/v1"
+    assert "api_version" not in dumped
+    assert GraphTopology.model_validate(dumped).node("planner").model.name == "m"

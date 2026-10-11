@@ -99,8 +99,8 @@ spec:
 
 ### 4. Validate before deploying
 
-Contract validation runs before anything starts — **if any of the eight checks fails,
-no container is started**:
+Contract validation runs before anything starts — **if any deploy-time contract check
+fails, no container is started**:
 
 ```bash
 malkuth validate                                # every graph in the repository

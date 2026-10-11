@@ -14,6 +14,7 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from malkuth.core.agent import TaskResult
 from malkuth.core.errors import ErrorCategory, ErrorCode, MalkuthError
+from malkuth.core.manifest import ModelConfig, ModelOverride
 from malkuth.graphs.schemas import ResearchState
 from malkuth.orchestrator.builder import GraphBuilder, build_channel_schema, build_graph
 from tests.fixtures.fake_runtime import FakeRuntime
@@ -148,6 +149,78 @@ async def test_task_carries_run_and_node_identity():
     assert task.node_id == "planner"
     assert task.trace.trace_id == "trace-9"
     assert task.is_direct is False
+
+
+async def test_task_carries_the_model_the_resolver_chose_per_node():
+    runtime = (
+        FakeRuntime()
+        .script("planner", output={"plan": "P"})
+        .script("researcher", output={"findings": []})
+    )
+    models = {
+        "planner": ModelConfig(provider="anthropic", name="claude-haiku-4-5"),
+        "researcher": ModelConfig(provider="anthropic", name="claude-opus-5"),
+    }
+
+    await build_graph(linear_topology(), runtime, models=lambda node: models[node.id]).ainvoke(
+        {"query": "q"}
+    )
+
+    assert {t.node_id: t.config.model for t in runtime.tasks} == models
+
+
+async def test_without_a_resolver_the_task_carries_no_model():
+    runtime = (
+        FakeRuntime()
+        .script("planner", output={"plan": "P"})
+        .script("researcher", output={"findings": []})
+    )
+
+    await build_graph(linear_topology(), runtime).ainvoke({"query": "q"})
+
+    assert [t.config.model for t in runtime.tasks] == [None, None]
+
+
+async def test_a_model_that_does_not_resolve_fails_the_node_as_graph_002():
+    """계층을 합친 결과가 모델이 아니면 pydantic 오류가 아니라 typed 노드 실패다."""
+    runtime = FakeRuntime().script("planner", output={"plan": "P"})
+
+    def broken(node: Any) -> ModelConfig:
+        # 주 모델이 fallback 과 겹치면 override 자체는 유효해도 합친 뒤 재검증에서 거부된다
+        base = ModelConfig.model_validate(
+            {
+                "provider": "anthropic",
+                "name": "claude-sonnet-5",
+                "fallbacks": [
+                    {"provider": "anthropic", "name": "claude-haiku-4-5", "on": ["rate_limit"]}
+                ],
+            }
+        )
+        return base.overridden(ModelOverride.model_validate({"name": "claude-haiku-4-5"}))
+
+    with pytest.raises(MalkuthError) as exc_info:
+        await build_graph(linear_topology(), runtime, models=broken).ainvoke({"query": "q"})
+
+    assert exc_info.value.code == ErrorCode.GRAPH_002
+    assert exc_info.value.category is ErrorCategory.GRAPH
+    assert exc_info.value.retryable is False
+    assert exc_info.value.details["node_id"] == "planner"
+    assert exc_info.value.details["reason"]
+    assert runtime.tasks == []
+
+
+async def test_a_typed_resolver_error_passes_through_unchanged():
+    runtime = FakeRuntime().script("planner", output={"plan": "P"})
+
+    def missing(node: Any) -> ModelConfig:
+        raise MalkuthError(
+            category=ErrorCategory.NOT_FOUND, code=ErrorCode.NF_001, message="agent not found"
+        )
+
+    with pytest.raises(MalkuthError) as exc_info:
+        await build_graph(linear_topology(), runtime, models=missing).ainvoke({"query": "q"})
+
+    assert exc_info.value.code == ErrorCode.NF_001
 
 
 # --- 조건부 라우팅 ----------------------------------------------------------

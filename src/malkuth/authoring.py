@@ -2,7 +2,7 @@
 
 UI 가 조립한 결과를 **저장할 통로**와, 저장 전에 **검증할 통로** (#242).
 `DeployValidator` 는 있었지만 CLI 전용이었다 — 여기서는 저장된 선언과 초안을 합쳐
-같은 8항목 검증을 돌리고, 통과한 것만 쓴다 (01 Contract Validation).
+같은 배포 검증 전체(`DeployValidator`)를 돌리고, 통과한 것만 쓴다 (01 Contract Validation).
 
 쓰지 않는 것: 모듈(skillset / promptset / memoryset). v0.1 에서 게시된 모듈은
 불변이다 (04 Registry 2) — 편집 가능한 것은 그래프와 에이전트 매니페스트뿐이다.
@@ -54,13 +54,23 @@ def _serialize(model: BaseModel) -> str:
 def _round_trips[T: BaseModel](model: T, kind: type[T]) -> None:
     """쓰기 **전에** 직렬화 → 파싱이 같은 모델을 내는지 본다 — 안 되면 파일이 생기지 않는다."""
     again = kind.model_validate(yaml.safe_load(_serialize(model)))
-    if again != model:
+    if again != model or _override_keys(again) != _override_keys(model):
         raise MalkuthError(
             category=ErrorCategory.INTERNAL,
             code=ErrorCode.INTERNAL_001,
             message="declaration does not survive a serialization round-trip",
             details={"kind": kind.__name__},
         )
+
+
+def _override_keys(model: BaseModel) -> list[frozenset[str] | None]:
+    """노드 model override 가 설정한 키 — 같은 값이라도 키의 유무가 다르면 다른 선언이다."""
+    if not isinstance(model, GraphTopology):
+        return []
+    return [
+        frozenset(node.model.model_fields_set) if node.model is not None else None
+        for node in model.spec.nodes
+    ]
 
 
 def _rejected(message: str, **details: Any) -> MalkuthError:
@@ -96,12 +106,15 @@ class Author:
             것을 지우거나 덮어쓰면 실행 중 run 의 계약이 발밑에서 바뀐다.
         materials: Where build materials live (#264). 없으면 재료 표면을 열지 않는다 —
             선언만 다루는 조립에서는 커스텀 이미지를 굽지 않기 때문이다.
+        providers: Egress proxy upstream names (#358). None 이면 프록시가 없다 —
+            모델 provider 는 알려진 논리 호스트인지만 본다.
     """
 
     catalog: Catalog
     a2a_port_range: tuple[int, int] | None = None
     in_use: InUse | None = None
     materials: MaterialStore | None = None
+    providers: frozenset[str] | None = None
 
     # --- 검증 ----------------------------------------------------------------
 
@@ -147,6 +160,7 @@ class Author:
                 else ()
             ),
             a2a_port_range=self.a2a_port_range,
+            providers=self.providers,
         )
         # 저장된 그래프의 문제는 저장된 그래프를 검증할 때만 — 그래프 하나를 지목한
         # CLI 검증이 무관한 깨진 그래프 때문에 실패하면 docstring 과 어긋난다.

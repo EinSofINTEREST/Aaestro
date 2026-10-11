@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlsplit
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from malkuth.core.errors import ErrorCategory, ErrorCode, MalkuthError
 
@@ -101,6 +101,19 @@ class EgressProxyConfig(BaseModel):
     container: str | None = Field(default=None, pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_.-]*$")
     """프록시 컨테이너 이름 — MCP 사이드카를 쓰려면 필요하다 (#304). runtime 이 에이전트마다의
     사이드카 네트워크에 이 컨테이너를 붙여, 사이드카에 닿는 것이 프록시뿐이게 한다."""
+    providers: tuple[str, ...] = ("anthropic",)
+    """프록시가 종단하는 provider 이름. 배포 검증이 fallback provider 를 이 목록과 대조한다 —
+    프록시 실제 upstream 과 맞춰 선언한다. 어긋나면 fallback 이 런타임에 프록시에서 거절된다."""
+
+    @field_validator("providers")
+    @classmethod
+    def _non_empty_unique_providers(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        # 빈 목록이면 어떤 모델도 부를 수 없다 — 프록시를 켠 의미가 없는 오설정이다
+        if not value:
+            raise ValueError("runtime.egress_proxy.providers must not be empty")
+        if len(set(value)) != len(value):
+            raise ValueError("runtime.egress_proxy.providers has duplicates")
+        return value
 
     @model_validator(mode="after")
     def _plain_urls(self) -> EgressProxyConfig:

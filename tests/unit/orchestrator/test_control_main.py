@@ -631,3 +631,113 @@ def test_the_entrypoint_checks_host_reachability(tmp_path, monkeypatch):
     _serve_with(tmp_path, monkeypatch, {})
 
     assert calls == ["127.0.0.1"]
+
+
+def test_the_served_run_service_resolves_node_models_from_the_catalog(tmp_path):
+    """resolver 를 물리지 않으면 배포의 model_overrides 가 기록만 되고 태스크에 닿지 않는다."""
+    from types import SimpleNamespace
+
+    from malkuth.catalog import Catalog
+    from malkuth.orchestrator.models import CatalogModels
+
+    catalog = Catalog.under(tmp_path)
+    config = SimpleNamespace(
+        orchestrator=SimpleNamespace(
+            max_concurrent_runs=1,
+            max_service_runs=1,
+            checkpointer="memory",
+            checkpointer_url=None,
+            node_timeout_s=30.0,
+        )
+    )
+
+    runs = entrypoint._run_service(
+        config, catalog, SimpleNamespace(launcher=None), store=SqliteRunStore()
+    )
+
+    assert runs.submitter.models == CatalogModels(catalog)
+
+
+# --- 프록시 upstream 대조 (#358) ---------------------------------------------------------
+
+
+def test_proxy_providers_is_none_without_a_proxy_and_the_declared_set_with_one():
+    from malkuth.config import RuntimeConfig
+
+    plain = RuntimeConfig()
+    proxied = RuntimeConfig(egress_proxy={**EGRESS, "providers": ["anthropic", "openai-compat"]})
+
+    class Holder:
+        def __init__(self, runtime):
+            self.runtime = runtime
+
+    assert entrypoint._proxy_providers(Holder(plain)) is None  # noqa: SLF001
+    assert entrypoint._proxy_providers(Holder(proxied)) == frozenset(  # noqa: SLF001
+        {"anthropic", "openai-compat"}
+    )
+
+
+def test_the_served_author_and_the_deployment_wiring_get_the_proxy_providers(tmp_path, monkeypatch):
+    """한 곳이라도 빠지면 그 경로의 검증만 프록시 upstream 을 모른 채 통과한다."""
+    (tmp_path / "local.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "orchestrator": {
+                    "run_store": str(tmp_path / "runs.db"),
+                    "control_port": 18999,
+                    "access_store": str(tmp_path / "access.db"),
+                    "access_enforcer_token": "enforcer",
+                    "access_agent_url": "http://control-plane:8700",
+                },
+                "runtime": {
+                    "egress_proxy": {**EGRESS, "providers": ["anthropic", "openai-compat"]}
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MALKUTH_ENV", "local")
+    monkeypatch.setenv("MALKUTH_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(entrypoint, "_setup_observability", lambda: None)
+
+    class Deployments:
+        author = None
+        images = None
+        access = None
+        launcher = None
+
+        def in_use(self, kind: str, name: str) -> bool:
+            return False
+
+    deployments = Deployments()
+    monkeypatch.setattr(entrypoint, "_deployment_manager", lambda *a, **k: deployments)
+    monkeypatch.setattr(entrypoint, "_run_service", lambda *a, **k: None)
+    captured: dict = {}
+    monkeypatch.setattr(
+        entrypoint, "create_app", lambda store, **kw: captured.update(kw) or object()
+    )
+    monkeypatch.setattr(entrypoint.uvicorn, "run", lambda app, **_kw: None)
+    expected = frozenset({"anthropic", "openai-compat"})
+
+    entrypoint.main()
+
+    assert captured["author"].providers == expected
+    assert deployments.author.providers == expected
+
+
+def test_the_deployment_managers_own_author_gets_the_proxy_providers(tmp_path, monkeypatch):
+    """배포 관리자가 안에서 만드는 Author — 진입점의 두 번째 조립 지점."""
+    from malkuth.catalog import Catalog
+    from malkuth.config import MalkuthConfig, OrchestratorConfig
+
+    monkeypatch.setattr(entrypoint, "agent_engine", lambda runtime, client: None)
+    config = MalkuthConfig.model_validate(
+        {"runtime": {"egress_proxy": {**EGRESS, "providers": ["anthropic", "openai-compat"]}}}
+    )
+    orchestrator = OrchestratorConfig(deployment_store=str(tmp_path / "deployments.db"))
+
+    manager = entrypoint._deployment_manager(  # noqa: SLF001
+        config, Catalog.under(tmp_path), store_root=tmp_path, orchestrator=orchestrator
+    )
+
+    assert manager.author.providers == frozenset({"anthropic", "openai-compat"})

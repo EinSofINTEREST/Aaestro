@@ -360,6 +360,19 @@ curl -X POST -H "Authorization: Bearer $TOKEN" -H 'content-type: application/jso
   -d '{"graph": "research-pipeline"}' http://127.0.0.1:8700/v1/deployments
 ```
 
+Optionally pass `model_overrides` (node id → partial `spec.model`) to swap models without editing
+any declaration; see [Agents — model resilience](modules.md#agents--model-resilience). The call
+still uses the manifest's model until the failover-loop work (#359) lands:
+
+```bash
+curl -X POST -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"graph": "research-pipeline", "model_overrides": {"researcher": {"name": "claude-haiku-4-5", "fallbacks": []}}}' \
+  http://127.0.0.1:8700/v1/deployments
+```
+
+The response echoes the map you sent, only the keys you set — here `"model_overrides": {"researcher": {"name": "claude-haiku-4-5", "fallbacks": []}}` (`{}` for the first example). Promoting a fallback to primary also needs `fallbacks` adjusted —
+a fallback equal to the primary is refused.
+
 `201` once every agent reports healthy:
 
 ```json
@@ -370,6 +383,7 @@ curl -X POST -H "Authorization: Bearer $TOKEN" -H 'content-type: application/jso
   "status": "ready",
   "error": null,
   "updated_at": "2026-09-13T11:29:06.391594+00:00",
+  "model_overrides": {},
   "agents": [
     {"name": "planner", "replica": 0, "container_id": "0f2edbe1aa5a",
      "image": "malkuth/agent-base:0.1.0", "control_port": 32852, "a2a_port": 9100}
@@ -393,10 +407,15 @@ reference graph. Per-agent tokens are never in a response.
 Failures leave no ghost containers. What you get back tells you which kind it was:
 
 - `404` (`NF_001`) — no such graph.
-- `400` (`VAL_001`) — the graph does not validate; nothing was started.
+- `400` (`VAL_001`) — the graph does not validate; nothing was started. This includes the
+  `model_providers` check: an unknown provider, a provider missing from
+  `runtime.egress_proxy.providers`, or an override leaving the manifest's provider set — the finding
+  is in `details.findings`.
 - `400` (`VAL_002`) — an agent with build materials declares a `runtime.image` other than the
   tag its build produces (`malkuth/agent-<name>:<version>`). Two places naming two images
   leave no way to tell what runs.
+- `400` (`VAL_002`) — `model_overrides` names a node that is not in the graph, or an override
+  body is malformed (provider without name, unknown key). Nothing was started.
 - `409` (`RT_012`) — an agent with build materials has no `built` image for its version: never
   built, the last build failed, or a build is still running. `details` carries `image`,
   `build_status` and `build_error`. Build it, then deploy again — a deploy never builds for
@@ -410,7 +429,8 @@ Failures leave no ghost containers. What you get back tells you which kind it wa
 
 ### `GET /v1/deployments`, `GET /v1/deployments/{id}`
 
-The listing is `{"items": [...]}`; a single fetch is the record itself. Both reflect the
+The listing is `{"items": [...]}`; a single fetch is the record itself. Each record carries the
+`model_overrides` the deployment was created with (`{}` when none). Both reflect the
 containers that are actually there right now — if supervision replaced a container after a
 crash, the record shows the new id and port.
 
@@ -826,7 +846,11 @@ runtime:
     connect_url: http://malkuth-egress:8080
     providers_url: http://malkuth-egress:8081
     container: malkuth-egress   # needed only for MCP sidecars — see below
+    providers: [anthropic]      # providers the proxy terminates; match the real upstream setup (default [anthropic])
 ```
+
+Deployment validation refuses a model provider (primary or fallback) that is not in `providers`
+(`400 VAL_001`, finding `model_providers`).
 
 Deployments then give each agent `HTTPS_PROXY` (its own identity as credentials),
 `ANTHROPIC_BASE_URL` pointing at the proxy, and its identity where `ANTHROPIC_API_KEY` was. Plain

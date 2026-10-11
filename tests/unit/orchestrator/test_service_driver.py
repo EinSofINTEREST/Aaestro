@@ -13,6 +13,7 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from malkuth.core.agent import TaskResult
 from malkuth.core.errors import ErrorCategory, ErrorCode, MalkuthError
+from malkuth.core.manifest import ModelConfig
 from malkuth.orchestrator.run import RunStatus
 from malkuth.orchestrator.submit import RunSubmitter
 from malkuth.orchestrator.topology import GraphMode
@@ -65,6 +66,32 @@ async def test_service_run_iterates_and_stops_at_the_bound():
     assert handle.iteration == 3
     assert handle.status is RunStatus.STOPPED
     assert runtime.invoked == ["watcher", "watcher", "watcher"]
+
+
+async def test_every_iteration_task_carries_the_resolved_model():
+    """service 경로의 build_graph 가 resolver 를 빠뜨리면 상주 run 만 manifest 모델로 돈다."""
+
+    class ModelRuntime(EchoRuntime):
+        def __init__(self) -> None:
+            super().__init__()
+            self.models: list[str | None] = []
+
+        async def invoke(self, node, task) -> TaskResult:
+            self.models.append(None if task.config.model is None else task.config.model.name)
+            return await super().invoke(node, task)
+
+    runtime = ModelRuntime()
+    sub = RunSubmitter(
+        runtime=runtime,
+        models=lambda node: ModelConfig(provider="anthropic", name=f"for-{node.id}"),
+    )
+
+    handle = await sub.start_service(
+        make_service(), {"feeds": []}, max_iterations=2, sleep=no_sleep
+    )
+    await asyncio.wait_for(sub.services[handle.run_id], timeout=10)
+
+    assert runtime.models == ["for-watcher", "for-watcher"]
 
 
 async def test_mission_graph_is_rejected_by_the_service_path():

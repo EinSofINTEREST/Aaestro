@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from pydantic import BaseModel, ConfigDict, Field
 
 from malkuth.core.errors import MalkuthError, MalkuthErrorPayload
+from malkuth.core.manifest import ModelConfig
 
 if TYPE_CHECKING:
     from malkuth.core.events import TaskEvent
@@ -95,6 +96,11 @@ class TaskConfig(BaseModel):
     max_turns: int = DEFAULT_MAX_TURNS
     tool_timeout_s: float = DEFAULT_TOOL_TIMEOUT_S
     locale: str | None = None
+    model: ModelConfig | None = None
+    """그래프가 해석한 이 태스크의 모델.
+
+    None 이면 agentd 가 manifest 기본값을 쓴다 (direct 요청).
+    """
 
 
 class ModelUsage(BaseModel):

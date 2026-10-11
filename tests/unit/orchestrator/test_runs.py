@@ -10,8 +10,9 @@ import pytest
 
 from malkuth.core.agent import TaskResult
 from malkuth.core.errors import ErrorCategory, ErrorCode, MalkuthError
+from malkuth.core.manifest import ModelConfig
 from malkuth.orchestrator.checkpoint import build_checkpointer
-from malkuth.orchestrator.run import RunManager, RunStatus
+from malkuth.orchestrator.run import RESUMED_SUFFIX, RunHandle, RunManager, RunStatus
 from malkuth.orchestrator.runs import RoutedClients, RunService
 from malkuth.orchestrator.runstore import InMemoryRunStore, RunRecord
 from malkuth.orchestrator.submit import RunResult, RunSubmitter
@@ -52,6 +53,7 @@ class FakeSubmitter:
 
     store: InMemoryRunStore
     calls: list[tuple[str, str]] = field(default_factory=list)
+    topologies: list[Any] = field(default_factory=list)
     gate: asyncio.Event = field(default_factory=asyncio.Event)
     stopped: bool = False
 
@@ -86,12 +88,21 @@ class FakeSubmitter:
 
     async def start_service(self, topology, initial_state, *, run_id=None, **_):
         self.calls.append(("start_service", run_id))
+        self.topologies.append(topology)
         self.store.upsert(
             RunRecord(run_id=run_id, graph=topology.metadata.name, mode="service", status="running")
         )
 
     async def resume_service(self, topology, run_id, **_):
         self.calls.append(("resume_service", run_id))
+        self.topologies.append(topology)
+        resumed = f"{run_id}{RESUMED_SUFFIX}"
+        self.store.upsert(
+            RunRecord(
+                run_id=resumed, graph=topology.metadata.name, mode="service", status="running"
+            )
+        )
+        return RunHandle(run_id=resumed, graph=topology.metadata.name, mode=GraphMode.SERVICE)
 
     async def stop_services(self) -> None:
         self.stopped = True
@@ -321,3 +332,111 @@ async def test_results_are_bounded(parts):
 
     assert list(runs.results) == ["r1", "r2"]
     assert runs.result_of("r0") is None
+
+
+# --- 배포의 모델 override 가 run 에 이어진다 (#358) ---------------------------------
+
+BASE_MODEL = ModelConfig(provider="anthropic", name="claude-sonnet-5")
+OVERRIDES = {"researcher": {"name": "claude-haiku-4-5"}}
+
+
+def base_models(node) -> ModelConfig:
+    """manifest 대역 — 노드에 입혀진 override 를 그대로 올린다 (catalog 없이 배선만 본다)."""
+    return BASE_MODEL.overridden(node.model)
+
+
+def overridden_deployment(graph: str) -> DeploymentRecord:
+    return DeploymentRecord(
+        deployment_id="dep-1",
+        graph=graph,
+        version="1.0.0",
+        status=DeploymentStatus.READY,
+        model_overrides=OVERRIDES,
+    )
+
+
+def real_runs(parts, runtime, deployments: dict[str, DeploymentRecord]) -> RunService:
+    store, catalog, _, _, _ = parts
+    return RunService(
+        catalog=catalog,
+        deployments=FakeDeployments(deployments),
+        submitter=RunSubmitter(
+            runtime=runtime,
+            manager=RunManager(store=store),
+            checkpointer=build_checkpointer("memory"),
+            models=base_models,
+        ),
+        store=store,
+    )
+
+
+class RecordingRuntime(FailOnceRuntime):
+    """노드 태스크가 받은 모델을 기록한다 — researcher 는 첫 호출에서 실패한다."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.models: list[tuple[str, str | None]] = []
+
+    async def invoke(self, node, task):
+        model = task.config.model
+        self.models.append((node.id, None if model is None else model.name))
+        return await super().invoke(node, task)
+
+
+async def test_submit_runs_nodes_with_the_deployment_overrides_and_copies_them(parts):
+    store, _, _, mission, _ = parts
+    runtime = RecordingRuntime()
+    runs = real_runs(parts, runtime, {"dep-1": overridden_deployment(mission.metadata.name)})
+
+    await runs.submit("dep-1", {"query": "q"}, run_id="m-1")
+    await asyncio.gather(*runs.drivers.values())
+
+    assert runtime.models == [("planner", "claude-sonnet-5"), ("researcher", "claude-haiku-4-5")]
+    # 슬롯 반납 같은 핸들 갱신이 지나간 뒤에도 남아 있어야 한다
+    assert store.get("m-1").model_overrides == OVERRIDES
+
+
+async def test_resume_keeps_the_models_even_after_the_deployment_is_gone(parts):
+    store, _, _, mission, _ = parts
+    runtime = RecordingRuntime()
+    deployments = {"dep-1": overridden_deployment(mission.metadata.name)}
+    runs = real_runs(parts, runtime, deployments)
+    await runs.submit("dep-1", {"query": "q"}, run_id="m-1")
+    await asyncio.gather(*runs.drivers.values())
+    assert store.get("m-1").status == "failed"
+    deployments.clear()
+
+    await runs.resume("m-1")
+    await asyncio.gather(*runs.drivers.values())
+
+    assert runtime.models[-1] == ("researcher", "claude-haiku-4-5")
+    assert store.get("m-1").status == "completed"
+    assert store.get("m-1").model_overrides == OVERRIDES
+
+
+async def test_a_service_run_records_and_resumes_with_the_deployment_overrides(parts):
+    store, _, submitter, _, service = parts
+    node_id = service.spec.nodes[0].id
+    record = DeploymentRecord(
+        deployment_id="dep-1",
+        graph=service.metadata.name,
+        version=service.metadata.version,
+        status=DeploymentStatus.READY,
+        model_overrides={node_id: {"name": "claude-haiku-4-5"}},
+    )
+    runs = service_for(parts, record)
+
+    await runs.submit("dep-1", {}, run_id="svc-1")
+    store.upsert(
+        RunRecord(run_id="svc-1", graph=service.metadata.name, mode="service", status="halted")
+    )
+    await runs.resume("svc-1")
+
+    started, resumed = submitter.topologies
+    for topology in (started, resumed):
+        assert topology.node(node_id).model.name == "claude-haiku-4-5"
+    assert store.get("svc-1").model_overrides == {node_id: {"name": "claude-haiku-4-5"}}
+    # 재개된 run 은 새 id 다 — 그것을 다시 재개해도 같은 모델이어야 한다
+    assert store.get(f"svc-1{RESUMED_SUFFIX}").model_overrides == {
+        node_id: {"name": "claude-haiku-4-5"}
+    }

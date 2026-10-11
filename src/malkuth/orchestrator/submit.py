@@ -37,7 +37,7 @@ if TYPE_CHECKING:
     from langgraph.checkpoint.base import BaseCheckpointSaver
 
     from malkuth.observability.metrics import Metrics
-    from malkuth.orchestrator.builder import NodeRuntime
+    from malkuth.orchestrator.builder import ModelResolver, NodeRuntime
     from malkuth.orchestrator.topology import GraphTopology
 
 DEFAULT_NODE_TIMEOUT_S = 300.0
@@ -110,6 +110,8 @@ class RunSubmitter:
     node_timeout_s: float = DEFAULT_NODE_TIMEOUT_S
     metrics: Metrics | None = None
     """계측 registry — 여기서 넘기지 않으면 각 계층의 집계 로직이 무동작이다."""
+    models: ModelResolver | None = None
+    """노드별 해석된 모델을 태스크에 싣는다 — 없으면 agentd 가 manifest 기본값을 쓴다."""
 
     def __post_init__(self) -> None:
         # 기본 manager 는 registry 를 모른 채 만들어진다 — 슬롯 게이지만 빠지면
@@ -287,6 +289,7 @@ class RunSubmitter:
                 checkpointer=self.checkpointer,
                 node_timeout_s=self.node_timeout_s,
                 metrics=self.metrics,
+                models=self.models,
             ),
             sleep=sleep,
             metrics=self.metrics,
@@ -406,6 +409,7 @@ class RunSubmitter:
         Raises:
             MalkuthError: STORAGE/``STOR_002`` if no iteration left a checkpoint.
         """
+        # state 만 읽고 노드를 실행하지 않는다 — 모델 해석기를 넘겨도 쓰이지 않는다
         graph = build_graph(topology, self.runtime, checkpointer=self.checkpointer)
         for iteration in range(previous.iteration - 1, -1, -1):
             for generation in run_generations(previous.run_id):
@@ -474,6 +478,7 @@ class RunSubmitter:
             checkpointer=self.checkpointer,
             node_timeout_s=self.node_timeout_s,
             metrics=self.metrics,
+            models=self.models,
         )
         bound = log.bind(graph=topology.metadata.name, run_id=handle.run_id)
         outcome = RunStatus.FAILED

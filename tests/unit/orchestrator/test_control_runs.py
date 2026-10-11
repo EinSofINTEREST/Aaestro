@@ -91,6 +91,15 @@ async def test_post_with_a_bad_body_is_400_val_002(api):
     assert response.json()["error"]["code"] == ErrorCode.VAL_002
 
 
+async def test_post_with_a_misspelled_key_is_400_not_ignored(api):
+    response = await api.post("/v1/runs", json={"deployment_id": "dep-1", "inputs": {"q": 1}})
+
+    assert response.status_code == 400
+    error = response.json()["error"]
+    assert error["code"] == ErrorCode.VAL_002
+    assert [e["field"] for e in error["details"]["errors"]] == ["inputs"]
+
+
 async def test_get_shows_the_final_state_once_the_run_finished(api, store, runs):
     store.upsert(RunRecord(run_id="run-1", graph="g", mode="mission", status="completed"))
     runs.results["run-1"] = RunResult(
