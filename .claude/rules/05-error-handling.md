@@ -277,7 +277,7 @@ DECISION_RETRY = RetryPolicy(
 
 | 호출 | 재시도 주체 |
 |---|---|
-| 모델 API 호출 | agentd (provider SDK 재시도는 비활성화) |
+| 모델 API 호출 | agentd (provider SDK 재시도는 비활성화) — 재시도 소진 뒤 선언된 fallback 모델로의 전환도 agentd (02 Model Resilience Declaration) |
 | 결정 모델 호출 | agentd — `DECISION_RETRY` (network·timeout·rate limit 모두 1회 재시도, 총 대기 < `decision.timeout_s`). 소진하면 `unavailable` 로 원래 경로 — RATE_LIMIT_RETRY 의 수십 초 백오프는 판정에 맞지 않는다 |
 | MCP tool 호출 | agentd — 단 `MCP_004` (transport) 는 재연결 후 1회만 |
 | A2A 호출 | caller 에이전트 |
@@ -288,7 +288,7 @@ DECISION_RETRY = RetryPolicy(
 
 외부 의존 대상별로 circuit breaker 를 적용한다:
 
-- 모델 provider (에이전트별)
+- 모델 (provider/name 별 — fallback 포함)
 - 결정 provider (에이전트별) — open 이면 호출 없이 `unavailable`: 장애 중 판정마다 timeout 을
   기다리면 태스크가 결정 수만큼 느려진다
 - MCP external/sidecar 서버 (서버별)

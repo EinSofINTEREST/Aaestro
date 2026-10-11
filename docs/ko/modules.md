@@ -133,9 +133,8 @@ spec:
 ## 에이전트 — 모델 회복력
 
 에이전트의 `spec.model` 은 primary 모델이 실패했을 때의 동작을 선언할 수 있습니다. 아래 필드는
-모두 선택이며, 생략하면 동작은 그대로입니다. **지금은 선언만, 동작은 후속 작업**입니다:
-검증과 해석이 먼저 들어가고, 전환 루프·키 교체·비-Anthropic 어댑터가 뒤따릅니다
-(#359, #360, #361).
+모두 선택이며, 생략하면 동작은 그대로입니다. 검증, 해석, 실행 중 전환 루프는 들어와 있습니다.
+같은 provider 안의 키 교체(#360)와 비-Anthropic 어댑터(#361)가 뒤따릅니다.
 
 ```yaml
 spec:
@@ -183,9 +182,36 @@ nodes:
       fallbacks: []                # 이 노드에서는 fallback 없이
 ```
 
-해석 결과는 `TaskRequest.config.model` 로 agentd 에 전달됩니다. **agentd 가 그 모델로 호출을
-바꾸는 것은 전환 루프 작업(#359)에서 들어갑니다** — 그때까지 노드·배포 override 는 기록·검증·
-전달되지만 실제 호출은 manifest 의 모델입니다. 그래프 밖 direct 요청은 manifest 기본값을 씁니다.
+해석 결과는 `TaskRequest.config.model` 로 agentd 에 전달됩니다. agentd 는 **태스크 시작 시 그
+선언으로 모델 체인을 고정**하고 primary 부터 그 모델로 호출합니다. 리로드가 진행 중 태스크에 섞이지
+않습니다 (모듈 묶음과 같은 규칙). 선언이 없으면 — 그래프 밖 direct 요청 — manifest 기본값을 씁니다.
+
+### 실행 중 전환
+
+전환은 **턴 단위**입니다. primary 의 재시도 정책(`retry` 선언, 없으면 기본값: rate limit 10초 시작
+5회, network 1초 시작 3회)이 소진되면, 실패 부류가 `on` 에 든 다음 fallback 에 **같은 대화**를
+보냅니다. `on` 에 없는 부류면 전환 없이 태스크가 실패합니다. 마지막 fallback 도 소진되면 마지막
+에러를 돌려줍니다.
+
+| `on` 부류 | 대응하는 실패 |
+|---|---|
+| `rate_limit` | provider rate limit (`LLM_001`) |
+| `server_error` | provider 5xx (`LLM_003`), 그리고 네트워크 오류·타임아웃 (provider 가 답하지 못함) |
+| `context_overflow` | `LLM_002` — 재시도 없이 곧장 전환 ("더 긴 컨텍스트의 모델로 같은 요청") |
+
+해석 불가 응답(`LLM_004`)과 설정 오류는 전환하지 않습니다.
+
+- **`circuit`**: 모델(provider/name)마다 circuit breaker 가 있습니다. open 인 모델은 **호출 없이**
+  건너뜁니다. 같은 모델은 태스크·체인이 달라도 breaker 를 공유합니다. 모든 후보가 open 이면
+  `LLM_003`(retryable) 으로 실패합니다. 상태는 `malkuth_circuit_state{target="model:<provider>/<name>"}`
+  로 노출됩니다.
+- fallback 은 `max_tokens`·`effort` 를 primary 에서 물려받습니다.
+- **관측**: `TaskResult.usage.model` / `.provider` 는 **실제로 응답한** 모델입니다.
+  `malkuth_model_requests_total` 에 `fallback_index` 라벨이 붙습니다 (0 = primary). 전환할 때마다
+  `model`, `provider`, `fallback_index`, `error_code`, `next_model`, `next_provider` 필드의 WARN
+  로그를 남깁니다.
+- 범위 밖: 비-Anthropic provider 로의 전환은 어댑터(#361)가 들어와야 합니다 — 그 전에는 체인을 만들 때
+  `CFG_001` 로 거절됩니다. 같은 provider 의 키 교체는 #360 입니다.
 
 ### 배포 검증 (`model_providers`)
 
