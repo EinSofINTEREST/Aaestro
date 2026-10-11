@@ -356,6 +356,8 @@ curl -X POST -H "Authorization: Bearer $TOKEN" -H 'content-type: application/jso
   http://127.0.0.1:8700/v1/deployments
 ```
 
+응답은 보낸 map 을 적은 키만 그대로 돌려준다 — 여기서는 `"model_overrides": {"researcher": {"provider": "anthropic", "name": "claude-haiku-4-5"}}` (첫 예시는 `{}`).
+
 모든 에이전트가 healthy 를 보고하면 `201`:
 
 ```json

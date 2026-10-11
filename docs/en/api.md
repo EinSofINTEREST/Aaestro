@@ -369,6 +369,8 @@ curl -X POST -H "Authorization: Bearer $TOKEN" -H 'content-type: application/jso
   http://127.0.0.1:8700/v1/deployments
 ```
 
+The response echoes the map you sent, only the keys you set — here `"model_overrides": {"researcher": {"provider": "anthropic", "name": "claude-haiku-4-5"}}` (`{}` for the first example).
+
 `201` once every agent reports healthy:
 
 ```json
