@@ -773,6 +773,9 @@ observability:
    질문이 해석되고, 그 질문을 쓰는 에이전트가 `spec.decision.provider` 를 선언했으며, provider 가
    decisionset 의 `locale` 을 지원하는가. 그래프 decision 노드의 `output_map` 이 `decision.` 키만
    읽는가
+10. 모든 모델 provider (primary · fallback · 노드/배포 override) 가 알려진 논리 호스트를 갖고,
+    프록시를 쓰면 `runtime.egress_proxy.providers` 에 있으며, override 의 provider 는 manifest 가
+    선언한 집합 안인가
 
 ## Scalability Considerations
 

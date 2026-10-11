@@ -348,15 +348,17 @@ curl -X POST -H "Authorization: Bearer $TOKEN" -H 'content-type: application/jso
 ```
 
 선택으로 `model_overrides`(노드 id → 부분 `spec.model`)를 넘기면 선언 파일을 바꾸지 않고 모델을
-교체합니다. [에이전트 — 모델 회복력](modules.md#에이전트--모델-회복력) 참조:
+교체합니다. [에이전트 — 모델 회복력](modules.md#에이전트--모델-회복력) 참조. 실제 호출은 전환 루프 작업(#359)이
+들어갈 때까지 manifest 의 모델을 씁니다:
 
 ```bash
 curl -X POST -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
-  -d '{"graph": "research-pipeline", "model_overrides": {"researcher": {"provider": "anthropic", "name": "claude-haiku-4-5"}}}' \
+  -d '{"graph": "research-pipeline", "model_overrides": {"researcher": {"name": "claude-haiku-4-5", "fallbacks": []}}}' \
   http://127.0.0.1:8700/v1/deployments
 ```
 
-응답은 보낸 map 을 적은 키만 그대로 돌려준다 — 여기서는 `"model_overrides": {"researcher": {"provider": "anthropic", "name": "claude-haiku-4-5"}}` (첫 예시는 `{}`).
+응답은 보낸 map 을 적은 키만 그대로 돌려준다 — 여기서는 `"model_overrides": {"researcher": {"name": "claude-haiku-4-5", "fallbacks": []}}` (첫 예시는 `{}`). fallback 을 primary 로 올릴 때는 `fallbacks` 도 함께 조정해야 합니다 —
+primary 와 같은 fallback 은 거절됩니다.
 
 모든 에이전트가 healthy 를 보고하면 `201`:
 
@@ -392,12 +394,13 @@ curl -X POST -H "Authorization: Bearer $TOKEN" -H 'content-type: application/jso
 실패해도 유령 컨테이너는 남지 않는다. 어떤 종류의 실패인지는 응답이 알려준다:
 
 - `404` (`NF_001`) — 그런 그래프가 없다.
-- `400` (`VAL_001`) — 그래프가 검증을 통과하지 못했다. 아무것도 기동하지 않았다.
+- `400` (`VAL_001`) — 그래프가 검증을 통과하지 못했다. 아무것도 기동하지 않았다. `model_providers`
+  검사도 여기에 해당한다: 모르는 provider, `runtime.egress_proxy.providers` 에 없는 provider,
+  manifest 의 provider 집합을 벗어나는 override — 사유는 `details.findings` 에 실린다.
 - `400` (`VAL_002`) — 빌드 재료가 있는 에이전트가 빌드 태그(`malkuth/agent-<name>:<version>`)
   와 다른 `runtime.image` 를 선언했다. 두 곳이 다른 이미지를 가리키면 무엇이 도는지 알 수 없다.
-- `400` (`VAL_002`) — 모델 선언이 거절됐다 (`model_providers` 검사): 모르는 provider,
-  `runtime.egress_proxy.providers` 에 없는 provider, manifest 가 선언한 provider 집합을 벗어나는
-  override, 그래프의 노드가 아닌 `model_overrides` 키. 아무것도 기동하지 않았다.
+- `400` (`VAL_002`) — `model_overrides` 가 그래프에 없는 노드를 가리키거나 override 본문이 잘못됐다
+  (provider 만 적음, 모르는 키). 아무것도 기동하지 않았다.
 - `409` (`RT_012`) — 빌드 재료가 있는 에이전트에 그 버전의 `built` 이미지가 없다: 굽힌 적이
   없거나, 마지막 빌드가 실패했거나, 아직 굽는 중이다. `details` 에 `image`, `build_status`,
   `build_error` 가 실린다. 구운 뒤 다시 배포한다 — 배포는 대신 굽지 않는다. 아무것도 기동하지
@@ -811,7 +814,7 @@ runtime:
     providers: [anthropic]      # 프록시가 종단하는 provider — 실제 upstream 구성과 맞춘다 (기본값 [anthropic])
 ```
 
-배포 검증은 `providers` 에 없는 모델 provider(primary·fallback)를 거절한다 (`VAL_002`).
+배포 검증은 `providers` 에 없는 모델 provider(primary·fallback)를 거절한다 (`400 VAL_001`, finding `model_providers`).
 
 그러면 배포가 에이전트마다 `HTTPS_PROXY`(자기 신원을 자격으로), 프록시를 가리키는 `ANTHROPIC_BASE_URL`,
 그리고 `ANTHROPIC_API_KEY` 자리에 신원을 넣는다. 평문 `http` 는 프록시로 보내지 않는다 — 에이전트

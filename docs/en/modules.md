@@ -151,12 +151,14 @@ spec:
     effort: high
     fallbacks:                      # tried in order when the primary fails for a reason in `on`
       - {provider: anthropic, name: claude-haiku-4-5, on: [rate_limit, server_error]}
-      - {provider: openai-compat, name: gpt-5, on: [server_error]}
     retry:                          # per-category retry; omitted = framework defaults
       rate_limit: {start_s: 10, attempts: 5}        # optional max_s (>= start_s)
       network:    {start_s: 1,  attempts: 3}
     circuit: {max_failures: 5, reset_s: 60}
 ```
+
+Only providers the framework knows (currently `anthropic`) validate; a second provider arrives
+with the OpenAI-compatible adapter (#361).
 
 - `on` takes `rate_limit`, `server_error`, `context_overflow`; it is required and cannot be empty.
 - A fallback's `(provider, name)` must differ from the primary and from every other fallback.
@@ -173,7 +175,8 @@ Same rule as resource scoping (local > group > global). Later layers override ea
 
 An override is **partial**: only the keys it names replace the layer below. An explicit empty
 value — `fallbacks: []`, `circuit: null` — erases the lower layer's value. Naming `provider`
-requires naming `name` too (a model name belongs to its provider). Subgraph nodes cannot carry
+requires naming `name` too (a model name belongs to its provider). Promoting a fallback to primary
+also needs `fallbacks` adjusted — a fallback equal to the primary is refused. Subgraph nodes cannot carry
 `model`.
 
 ```yaml
@@ -186,12 +189,15 @@ nodes:
       fallbacks: []                # no fallback on this node
 ```
 
-The result travels to agentd as `TaskRequest.config.model`; agentd does not re-read the manifest.
+The resolved result is delivered to agentd as `TaskRequest.config.model`. **Switching agentd's
+calls to that model arrives with the failover-loop work (#359)** — until then node and deployment
+overrides are recorded, validated and delivered, but the actual call uses the manifest's model.
 Direct requests (outside any graph) use the manifest defaults.
 
-### Deploy-time checks (`model_providers`, `VAL_002`)
+### Deploy-time checks (`model_providers`)
 
-If any check fails, nothing is started:
+The check is named `model_providers`; its findings carry code `VAL_002`, and the HTTP response is
+`400 VAL_001` with the findings in `details.findings`. If any check fails, nothing is started:
 
 - the provider must be one the framework knows (one with a logical host)
 - with an egress proxy, the provider must appear in `runtime.egress_proxy.providers` — otherwise a
@@ -200,7 +206,8 @@ If any check fails, nothing is started:
   declares** (primary + fallbacks): egress decisions derive from the manifest, so a provider
   outside it would be refused by the proxy. To switch to another provider, declare it in the
   manifest's `fallbacks` first
-- `model_overrides` naming a node id that is not in the graph is `400 VAL_002`
+- `model_overrides` naming a node id that is not in the graph, or a malformed override body
+  (provider without name, unknown key), is a direct `400 VAL_002`
 - the egress baseline includes the fallback providers' hosts automatically (a manifest
   declaration is the default permission)
 

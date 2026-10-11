@@ -146,12 +146,14 @@ spec:
     effort: high
     fallbacks:                      # primary 가 `on` 의 사유로 실패하면 순서대로 시도
       - {provider: anthropic, name: claude-haiku-4-5, on: [rate_limit, server_error]}
-      - {provider: openai-compat, name: gpt-5, on: [server_error]}
     retry:                          # 카테고리별 재시도; 생략 시 프레임워크 기본값
       rate_limit: {start_s: 10, attempts: 5}        # max_s 선택 (>= start_s)
       network:    {start_s: 1,  attempts: 3}
     circuit: {max_failures: 5, reset_s: 60}
 ```
+
+프레임워크가 아는 provider(현재 `anthropic`)만 검증을 통과합니다. 두 번째 provider 는
+OpenAI 호환 어댑터(#361)와 함께 들어옵니다.
 
 - `on` 값은 `rate_limit`, `server_error`, `context_overflow` 이며 필수이고 비어 있을 수 없습니다.
 - fallback 의 `(provider, name)` 은 primary 와, 그리고 다른 fallback 과 달라야 합니다.
@@ -167,7 +169,8 @@ spec:
 
 override 는 **부분 선언**입니다: 적은 키만 아래 계층을 덮습니다. `fallbacks: []`, `circuit: null`
 처럼 명시한 빈 값·null 은 아래 계층의 값을 지웁니다. `provider` 를 적으면 `name` 도 적어야 합니다
-(모델 이름은 provider 에 속합니다). 서브그래프 노드에는 `model` 을 둘 수 없습니다.
+(모델 이름은 provider 에 속합니다). fallback 을 primary 로 올릴 때는 `fallbacks` 도 함께 조정해야
+합니다 — primary 와 같은 fallback 은 거절됩니다. 서브그래프 노드에는 `model` 을 둘 수 없습니다.
 
 ```yaml
 # graphs/research-pipeline.yaml (발췌)
@@ -179,12 +182,14 @@ nodes:
       fallbacks: []                # 이 노드에서는 fallback 없이
 ```
 
-해석 결과는 `TaskRequest.config.model` 로 agentd 에 전달되며, agentd 는 manifest 를 다시 읽지
-않습니다. 그래프 밖 direct 요청은 manifest 기본값을 씁니다.
+해석 결과는 `TaskRequest.config.model` 로 agentd 에 전달됩니다. **agentd 가 그 모델로 호출을
+바꾸는 것은 전환 루프 작업(#359)에서 들어갑니다** — 그때까지 노드·배포 override 는 기록·검증·
+전달되지만 실제 호출은 manifest 의 모델입니다. 그래프 밖 direct 요청은 manifest 기본값을 씁니다.
 
-### 배포 검증 (`model_providers`, `VAL_002`)
+### 배포 검증 (`model_providers`)
 
-하나라도 걸리면 아무것도 기동하지 않습니다:
+검사 이름은 `model_providers` 이고, finding 코드는 `VAL_002` 이며, HTTP 응답은 `400 VAL_001` 에
+finding 이 `details.findings` 로 실립니다. 하나라도 걸리면 아무것도 기동하지 않습니다:
 
 - provider 는 프레임워크가 아는 것(논리 호스트가 있는 것)이어야 합니다
 - 이그레스 프록시를 쓰면 provider 가 `runtime.egress_proxy.providers` 에 있어야 합니다 — 아니면
@@ -192,7 +197,8 @@ nodes:
 - 노드·배포 override 는 **manifest 가 선언한 provider 집합(primary + fallbacks) 안에서만**
   provider 를 바꿀 수 있습니다: 이그레스 판정 기본값이 manifest 에서 도출되므로 그 밖의 provider 는
   프록시가 거부합니다. 다른 provider 로 바꾸려면 manifest 의 `fallbacks` 에 먼저 선언합니다
-- 그래프에 없는 노드 id 를 가리키는 `model_overrides` 는 `400 VAL_002` 입니다
+- 그래프에 없는 노드 id 를 가리키는 `model_overrides` 나 잘못된 override 본문(provider 만 적음,
+  모르는 키)은 곧바로 `400 VAL_002` 입니다
 - 이그레스 baseline 은 fallback provider 의 호스트를 자동 포함합니다 (manifest 선언이 곧 기본 권한)
 
 `malkuth validate` 와 `malkuth deploy` 출력의 `models` 항목이 노드별로 해석된 모델 계층을
