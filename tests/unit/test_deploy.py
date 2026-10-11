@@ -1,8 +1,8 @@
 """Unit tests for deploy-time contract validation.
 
-**하나라도 실패하면 컨테이너를 기동하지 않는다.** 8항목 각각의 실패 케이스와,
-여러 항목이 동시에 실패할 때 전부 보고되는지를 검증한다 — 첫 실패에서 멈추면
-운영자가 고칠 때마다 처음부터 다시 돌려야 한다.
+**하나라도 실패하면 컨테이너를 기동하지 않는다.** 10항목 (01 의 8 + 노드 템플릿 +
+모델 provider) 각각의 실패 케이스와, 여러 항목이 동시에 실패할 때 전부 보고되는지를
+검증한다 — 첫 실패에서 멈추면 운영자가 고칠 때마다 처음부터 다시 돌려야 한다.
 """
 
 from __future__ import annotations
@@ -503,7 +503,7 @@ def test_raise_if_failed_is_silent_when_valid():
     reason="reference artifacts are not present on this branch",
 )
 def test_reference_deployment_passes_every_check():
-    """실제 배포되는 아티팩트가 8항목을 통과해야 한다 — 검증기가 만든 예제만
+    """실제 배포되는 아티팩트가 10항목을 통과해야 한다 — 검증기가 만든 예제만
     통과하면 아무것도 증명하지 못한다."""
     import yaml
 
@@ -734,6 +734,18 @@ def test_a_node_override_to_a_declared_fallback_provider_passes():
     planner = with_fallback("planner", {"provider": "openai-compat", "name": "gpt-5-mini"})
 
     assert run([topology], manifests={"planner": planner}).ok
+
+
+@pytest.mark.usefixtures("openai_known")
+def test_a_provider_the_manifest_already_reported_is_not_reported_again_per_node():
+    """노드가 manifest 선언 provider 로 바꾸면 같은 문제는 manifest 검사 한 건으로 충분하다."""
+    topology = make_topology(["planner"]).with_model_overrides({"planner": _override(OPENAI)})
+    planner = with_fallback("planner", {"provider": "openai-compat", "name": "gpt-5-mini"})
+
+    report = run([topology], manifests={"planner": planner}, providers=frozenset({"anthropic"}))
+
+    [finding] = model_findings(report)
+    assert finding.details == {"agent": "planner", "provider": "openai-compat"}
 
 
 def test_a_node_override_that_does_not_resolve_is_reported():

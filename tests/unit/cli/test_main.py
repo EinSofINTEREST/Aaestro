@@ -14,6 +14,7 @@ import yaml
 from malkuth.cli.main import (
     EXIT_FAILED,
     EXIT_OK,
+    EXIT_USAGE,
     build_parser,
     main,
     validate_root,
@@ -315,9 +316,59 @@ def test_check_rejects_a_non_mapping_state(tmp_path, capsys):
 
 
 def test_repository_validates_end_to_end(capsys):
-    """저장소 전체가 8항목을 통과해야 한다 — CLI 가 만든 예제만 통과하면
+    """저장소 전체가 10항목을 통과해야 한다 — CLI 가 만든 예제만 통과하면
     아무것도 증명하지 못한다."""
     assert run_cli(["--root", str(REPO_ROOT), "validate"]) == EXIT_OK
+
+
+# --- --providers ----------------------------------------------------------------
+
+
+@pytest.fixture
+def with_openai_fallback(workspace: Path, monkeypatch) -> Path:
+    """프록시 upstream 이 아닐 수 있는 provider 로 넘어가는 fallback 을 가진 저장소."""
+    from malkuth.access import baselines
+
+    monkeypatch.setitem(baselines.PROVIDER_HOSTS, "openai-compat", "api.openai.com")
+    manifest = workspace / "agents" / "solo" / "manifest.yaml"
+    document = yaml.safe_load(manifest.read_text())
+    document["spec"]["model"]["fallbacks"] = [
+        {"provider": "openai-compat", "name": "gpt-5", "on": ["server_error"]}
+    ]
+    manifest.write_text(yaml.safe_dump(document), encoding="utf-8")
+    return workspace
+
+
+@pytest.mark.parametrize("command", ["validate", "deploy"])
+def test_providers_rejects_a_fallback_the_proxy_does_not_terminate(
+    with_openai_fallback, capsys, command
+):
+    extra = (
+        [] if command == "validate" else [str(with_openai_fallback / "graphs" / "solo-graph.yaml")]
+    )
+    argv = ["--root", str(with_openai_fallback), command, *extra]
+
+    assert run_cli([*argv, "--providers", "anthropic"]) == EXIT_FAILED
+    assert "not an egress proxy upstream" in capsys.readouterr().out
+    assert run_cli([*argv, "--providers", "anthropic,openai-compat"]) == EXIT_OK
+    # 플래그가 없으면 프록시도 없다 — upstream 판정을 하지 않는다
+    assert run_cli(argv) == EXIT_OK
+
+
+def test_run_applies_the_same_providers_check(with_openai_fallback, capsys):
+    graph = str(with_openai_fallback / "graphs" / "solo-graph.yaml")
+
+    code = run_cli(["--root", str(with_openai_fallback), "run", graph, "--providers", "anthropic"])
+
+    assert code == EXIT_FAILED
+    assert "not an egress proxy upstream" in capsys.readouterr().out
+
+
+def test_an_empty_providers_list_is_a_usage_error():
+    with pytest.raises(SystemExit) as exc_info:
+        build_parser().parse_args(["validate", "--providers", " , "])
+
+    assert exc_info.value.code == EXIT_USAGE
 
 
 # --- run ----------------------------------------------------------------------

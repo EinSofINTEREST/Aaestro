@@ -11,6 +11,7 @@ import yaml
 from malkuth.authoring import Author
 from malkuth.catalog import Catalog
 from malkuth.core.errors import ErrorCode
+from malkuth.core.manifest import ModelOverride
 from malkuth.orchestrator.control import create_app
 from malkuth.orchestrator.runstore import InMemoryRunStore
 
@@ -261,3 +262,22 @@ async def test_files_left_by_a_person_are_reported_not_deleted(api, workspace):
     assert response.status_code == 200
     assert response.json() == {"retained": ["notes.md"]}
     assert (directory / "notes.md").exists()
+
+
+# --- 노드 model override 의 왕복 ----------------------------------------------------
+
+
+async def test_a_graph_read_back_carries_only_the_model_keys_it_set(api):
+    """GET 응답이 미설정 키를 null 로 내면 "아래 계층 지우기" 가 된다.
+
+    그 문서를 되돌려 쓰면 null provider 로 거절된다.
+    """
+    document = graph_doc("pipeline")
+    document["spec"]["nodes"][0]["model"] = {"max_tokens": 1024, "circuit": None}
+    assert (await api.put("/v1/graphs/pipeline", json=document)).status_code == 200
+
+    body = (await api.get("/v1/graphs/pipeline")).json()
+
+    returned = body["spec"]["nodes"][0]["model"]
+    assert returned == {"max_tokens": 1024, "circuit": None}
+    assert ModelOverride.model_validate(returned).model_fields_set == {"max_tokens", "circuit"}

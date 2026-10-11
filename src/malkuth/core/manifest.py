@@ -13,7 +13,15 @@ from pathlib import PurePosixPath
 from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 RESERVED_GLOBAL_GROUP = "global"
 DEFAULT_SIDECAR_PORT = 8000
@@ -315,6 +323,20 @@ class ModelOverride(BaseModel):
         if "provider" in self.model_fields_set and "name" not in self.model_fields_set:
             raise ValueError("model override that sets provider must also set name")
         return self
+
+    @model_serializer(mode="wrap")
+    def _dump_set_keys(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        """설정한 키만, null 이어도 내보낸다.
+
+        키의 유무가 곧 의미다 — 미설정 키를 null 로 내보내면 "아래 계층 지우기" 가 되고,
+        설정한 null 을 ``exclude_none`` 이 지우면 지우기 선언이 사라진다.
+        """
+        dumped = handler(self)
+        return {
+            key: dumped.get(key)
+            for key in type(self).model_fields
+            if key in self.model_fields_set and (key in dumped or getattr(self, key) is None)
+        }
 
     def merged(self, other: ModelOverride) -> ModelOverride:
         """Layer ``other`` on top of this override.

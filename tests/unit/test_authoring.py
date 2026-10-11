@@ -13,6 +13,7 @@ from malkuth.core.errors import ErrorCode, MalkuthError
 from malkuth.core.manifest import AgentManifest
 from malkuth.materials import InMemoryMaterialStore
 from malkuth.orchestrator.topology import GraphTopology
+from tests.fixtures.topologies import mission_dict
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -722,3 +723,58 @@ def test_validate_accepts_the_same_fallback_without_a_proxy_or_when_it_is_termin
 
     assert no_proxy.ok
     assert terminated.ok
+
+
+# --- 노드 model override 의 null 은 지우기 선언이다 --------------------------------------
+
+
+def test_a_node_override_that_clears_with_null_survives_saving(author, workspace):
+    """``exclude_none`` 덤프가 설정한 null 을 지우면 "아래 계층 지우기" 가 사라진다."""
+    document = graph("pipeline").model_dump(mode="json", by_alias=True)
+    document["spec"]["nodes"][0]["model"] = {"retry": None, "circuit": None, "max_tokens": None}
+    declared = GraphTopology.model_validate(document)
+
+    author.save_graph("pipeline", declared)
+
+    saved = Catalog.under(workspace).graph("pipeline").node("step").model
+    assert saved is not None
+    assert saved.model_fields_set == {"retry", "circuit", "max_tokens"}
+
+
+def test_the_serialized_override_keeps_exactly_the_keys_it_set():
+    from malkuth.authoring import _serialize
+
+    document = mission_dict()
+    document["spec"]["nodes"][0]["model"] = {"retry": None, "circuit": None, "max_tokens": None}
+    declared = GraphTopology.model_validate(document)
+
+    again = GraphTopology.model_validate(yaml.safe_load(_serialize(declared)))
+
+    assert again.node("planner").model.model_fields_set == {"retry", "circuit", "max_tokens"}
+    assert again.node("researcher").model is None
+
+
+def test_a_serialization_that_drops_override_keys_is_caught_before_writing(
+    author, workspace, monkeypatch
+):
+    """값만 비교하면 null 이 빠진 override 도 같아 보인다 — 키 집합까지 대조해야 잡힌다."""
+    import malkuth.authoring as authoring
+
+    original = authoring._serialize
+
+    def dropping_nulls(model):
+        document = yaml.safe_load(original(model))
+        for node in document["spec"]["nodes"]:
+            if "model" in node:
+                node["model"] = {k: v for k, v in node["model"].items() if v is not None}
+        return yaml.safe_dump(document, sort_keys=False)
+
+    monkeypatch.setattr(authoring, "_serialize", dropping_nulls)
+    document = graph("pipeline").model_dump(mode="json", by_alias=True)
+    document["spec"]["nodes"][0]["model"] = {"max_tokens": 1, "circuit": None}
+
+    with pytest.raises(MalkuthError) as exc_info:
+        author.save_graph("pipeline", GraphTopology.model_validate(document))
+
+    assert exc_info.value.code == ErrorCode.INTERNAL_001
+    assert not (workspace / "graphs" / "pipeline.yaml").exists()

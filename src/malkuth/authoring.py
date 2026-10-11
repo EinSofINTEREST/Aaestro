@@ -54,13 +54,23 @@ def _serialize(model: BaseModel) -> str:
 def _round_trips[T: BaseModel](model: T, kind: type[T]) -> None:
     """쓰기 **전에** 직렬화 → 파싱이 같은 모델을 내는지 본다 — 안 되면 파일이 생기지 않는다."""
     again = kind.model_validate(yaml.safe_load(_serialize(model)))
-    if again != model:
+    if again != model or _override_keys(again) != _override_keys(model):
         raise MalkuthError(
             category=ErrorCategory.INTERNAL,
             code=ErrorCode.INTERNAL_001,
             message="declaration does not survive a serialization round-trip",
             details={"kind": kind.__name__},
         )
+
+
+def _override_keys(model: BaseModel) -> list[frozenset[str] | None]:
+    """노드 model override 가 설정한 키 — 같은 값이라도 키의 유무가 다르면 다른 선언이다."""
+    if not isinstance(model, GraphTopology):
+        return []
+    return [
+        frozenset(node.model.model_fields_set) if node.model is not None else None
+        for node in model.spec.nodes
+    ]
 
 
 def _rejected(message: str, **details: Any) -> MalkuthError:

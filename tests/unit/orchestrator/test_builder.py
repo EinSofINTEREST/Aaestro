@@ -181,6 +181,38 @@ async def test_without_a_resolver_the_task_carries_no_model():
     assert [t.config.model for t in runtime.tasks] == [None, None]
 
 
+async def test_a_model_that_does_not_resolve_fails_the_node_as_graph_002():
+    """계층을 합친 결과가 모델이 아니면 pydantic 오류가 아니라 typed 노드 실패다."""
+    runtime = FakeRuntime().script("planner", output={"plan": "P"})
+
+    def broken(node: Any) -> ModelConfig:
+        return ModelConfig.model_validate({"provider": "anthropic", "max_tokens": -1})
+
+    with pytest.raises(MalkuthError) as exc_info:
+        await build_graph(linear_topology(), runtime, models=broken).ainvoke({"query": "q"})
+
+    assert exc_info.value.code == ErrorCode.GRAPH_002
+    assert exc_info.value.category is ErrorCategory.GRAPH
+    assert exc_info.value.retryable is False
+    assert exc_info.value.details["node_id"] == "planner"
+    assert exc_info.value.details["reason"]
+    assert runtime.tasks == []
+
+
+async def test_a_typed_resolver_error_passes_through_unchanged():
+    runtime = FakeRuntime().script("planner", output={"plan": "P"})
+
+    def missing(node: Any) -> ModelConfig:
+        raise MalkuthError(
+            category=ErrorCategory.NOT_FOUND, code=ErrorCode.NF_001, message="agent not found"
+        )
+
+    with pytest.raises(MalkuthError) as exc_info:
+        await build_graph(linear_topology(), runtime, models=missing).ainvoke({"query": "q"})
+
+    assert exc_info.value.code == ErrorCode.NF_001
+
+
 # --- 조건부 라우팅 ----------------------------------------------------------
 
 

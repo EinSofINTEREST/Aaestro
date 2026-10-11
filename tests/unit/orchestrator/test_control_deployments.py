@@ -163,6 +163,18 @@ async def test_a_bad_body_is_400_val_002(api):
     assert response.json()["error"]["code"] == ErrorCode.VAL_002
 
 
+async def test_a_misspelled_key_is_refused_rather_than_ignored(api):
+    """모르는 키를 무시하면 override 없이 배포된다 — 오타는 거절해야 드러난다."""
+    response = await api.post(
+        "/v1/deployments", json={"graph": "g", "model_override": {"step": {"name": "m"}}}
+    )
+
+    assert response.status_code == 400
+    error = response.json()["error"]
+    assert error["code"] == ErrorCode.VAL_002
+    assert [e["field"] for e in error["details"]["errors"]] == ["model_override"]
+
+
 async def test_list_and_get(api):
     created = (await api.post("/v1/deployments", json={"graph": "g"})).json()
 

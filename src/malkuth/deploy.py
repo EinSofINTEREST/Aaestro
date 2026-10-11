@@ -221,6 +221,8 @@ class DeployValidator:
                 )
         return findings
 
+    # --- 9. 노드 템플릿 · 입력 계약 -------------------------------------------
+
     def _check_node_templates(self, topology: GraphTopology) -> list[Finding]:
         """노드가 promptset 계약을 만족하는지 — 04 호환성 규칙 3 과 입력 계약.
 
@@ -580,7 +582,8 @@ class DeployValidator:
             # 이그레스 baseline 은 manifest 에서만 도출된다 — manifest 밖 provider 로 바꾸면
             # 배포는 되지만 프록시가 그 호출을 거부해 run 에서 조용히 실패한다
             declared = EgressBaseline.declared(manifest)
-            for provider in sorted(resolved.providers()):
+            # manifest 가 선언한 provider 는 manifest 검사가 이미 봤다 — 같은 문제를 두 번 내지 않게
+            for provider in sorted(resolved.providers() - manifest.spec.model.providers()):
                 problem = self._provider_problem(provider)
                 if problem is None and PROVIDER_HOSTS[provider] not in declared:
                     problem = (

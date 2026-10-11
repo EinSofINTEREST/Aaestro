@@ -54,6 +54,7 @@ def validate_root(
     topologies: Sequence[GraphTopology],
     *,
     a2a_port_range: tuple[int, int] | None = None,
+    providers: frozenset[str] | None = None,
 ) -> ValidationReport:
     """Validate topologies against the repository's declarations.
 
@@ -63,9 +64,8 @@ def validate_root(
     내리도록 한 곳에 모읍니다 — 흩어지면 한 명령만 통과하는 상태가 생깁니다.
     """
     # 조립은 Author.validate 한 곳 — CLI 는 지목한 그래프만 판정한다 (with_saved_graphs=False)
-    return Author(catalog=Catalog.under(root), a2a_port_range=a2a_port_range).validate(
-        graphs=topologies, with_saved_graphs=False
-    )
+    author = Author(catalog=Catalog.under(root), a2a_port_range=a2a_port_range, providers=providers)
+    return author.validate(graphs=topologies, with_saved_graphs=False)
 
 
 def node_models(catalog: Catalog, topologies: Sequence[GraphTopology]) -> list[dict[str, Any]]:
@@ -146,7 +146,9 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     catalog = Catalog.under(root)
     manifests = catalog.agents().items
 
-    report = validate_root(root, [topology], a2a_port_range=args.a2a_port_range)
+    report = validate_root(
+        root, [topology], a2a_port_range=args.a2a_port_range, providers=args.providers
+    )
 
     emit(
         {
@@ -174,7 +176,9 @@ def cmd_validate(args: argparse.Namespace) -> int:
         for path in sorted((root / "graphs").glob("*.yaml"))
     ]
 
-    report = validate_root(root, topologies, a2a_port_range=args.a2a_port_range)
+    report = validate_root(
+        root, topologies, a2a_port_range=args.a2a_port_range, providers=args.providers
+    )
 
     emit(
         {
@@ -321,7 +325,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     root = Path(args.root)
     topology = GraphTopology.model_validate(load_yaml(Path(args.graph)))
 
-    report = validate_root(root, [topology])
+    report = validate_root(root, [topology], providers=args.providers)
     if not report.ok:
         # 검증에 실패한 그래프를 굴리면 노드 실행 중에야 실패한다
         emit(
@@ -516,6 +520,15 @@ def port_range(raw: str) -> tuple[int, int]:
     return int(low), int(high)
 
 
+def provider_names(raw: str) -> frozenset[str]:
+    """Parse a comma-separated list of egress proxy upstream names."""
+    names = frozenset(part.strip() for part in raw.split(",") if part.strip())
+    if not names:
+        # 빈 목록은 "프록시 없음" 이 아니라 "모든 provider 거부" 가 된다 — 실수로 보고 거절
+        raise argparse.ArgumentTypeError("provider list must not be empty")
+    return names
+
+
 def _control_client(args: argparse.Namespace) -> Any:
     """이 명령이 말할 Control Plane — 주소는 플래그 또는 기본값."""
     from malkuth.cli.control import ControlClient
@@ -701,6 +714,16 @@ def _build_summary(record: dict[str, Any]) -> dict[str, Any]:
     return summary
 
 
+def _add_providers(command: argparse.ArgumentParser) -> None:
+    # deploy · validate · run 이 같은 입력으로 같은 판정을 내리도록 세 곳에 같은 플래그
+    command.add_argument(
+        "--providers",
+        type=provider_names,
+        default=None,
+        help="egress proxy upstream names, comma-separated (default: no proxy)",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the CLI argument parser.
 
@@ -714,10 +737,12 @@ def build_parser() -> argparse.ArgumentParser:
     deploy = subcommands.add_parser("deploy", help="validate a graph before deploying")
     deploy.add_argument("graph", help="path to the graph topology yaml")
     deploy.add_argument("--a2a-port-range", type=port_range, default=None, dest="a2a_port_range")
+    _add_providers(deploy)
     deploy.set_defaults(handler=cmd_deploy)
 
     validate = subcommands.add_parser("validate", help="validate every graph")
     validate.add_argument("--a2a-port-range", type=port_range, default=None, dest="a2a_port_range")
+    _add_providers(validate)
     validate.set_defaults(handler=cmd_validate)
 
     status = subcommands.add_parser("status", help="summarise declared artifacts")
@@ -752,6 +777,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--poll", type=float, default=1.0, dest="poll_s")
     run.add_argument("--input", default=None, help="initial state as json")
     run.add_argument("--run-id", default=None, dest="run_id")
+    _add_providers(run)
     run.add_argument(
         "--checkpointer",
         default=None,

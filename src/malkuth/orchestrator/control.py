@@ -507,6 +507,9 @@ def _deployment_view(record: DeploymentRecord) -> dict[str, Any]:
 
 
 class DeployRequest(BaseModel):
+    # 모르는 키(``model_override`` 오타)를 무시하면 override 없이 조용히 배포된다
+    model_config = ConfigDict(extra="forbid")
+
     graph: str
     model_overrides: dict[str, ModelOverride] = Field(default_factory=dict)
     """노드 id → 부분 모델 선언. 모르는 노드 id 는 배포가 ``VAL_002`` 로 거절한다."""
@@ -539,6 +542,9 @@ def _mount_deployments(api: APIRouter, deployments: DeploymentManager) -> None:
 
 
 class RunSubmission(BaseModel):
+    # DeployRequest 와 같은 이유 — 오타 난 키가 조용히 빠진 채 run 이 시작되지 않게
+    model_config = ConfigDict(extra="forbid")
+
     deployment_id: str
     input: dict[str, Any] = Field(default_factory=dict)
     mode: str | None = None

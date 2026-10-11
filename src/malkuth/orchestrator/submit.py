@@ -409,9 +409,8 @@ class RunSubmitter:
         Raises:
             MalkuthError: STORAGE/``STOR_002`` if no iteration left a checkpoint.
         """
-        graph = build_graph(
-            topology, self.runtime, checkpointer=self.checkpointer, models=self.models
-        )
+        # state 만 읽고 노드를 실행하지 않는다 — 모델 해석기를 넘겨도 쓰이지 않는다
+        graph = build_graph(topology, self.runtime, checkpointer=self.checkpointer)
         for iteration in range(previous.iteration - 1, -1, -1):
             for generation in run_generations(previous.run_id):
                 config = _thread_config(iteration_thread(generation, iteration))

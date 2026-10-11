@@ -20,6 +20,7 @@ import structlog
 from langgraph.graph import END as LG_END
 from langgraph.graph import START as LG_START
 from langgraph.graph import StateGraph
+from pydantic import ValidationError
 
 from malkuth.core.agent import (
     CONTROL_OVERHEAD_S,
@@ -398,10 +399,26 @@ class GraphBuilder:
             input=extract_input(node, state, schema=self._schema),
             config=TaskConfig(
                 timeout_s=node.timeout_s or self._node_timeout_s,
-                model=self._models(node) if self._models is not None else None,
+                model=self._resolve_model(node),
             ),
             trace=TraceContext(trace_id=trace_id, graph=self._topology.name),
         )
+
+    def _resolve_model(self, node: NodeSpec) -> ModelConfig | None:
+        """노드의 실효 모델을 해석한다 — 계층을 합친 결과가 모델이 아니면 GRAPH_002."""
+        if self._models is None:
+            return None
+        try:
+            return self._models(node)
+        except ValidationError as err:
+            # 계층 합성의 실패는 노드 실행 실패다 — pydantic 오류가 run 을 날것으로 터뜨리지 않게
+            raise _graph_error(
+                ErrorCode.GRAPH_002,
+                "node model does not resolve to a valid model",
+                graph=self._topology.name,
+                node_id=node.id,
+                reason=err.errors()[0]["msg"],
+            ) from err
 
 
 def build_graph(
