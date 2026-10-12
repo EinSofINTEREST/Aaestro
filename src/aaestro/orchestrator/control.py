@@ -573,6 +573,8 @@ def _build_view(record: BuildRecord) -> dict[str, Any]:
         "version": record.version,
         "status": record.status,
         "image": record.image,
+        # 게이트와 같은 함수 — UI 가 기록의 태그와 대조할 기준
+        "expected_image": image_tag(record.agent, record.version),
         "error": record.error,
         "log": record.log,
         "updated_at": record.updated_at,
@@ -606,6 +608,7 @@ def _mount_images(api: APIRouter, builder: ImageBuilder) -> None:
                 "version": version,
                 "status": None,
                 "image": image_tag(name, version),
+                "expected_image": image_tag(name, version),
                 "needs_build": builder.needs_build(name, version),
                 "error": None,
                 "log": "",
