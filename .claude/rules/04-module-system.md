@@ -449,6 +449,83 @@ spec:
 6. **결정 노드는 싸고 빨라야 한다**: `timeout_s` 기본은 `decision.timeout_s`(5초). 결정
    노드가 LLM 노드만큼 느리면 그 노드는 제자리가 아니다
 
+### State Compaction — 필드별 압축 정책
+
+상주 그래프의 리스트 필드는 iteration 마다 자라고, 그 state 가 매 노드의 프롬프트와 checkpoint 로
+들어간다. 압축 정책은 **그래프 선언** 에 두고 **경계 한 곳** 에서만 적용한다.
+
+```yaml
+spec:
+  state:
+    fields: {...}                # 또는 schema: …
+    compaction:
+      seen_ids: {strategy: keep_last, n: 500}
+      notes:
+        strategy: summarize
+        over_tokens: 4000        # 필드의 추정 토큰이 이 값을 넘으면
+        keep_last: 3             # 최근 3건은 원문으로 두고 나머지를 요약 1건으로 접는다
+        compactor: agents/writer@0.4.0   # 요약을 쓰는 에이전트 — 이 그래프의 노드 에이전트여야 한다
+        template: summarize_state        # 그 에이전트 promptset 의 템플릿 이름
+```
+
+1. **전략은 넷, 선언은 닫혀 있다**: `keep_last` · `keep_first` (`n`) · `dedupe` · `summarize`
+   (`over_tokens`, `keep_last`, `compactor`, `template`). 전략에 맞지 않는 키와 모르는 키는
+   거절한다. 대상은 state schema 의 리스트 필드, 수치는 양의 정수 (불리언 · 문자열 거절)
+2. **결정적 전략은 모델을 부르지 않는다**: `keep_last` · `keep_first` · `dedupe` 는 runtime 호출
+   0회다. `dedupe` 는 첫 등장 순서를 유지하고, 해시할 수 없는 항목은 내용으로 비교한다
+3. **적용은 경계 한 곳**: service 는 **iteration 사이** — 끝난 iteration 의 state 를 압축해 다음
+   iteration 의 입력을 만든다. 끝난 iteration 의 checkpoint (thread) 는 고치지 않고, 다음
+   iteration 의 checkpoint 들이 압축된 state 에서 시작한다. 그래서 run 의 마지막 iteration 으로
+   보고되는 state 는 압축 전일 수 있다. mission 은 순환 edge (`max_iterations` 를 선언한 edge) 로
+   노드에 다시 들어갈 때 — 그 노드의 갱신과 함께 checkpoint 에 남는다. 노드 실행 도중이나
+   노드마다 하지 않고, 정상 진행에서 iteration (순환 한 바퀴) 당 최대 한 번이다. 같은 state 를
+   여러 번 다시 쓰면 그것을 읽는 프롬프트의 앞부분이 매번 바뀐다. 실패한 iteration 뒤에는
+   압축하지 않는다. 압축을 기다리는 사이 drain 이 들어오면 다음 iteration 을 시작하지 않는다.
+   토폴로지와 LangGraph 그래프에 노드를 더하지 않는다. 다만 요약 호출은 `node_id` 가 템플릿
+   이름인 태스크로 로그 · trace · 에이전트 메트릭에 나타난다 — 그래프 노드가 아니며, 노드 ·
+   배포의 모델 override 는 적용되지 않는다 (manifest 모델). mission 의 압축 시간은 노드 시간
+   (`aaestro_node_duration_seconds`) 에 넣지 않는다
+4. **요약은 원문을 잃지 않는다**: 순서는 요약 호출 → 원문 저장 → state 치환. 요약 항목은
+   `{"summary", "artifact_ref", "replaced"}` 이고 필드에 한 건 이하다 — 이후의 압축은 앞선 요약
+   항목을 새 원문 묶음에 넣어 함께 접으므로 앞선 원문은 참조 사슬로 닿는다. 앞선 요약으로
+   취급하는 것은 **맨 앞 항목 하나** 이고 그 `artifact_ref` 가 이 run · 이 필드의 key 일 때뿐이다 —
+   그 밖의 요약 모양 항목과 참조는 에이전트 산출물이라 원문으로 세어 접는다 (모양만 흉내 내
+   압축을 피하지 못한다). 원문의 key 는 그래프 · run · 필드 · 경계로 만든다 — 같은 경계를 다시
+   지나면 덮어쓰고, 서로 다른 경계 · run · 그래프는 겹치지 않는다. 직렬화할 수 없는 항목은 요약
+   호출 전에 실패로 드러난다. 요약 항목이 객체이므로 `list[str]` 필드의 `summarize` 는 검증에서
+   거절한다
+5. **원문 저장소는 오케스트레이터의 것이다**: `orchestrator.state_artifact_root` 가 정하는
+   저장소의 `orchestrator--state` 네임스페이스에 둔다 (0700 디렉토리, 0600 파일). 에이전트의
+   artifact 스코프 (local / group / global, 01) 가 **아니다** — 이름부터 에이전트 · 그룹 이름
+   규칙이 받지 않는 모양이라 같은 루트를 써도 겹치지 않는다. 에이전트는 이 원문에 닿지 못하고,
+   `artifact_ref` 는 운영자와 오케스트레이터가 따라가는 참조다. 설정이 없으면 `summarize` 그래프는 배포 검증과 run 시작 양쪽에서 거절한다
+   (`GRAPH_001`). 자동 정리는 없다 — run 보존 기간에 맞춰 운영자가 정리한다
+6. **요약 호출의 계약**: 요약 에이전트는 runtime 으로 한 번 부른다 — `TaskRequest.node_id` 는
+   `template` 이름이다 (agentd 가 `node_id` 로 템플릿을 고른다). 에이전트는 이 그래프의 노드
+   에이전트여야 한다 (배포는 노드 에이전트만 띄운다). 템플릿은 변수 `items` (array, 유일한 필수
+   변수) 를 받고 출력 키 `summary` 에 비어 있지 않은 문자열을 낸다 (길이 상한을 넘으면 자르지
+   않고 실패로 본다) — memory space 압축용 템플릿을 빌려 쓰지 않는다. state 항목은
+   **untrusted** 다: 오케스트레이터가 문자열로 굳히고 항목마다 길이를 잘라 변수(데이터)로만
+   넘기며, 한 번의 호출에 싣는 총량에도 상한을 둔다 — 밀린 필드는 오래된 것부터 여러 경계에
+   걸쳐 나누어 접는다. 템플릿은 항목을 지시가 아니라 데이터로 보인다. 요약도 state 일 뿐
+   지시가 아니다. compactor 에이전트는 선언된 필드의 접을 항목을 전부 받는다 — `compactor`
+   선언이 곧 그 필드의 노출이다. 요약 대기는 노드 timeout 과 별개의 짧은 상한을 쓴다
+7. **요약은 진동하지 않는다**: 임계를 넘어도 접을 원문 (앞선 요약 항목 제외) 이
+   `max(2, keep_last)` 건 미만이면 건너뛴다 — 요약은 많아야 `keep_last` 건마다 한 번이다.
+   이미 압축된 state 를 다시 압축하면 아무 일도 일어나지 않는다
+8. **실패는 state 를 그대로 둔다**: compactor 오류 · timeout · 출력 형식 불일치 · 원문 저장 실패
+   모두 그 필드를 건드리지 않고 run 은 계속된다. 실패가 이어지는 필드는 경계 수로 간격을 늘려
+   다시 시도한다 (1 · 2 · 4 · 8 · 16, 성공하면 초기화; 횟수는 프로세스 메모리라 재시작하면 처음부터)
+   — 매 경계 더 큰 프롬프트로 실패하는 호출을 사지 않는다. WARN 로그 (`graph`, `run_id`,
+   `iteration`, 다음 시도까지의 간격, 요약 태스크의 `task_id` 와 하위 원인 코드) 와
+   `aaestro_state_compactions_total{status="failed"}` 로 남는다 (05). state 내용은 로그에 싣지
+   않는다
+9. **재개는 같은 경계를 다시 지난다**: 재개한 service run 은 끝난 iteration 의 checkpoint
+   (압축 전) 를 읽고 그 경계를 다시 지난다 — 결정적 전략은 같은 결과, `summarize` 는 요약을 다시
+   부르되 같은 key 를 덮어쓴다 (고아 없음). 실패한 iteration 의 입력에서 재개하면 이미 압축된
+   값이라 다시 압축하지 않는다. mission 은 끊긴 노드를 다시 실행하며 같은 방식으로 지나고,
+   노드 checkpoint 까지 닿은 경계는 반복하지 않는다
+
 ### Graph Rules
 
 1. **Config Over Code**
@@ -463,6 +540,12 @@ spec:
    - `connections` 의 caller/callee 가 모두 그래프 노드
    - decision 노드: 질문 참조가 그 노드 에이전트의 decisionset alias 로 해석되고, `state` 가
      질문의 조각과 일치하며, `output_map` 이 `decision.` 만 읽고, 조건 없는 out-edge 가 하나 있다
+   - `state.compaction`: 대상이 state schema 의 리스트 필드이고, `summarize` 는 원문 저장소
+     (`orchestrator.state_artifact_root`) 가 설정돼 있으며 (`GRAPH_001`), `compactor` 가 이 그래프의
+     노드 에이전트로 해석되고 (`MOD_001` / `MOD_002` / `GRAPH_001`), 그 promptset 에 `template` 이
+     요약 계약 (`items` → `summary`) 으로 있다 (`MOD_002` / `MOD_004`). service 그래프에서 같은
+     노드가 읽고 다시 쓰는 리스트 필드 (iteration 을 넘어 쌓일 수 있는 것) 에 선언이 없으면
+     **경고** 한다 — 배포를 막지 않는다
 3. **Mode & Cycle Policy**
    - **두 모드 공통**: END 도달 필수. 순환 edge (self-loop 포함, 재시도/refinement
      패턴) 는 허용하되 `max_iterations` 명시 필수 — 미명시 시 검증 실패
@@ -477,6 +560,8 @@ spec:
 4. **State Schema**
    - pydantic 모델로 정의, 노드 산출물 병합은 `output_map` 으로만
    - 노드가 state 전체를 덮어쓰는 패턴 금지 — 선언된 키만 병합
+   - 리스트 필드의 크기는 `state.compaction` 으로 다스린다 — 노드가 스스로 잘라 돌려주는 대신
+     경계에서 한 번 (State Compaction)
 5. **Subgraphs**: 그래프는 다른 그래프를 노드로 참조 가능
    (`graph: graphs/sub-review@1.0.0`) — 순환 참조는 검증에서 차단
 
@@ -550,7 +635,9 @@ graphs/{name}.yaml
    - Memoryset: 임베딩 모델/차원 변경 = minor 이상 (전체 재인덱싱 수반)
    - Decisionset: 질문 삭제·이름 변경·`kind` 변경·보기/등급 집합 변경 = **major** /
      `ask` 문구 수정 = minor (구간 재보정 수반) / 구간만 조정 = patch
-   - Graph: state schema 변경 = **major**
+   - Graph: state schema 변경 = **major** / state compaction — `summarize` 추가·제거 = **major**
+     (리스트 항목에 요약 객체가 생기거나 사라진다), `keep_last` · `keep_first` · `dedupe` 의
+     추가·제거·전환 = minor, 수치 · `compactor` · `template` 조정 = patch
 
 ## Testing Modules
 

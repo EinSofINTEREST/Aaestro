@@ -55,6 +55,7 @@ def validate_root(
     *,
     a2a_port_range: tuple[int, int] | None = None,
     providers: frozenset[str] | None = None,
+    state_artifacts: bool = False,
 ) -> ValidationReport:
     """Validate topologies against the repository's declarations.
 
@@ -64,7 +65,13 @@ def validate_root(
     내리도록 한 곳에 모읍니다 — 흩어지면 한 명령만 통과하는 상태가 생깁니다.
     """
     # 조립은 Author.validate 한 곳 — CLI 는 지목한 그래프만 판정한다 (with_saved_graphs=False)
-    author = Author(catalog=Catalog.under(root), a2a_port_range=a2a_port_range, providers=providers)
+    author = Author(
+        catalog=Catalog.under(root),
+        a2a_port_range=a2a_port_range,
+        providers=providers,
+        # state 압축(summarize)의 원문 저장소가 있는지 — 없으면 그런 그래프는 거절된다 (#371)
+        state_artifacts=state_artifacts,
+    )
     return author.validate(graphs=topologies, with_saved_graphs=False)
 
 
@@ -147,7 +154,11 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     manifests = catalog.agents().items
 
     report = validate_root(
-        root, [topology], a2a_port_range=args.a2a_port_range, providers=args.providers
+        root,
+        [topology],
+        a2a_port_range=args.a2a_port_range,
+        providers=args.providers,
+        state_artifacts=state_artifact_root_for(args) is not None,
     )
 
     emit(
@@ -156,6 +167,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
             "validated": len(manifests),
             "status": "ok" if report.ok else "failed",
             "failures": [f"{f.check}: {f.message}" for f in report.findings],
+            "warnings": [f"{f.check}: {f.message}" for f in report.warnings],
             "models": models_entry(catalog, [topology], as_json=args.json),
         },
         as_json=args.json,
@@ -177,7 +189,11 @@ def cmd_validate(args: argparse.Namespace) -> int:
     ]
 
     report = validate_root(
-        root, topologies, a2a_port_range=args.a2a_port_range, providers=args.providers
+        root,
+        topologies,
+        a2a_port_range=args.a2a_port_range,
+        providers=args.providers,
+        state_artifacts=state_artifact_root_for(args) is not None,
     )
 
     emit(
@@ -186,6 +202,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
             "agents": len(manifests),
             "status": "ok" if report.ok else "failed",
             "failures": [f"{f.check}: {f.message}" for f in report.findings],
+            "warnings": [f"{f.check}: {f.message}" for f in report.warnings],
             "models": models_entry(catalog, topologies, as_json=args.json),
         },
         as_json=args.json,
@@ -278,6 +295,25 @@ def orchestrator_config(args: argparse.Namespace) -> Any:
     ).orchestrator
 
 
+def state_artifact_root_for(args: argparse.Namespace) -> str | None:
+    """Where state-compaction originals go for this invocation.
+
+    state 압축 원문 저장소의 경로 — ``--state-artifact-root`` 가 있으면 그것, 없으면 설정의
+    ``orchestrator.state_artifact_root``. `deploy` · `validate` · `run` 이 **같은 답** 을 써야
+    한다: 한 명령만 설정을 읽으면 검증은 거절하는데 실행은 되는 상태가 생긴다.
+
+    설정 디렉토리 자체가 없으면 설정이 없는 것이다 — 선언만 검증하는 저장소에서 `validate`
+    가 설정 파일을 요구하지 않게 한다. 디렉토리가 있는데 읽지 못하면 그 오류는 그대로 낸다.
+    """
+    explicit: str | None = getattr(args, "state_artifact_root", None)
+    if explicit is not None:
+        return explicit
+    if not Path(getattr(args, "config_dir", DEFAULT_CONFIG_DIR)).is_dir():
+        return None
+    root: str | None = orchestrator_config(args).state_artifact_root
+    return root
+
+
 def run_manager_for(args: argparse.Namespace) -> Any:
     """Build the run manager, recording to the configured store when there is one.
 
@@ -309,6 +345,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     import asyncio
 
     from aaestro.orchestrator.checkpoint import close_checkpointer
+    from aaestro.orchestrator.state_artifacts import state_artifact_store
     from aaestro.orchestrator.submit import RunSubmitter
     from aaestro.runtime.nodes import ControlNodeRuntime
 
@@ -325,7 +362,13 @@ def cmd_run(args: argparse.Namespace) -> int:
     root = Path(args.root)
     topology = GraphTopology.model_validate(load_yaml(Path(args.graph)))
 
-    report = validate_root(root, [topology], providers=args.providers)
+    state_artifact_root = state_artifact_root_for(args)
+    report = validate_root(
+        root,
+        [topology],
+        providers=args.providers,
+        state_artifacts=state_artifact_root is not None,
+    )
     if not report.ok:
         # 검증에 실패한 그래프를 굴리면 노드 실행 중에야 실패한다
         emit(
@@ -350,6 +393,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         checkpointer=checkpointer,
         metrics=Metrics(),
         models=CatalogModels(Catalog.under(root)),
+        artifacts=state_artifact_store(state_artifact_root),
     )
 
     if getattr(args, "service", False):
@@ -724,6 +768,23 @@ def _add_providers(command: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_state_artifacts(command: argparse.ArgumentParser, *, with_config: bool = False) -> None:
+    # deploy · validate · run 이 같은 입력으로 같은 판정을 내리도록 세 곳에 같은 플래그
+    if with_config:
+        # run 은 이미 설정 인자를 갖는다 — 검증 명령도 같은 설정에서 저장소 경로를 읽는다
+        command.add_argument("--env", default=None, dest="environment")
+        command.add_argument("--config-dir", default=DEFAULT_CONFIG_DIR, dest="config_dir")
+    command.add_argument(
+        "--state-artifact-root",
+        default=None,
+        dest="state_artifact_root",
+        help=(
+            "directory keeping originals replaced by state compaction "
+            "(default: orchestrator.state_artifact_root from the config)"
+        ),
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the CLI argument parser.
 
@@ -738,11 +799,13 @@ def build_parser() -> argparse.ArgumentParser:
     deploy.add_argument("graph", help="path to the graph topology yaml")
     deploy.add_argument("--a2a-port-range", type=port_range, default=None, dest="a2a_port_range")
     _add_providers(deploy)
+    _add_state_artifacts(deploy, with_config=True)
     deploy.set_defaults(handler=cmd_deploy)
 
     validate = subcommands.add_parser("validate", help="validate every graph")
     validate.add_argument("--a2a-port-range", type=port_range, default=None, dest="a2a_port_range")
     _add_providers(validate)
+    _add_state_artifacts(validate, with_config=True)
     validate.set_defaults(handler=cmd_validate)
 
     status = subcommands.add_parser("status", help="summarise declared artifacts")
@@ -778,6 +841,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--input", default=None, help="initial state as json")
     run.add_argument("--run-id", default=None, dest="run_id")
     _add_providers(run)
+    _add_state_artifacts(run)
     run.add_argument(
         "--checkpointer",
         default=None,

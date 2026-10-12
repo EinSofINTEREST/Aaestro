@@ -359,6 +359,10 @@ def _report(report: ValidationReport) -> dict[str, Any]:
             {"check": f.check, "code": str(f.code), "message": f.message, **f.details}
             for f in report.findings
         ],
+        "warnings": [
+            {"check": f.check, "code": str(f.code), "message": f.message, **f.details}
+            for f in report.warnings
+        ],
     }
 
 

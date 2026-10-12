@@ -14,6 +14,10 @@
     {"title": "Service idle backoff", "type": "timeseries",
      "targets": [{"expr": "aaestro_service_idle_delay_seconds"}]},
     {"title": "Checkpoint operations", "type": "timeseries",
-     "targets": [{"expr": "sum by (operation, status) (rate(aaestro_checkpoint_operations_total[5m]))"}]}
+     "targets": [{"expr": "sum by (operation, status) (rate(aaestro_checkpoint_operations_total[5m]))"}]},
+    {"title": "State compactions", "type": "timeseries",
+     "targets": [{"expr": "sum by (graph, field, strategy, status) (rate(aaestro_state_compactions_total[5m]))"}]},
+    {"title": "State field size (estimated tokens)", "type": "timeseries",
+     "targets": [{"expr": "max by (graph, field) (aaestro_state_field_tokens)"}]}
   ]
 }

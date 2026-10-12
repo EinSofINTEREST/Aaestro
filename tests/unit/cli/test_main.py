@@ -611,3 +611,205 @@ def test_validate_fails_when_a_module_directory_has_no_document(workspace):
     report = validate_root(workspace, [])
 
     assert any(f.check == "catalog" and "ghost" in f.details["path"] for f in report.findings)
+
+
+# --- state 압축: 경고와 원문 저장소 (#371) ------------------------------------------
+
+
+def _service_graph(workspace: Path, compaction: dict) -> str:
+    """노드가 읽고 다시 쓰는 리스트 필드를 가진 상주 그래프 — 쌓이는 state 다."""
+    solo = workspace / "modules" / "promptsets" / "solo" / "0.1.0" / "promptset.yaml"
+    document = yaml.safe_load(solo.read_text())
+    document["spec"]["templates"]["solo"]["variables"] = {"notes": {"type": "array"}}
+    document["spec"]["templates"]["summarize_state"] = {
+        "file": "t.j2",
+        "output_keys": ["summary"],
+        "variables": {"items": {"type": "array", "required": True}},
+    }
+    solo.write_text(yaml.safe_dump(document), encoding="utf-8")
+    state: dict = {"fields": {"notes": {"type": "array"}}}
+    if compaction:
+        state["compaction"] = compaction
+    path = workspace / "graphs" / "solo-service.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "apiVersion": "aaestro/v1",
+                "kind": "Graph",
+                "metadata": {"name": "solo-service", "version": "1.0.0"},
+                "spec": {
+                    "mode": "service",
+                    "goal": "의견을 쌓는다",
+                    "service": {"idle": {"min_delay_s": 1, "max_delay_s": 2}},
+                    "state": state,
+                    "nodes": [
+                        {
+                            "id": "solo",
+                            "agent": "agents/solo@0.1.0",
+                            "input_map": {"notes": "state.notes"},
+                            "output_map": {"notes": "output.notes"},
+                        }
+                    ],
+                    "edges": [{"from": "START", "to": "solo"}, {"from": "solo", "to": "END"}],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    return str(path)
+
+
+SUMMARIZE_NOTES = {
+    "notes": {
+        "strategy": "summarize",
+        "over_tokens": 4000,
+        "keep_last": 3,
+        "compactor": "agents/solo@0.1.0",
+        "template": "summarize_state",
+    }
+}
+
+
+def test_deploy_prints_validation_warnings_without_failing(workspace, capsys):
+    graph = _service_graph(workspace, {})
+
+    assert run_cli(["--root", str(workspace), "deploy", graph]) == EXIT_OK
+
+    output = capsys.readouterr().out
+    assert "warnings:" in output
+    assert "state_compaction: service graph accumulates list state fields" in output
+
+
+def test_validate_json_carries_warnings(workspace, capsys):
+    import json
+
+    _service_graph(workspace, {})
+
+    assert run_cli(["--root", str(workspace), "--json", "validate"]) == EXIT_OK
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "ok"
+    assert len(payload["warnings"]) == 1
+    assert "notes" in payload["warnings"][0]
+
+
+def test_a_clean_workspace_reports_no_warnings(workspace, capsys):
+    import json
+
+    run_cli(["--root", str(workspace), "--json", "validate"])
+
+    assert json.loads(capsys.readouterr().out)["warnings"] == []
+
+
+def test_deploy_rejects_summarize_until_a_state_artifact_root_is_given(workspace, tmp_path, capsys):
+    graph = _service_graph(workspace, SUMMARIZE_NOTES)
+
+    assert run_cli(["--root", str(workspace), "deploy", graph]) == EXIT_FAILED
+    assert "orchestrator.state_artifact_root" in capsys.readouterr().out
+
+    root = str(tmp_path / "originals")
+    assert (
+        run_cli(["--root", str(workspace), "deploy", graph, "--state-artifact-root", root])
+        == EXIT_OK
+    )
+
+
+def test_run_keeps_compaction_originals_under_the_given_root(workspace, tmp_path, monkeypatch):
+    """`run` 이 저장소를 제출기에 주입하지 않으면 summarize 그래프는 CLI 에서 늘 거절된다."""
+    from aaestro.core.agent import TaskResult
+    from aaestro.runtime.nodes import ControlNodeRuntime
+
+    policy = {"notes": {**SUMMARIZE_NOTES["notes"], "over_tokens": 250, "keep_last": 1}}
+    graph = _service_graph(workspace, policy)
+    summarized = []
+
+    async def invoke(self, node, task):
+        if node.id == "summarize_state":
+            summarized.append(task.input["items"])
+            return TaskResult.completed(task, output={"summary": "short"})
+        notes = [*task.input.get("notes", []), "n" * 400]
+        return TaskResult.completed(task, output={"notes": notes})
+
+    monkeypatch.setattr(ControlNodeRuntime, "invoke", invoke)
+    root = tmp_path / "originals"
+
+    code = run_cli(
+        ["--root", str(workspace), "run", graph, "--service", "--iterations", "4"]
+        + ["--state-artifact-root", str(root)]
+    )
+
+    assert code == EXIT_OK
+    assert len(summarized) == 1
+    from aaestro.orchestrator.state_artifacts import STATE_ARTIFACT_SCOPE
+
+    stored = [path for path in (root / STATE_ARTIFACT_SCOPE).rglob("*") if path.is_file()]
+    assert len(stored) == 1
+
+
+def _config_dir(tmp_path: Path, body: str) -> str:
+    directory = tmp_path / "configs"
+    directory.mkdir()
+    (directory / "dev.yaml").write_text(body, encoding="utf-8")
+    return str(directory)
+
+
+@pytest.mark.parametrize("command", ["deploy", "validate"])
+def test_validation_reads_the_state_artifact_root_from_the_config(workspace, tmp_path, command):
+    """설정에 키가 있는데 "키를 설정하라" 며 거절하면 메시지가 거짓이다 — 진짜 프로세스로 본다."""
+    import os
+    import subprocess
+    import sys
+
+    graph = _service_graph(workspace, SUMMARIZE_NOTES)
+    configured = _config_dir(
+        tmp_path, f"orchestrator:\n  state_artifact_root: {tmp_path}/originals\n"
+    )
+    target = [graph] if command == "deploy" else []
+    environment = {k: v for k, v in os.environ.items() if not k.startswith("AAESTRO_")}
+
+    def run(*extra: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(  # noqa: S603 — 고정된 인자로 자기 인터프리터를 부른다
+            [
+                sys.executable,
+                "-m",
+                "aaestro.cli",
+                "--root",
+                str(workspace),
+                command,
+                *target,
+                *extra,
+            ],
+            capture_output=True,
+            text=True,
+            env=environment,
+            cwd=tmp_path / "elsewhere",
+            check=False,
+        )
+
+    (tmp_path / "elsewhere").mkdir()
+    # 설정 디렉토리가 없는 곳에서는 설정이 없는 것이다 — 거절하고 설정 키를 말한다
+    without = run()
+    with_config = run("--config-dir", configured)
+
+    assert without.returncode == EXIT_FAILED
+    assert "orchestrator.state_artifact_root" in without.stdout
+    assert with_config.returncode == EXIT_OK, with_config.stdout + with_config.stderr
+
+
+def test_the_three_commands_resolve_the_artifact_root_the_same_way(tmp_path):
+    """한 명령만 설정을 읽으면 검증은 거절하는데 실행은 되는 상태가 생긴다."""
+    from aaestro.cli.main import build_parser, state_artifact_root_for
+
+    configured = _config_dir(tmp_path, "orchestrator:\n  state_artifact_root: /from/config\n")
+    parser = build_parser()
+
+    for command in (["deploy", "g.yaml"], ["validate"], ["run", "g.yaml"]):
+        from_config = parser.parse_args([*command, "--config-dir", configured])
+        flagged = parser.parse_args([*from_config_args(command, configured), "/from/flag"])
+
+        assert state_artifact_root_for(from_config) == "/from/config"
+        assert state_artifact_root_for(flagged) == "/from/flag"
+
+
+def from_config_args(command: list[str], configured: str) -> list[str]:
+    return [*command, "--config-dir", configured, "--state-artifact-root"]

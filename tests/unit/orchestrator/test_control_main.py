@@ -648,6 +648,7 @@ def test_the_served_run_service_resolves_node_models_from_the_catalog(tmp_path):
             checkpointer="memory",
             checkpointer_url=None,
             node_timeout_s=30.0,
+            state_artifact_root=None,
         )
     )
 
@@ -656,6 +657,36 @@ def test_the_served_run_service_resolves_node_models_from_the_catalog(tmp_path):
     )
 
     assert runs.submitter.models == CatalogModels(catalog)
+    assert runs.submitter.artifacts is None
+
+
+def test_the_served_run_service_keeps_compaction_originals_under_the_configured_root(tmp_path):
+    """#371 — 설정 키가 저장소로 이어지지 않으면 summarize 그래프는 운영에서 늘 거절된다."""
+    from types import SimpleNamespace
+
+    from aaestro.catalog import Catalog
+
+    config = SimpleNamespace(
+        orchestrator=SimpleNamespace(
+            max_concurrent_runs=1,
+            max_service_runs=1,
+            checkpointer="memory",
+            checkpointer_url=None,
+            node_timeout_s=30.0,
+            state_artifact_root=str(tmp_path / "originals"),
+        )
+    )
+
+    runs = entrypoint._run_service(
+        config, Catalog.under(tmp_path), SimpleNamespace(launcher=None), store=SqliteRunStore()
+    )
+
+    store = runs.submitter.artifacts
+    assert store.root == tmp_path / "originals"
+    # 에이전트의 artifact 스코프(local/group/global)가 아닌 오케스트레이터 전용 네임스페이스
+    from aaestro.orchestrator.state_artifacts import STATE_ARTIFACT_SCOPE
+
+    assert store.scope == STATE_ARTIFACT_SCOPE
 
 
 # --- 프록시 upstream 대조 (#358) ---------------------------------------------------------

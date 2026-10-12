@@ -174,6 +174,10 @@
      `ServiceRunner` 가 소유한다 — 그래프가 스스로 순환하면 한 번의 실행이 끝나지 않아
      iteration 경계 자체가 성립하지 않는다
    - Iteration 마다 checkpoint — 프로세스/호스트 재시작 시 마지막 iteration 에서 재개
+   - 누적하는 리스트 state 는 그래프의 `state.compaction` 선언으로 **iteration 사이에서만**
+     압축한다 — 끝난 iteration 의 state 를 압축한 것이 다음 iteration 의 입력이고, 끝난
+     iteration 의 checkpoint 는 고치지 않는다
+     ([04-module-system.md](04-module-system.md) State Compaction)
    - **Idle 정책 필수**: 처리할 작업이 없으면 exponential backoff —
      busy-loop 로 모델 호출을 낭비하는 것 금지
    - 중단은 drain 방식 — 진행 중 iteration 완료 후 정지
@@ -674,7 +678,8 @@ Client → Control Plane → Orchestrator(StateGraph)
 6. **Checkpoint**: node 완료마다 state 저장 (실패 시 마지막 checkpoint 에서 재개)
 7. **Edge Evaluation**: 조건 함수 평가 → 다음 node 라우팅
 8. **Complete / Iterate**: mission 은 END 도달 → 결과 반환, run 기록 저장.
-   service 는 iteration checkpoint 후 다음 iteration 으로 순환 (idle 시 backoff)
+   service 는 iteration checkpoint 후 다음 iteration 으로 순환 (idle 시 backoff).
+   state 압축은 이 경계 (mission 은 순환 edge 로의 재진입) 에서만 일어난다
 
 ### Communication & Access Paths — 반드시 구분
 
@@ -718,6 +723,7 @@ orchestrator:
   max_concurrent_runs: 10     # mission run 동시 실행 상한
   max_service_runs: 5         # 상주(service) run 상한 — 장기 점유 슬롯 분리 관리
   node_timeout_s: 300
+  # state_artifact_root: ./var/state-artifacts   # state 압축(summarize) 원문 저장소 — 오케스트레이터 전용 (04)
   service_defaults:
     idle_min_delay_s: 30
     idle_max_delay_s: 600

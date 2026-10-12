@@ -17,6 +17,9 @@ orchestrator:
   max_concurrent_runs: 10
   max_service_runs: 5       # 상주 run 은 슬롯을 오래 점유하므로 별도 상한
   node_timeout_s: 300
+  # 그래프 state 압축(summarize)이 접은 원문을 두는 디렉토리 — 없으면 그런 그래프는 거절된다.
+  # 오케스트레이터 전용이고 자동 정리가 없다 (run 보존 기간에 맞춰 비운다)
+  # state_artifact_root: ./var/state-artifacts
   service_defaults:
     idle_min_delay_s: 30
     idle_max_delay_s: 600

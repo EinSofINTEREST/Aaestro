@@ -36,8 +36,10 @@ from aaestro.orchestrator.telemetry import OrchestratorTelemetry
 from aaestro.orchestrator.topology import (
     END,
     START,
+    GraphMode,
     GraphTopology,
     NodeSpec,
+    reentry_targets,
     resolve_condition,
 )
 from aaestro.resilience import retrying
@@ -50,6 +52,7 @@ if TYPE_CHECKING:
 
     from aaestro.core.manifest import ModelConfig
     from aaestro.observability.metrics import Metrics
+    from aaestro.orchestrator.compactor import StateCompactor
 
     # 노드 → 그 노드 태스크의 해석된 모델. None 이면 agentd 가 manifest 기본값을 쓴다
     ModelResolver = Callable[[NodeSpec], ModelConfig | None]
@@ -170,9 +173,17 @@ class GraphBuilder:
         retry_sleep: Callable[[float], Awaitable[None]] | None = None,
         control_overhead_s: float = CONTROL_OVERHEAD_S,
         models: ModelResolver | None = None,
+        compactor: StateCompactor | None = None,
     ) -> None:
         self._topology = topology
         self._models = models
+        self._compactor = compactor
+        # service 는 iteration 경계에서 러너가 압축한다 — 그래프 안에서 또 하면 경계가 둘이 된다
+        self._reentry_targets = (
+            reentry_targets(topology)
+            if compactor is not None and topology.mode is GraphMode.MISSION
+            else frozenset()
+        )
         self._control_overhead_s = control_overhead_s
         self._runtime = runtime
         self._schema = state_schema or resolve_graph_state(topology.spec.state, graph=topology.name)
@@ -204,7 +215,7 @@ class GraphBuilder:
         graph: StateGraph[Any, Any, Any, Any] = StateGraph(build_channel_schema(self._schema))
 
         for node in self._topology.spec.nodes:
-            graph.add_node(node.id, self._node_runner(node))
+            graph.add_node(node.id, self._compacting_on_reentry(node, self._node_runner(node)))
 
         self._wire_edges(graph)
         return graph.compile(checkpointer=checkpointer)
@@ -331,6 +342,36 @@ class GraphBuilder:
 
         return timed
 
+    def _compacting_on_reentry(self, node: NodeSpec, runner: Any) -> Any:
+        """순환 edge 로 다시 들어오는 노드의 러너 앞에 압축을 세운다 — 그런 노드가 아니면 그대로.
+
+        압축은 노드 러너 **밖** 이다: 노드 시간 측정 (``aaestro_node_duration_seconds``) 에
+        요약 호출이 섞이지 않는다. 결과는 노드의 갱신과 한 덩어리로 돌려준다 — 노드
+        checkpoint 와 함께 남아야 재개가 같은 압축을 다시 하지 않는다.
+        """
+        if node.id not in self._reentry_targets:
+            return runner
+
+        async def compact_then_run(state: dict[str, Any]) -> dict[str, Any]:
+            compacted = await self._compact_on_reentry(node, state)
+            update: dict[str, Any] = await runner({**state, **compacted})
+            # 노드가 같은 필드를 쓰면 노드 출력이 이긴다 — 노드는 압축된 값을 받아 만든 것이다
+            return {**compacted, **update}
+
+        return compact_then_run
+
+    async def _compact_on_reentry(self, node: NodeSpec, state: dict[str, Any]) -> dict[str, Any]:
+        """순환 edge 로 다시 들어온 노드 앞에서 state 를 한 번 압축한다.
+
+        첫 진입은 순환을 탄 것이 아니다 — 이미 한 번 돈 노드에 다시 들어올 때만 경계다.
+        """
+        from aaestro.orchestrator.compactor import Boundary
+
+        passes = (state.get(_ITERATION_KEY) or {}).get(node.id, 0)
+        if self._compactor is None or passes < 1:
+            return {}
+        return await self._compactor.compact(state, Boundary.on_reentry(state, node.id, passes))
+
     def _with_iteration(
         self, state: dict[str, Any], node_id: str, update: dict[str, Any]
     ) -> dict[str, Any]:
@@ -432,6 +473,7 @@ def build_graph(
     retry_sleep: Callable[[float], Awaitable[None]] | None = None,
     control_overhead_s: float = CONTROL_OVERHEAD_S,
     models: ModelResolver | None = None,
+    compactor: StateCompactor | None = None,
 ) -> Any:
     """Build a runnable graph from a topology.
 
@@ -450,6 +492,8 @@ def build_graph(
             결과가 돌아올 틈이다.
         models: Resolves each node's model into ``TaskConfig.model`` — 생략하면 모델을
             싣지 않아 agentd 가 manifest 기본값을 쓴다.
+        compactor: Compacts declared state fields when a mission re-enters a node
+            over a cycle edge — 선언이 없는 그래프는 None 입니다.
 
     Returns:
         The compiled graph.
@@ -463,5 +507,6 @@ def build_graph(
         metrics=metrics,
         control_overhead_s=control_overhead_s,
         models=models,
+        compactor=compactor,
     )
     return builder.build(checkpointer=checkpointer)

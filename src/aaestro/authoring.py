@@ -108,6 +108,8 @@ class Author:
             선언만 다루는 조립에서는 커스텀 이미지를 굽지 않기 때문이다.
         providers: Egress proxy upstream names (#358). None 이면 프록시가 없다 —
             모델 provider 는 알려진 논리 호스트인지만 본다.
+        state_artifacts: Whether a state-compaction artifact store is configured (#371).
+            없으면 `summarize` 압축을 선언한 그래프가 검증에서 거절된다.
     """
 
     catalog: Catalog
@@ -115,6 +117,7 @@ class Author:
     in_use: InUse | None = None
     materials: MaterialStore | None = None
     providers: frozenset[str] | None = None
+    state_artifacts: bool = False
 
     # --- 검증 ----------------------------------------------------------------
 
@@ -161,6 +164,7 @@ class Author:
             ),
             a2a_port_range=self.a2a_port_range,
             providers=self.providers,
+            state_artifacts=self.state_artifacts,
         )
         # 저장된 그래프의 문제는 저장된 그래프를 검증할 때만 — 그래프 하나를 지목한
         # CLI 검증이 무관한 깨진 그래프 때문에 실패하면 docstring 과 어긋난다.
@@ -183,7 +187,9 @@ class Author:
             for p in problems
             if p.path not in targets
         ]
-        return ValidationReport(findings=(*broken, *unloadable, *report.findings))
+        return ValidationReport(
+            findings=(*broken, *unloadable, *report.findings), warnings=report.warnings
+        )
 
     # --- 그래프 ---------------------------------------------------------------
 
