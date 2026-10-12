@@ -16,8 +16,8 @@
 ## Setup
 
 ```bash
-git clone https://github.com/EinSofINTEREST/Malkuth.git
-cd Malkuth
+git clone https://github.com/EinSofINTEREST/Aaestro.git
+cd Aaestro
 uv sync                 # install pinned dependencies
 ```
 

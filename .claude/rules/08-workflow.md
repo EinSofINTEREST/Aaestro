@@ -98,7 +98,7 @@ IssueTracker 의 보조 도구 중 일부는 아직 이식되지 않았다. 이�
 
 ## 규약 6 — Label · Issue Type
 
-매핑과 접두사 3분리는 공통 `03-conventions.md`. 본 repo (EinSofINTEREST/Malkuth) 의 Issue Type ID (2026-08-24 조회):
+매핑과 접두사 3분리는 공통 `03-conventions.md`. 본 repo (EinSofINTEREST/Aaestro) 의 Issue Type ID (2026-08-24 조회):
 
 | Issue Type | ID |
 |---|---|
@@ -110,7 +110,7 @@ IssueTracker 의 보조 도구 중 일부는 아직 이식되지 않았다. 이�
 
 ```bash
 # 이슈 생성 + Label
-gh issue create --repo EinSofINTEREST/Malkuth --title "[FEATURE] Docker 런타임 구현" --body "..." --label enhancement
+gh issue create --repo EinSofINTEREST/Aaestro --title "[FEATURE] Docker 런타임 구현" --body "..." --label enhancement
 
 # Issue Type 부여 (updateIssueIssueType mutation)
 ISSUE_ID=$(gh issue view <NUMBER> --json id --jq .id)

@@ -16,8 +16,8 @@
 ## 환경 구성
 
 ```bash
-git clone https://github.com/EinSofINTEREST/Malkuth.git
-cd Malkuth
+git clone https://github.com/EinSofINTEREST/Aaestro.git
+cd Aaestro
 uv sync                 # 고정된 의존성 설치
 ```
 
