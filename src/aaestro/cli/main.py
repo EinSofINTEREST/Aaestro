@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import ValidationError
 
 from aaestro.authoring import Author
-from aaestro.catalog import MODULE_TYPES, Catalog, load_yaml, parse_declaration
+from aaestro.catalog import MODULE_TYPES, Catalog, Problem, load_yaml, parse_declaration
 from aaestro.cli.control import CONTROL_TOKEN_ENV, DEFAULT_CONTROL_URL
 from aaestro.cli.integrity import (
     dangling_module_refs,
@@ -179,6 +179,18 @@ def _finding_line(finding: Any) -> str:
     return line
 
 
+def _problem_line(problem: Problem) -> str:
+    """One line for a declaration that could not be read: file, code, and which key.
+
+    읽지 못한 선언 한 줄 — 어느 파일이 왜, 스키마 위반이면 어느 키가 왜.
+    """
+    return (
+        f"{problem.path}: [{problem.code}] {problem.message}"
+        + (f"; {problem.reason}" if problem.reason else "")
+        + "".join(f"; {e['field']}: {e['problem']}" for e in problem.errors)
+    )
+
+
 def cmd_validate(args: argparse.Namespace) -> int:
     """Validate every graph in the repository.
 
@@ -187,25 +199,29 @@ def cmd_validate(args: argparse.Namespace) -> int:
     root = Path(args.root)
     catalog = Catalog.under(root)
     manifests = catalog.agents().items
-    topologies = [
-        parse_declaration(path, GraphTopology) for path in sorted((root / "graphs").glob("*.yaml"))
-    ]
+    # 깨진 그래프 하나가 나머지 검증을 막지 않는다 — 일괄 점검은 전부 보고 전부 말한다
+    graphs = catalog.graphs()
+    topologies = [graphs.items[name] for name in sorted(graphs.items)]
 
     report = validate_root(
         root, topologies, a2a_port_range=args.a2a_port_range, providers=args.providers
     )
+    ok = report.ok and not graphs.problems
 
     emit(
         {
             "graphs": len(topologies),
             "agents": len(manifests),
-            "status": "ok" if report.ok else "failed",
-            "failures": [_finding_line(f) for f in report.findings],
+            "status": "ok" if ok else "failed",
+            "failures": [
+                *(_problem_line(p) for p in graphs.problems),
+                *(_finding_line(f) for f in report.findings),
+            ],
             "models": models_entry(catalog, topologies, as_json=args.json),
         },
         as_json=args.json,
     )
-    return EXIT_OK if report.ok else EXIT_FAILED
+    return EXIT_OK if ok else EXIT_FAILED
 
 
 def cmd_status(args: argparse.Namespace) -> int:
@@ -232,12 +248,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         *(p for module_type in MODULE_TYPES for p in catalog.modules(module_type).problems),
     ]
     if problems:
-        payload["problems"] = [
-            f"{p.path}: [{p.code}] {p.message}"
-            + (f"; {p.reason}" if p.reason else "")
-            + "".join(f"; {e['field']}: {e['problem']}" for e in p.errors)
-            for p in problems
-        ]
+        payload["problems"] = [_problem_line(p) for p in problems]
     emit(payload, as_json=args.json)
     return EXIT_OK if not problems else EXIT_FAILED
 
