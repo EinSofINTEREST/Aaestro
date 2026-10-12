@@ -22,9 +22,10 @@ from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 from aaestro.core.manifest import NAME_PATTERN, AgentManifest, GroupManifest
 from aaestro.modules.promptset import PromptsetManifest
 from aaestro.modules.registry import ModuleRegistry, RegistryRoots
+from aaestro.modules.skillpack import SkillpackLoader
 from aaestro.orchestrator.topology import GraphTopology
 
-MODULE_TYPES: tuple[str, ...] = ("skillsets", "promptsets", "memorysets")
+MODULE_TYPES: tuple[str, ...] = ("skillsets", "promptsets", "memorysets", "skillpacks")
 """API 로 읽을 수 있는 모듈 종류 — v0.1 은 전부 읽기 전용이다 (04 Registry 2)."""
 
 
@@ -212,6 +213,8 @@ class ModuleListing:
 
     items: dict[str, tuple[str, ...]] = field(default_factory=dict)
     problems: tuple[Problem, ...] = ()
+    warnings: tuple[str, ...] = ()
+    """게시를 막지 않는 권고 (예: 권장 길이를 넘은 SKILL.md) — problems 와 섞지 않는다."""
 
 
 @dataclass(frozen=True)
@@ -332,18 +335,29 @@ class Catalog:
         """
         if module_type not in MODULE_TYPES:
             raise not_found("module type", module_type)
+        if getattr(self.roots, module_type, None) is None:
+            # 루트가 설정되지 않은 타입은 디렉토리가 없는 타입과 같다 — 게시된 것이 없다
+            return ModuleListing()
         type_root = self.roots.for_type(module_type)
         if not type_root.is_dir():
             return ModuleListing()
         registry = ModuleRegistry(self.roots)
         found: dict[str, list[str]] = {}
         problems: list[Problem] = []
+        warnings: list[str] = []
         for version_dir in sorted(type_root.glob("*/*")):
             if not version_dir.is_dir():
                 continue
             ref = f"{module_type}/{version_dir.parent.name}@{version_dir.name}"
             try:
-                registry.load_document(ref)
+                if module_type == "skillpacks":
+                    # skillpack 은 읽기만 해서 전부 검증된다 (코드를 실행하지 않는다) — 선언만
+                    # 맞고 담긴 skill 이 표준을 어긴 팩을 게시된 것으로 넘기지 않는다.
+                    # 로더가 선언 무결성 검사 (load_document) 를 포함한다
+                    loaded = SkillpackLoader(registry).load(ref)
+                    warnings.extend(f"{ref}: {warning}" for warning in loaded.warnings)
+                else:
+                    registry.load_document(ref)
             except AaestroError as err:
                 problems.append(Problem(path=str(version_dir), code=err.code, message=err.message))
                 continue
@@ -351,6 +365,7 @@ class Catalog:
         return ModuleListing(
             items={name: tuple(versions) for name, versions in found.items()},
             problems=tuple(problems),
+            warnings=tuple(warnings),
         )
 
     def promptset(self, ref: str) -> PromptsetManifest:
@@ -383,11 +398,30 @@ class Catalog:
             raise not_found("module type", module_type)
         ref = f"{module_type}/{name}@{version}"
         try:
+            if module_type == "skillpacks":
+                return self._skillpack(ref)
             _path, document = ModuleRegistry(self.roots).load_document(ref)
         except AaestroError as err:
             if err.code == ErrorCode.MOD_001:
                 raise not_found("module", ref) from err
             raise
+        return document
+
+    def _skillpack(self, ref: str) -> dict[str, Any]:
+        """skillpack 단건 — 목록과 **같은 검증**을 지난다.
+
+        선언만 읽어 돌려주면 목록은 "게시 안 됨" 인데 단건은 200 이 된다. 선언에 skill 목록이
+        없으므로 (디렉토리가 곧 목록) 검증한 결과에서 이름과 파일 수를 함께 싣는다.
+        `description` 같은 frontmatter 값은 싣지 않는다 — 받아 온 skill 의 내용은 신뢰하지
+        않는 입력이고, 그것을 어디에 어떻게 보일지는 #374 가 정한다.
+        """
+        loaded = SkillpackLoader(ModuleRegistry(self.roots)).load(ref)
+        document: dict[str, Any] = loaded.manifest.model_dump(
+            mode="json", by_alias=True, exclude_none=True
+        )
+        document["skills"] = [
+            {"name": skill.name, "files": len(skill.files)} for skill in loaded.skills
+        ]
         return document
 
 

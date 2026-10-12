@@ -126,16 +126,35 @@ control plane 의 `501` (더 납작한 레거시 모양).
 
 ### `GET /v1/modules/{module_type}`
 
-`module_type` 은 `skillsets`, `promptsets`, `memorysets` 중 하나. 게시된 모든 버전을
-나열한다:
+`module_type` 은 `skillsets`, `promptsets`, `memorysets`, `skillpacks` 중 하나. 게시된 모든
+버전을 나열한다:
 
 ```json
-{"items": [{"name": "planner", "versions": ["0.1.0", "0.2.0", "0.3.0"]}], "problems": []}
+{"items": [{"name": "planner", "versions": ["0.1.0", "0.2.0", "0.3.0"]}], "problems": [], "warnings": []}
 ```
+
+`problems` 는 게시되지 않은 버전이다 (각각 `path`, `code`, `message`). `warnings` 는 게시**된**
+버전에 대한 권고 문자열이다 — 지금은 스킬팩만 낸다 (500줄을 넘는 `SKILL.md`, 표준 밖
+frontmatter 키, `skills/` 아래의 낱개 파일). 스킬팩은
+여기서 전부 검증되므로, 선언은 맞고 담긴 skill 이 표준을 어긴 팩은 `problems` 에 나온다
+([modules.md](modules.md#스킬팩)).
 
 ### `GET /v1/modules/{module_type}/{name}/{version}`
 
 모듈 문서 하나. 버전은 정확히 지정한다 — `latest` 는 없다.
+
+스킬팩은 목록과 같은 검증을 지난다. 목록의 `problems` 에 나온 팩은 여기서도 `200` 이 아니라
+같은 `MOD_003` 에러 (`400`) 로 답한다. 스킬팩 선언에는 skill 목록이 없으므로 (디렉토리가 곧
+목록이다) 응답은 검증한 팩에서 목록을 더한다:
+
+```json
+{"apiVersion": "aaestro/v1", "kind": "Skillpack",
+ "metadata": {"name": "docs", "version": "1.0.0"},
+ "skills": [{"name": "changelog-entry", "files": 3}, {"name": "doc-review", "files": 3}]}
+```
+
+`skills` 에는 이름과 파일 수만 싣는다. `description` 같은 frontmatter 값은 skill 에 딸려 온
+내용이라 여기서 돌려주지 않는다.
 
 ## 저작
 

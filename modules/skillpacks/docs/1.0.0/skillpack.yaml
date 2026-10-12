@@ -1,0 +1,6 @@
+apiVersion: aaestro/v1
+kind: Skillpack
+metadata:
+  name: docs
+  version: 1.0.0
+  description: 문서 작업용 Agent Skills 묶음 — 변경 기록 작성과 문서 리뷰

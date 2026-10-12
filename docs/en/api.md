@@ -129,15 +129,36 @@ text. `404` (`NF_001`) when the name is unknown.
 
 ### `GET /v1/modules/{module_type}`
 
-`module_type` is `skillsets`, `promptsets`, or `memorysets`. Lists every published version:
+`module_type` is `skillsets`, `promptsets`, `memorysets`, or `skillpacks`. Lists every
+published version:
 
 ```json
-{"items": [{"name": "planner", "versions": ["0.1.0", "0.2.0", "0.3.0"]}], "problems": []}
+{"items": [{"name": "planner", "versions": ["0.1.0", "0.2.0", "0.3.0"]}], "problems": [], "warnings": []}
 ```
+
+`problems` are versions that are not published (each with `path`, `code`, `message`).
+`warnings` are advisory strings about versions that **are** published — today only skillpacks
+produce them (a `SKILL.md` over 500 lines, a frontmatter key outside the standard, a stray file
+under `skills/`). A skillpack is validated in full here, so a pack
+whose declaration is fine but whose skill breaks the standard appears under `problems`
+([modules.md](modules.md#skillpacks)).
 
 ### `GET /v1/modules/{module_type}/{name}/{version}`
 
 One module document. Versions are exact — there is no `latest`.
+
+A skillpack goes through the same validation as the listing, so a pack listed under `problems`
+answers here with the same `MOD_003` error (`400`) instead of `200`. Its declaration has no
+skill list — the directories are the list — so the response adds one from the validated pack:
+
+```json
+{"apiVersion": "aaestro/v1", "kind": "Skillpack",
+ "metadata": {"name": "docs", "version": "1.0.0"},
+ "skills": [{"name": "changelog-entry", "files": 3}, {"name": "doc-review", "files": 3}]}
+```
+
+`skills` carries names and file counts only. Frontmatter values such as `description` are
+content that came with the skill, and are not returned here.
 
 ## Authoring
 

@@ -35,7 +35,8 @@
 ├──────────────────────────────────────────────┤
 │  Module Layer                                │
 │  (Skillsets, Promptsets, Memorysets,         │
-│   Decisionsets, Graph modules, Registry)     │
+│   Decisionsets, Skillpacks, Graph modules,   │
+│   Registry)                                  │
 ├──────────────────────────────────────────────┤
 │  Storage & Observability Layer               │
 │  (Checkpoints, Memory store + index,         │
@@ -73,7 +74,8 @@
 
 5. **Module Layer**
    - Skillsets (tool bundles), promptsets (prompt bundles), memorysets (memory
-     policies), decisionsets (typed questions + bands), graph modules
+     policies), decisionsets (typed questions + bands), skillpacks (Agent Skills
+     directories, carried unmodified), graph modules
    - Versioned, independently deployable, swappable at agent restart
 
 6. **Storage & Observability Layer**
@@ -447,7 +449,7 @@ TypeSafe 의 Jev 이지만, 시스템은 Jev 가 아니라 **`DecisionModel` 계
   - Per-agent MCP client + server declaration
   - Per-agent A2A server + connection allowlist
 - **Module System**
-  - Skillset / promptset / memoryset / decisionset loaders + local registry
+  - Skillset / promptset / memoryset / decisionset / skillpack loaders + local registry
 - **Decision Models**
   - `DecisionModel` 계약 + Jev provider 어댑터 + 판정 구간
   - 회상 필터 · 입력 판별 · 그래프 decision 노드 · 도구 게이트 · compaction 중요도
@@ -505,6 +507,8 @@ aaestro/
 │       │   ├── promptset.py     # Promptset 스키마 + 로더 (Jinja2)
 │       │   ├── memoryset.py     # Memoryset 스키마 (정책 선언)
 │       │   ├── decisionset.py   # Decisionset 스키마 + 로더 (질문·구간)
+│       │   ├── skillpack.py     # Skillpack 스키마 + 로더 (Agent Skills 표준 검증 — 실행 없음)
+│       │   ├── skilltree.py     # skill 디렉토리 경로 격리 · 상한 검사
 │       │   └── registry.py      # 모듈 해석 (ref@version → 경로)
 │       │
 │       ├── decision/            # 결정 모델 — 계약 뒤의 provider 와 판정 (에이전트 컨테이너 안에서 실행)
@@ -546,7 +550,8 @@ aaestro/
 │   ├── skillsets/<name>/        # skillset.yaml + skills/
 │   ├── promptsets/<name>/       # promptset.yaml + templates/
 │   ├── memorysets/<name>/       # memoryset.yaml (메모리 정책)
-│   └── decisionsets/<name>/     # decisionset.yaml (질문·보기·구간)
+│   ├── decisionsets/<name>/     # decisionset.yaml (질문·보기·구간)
+│   └── skillpacks/<name>/       # skillpack.yaml + skills/<skill>/SKILL.md (Agent Skills 표준 그대로)
 │
 ├── graphs/                      # 그래프 토폴로지 정의
 │   └── <graph-name>.yaml
@@ -736,6 +741,7 @@ registry:
     promptsets: ./modules/promptsets
     memorysets: ./modules/memorysets
     decisionsets: ./modules/decisionsets
+    skillpacks: ./modules/skillpacks
     agents: ./agents
     graphs: ./graphs
 
@@ -762,7 +768,8 @@ observability:
 배포 시점에 다음을 검증하고, 하나라도 실패하면 컨테이너를 기동하지 않는다:
 
 1. Graph topology 의 모든 `agent` ref 가 존재하는 manifest 를 가리키는가
-2. 모든 manifest 의 skillset/promptset/memoryset ref 가 registry 에서 해석되는가
+2. 모든 manifest 의 skillset/promptset/memoryset/skillpack ref 가 registry 에서 해석되는가 —
+   skillpack 은 담긴 skill 전부가 표준 검증을 통과해야 해석된 것이다 (04 Skillpack Rules)
 3. 모든 manifest 의 `group` 이 존재하는 그룹을 가리키는가 (`global` 직접 소속 금지)
 4. `env_allowlist` 의 각 키가 스코프 체인 (local > group > global) 에서 해석되는가
 5. `connections` 의 caller/callee 가 모두 그래프 노드인가
