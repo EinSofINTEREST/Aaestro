@@ -10,15 +10,15 @@ import asyncio
 
 import pytest
 
-from malkuth.core.errors import ErrorCategory, MalkuthError
-from malkuth.runtime.docker.engine import (
+from aaestro.core.errors import AaestroError, ErrorCategory
+from aaestro.runtime.docker.engine import (
     ContainerHandle,
     DockerClient,
     DockerEngine,
     agent_of,
     control_port_of,
 )
-from malkuth.runtime.spec import build_container_spec
+from aaestro.runtime.spec import build_container_spec
 from tests.fixtures.builders import make_manifest
 from tests.fixtures.fake_docker import FakeDockerClient
 
@@ -49,7 +49,7 @@ def test_spec_without_a_control_port_is_rejected():
     without = spec()
     stripped = type(without)(**{**without.__dict__, "ports": ()})
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         control_port_of(stripped)
 
     assert exc_info.value.code == "RT_001"
@@ -80,8 +80,8 @@ async def test_start_uses_the_declared_network():
 
     await engine(client).start(spec())
 
-    assert client.networks == ["malkuth-net"]
-    assert client.created[0]["network"] == "malkuth-net"
+    assert client.networks == ["aaestro-net"]
+    assert client.created[0]["network"] == "aaestro-net"
 
 
 async def test_an_isolated_engine_publishes_nothing_and_is_reached_inside_the_network():
@@ -113,11 +113,11 @@ async def test_extra_networks_are_joined_before_the_container_starts():
     client = Ordered()
     manifest = make_manifest()
     handle = await engine(client).start(
-        build_container_spec(manifest, extra_networks=("malkuth-test-agent--mcp",))
+        build_container_spec(manifest, extra_networks=("aaestro-test-agent--mcp",))
     )
 
-    assert client.connected == [("malkuth-test-agent--mcp", handle.container_id, ())]
-    assert order == ["connect malkuth-test-agent--mcp", "start"]
+    assert client.connected == [("aaestro-test-agent--mcp", handle.container_id, ())]
+    assert order == ["connect aaestro-test-agent--mcp", "start"]
 
 
 async def test_an_isolated_agent_never_joins_another_network():
@@ -125,7 +125,7 @@ async def test_an_isolated_agent_never_joins_another_network():
     client = FakeDockerClient()
     isolated = DockerEngine(client=client, network="agents", internal=True)
 
-    with pytest.raises(MalkuthError) as caught:
+    with pytest.raises(AaestroError) as caught:
         await isolated.start(build_container_spec(make_manifest(), extra_networks=("side",)))
 
     assert caught.value.code == "RT_001"
@@ -133,7 +133,7 @@ async def test_an_isolated_agent_never_joins_another_network():
 
 
 def test_extra_networks_cannot_be_shared_or_host_networks():
-    with pytest.raises(MalkuthError) as caught:
+    with pytest.raises(AaestroError) as caught:
         build_container_spec(make_manifest(), extra_networks=("host",))
 
     assert caught.value.code == "RT_001"
@@ -151,13 +151,13 @@ async def test_a_plain_engine_publishes_on_loopback_and_asks_for_a_normal_networ
 
 
 async def test_a_network_with_the_wrong_isolation_is_refused_before_creating_anything():
-    from malkuth.runtime.docker.errors import NetworkIsolationError
+    from aaestro.runtime.docker.errors import NetworkIsolationError
 
     client = FakeDockerClient(
         network_error=NetworkIsolationError("agents", expected=True, actual=False)
     )
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await DockerEngine(client=client, network="agents", internal=True).start(spec())
 
     assert (exc_info.value.code, exc_info.value.retryable) == ("RT_001", False)
@@ -169,7 +169,7 @@ async def test_missing_image_is_rt_004():
     """이미지 문제는 설정 문제 — 재시도해도 같다."""
     client = FakeDockerClient(image_error=RuntimeError("not found"))
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await engine(client).start(spec())
 
     assert exc_info.value.code == "RT_004"
@@ -182,7 +182,7 @@ async def test_create_failure_is_retryable_rt_001():
     """일시적 자원 부족일 수 있으므로 재시도 가능하다."""
     client = FakeDockerClient(create_error=RuntimeError("no space"))
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await engine(client).start(spec())
 
     assert exc_info.value.code == "RT_001"
@@ -192,7 +192,7 @@ async def test_create_failure_is_retryable_rt_001():
 async def test_network_failure_is_rt_001():
     client = FakeDockerClient(network_error=RuntimeError("network down"))
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await engine(client).start(spec())
 
     assert exc_info.value.code == "RT_001"
@@ -202,7 +202,7 @@ async def test_start_failure_discards_the_half_built_container():
     """반쯤 만들어진 컨테이너를 남기면 유령 컨테이너가 쌓인다."""
     client = FakeDockerClient(start_error=RuntimeError("boom"))
 
-    with pytest.raises(MalkuthError):
+    with pytest.raises(AaestroError):
         await engine(client).start(spec())
 
     assert len(client.removed) == 1
@@ -212,7 +212,7 @@ async def test_failed_start_is_not_tracked():
     client = FakeDockerClient(start_error=RuntimeError("boom"))
     docker = engine(client)
 
-    with pytest.raises(MalkuthError):
+    with pytest.raises(AaestroError):
         await docker.start(spec())
 
     assert docker.started == {}
@@ -227,7 +227,7 @@ async def test_oom_kill_is_rt_003():
     docker = engine(client)
     handle = await docker.start(spec())
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await docker.check_exit(handle)
 
     assert exc_info.value.code == "RT_003"
@@ -240,7 +240,7 @@ async def test_oom_exit_code_alone_is_detected():
     docker = engine(client)
     handle = await docker.start(spec())
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await docker.check_exit(handle)
 
     assert exc_info.value.code == "RT_003"
@@ -299,7 +299,7 @@ async def test_drain_timeout_is_rt_005():
     async def sleep(_delay: float) -> None:
         pass
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await docker.drain(
             handle,
             request_drain=lambda: None,
@@ -400,13 +400,13 @@ async def test_removal_failure_log_carries_agent_and_image(monkeypatch):
     def capture(_event: str, **fields: object) -> None:
         recorded.append(dict(fields))
 
-    from malkuth.runtime.docker import engine as engine_module
+    from aaestro.runtime.docker import engine as engine_module
 
     monkeypatch.setattr(engine_module.log, "warning", capture)
 
     client = FakeDockerClient(start_error=RuntimeError("boom"), remove_error=RuntimeError("in use"))
 
-    with pytest.raises(MalkuthError):
+    with pytest.raises(AaestroError):
         await engine(client).start(spec())
 
     assert recorded[-1]["agent"] == "test-agent"
@@ -421,7 +421,7 @@ async def test_drain_success_log_includes_the_image(monkeypatch):
     def capture(_event: str, **fields: object) -> None:
         recorded.append(dict(fields))
 
-    from malkuth.runtime.docker import engine as engine_module
+    from aaestro.runtime.docker import engine as engine_module
 
     monkeypatch.setattr(engine_module.log, "info", capture)
 

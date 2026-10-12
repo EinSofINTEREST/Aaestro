@@ -17,11 +17,11 @@ import httpx
 import pytest
 import yaml
 
-from malkuth.core.errors import NETWORK_RETRY, ErrorCode, MalkuthError
-from malkuth.core.manifest import AgentManifest
-from malkuth.runtime.control import ControlClient
-from malkuth.runtime.docker.engine import DockerEngine
-from malkuth.runtime.launcher import AgentLauncher
+from aaestro.core.errors import NETWORK_RETRY, AaestroError, ErrorCode
+from aaestro.core.manifest import AgentManifest
+from aaestro.runtime.control import ControlClient
+from aaestro.runtime.docker.engine import DockerEngine
+from aaestro.runtime.launcher import AgentLauncher
 from tests.fixtures.builders import make_task
 from tests.fixtures.fake_docker import FakeDockerClient
 
@@ -74,7 +74,7 @@ async def test_health_is_not_retried(waits):
     """
     server = FlakyServer(failures=1)
 
-    with pytest.raises(MalkuthError) as excinfo:
+    with pytest.raises(AaestroError) as excinfo:
         await client(server, waits).health()
 
     assert excinfo.value.code == ErrorCode.NET_001
@@ -95,7 +95,7 @@ async def test_invoke_is_not_retried(waits):
     """부수효과를 낳고 node 재시도와 곱해진다 — 05 는 한 계층만 허용한다."""
     server = FlakyServer(failures=1)
 
-    with pytest.raises(MalkuthError) as excinfo:
+    with pytest.raises(AaestroError) as excinfo:
         await client(server, waits).invoke(make_task())
 
     assert excinfo.value.code == ErrorCode.NET_001
@@ -107,7 +107,7 @@ async def test_retry_is_off_unless_the_assembly_turns_it_on(waits):
     """미주입이면 재시도하지 않는다 — 조립하는 쪽이 켠다."""
     server = FlakyServer(failures=1, body={"name": "researcher"})
 
-    with pytest.raises(MalkuthError):
+    with pytest.raises(AaestroError):
         await client(server, waits, retry=None).card()
 
     assert len(server.calls) == 1
@@ -117,7 +117,7 @@ async def test_exhausted_retries_surface_the_last_error(waits):
     """감싸서 올리면 호출자의 카테고리 기반 처리가 깨진다."""
     server = FlakyServer(failures=99, body={"name": "researcher"})
 
-    with pytest.raises(MalkuthError) as excinfo:
+    with pytest.raises(AaestroError) as excinfo:
         await client(server, waits).card()
 
     assert excinfo.value.code == ErrorCode.NET_001

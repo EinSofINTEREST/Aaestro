@@ -11,10 +11,10 @@ from pathlib import Path
 import httpx
 import pytest
 
-from malkuth.catalog import Catalog
-from malkuth.orchestrator import __main__ as entrypoint
-from malkuth.orchestrator.control import create_app
-from malkuth.orchestrator.runstore import InMemoryRunStore
+from aaestro.catalog import Catalog
+from aaestro.orchestrator import __main__ as entrypoint
+from aaestro.orchestrator.control import create_app
+from aaestro.orchestrator.runstore import InMemoryRunStore
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 TOKEN = "cp-secret"  # noqa: S105
@@ -107,9 +107,9 @@ def _serve(monkeypatch, tmp_path, *, host: str, token: str | None):
     (tmp_path / "local.yaml").write_text(
         yaml.safe_dump({"orchestrator": orchestrator}), encoding="utf-8"
     )
-    monkeypatch.setenv("MALKUTH_ENV", "local")
-    monkeypatch.setenv("MALKUTH_CONFIG_DIR", str(tmp_path))
-    monkeypatch.setenv("MALKUTH_REPO_ROOT", str(REPO_ROOT))
+    monkeypatch.setenv("AAESTRO_ENV", "local")
+    monkeypatch.setenv("AAESTRO_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("AAESTRO_REPO_ROOT", str(REPO_ROOT))
     monkeypatch.setattr(entrypoint, "_setup_observability", lambda: None)
     served: list[object] = []
     monkeypatch.setattr(entrypoint.uvicorn, "run", lambda app, **_kw: served.append(app))
@@ -118,11 +118,11 @@ def _serve(monkeypatch, tmp_path, *, host: str, token: str | None):
 
 def test_binding_outside_loopback_without_a_token_is_refused(monkeypatch, tmp_path):
     """무인증으로 밖에 열면 누구나 컨테이너를 띄울 수 있다."""
-    from malkuth.core.errors import ErrorCode, MalkuthError
+    from aaestro.core.errors import AaestroError, ErrorCode
 
     served = _serve(monkeypatch, tmp_path, host="0.0.0.0", token=None)  # noqa: S104
 
-    with pytest.raises(MalkuthError) as excinfo:
+    with pytest.raises(AaestroError) as excinfo:
         entrypoint.main()
 
     assert excinfo.value.code == ErrorCode.CFG_001
@@ -151,7 +151,7 @@ def test_loopback_without_a_token_serves_with_a_warning(monkeypatch, tmp_path):
 
 
 def test_the_cli_client_sends_the_bearer_header(monkeypatch):
-    from malkuth.cli.control import ControlClient
+    from aaestro.cli.control import ControlClient
 
     seen: dict = {}
 
@@ -166,7 +166,7 @@ def test_the_cli_client_sends_the_bearer_header(monkeypatch):
 
 
 def test_the_cli_client_sends_nothing_without_a_token(monkeypatch):
-    from malkuth.cli.control import ControlClient
+    from aaestro.cli.control import ControlClient
 
     seen: dict = {}
 
@@ -184,9 +184,9 @@ def test_the_cli_reads_the_token_from_the_environment(monkeypatch):
     """CLI 사용자는 매 명령마다 토큰을 타이핑하지 않는다."""
     import argparse
 
-    from malkuth.cli.main import _control_client
+    from aaestro.cli.main import _control_client
 
-    monkeypatch.setenv("MALKUTH_CONTROL_TOKEN", "from-env")
+    monkeypatch.setenv("AAESTRO_CONTROL_TOKEN", "from-env")
 
     built = _control_client(argparse.Namespace(control_url=None, control_token=None))
 

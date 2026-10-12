@@ -1,4 +1,4 @@
-apiVersion: malkuth/v1
+apiVersion: aaestro/v1
 kind: Agent
 metadata:
   name: claude-code
@@ -22,7 +22,7 @@ spec:
   runtime:
     # 빌드 단계가 굽는 태그와 **같아야** 한다 — 다르면 배포가 거절한다 (#266).
     # 재료는 저장소가 아니라 스토어에 있다: examples/materials/claude-code 를 시드로 올린다
-    image: malkuth/agent-claude-code:0.1.0
+    image: aaestro/agent-claude-code:0.1.0
     resources:
       cpu: "1.0"
       memory: 2Gi

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from malkuth.core.errors import ErrorCategory, ErrorCode, MalkuthError
-from malkuth.modules.registry import ModuleRegistry
-from malkuth.orchestrator.topology import GraphTopology, validate_topology
+from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.modules.registry import ModuleRegistry
+from aaestro.orchestrator.topology import GraphTopology, validate_topology
 from tests.fixtures.topologies import make_mission
 
 
@@ -20,7 +20,7 @@ class FakeRegistry:
     def resolve(self, ref: str) -> object:
         self.resolved.append(ref)
         if ref not in self._known:
-            raise MalkuthError(
+            raise AaestroError(
                 category=ErrorCategory.MODULE,
                 code=ErrorCode.MOD_001,
                 message=f"cannot resolve: {ref}",
@@ -39,13 +39,13 @@ def test_resolvable_agent_refs_pass():
 def test_unresolvable_agent_ref_is_rejected():
     registry = FakeRegistry({"agents/planner@0.1.0"})
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         validate_topology(make_mission(), registry=registry)  # type: ignore[arg-type]
 
     assert exc_info.value.code == "GRAPH_001"
     assert "cannot resolve node ref" in exc_info.value.message
     # 원인 체인이 모듈 레이어 에러로 이어진다
-    assert isinstance(exc_info.value.__cause__, MalkuthError)
+    assert isinstance(exc_info.value.__cause__, AaestroError)
 
 
 def test_registry_is_optional():
@@ -70,13 +70,13 @@ def _graph_with_subgraph(name: str, child_ref: str | None) -> GraphTopology:
 
     return GraphTopology.model_validate(
         {
-            "apiVersion": "malkuth/v1",
+            "apiVersion": "aaestro/v1",
             "kind": "Graph",
             "metadata": {"name": name, "version": "1.0.0"},
             "spec": {
                 "mode": "mission",
                 "goal": "테스트",
-                "state": {"schema": "malkuth.graphs.schemas:ResearchState"},
+                "state": {"schema": "aaestro.graphs.schemas:ResearchState"},
                 "nodes": nodes,
                 "edges": edges,
             },
@@ -95,7 +95,7 @@ def test_direct_subgraph_cycle_is_rejected():
     """자기 자신을 서브그래프로 참조하는 그래프는 차단된다."""
     parent = _graph_with_subgraph("parent", "graphs/parent@1.0.0")
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         validate_topology(parent, load_subgraph=lambda ref: parent)
 
     assert exc_info.value.code == "GRAPH_001"
@@ -108,7 +108,7 @@ def test_indirect_subgraph_cycle_is_rejected():
     b = _graph_with_subgraph("b", "graphs/a@1.0.0")
     loaded = {"graphs/a@1.0.0": a, "graphs/b@1.0.0": b}
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         validate_topology(a, load_subgraph=lambda ref: loaded[ref])
 
     assert "subgraph cycle detected" in exc_info.value.message
@@ -118,7 +118,7 @@ def test_registry_under_repo_root_resolves_graph_refs(tmp_path):
     """실제 레지스트리로 그래프 ref 해석 경로가 이어지는지 확인한다."""
     graphs = tmp_path / "graphs"
     graphs.mkdir()
-    (graphs / "sub-review.yaml").write_text("apiVersion: malkuth/v1\nkind: Graph\n")
+    (graphs / "sub-review.yaml").write_text("apiVersion: aaestro/v1\nkind: Graph\n")
 
     registry = ModuleRegistry.under(tmp_path)
     resolved = registry.resolve("graphs/sub-review@1.0.0")

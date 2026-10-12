@@ -222,7 +222,7 @@ memory 는 [09-memory-context.md](09-memory-context.md).
 
 ```yaml
 # groups/research.yaml
-apiVersion: malkuth/v1
+apiVersion: aaestro/v1
 kind: Group
 metadata:
   name: research
@@ -473,15 +473,15 @@ TypeSafe 의 Jev 이지만, 시스템은 Jev 가 아니라 **`DecisionModel` 계
 ## Directory Structure
 
 ```
-malkuth/
+aaestro/
 ├── src/
-│   └── malkuth/
+│   └── aaestro/
 │       ├── core/                # 프레임워크 핵심 계약 (모든 레이어가 의존)
 │       │   ├── agent.py         # BaseAgent, AgentContext, TaskRequest/Result
 │       │   ├── manifest.py      # AgentManifest 스키마 (pydantic)
 │       │   ├── skill.py         # @skill 데코레이터 + SkillContext
 │       │   ├── decision.py      # DecisionModel 계약, Question/Decision, 판정 구간(Band)
-│       │   ├── errors.py        # MalkuthError + ErrorCategory + 코드 상수
+│       │   ├── errors.py        # AaestroError + ErrorCategory + 코드 상수
 │       │   └── events.py        # TaskEvent, 스트리밍 이벤트 모델
 │       │
 │       ├── orchestrator/        # LangGraph 오케스트레이션
@@ -534,7 +534,7 @@ malkuth/
 │       │   ├── schemas.py       # 그래프 state pydantic 모델 (topology 의 state.schema ref 대상)
 │       │   └── conditions.py    # conditional edge 조건 함수 (edges 의 condition ref 대상)
 │       │
-│       └── cli/                 # malkuth CLI (deploy/run/status/logs)
+│       └── cli/                 # aaestro CLI (deploy/run/status/logs)
 │
 ├── agents/                      # 에이전트 선언 — 빌드 입력은 재료 스토어에 (02)
 │   └── <agent-name>/
@@ -577,19 +577,19 @@ malkuth/
 
 ### Directory Purposes
 
-**`src/malkuth/core/`**: Framework contracts
+**`src/aaestro/core/`**: Framework contracts
 - Depended on by every other layer; depends on nothing internal
 - Pure schemas, interfaces, and errors — no I/O
 
-**`src/malkuth/orchestrator/`**: Graph brain
+**`src/aaestro/orchestrator/`**: Graph brain
 - The only layer that touches LangGraph APIs directly
 - Never talks to Docker or protocols directly — goes through `runtime/`
 
-**`src/malkuth/runtime/`**: Container muscle
+**`src/aaestro/runtime/`**: Container muscle
 - The only layer that touches the Docker SDK
 - Exposes agents to the orchestrator as async callables
 
-**`src/malkuth/agentd/`**: In-container daemon
+**`src/aaestro/agentd/`**: In-container daemon
 - Ships inside the agent base image
 - Loads manifest → initializes promptset/skillset/MCP/A2A → serves Control API
 
@@ -622,7 +622,7 @@ malkuth/
 ### Runtime
 - **Isolation**: Docker Engine 24+, `docker` Python SDK
 - **Agent Control API**: FastAPI + uvicorn (컨테이너 내부)
-- **Base Image**: `python:3.12-slim` 기반 `malkuth/agent-base`
+- **Base Image**: `python:3.12-slim` 기반 `aaestro/agent-base`
 
 ### Storage
 - **Checkpoints**: In-memory (dev) → Redis 7+ / PostgreSQL 15+ (prod)
@@ -637,7 +637,7 @@ malkuth/
 ### Quality
 - **Testing**: pytest + pytest-asyncio + testcontainers
 - **Lint/Format**: ruff (lint + format)
-- **Type Check**: mypy (strict on `src/malkuth/core/`)
+- **Type Check**: mypy (strict on `src/aaestro/core/`)
 
 ## Control Flow
 
@@ -694,7 +694,7 @@ Graph state 를 우회하는 사이드채널 (공유 파일, 공유 DB 테이블
 
 ### Multi-Environment Support
 - Development, Staging, Production configs (`configs/{env}.yaml`)
-- Environment variable overrides (`MALKUTH_` prefix)
+- Environment variable overrides (`AAESTRO_` prefix)
 - Secrets는 환경 변수 주입 — 파일/이미지에 저장 금지
 
 ### Framework Configuration
@@ -703,8 +703,8 @@ Graph state 를 우회하는 사이드채널 (공유 파일, 공유 DB 테이블
 # configs/dev.yaml
 runtime:
   backend: docker
-  network: malkuth-net
-  agent_base_image: malkuth/agent-base:0.1.0
+  network: aaestro-net
+  agent_base_image: aaestro/agent-base:0.1.0
   default_resources:
     cpu: "1.0"
     memory: 1Gi
@@ -818,9 +818,9 @@ observability:
 
 3. **Model API**
    - Provider rate limit 을 에이전트별 세마포어로 제어
-   - 토큰 사용량 metric 수집 (`malkuth_model_tokens_total`)
+   - 토큰 사용량 metric 수집 (`aaestro_model_tokens_total`)
 
 4. **Decision API**
-   - 호출 수와 구간 분포를 쓰임별로 수집 (`malkuth_decision_calls_total`,
-     `malkuth_decision_bands_total`) — `uncertain` 비율이 높으면 구간이나 질문이 잘못된 것이다
+   - 호출 수와 구간 분포를 쓰임별로 수집 (`aaestro_decision_calls_total`,
+     `aaestro_decision_bands_total`) — `uncertain` 비율이 높으면 구간이나 질문이 잘못된 것이다
    - 회상 필터는 태스크당 1회, 도구 게이트는 게이트된 호출당 1회 — 루프마다 부르지 않는다

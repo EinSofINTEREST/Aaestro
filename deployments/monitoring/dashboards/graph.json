@@ -1,19 +1,19 @@
 {
-  "title": "Malkuth — Graph",
-  "uid": "malkuth-graph",
+  "title": "Aaestro — Graph",
+  "uid": "aaestro-graph",
   "description": "Node latency, run duration, failing node ranking, service iterations",
   "panels": [
     {"title": "Node latency p95", "type": "timeseries",
-     "targets": [{"expr": "histogram_quantile(0.95, sum by (le, node_id) (rate(malkuth_node_duration_seconds_bucket[5m])))"}]},
+     "targets": [{"expr": "histogram_quantile(0.95, sum by (le, node_id) (rate(aaestro_node_duration_seconds_bucket[5m])))"}]},
     {"title": "Runs by status", "type": "timeseries",
-     "targets": [{"expr": "sum by (graph, status) (increase(malkuth_runs_total[1h]))"}]},
+     "targets": [{"expr": "sum by (graph, status) (increase(aaestro_runs_total[1h]))"}]},
     {"title": "Active runs by mode", "type": "timeseries",
-     "targets": [{"expr": "sum by (mode) (malkuth_runs_active)"}]},
+     "targets": [{"expr": "sum by (mode) (aaestro_runs_active)"}]},
     {"title": "Service iterations", "type": "timeseries",
-     "targets": [{"expr": "sum by (graph, status) (rate(malkuth_service_iterations_total[5m]))"}]},
+     "targets": [{"expr": "sum by (graph, status) (rate(aaestro_service_iterations_total[5m]))"}]},
     {"title": "Service idle backoff", "type": "timeseries",
-     "targets": [{"expr": "malkuth_service_idle_delay_seconds"}]},
+     "targets": [{"expr": "aaestro_service_idle_delay_seconds"}]},
     {"title": "Checkpoint operations", "type": "timeseries",
-     "targets": [{"expr": "sum by (operation, status) (rate(malkuth_checkpoint_operations_total[5m]))"}]}
+     "targets": [{"expr": "sum by (operation, status) (rate(aaestro_checkpoint_operations_total[5m]))"}]}
   ]
 }

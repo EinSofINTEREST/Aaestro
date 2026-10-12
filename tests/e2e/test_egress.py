@@ -53,12 +53,12 @@ from tests.e2e.test_stack import docker, requires_docker
 pytestmark = [pytest.mark.e2e, requires_docker]
 
 ENFORCER_TOKEN = "e2e-enforcer-token"  # noqa: S105 — test_memory_access 의 Memory Service 와 같은 값
-PROXY = "malkuth-e2e-egress"
+PROXY = "aaestro-e2e-egress"
 PROXY_KEY = "e2e-proxy-held-key"
 TARGET = "fake-provider:8000"
 UNDECLARED = f"{MEMORY_ALIAS}:8090"
-RESEARCHER, PLANNER = "malkuth-researcher-0", "malkuth-planner-0"
-MCP_SERVER = "malkuth-e2e-fake-mcp"
+RESEARCHER, PLANNER = "aaestro-researcher-0", "aaestro-planner-0"
+MCP_SERVER = "aaestro-e2e-fake-mcp"
 MCP_TARGET = "fake-mcp:8000"
 MCP_TOKEN = "e2e-remote-mcp-token"  # noqa: S105 — 프록시만 쥐는 테스트 값
 MCP_TOKEN_ENV = "CORP_MCP_TOKEN"  # noqa: S105 — 키 이름이다
@@ -103,12 +103,12 @@ uvicorn.run(app, host="0.0.0.0", port=8000, log_level="warning")
 MCP_SESSION = """
 import asyncio, json, os, sys
 import yaml
-from malkuth.agentd.mcp import build_mcp_client
-from malkuth.core.errors import MalkuthError
-from malkuth.core.manifest import AgentManifest
+from aaestro.agentd.mcp import build_mcp_client
+from aaestro.core.errors import AaestroError
+from aaestro.core.manifest import AgentManifest
 
 async def main():
-    with open(os.environ["MALKUTH_MANIFEST"], encoding="utf-8") as handle:
+    with open(os.environ["AAESTRO_MANIFEST"], encoding="utf-8") as handle:
         manifest = AgentManifest.model_validate(yaml.safe_load(handle))
     client = build_mcp_client(manifest)
     server = sys.argv[1]
@@ -122,7 +122,7 @@ async def main():
             try:
                 result = await client.call_tool(f"mcp__{server}__{tool}", json.loads(arguments))
                 print("@@OK:" + json.dumps(result.content), flush=True)
-            except MalkuthError as err:
+            except AaestroError as err:
                 detail = str(err.details.get("detail", ""))[:200]
                 print("@@ERR:" + err.code + ":" + detail, flush=True)
     finally:
@@ -130,9 +130,9 @@ async def main():
 
 asyncio.run(main())
 """
-SIDECAR_IMAGE = "malkuth/e2e-mcp-sidecar:0.1.0"
-SIDECAR = "malkuth-researcher--mcp-tools"
-SIDECAR_NET = "malkuth-researcher--mcp"
+SIDECAR_IMAGE = "aaestro/e2e-mcp-sidecar:0.1.0"
+SIDECAR = "aaestro-researcher--mcp-tools"
+SIDECAR_NET = "aaestro-researcher--mcp"
 
 # 사이드카 이미지의 서버 — 자격 없이 듣는다. 닿는 길은 사이드카 네트워크의 프록시뿐이어야 한다
 SIDECAR_MCP = """
@@ -159,7 +159,7 @@ app = server.streamable_http_app(
 uvicorn.run(app, host="0.0.0.0", port=8000, log_level="warning")
 """
 
-AGENTS = "malkuth-e2e-agents"
+AGENTS = "aaestro-e2e-agents"
 """에이전트 네트워크 — ``--internal``. 이그레스 프록시를 켠 control plane 은 이 격리를 요구한다."""
 
 # 컨테이너 안에서 HTTPS_PROXY 로 CONNECT 를 열고 터널로 GET 한다 — 상태 코드(또는 거부 코드)만 출력
@@ -186,7 +186,7 @@ def build_sidecar_image(tmp_path: Path) -> None:
     context.mkdir()
     (context / "server.py").write_text(SIDECAR_MCP, encoding="utf-8")
     (context / "Dockerfile").write_text(
-        "FROM malkuth/agent-base:0.1.0\n"
+        "FROM aaestro/agent-base:0.1.0\n"
         "COPY --chown=1000:1000 server.py /app/sidecar/server.py\n"
         'ENTRYPOINT ["python", "/app/sidecar/server.py"]\n',
         encoding="utf-8",
@@ -201,7 +201,7 @@ def remove_sidecars() -> None:
 
 def build_proxy_image() -> None:
     docker(
-        "build", "-t", "malkuth/egress-proxy:0.1.0",
+        "build", "-t", "aaestro/egress-proxy:0.1.0",
         "-f", str(REPO_ROOT / "deployments" / "docker" / "egress-proxy.Dockerfile"), str(REPO_ROOT),
         timeout=900,
     )  # fmt: skip
@@ -224,7 +224,7 @@ def start_forwarder() -> None:
         "--network", NETWORK, "--add-host", "host.docker.internal:host-gateway",
         "--read-only", "--user", "1000:1000", "--cap-drop", "ALL",
         "--security-opt", "no-new-privileges:true",
-        "--entrypoint", "python", "malkuth/memory-service:0.1.0", "-c", FORWARD,
+        "--entrypoint", "python", "aaestro/memory-service:0.1.0", "-c", FORWARD,
     )  # fmt: skip
     docker("network", "connect", "--alias", "control-plane", AGENTS, FORWARDER)
 
@@ -236,7 +236,7 @@ def start_fake_mcp() -> None:
         "--network", NETWORK, "--network-alias", "fake-mcp",
         "--read-only", "--user", "1000:1000", "--cap-drop", "ALL",
         "--security-opt", "no-new-privileges:true",
-        "--entrypoint", "python", "malkuth/agent-base:0.1.0", "-c", FAKE_MCP,
+        "--entrypoint", "python", "aaestro/agent-base:0.1.0", "-c", FAKE_MCP,
     )  # fmt: skip
 
 
@@ -258,19 +258,19 @@ def start_proxy(root: Path, mode: str = "enforce") -> None:
         "--add-host", "host.docker.internal:host-gateway",
         "--read-only", "--user", "1000:1000", "--cap-drop", "ALL",
         "--security-opt", "no-new-privileges:true",
-        "-e", f"MALKUTH_ACCESS_URL=http://host.docker.internal:{CONTROL_PORT}",
-        "-e", f"MALKUTH_ACCESS_ENFORCER_TOKEN={ENFORCER_TOKEN}",
-        "-e", f"MALKUTH_EGRESS_MODE={mode}",
-        "-e", f"MALKUTH_EGRESS_PRIVATE_DESTINATIONS={TARGET},{UNDECLARED},{MCP_TARGET}",
+        "-e", f"AAESTRO_ACCESS_URL=http://host.docker.internal:{CONTROL_PORT}",
+        "-e", f"AAESTRO_ACCESS_ENFORCER_TOKEN={ENFORCER_TOKEN}",
+        "-e", f"AAESTRO_EGRESS_MODE={mode}",
+        "-e", f"AAESTRO_EGRESS_PRIVATE_DESTINATIONS={TARGET},{UNDECLARED},{MCP_TARGET}",
         # 원격 MCP 종단 — 서버 주소는 선언에서, 자격은 허용한 이름만 (#282)
-        "-v", f"{root}:/repo:ro", "-e", "MALKUTH_REPO_ROOT=/repo",
-        "-e", f"MALKUTH_EGRESS_MCP_TOKENS={MCP_TOKEN_ENV}", "-e", f"{MCP_TOKEN_ENV}={MCP_TOKEN}",
-        "-e", "MALKUTH_EGRESS_ANTHROPIC_UPSTREAM=http://fake-provider:8000",
-        "-e", "MALKUTH_EGRESS_ALLOW_PLAINTEXT_UPSTREAM=true",  # 대역 provider 는 평문이다
+        "-v", f"{root}:/repo:ro", "-e", "AAESTRO_REPO_ROOT=/repo",
+        "-e", f"AAESTRO_EGRESS_MCP_TOKENS={MCP_TOKEN_ENV}", "-e", f"{MCP_TOKEN_ENV}={MCP_TOKEN}",
+        "-e", "AAESTRO_EGRESS_ANTHROPIC_UPSTREAM=http://fake-provider:8000",
+        "-e", "AAESTRO_EGRESS_ALLOW_PLAINTEXT_UPSTREAM=true",  # 대역 provider 는 평문이다
         "-e", f"ANTHROPIC_API_KEY={PROXY_KEY}",
-        "malkuth/egress-proxy:0.1.0",
+        "aaestro/egress-proxy:0.1.0",
     )  # fmt: skip
-    docker("network", "connect", "--alias", "malkuth-egress", AGENTS, PROXY)
+    docker("network", "connect", "--alias", "aaestro-egress", AGENTS, PROXY)
 
 
 def proxy_ready() -> bool:
@@ -335,8 +335,8 @@ def plane(stack, tmp_path) -> Iterator[dict[str, Any]]:
     config = yaml.safe_load((config_dir / "e2e.yaml").read_text(encoding="utf-8"))
     config["runtime"]["network"] = AGENTS
     config["runtime"]["egress_proxy"] = {
-        "connect_url": "http://malkuth-egress:8080",
-        "providers_url": "http://malkuth-egress:8081",
+        "connect_url": "http://aaestro-egress:8080",
+        "providers_url": "http://aaestro-egress:8081",
         # 사이드카 네트워크에 붙일 프록시 컨테이너 (#304)
         "container": PROXY,
     }
@@ -345,8 +345,8 @@ def plane(stack, tmp_path) -> Iterator[dict[str, Any]]:
     tokens_path.write_text(json.dumps(memory_tokens()), encoding="utf-8")
     root = workspace(tmp_path)
     env = {
-        "MALKUTH_MEMORY_URL": f"http://{MEMORY_ALIAS}:8090",
-        "MALKUTH_REPO_ROOT": str(root),
+        "AAESTRO_MEMORY_URL": f"http://{MEMORY_ALIAS}:8090",
+        "AAESTRO_REPO_ROOT": str(root),
         # 선언 검증이 자격을 해석할 수 있어야 한다 — 에이전트 env 로는 나가지 않는다
         MCP_TOKEN_ENV: MCP_TOKEN,
     }
@@ -407,7 +407,7 @@ def test_egress_is_decided_per_destination_through_the_proxy(plane):
     assert PROXY_KEY not in env.values() and "e2e-fake-key" not in env.values(), (
         "모델 키가 들어갔다"
     )
-    assert env["ANTHROPIC_BASE_URL"] == "http://malkuth-egress:8081/anthropic"
+    assert env["ANTHROPIC_BASE_URL"] == "http://aaestro-egress:8081/anthropic"
     status, submitted = api(
         "POST", "/v1/runs", {"deployment_id": record["deployment_id"], "input": {"query": "e2e"}}
     )
@@ -421,7 +421,7 @@ def test_egress_is_decided_per_destination_through_the_proxy(plane):
     assert done["status"] == "completed", done
     keys = provider_keys()
     assert PROXY_KEY in keys, "대역 provider 가 프록시가 붙인 키를 받지 못했다"
-    assert env["MALKUTH_ACCESS_CREDENTIAL"] not in keys, "에이전트 신원이 provider 로 새어 나갔다"
+    assert env["AAESTRO_ACCESS_CREDENTIAL"] not in keys, "에이전트 신원이 provider 로 새어 나갔다"
 
     # --- CONNECT: 선언한 목적지는 통과, 선언하지 않은 에이전트는 거부
     assert tunnel(RESEARCHER, TARGET) == "200"
@@ -511,7 +511,7 @@ def test_isolated_agents_have_no_way_out_but_the_proxy(plane):
     assert docker("network", "inspect", "-f", "{{.Internal}}", AGENTS) == "true"
 
     # --- 프록시를 거치지 않은 외부 호출은 실패한다: 이름 해석, 직접 IP 둘 다
-    provider_ip = address_on("malkuth-e2e-fake-provider-1", NETWORK)
+    provider_ip = address_on("aaestro-e2e-fake-provider-1", NETWORK)
     assert direct(RESEARCHER, "fake-provider", 8000) == "gaierror", "스택 네트워크의 이름이 풀렸다"
     assert direct(RESEARCHER, provider_ip, 8000) != "OPEN", "외부 망의 IP 로 직접 나갔다"
     assert direct(RESEARCHER, "1.1.1.1", 443) != "OPEN", "공인 IP 로 직접 나갔다"
@@ -550,7 +550,7 @@ CARD = """
 import json, os, urllib.request
 request = urllib.request.Request(
     "http://127.0.0.1:8080/v1/card",
-    headers={"Authorization": "Bearer " + os.environ["MALKUTH_AGENT_TOKEN"]},
+    headers={"Authorization": "Bearer " + os.environ["AAESTRO_AGENT_TOKEN"]},
 )
 print(json.dumps([s["name"] for s in json.load(urllib.request.urlopen(request))["skills"]]))
 """
@@ -626,7 +626,7 @@ def test_remote_mcp_tools_are_decided_one_by_one_through_the_proxy(plane):
     assert MCP_TOKEN_ENV not in env and MCP_TOKEN not in env.values(), (
         "MCP 자격이 컨테이너에 들어갔다"
     )
-    assert env["MALKUTH_MCP_PROXY_URL"] == "http://malkuth-egress:8081/mcp"
+    assert env["AAESTRO_MCP_PROXY_URL"] == "http://aaestro-egress:8081/mcp"
     # --- agentd 가 기동 때 세션을 열어 도구를 광고한다
     advertised = json.loads(run_in(RESEARCHER, CARD))
     assert {"mcp__corp__echo", "mcp__corp__add"} <= set(advertised), advertised

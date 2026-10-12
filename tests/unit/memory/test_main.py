@@ -6,11 +6,11 @@ import asyncio
 
 import pytest
 
-from malkuth.access.client import ACCESS_URL_ENV, ENFORCER_TOKEN_ENV, AccessClient
-from malkuth.core.errors import ErrorCode, MalkuthError
-from malkuth.memory import __main__ as entry
-from malkuth.memory.bootstrap import MemoryDeployment
-from malkuth.observability.metrics import Metrics
+from aaestro.access.client import ACCESS_URL_ENV, ENFORCER_TOKEN_ENV, AccessClient
+from aaestro.core.errors import AaestroError, ErrorCode
+from aaestro.memory import __main__ as entry
+from aaestro.memory.bootstrap import MemoryDeployment
+from aaestro.observability.metrics import Metrics
 
 
 def test_registry_mode_is_off_without_settings(monkeypatch):
@@ -25,7 +25,7 @@ def test_registry_mode_needs_both_settings(monkeypatch):
     monkeypatch.setenv(ACCESS_URL_ENV, "http://control-plane:8700")
     monkeypatch.delenv(ENFORCER_TOKEN_ENV, raising=False)
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         entry._access(Metrics())  # noqa: SLF001
 
     assert exc_info.value.code == ErrorCode.CFG_001

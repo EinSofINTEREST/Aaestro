@@ -1,12 +1,12 @@
-# Malkuth Development Rules
+# Aaestro Development Rules
 
-This directory contains the comprehensive ruleset for developing **Malkuth**, a modular
+This directory contains the comprehensive ruleset for developing **Aaestro**, a modular
 multi-agent orchestration framework built on LangGraph. These rules guide the implementation
 of an extensible agent runtime with per-agent isolation and freely composable agent graphs.
 
 ## Overview
 
-**Malkuth** is a framework designed to:
+**Aaestro** is a framework designed to:
 - Orchestrate multiple AI agents through LangGraph state graphs
 - Compose each goal as a graph of **equal, directly addressable agents** — no hierarchy
   between agents; every agent also accepts interactive direct requests
@@ -104,7 +104,7 @@ Key for:
 **Error Handling, Monitoring, and Observability**
 
 Covers:
-- Error taxonomy and the `MalkuthError` type
+- Error taxonomy and the `AaestroError` type
 - Layer rules — where typed errors are required
 - Retry policies and circuit breakers
 - Structured logging standards (structlog), access-control log fields
@@ -331,7 +331,7 @@ spec:
     - {from: START, to: planner}
     - from: planner
       to: researcher
-      condition: malkuth.graphs.conditions:needs_research   # importable ref (04 규칙)
+      condition: aaestro.graphs.conditions:needs_research   # importable ref (04 규칙)
     - {from: researcher, to: END}
 ```
 
@@ -342,7 +342,7 @@ spec:
 try:
     result = await client.call_tool(name, args)
 except McpTransportError as err:
-    raise MalkuthError(
+    raise AaestroError(
         category=ErrorCategory.MCP,
         code="MCP_004",
         message="mcp transport disconnected",

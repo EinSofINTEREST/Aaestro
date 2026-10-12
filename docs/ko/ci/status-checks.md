@@ -19,7 +19,7 @@
 | 이름 | 워크플로 / Job | 설명 | Required |
 |------|---------------|------|----------|
 | `Lint` | `ci-quality.yml` / `lint` | `make lint` — ruff check + ruff format --check | Yes |
-| `Type Check` | `ci-quality.yml` / `typecheck` | `make typecheck` — mypy (`src/malkuth/core` strict) | Yes |
+| `Type Check` | `ci-quality.yml` / `typecheck` | `make typecheck` — mypy (`src/aaestro/core` strict) | Yes |
 | `Test` | `ci-quality.yml` / `test` | `make test` — pytest unit + 커버리지 70% 강제 | Yes |
 | `Integration Test` | `ci-quality.yml` / `integration` | `make test-integration` — Docker 기반 통합 테스트 | Yes |
 | `Commit Lint` | `ci-convention.yml` / `commit-lint` | PR 의 모든 커밋 메시지 `[카테고리]:` 포맷 강제 | Yes |
@@ -31,7 +31,7 @@
 
 ## 진화 내역 (IssueTracker 원형 대비)
 
-본 게이트 구성은 IssueTracker 저장소에서 이식하며 Malkuth 에 맞게 발전시킨 것입니다:
+본 게이트 구성은 IssueTracker 저장소에서 이식하며 Aaestro 에 맞게 발전시킨 것입니다:
 
 - `Format Check` + `Lint` (gofmt / golangci-lint) → 단일 `Lint` 로 통합
   (ruff 가 lint 와 format 검사를 모두 수행)

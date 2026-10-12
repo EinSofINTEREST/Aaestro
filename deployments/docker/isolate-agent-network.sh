@@ -21,7 +21,7 @@ id=$(docker network inspect -f '{{.Id}}' "$network")
 internal=$(docker network inspect -f '{{.Internal}}' "$network")
 bridge=$(docker network inspect -f '{{index .Options "com.docker.network.bridge.name"}}' "$network")
 [ -n "$bridge" ] && [ "$bridge" != "<no value>" ] || bridge="br-$(printf %s "$id" | cut -c1-12)"
-chain="MALKUTH-$(printf %s "$id" | cut -c1-12)"
+chain="AAESTRO-$(printf %s "$id" | cut -c1-12)"
 
 if [ "$internal" != "true" ] && [ "$action" = "apply" ]; then
   echo "refusing: $network is not an internal network — isolate agents first (runtime.egress_proxy)" >&2

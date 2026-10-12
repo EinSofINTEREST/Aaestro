@@ -10,11 +10,11 @@ import time
 
 import pytest
 
-from malkuth.cli.control import DEFAULT_CONTROL_URL, ControlClient
-from malkuth.cli.main import main
-from malkuth.core.errors import ErrorCode, MalkuthError
-from malkuth.orchestrator.control import create_app
-from malkuth.orchestrator.runstore import InMemoryRunStore, RunRecord
+from aaestro.cli.control import DEFAULT_CONTROL_URL, ControlClient
+from aaestro.cli.main import main
+from aaestro.core.errors import AaestroError, ErrorCode
+from aaestro.orchestrator.control import create_app
+from aaestro.orchestrator.runstore import InMemoryRunStore, RunRecord
 
 
 def record(run_id: str = "run-1", **overrides) -> RunRecord:
@@ -92,7 +92,7 @@ def test_the_client_requests_a_drain(served):
 
 def test_an_unknown_run_is_reported_as_not_found(served):
     _store, url = served
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         ControlClient(url).drain("never-existed")
 
     assert exc_info.value.code == ErrorCode.NF_001
@@ -100,7 +100,7 @@ def test_an_unknown_run_is_reported_as_not_found(served):
 
 def test_an_unreachable_control_plane_is_not_a_raw_connection_error():
     """운영자가 보는 것이 ConnectionRefusedError 면 원인을 찾기 어렵다."""
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         ControlClient("http://127.0.0.1:1", timeout_s=0.2).list_runs()
 
     assert exc_info.value.code == ErrorCode.NET_001
@@ -166,7 +166,7 @@ def test_resume_without_a_driver_is_reported_as_failure(served, capsys):
 
 def test_the_existing_run_command_still_takes_a_graph():
     """`run` 아래 subparser 로 넣었다면 이 형태가 깨진다."""
-    from malkuth.cli.main import build_parser
+    from aaestro.cli.main import build_parser
 
     parsed = build_parser().parse_args(["run", "graphs/feed-monitor.yaml"])
 
@@ -174,7 +174,7 @@ def test_the_existing_run_command_still_takes_a_graph():
 
 
 def test_the_default_control_url_is_used_when_unspecified():
-    from malkuth.cli.main import build_parser
+    from aaestro.cli.main import build_parser
 
     parsed = build_parser().parse_args(["run-list"])
 
@@ -189,7 +189,7 @@ class EchoRuntime:
     """노드를 빈 출력으로 완료시키는 runtime 대역."""
 
     async def invoke(self, node, task):
-        from malkuth.core.agent import TaskResult
+        from aaestro.core.agent import TaskResult
 
         return TaskResult.completed(task, output={})
 
@@ -209,9 +209,9 @@ def test_a_cli_drain_stops_a_run_started_elsewhere(tmp_path):
 
     import uvicorn
 
-    from malkuth.orchestrator.builder import build_graph
-    from malkuth.orchestrator.run import RunManager, RunStatus, ServiceRunner
-    from malkuth.orchestrator.runstore import SqliteRunStore
+    from aaestro.orchestrator.builder import build_graph
+    from aaestro.orchestrator.run import RunManager, RunStatus, ServiceRunner
+    from aaestro.orchestrator.runstore import SqliteRunStore
     from tests.fixtures.topologies import make_service
 
     path = tmp_path / "runs.db"
@@ -256,7 +256,7 @@ def test_a_cli_list_shows_a_run_started_elsewhere(tmp_path):
 
     import uvicorn
 
-    from malkuth.orchestrator.runstore import SqliteRunStore
+    from aaestro.orchestrator.runstore import SqliteRunStore
 
     path = tmp_path / "runs.db"
     driver = SqliteRunStore(path=path)
@@ -291,7 +291,7 @@ def test_a_missing_list_endpoint_is_not_reported_as_an_unknown_run(served):
     """
     _store, url = served
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         # 이 Control Plane 에 없는 경로 — 구버전 서버를 흉내낸다
         ControlClient(url)._request("GET", "/v1/nonexistent", run_scoped=False)
 
@@ -302,7 +302,7 @@ def test_a_missing_run_is_still_reported_as_not_found(served):
     """run 지정 경로의 404 는 그대로 NF_001 이어야 한다."""
     _store, url = served
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         ControlClient(url).get_run("never-existed")
 
     assert exc_info.value.code == ErrorCode.NF_001
@@ -315,9 +315,9 @@ class FailingRuntime:
     """항상 실패하는 runtime 대역 — GRAPH_005 로 정지시키기 위해."""
 
     async def invoke(self, node, task):
-        from malkuth.core.errors import ErrorCategory, ErrorCode, MalkuthError
+        from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 
-        raise MalkuthError(
+        raise AaestroError(
             category=ErrorCategory.GRAPH,
             code=ErrorCode.GRAPH_002,
             message="node execution failed",
@@ -337,8 +337,8 @@ async def test_a_cli_resume_continues_from_the_next_iteration(tmp_path):
     import uvicorn
     from langgraph.checkpoint.memory import MemorySaver
 
-    from malkuth.orchestrator.run import RunStatus
-    from malkuth.orchestrator.submit import RunSubmitter
+    from aaestro.orchestrator.run import RunStatus
+    from aaestro.orchestrator.submit import RunSubmitter
     from tests.fixtures.topologies import make_service
 
     async def no_sleep(_seconds: float) -> None:

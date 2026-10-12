@@ -1,6 +1,6 @@
 """Targets that bring a stack up must build the base image first.
 
-compose 파일의 에이전트 이미지는 `malkuth/agent-base` 를 `FROM` 으로 쓰는데,
+compose 파일의 에이전트 이미지는 `aaestro/agent-base` 를 `FROM` 으로 쓰는데,
 compose 는 그것을 빌드하지 않는다 — `--build` 는 compose 가 아는 서비스만 굽는다.
 그래서 `make e2e-up` 은 로컬에 남아 있는 **옛 base** 위에 스택을 올렸고,
 프레임워크를 고쳐도 컨테이너 안은 그대로였다 (#222). E2E 가 초록이어도 방금 만든

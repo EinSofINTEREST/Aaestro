@@ -15,10 +15,10 @@ from typing import Any
 import pytest
 import yaml
 
-from malkuth.core.agent import TaskResult
-from malkuth.core.errors import ErrorCode, MalkuthError
-from malkuth.orchestrator.builder import build_graph
-from malkuth.orchestrator.topology import GraphTopology
+from aaestro.core.agent import TaskResult
+from aaestro.core.errors import AaestroError, ErrorCode
+from aaestro.orchestrator.builder import build_graph
+from aaestro.orchestrator.topology import GraphTopology
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -87,7 +87,7 @@ async def test_an_endless_rejection_stops_at_the_bound():
     """04 는 순환에 `max_iterations` 를 요구한다 — 없으면 run 이 끝나지 않는다."""
     runtime = Reviewer(rejections=99)
 
-    with pytest.raises(MalkuthError) as excinfo:
+    with pytest.raises(AaestroError) as excinfo:
         await build_graph(topology(), runtime).ainvoke({"query": "q"})
 
     assert excinfo.value.code == ErrorCode.GRAPH_004

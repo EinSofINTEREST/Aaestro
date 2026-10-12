@@ -15,12 +15,12 @@ from pathlib import Path
 import pytest
 import yaml
 
-from malkuth.core.errors import ErrorCode, MalkuthError
-from malkuth.core.manifest import AgentManifest
-from malkuth.runtime.docker.engine import DockerEngine
-from malkuth.runtime.launcher import AgentLauncher
-from malkuth.runtime.ports import A2APortAllocator
-from malkuth.runtime.spec import A2A_PORT_ENV
+from aaestro.core.errors import AaestroError, ErrorCode
+from aaestro.core.manifest import AgentManifest
+from aaestro.runtime.docker.engine import DockerEngine
+from aaestro.runtime.launcher import AgentLauncher
+from aaestro.runtime.ports import A2APortAllocator
+from aaestro.runtime.spec import A2A_PORT_ENV
 from tests.integration.runtime.test_docker_lifecycle import (
     CliDockerClient,
     docker,
@@ -31,7 +31,7 @@ from tests.integration.runtime.test_docker_lifecycle import (
 pytestmark = pytest.mark.integration
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-TEST_NETWORK = "malkuth-net-ports"
+TEST_NETWORK = "aaestro-net-ports"
 PORT_RANGE = (9300, 9399)
 
 
@@ -113,7 +113,7 @@ async def test_an_exhausted_range_fails_loudly(echo_image):  # noqa: F811
     try:
         await agents.start(a2a_manifest("ports-full-a"))
 
-        with pytest.raises(MalkuthError) as excinfo:
+        with pytest.raises(AaestroError) as excinfo:
             await agents.start(a2a_manifest("ports-full-b"))
 
         assert excinfo.value.code == ErrorCode.RT_001

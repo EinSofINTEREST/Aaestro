@@ -23,7 +23,7 @@ import pytest
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-BASE_IMAGE = "malkuth/agent-base:0.1.0"
+BASE_IMAGE = "aaestro/agent-base:0.1.0"
 TOKEN = "reload-test-token"  # noqa: S105 — 테스트 전용
 READY_TIMEOUT_S = 60.0
 
@@ -87,7 +87,7 @@ def app_dir(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def agent(base_image: str, app_dir: Path) -> Iterator[tuple[str, int]]:
-    name = f"malkuth-reload-{uuid.uuid4().hex[:8]}"
+    name = f"aaestro-reload-{uuid.uuid4().hex[:8]}"
     container = docker(
         "run",
         "-d",
@@ -101,7 +101,7 @@ def agent(base_image: str, app_dir: Path) -> Iterator[tuple[str, int]]:
         "--mount",
         f"type=bind,src={app_dir},dst=/app,readonly",
         "-e",
-        f"MALKUTH_AGENT_TOKEN={TOKEN}",
+        f"AAESTRO_AGENT_TOKEN={TOKEN}",
         "-e",
         "ANTHROPIC_API_KEY=test-key-not-used",
         "-e",

@@ -13,7 +13,7 @@ cannot checkpoint cannot resume.
 1. Check the checkpointer backend first (Redis/PostgreSQL connectivity, disk space).
 2. Runs already in flight keep executing; they lose only the ability to resume.
 3. Once the backend is healthy, resume from the last good checkpoint:
-   `malkuth run resume <run_id>`.
+   `aaestro run resume <run_id>`.
 
 Do not delete checkpoints to "clear" the error — they are the only path back to a
 consistent state.
@@ -26,7 +26,7 @@ so a crash loop cannot burn model quota indefinitely.
 1. Read the halted run's error-code distribution — the streak has one dominant cause
    far more often than not.
 2. Fix that cause (provider quota, MCP server, topology).
-3. Resume from the last iteration checkpoint: `malkuth run resume <run_id>`.
+3. Resume from the last iteration checkpoint: `aaestro run resume <run_id>`.
 
 The run continues from the **next** iteration; completed iterations are not repeated.
 Its state is read back from the checkpointer, even after the control plane restarted: the
@@ -39,19 +39,19 @@ iteration checkpoint cannot be resumed (`STOR_002`) — start a new run instead.
 A node failure (`GRAPH_002`) does not corrupt graph state — the failed node's output is
 never merged.
 
-1. `malkuth run trace <run_id>` — find the failing node and its `task_id`.
-2. Reproduce the agent in isolation with the stored request: `malkuth replay <task>`.
-3. After fixing, resume: `malkuth run resume <run_id>`. Nodes that already succeeded do
+1. `aaestro run trace <run_id>` — find the failing node and its `task_id`.
+2. Reproduce the agent in isolation with the stored request: `aaestro replay <task>`.
+3. After fixing, resume: `aaestro run resume <run_id>`. Nodes that already succeeded do
    not re-execute.
 
 ## Memory Index Corruption
 
 `MEM_003` (indexing backlog) or `MEM_004` (search failure / corrupt index).
 
-1. Check `malkuth_memory_index_lag_seconds`. Sustained lag means the indexing queue is
+1. Check `aaestro_memory_index_lag_seconds`. Sustained lag means the indexing queue is
    not draining — usually the embedding provider.
 2. Rebuild when the index is corrupt or the embedding model changed:
-   `malkuth memory reindex <space>`.
+   `aaestro memory reindex <space>`.
 3. Search keeps serving from the **old** index during a rebuild, switching atomically on
    completion — reindexing does not take memory offline.
 
@@ -61,7 +61,7 @@ The search index lives in the service's memory; the entries live in the store. O
 service queues every stored entry for indexing (`memory index warm-up queued`, with the entry
 count) and the normal indexing loop rebuilds the index. Until `memory index warm-up completed`
 is logged, older memories may be missing from search results. Progress shows in
-`malkuth_memory_index_lag_seconds`, measured from the restart rather than from when each entry
+`aaestro_memory_index_lag_seconds`, measured from the restart rather than from when each entry
 was stored. Every restart embeds every entry again — with a paid embedding provider, that cost
 grows with the store.
 

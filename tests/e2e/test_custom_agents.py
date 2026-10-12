@@ -49,7 +49,7 @@ BUILD_DEADLINE_S = 900.0
 @pytest.fixture
 def plane(stack, tmp_path) -> Iterator[dict[str, Any]]:
     """모듈 전용 control plane — claude-code 의 CLI 를 대역으로 바꾼 설정."""
-    config_dir = write_config(tmp_path, agent_env={"MALKUTH_CLAUDE_COMMAND": FAKE_CLI})
+    config_dir = write_config(tmp_path, agent_env={"AAESTRO_CLAUDE_COMMAND": FAKE_CLI})
     tokens_path = tmp_path / "memory.json"
     tokens_path.write_text(json.dumps(memory_tokens()), encoding="utf-8")
     process = start_plane(config_dir, tokens_path)
@@ -58,31 +58,31 @@ def plane(stack, tmp_path) -> Iterator[dict[str, Any]]:
         yield {"process": process}
     finally:
         stop(process)
-        for name in ("malkuth-claude-code-0", "malkuth-e2e-broken-0", "malkuth-planner-0"):
+        for name in ("aaestro-claude-code-0", "aaestro-e2e-broken-0", "aaestro-planner-0"):
             docker("rm", "-f", name, check=False)
 
 
 def cli(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(  # noqa: S603
-        [sys.executable, "-m", "malkuth.cli", "--json", *args, "--control-url", plane_url()],
+        [sys.executable, "-m", "aaestro.cli", "--json", *args, "--control-url", plane_url()],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
         check=False,
         timeout=BUILD_DEADLINE_S,
-        env={**os.environ, "MALKUTH_CONTROL_TOKEN": CONTROL_TOKEN},
+        env={**os.environ, "AAESTRO_CONTROL_TOKEN": CONTROL_TOKEN},
     )
 
 
 def single_node_graph(name: str, agent_ref: str) -> dict[str, Any]:
     return {
-        "apiVersion": "malkuth/v1",
+        "apiVersion": "aaestro/v1",
         "kind": "Graph",
         "metadata": {"name": name, "version": "0.1.0", "description": "custom agent e2e"},
         "spec": {
             "mode": "mission",
             "goal": "custom agent e2e",
-            "state": {"schema": "malkuth.graphs.schemas:ResearchState"},
+            "state": {"schema": "aaestro.graphs.schemas:ResearchState"},
             "nodes": [
                 {
                     # claude-code 프롬프트셋은 default 템플릿만 둔다 — 노드 id 가 템플릿 이름이다
@@ -116,7 +116,7 @@ def test_a_failed_build_and_a_mismatched_image_are_refused_before_anything_start
         (REPO_ROOT / "agents" / "claude-code" / "manifest.yaml").read_text(encoding="utf-8")
     )
     manifest["metadata"]["name"] = "e2e-broken"
-    manifest["spec"]["runtime"]["image"] = "malkuth/agent-e2e-broken:0.1.0"
+    manifest["spec"]["runtime"]["image"] = "aaestro/agent-e2e-broken:0.1.0"
     manifest["spec"]["runtime"]["volumes"] = []
     try:
         status, saved = api("PUT", "/v1/agents/e2e-broken", manifest)
@@ -134,7 +134,7 @@ def test_a_failed_build_and_a_mismatched_image_are_refused_before_anything_start
             "/v1/agents/e2e-broken/materials",
             {
                 "files": {
-                    "Dockerfile": "FROM malkuth/agent-base:0.1.0\nRUN exit 3\n",
+                    "Dockerfile": "FROM aaestro/agent-base:0.1.0\nRUN exit 3\n",
                     "src/agent.py": "MARK = 1\n",
                 }
             },
@@ -149,7 +149,7 @@ def test_a_failed_build_and_a_mismatched_image_are_refused_before_anything_start
         assert status == 409, refused
         assert refused["error"]["code"] == "RT_012"
         assert refused["error"]["details"]["build_status"] == "failed"
-        assert docker("ps", "-aq", "--filter", "name=^malkuth-e2e-broken-") == ""
+        assert docker("ps", "-aq", "--filter", "name=^aaestro-e2e-broken-") == ""
 
         # --- 레퍼런스 planner 는 base 이미지를 선언한다 — 재료를 주면 두 이미지가 된다
         status, stored = api(
@@ -160,10 +160,10 @@ def test_a_failed_build_and_a_mismatched_image_are_refused_before_anything_start
         assert status == 400, refused
         assert refused["error"]["code"] == "VAL_002"
         assert refused["error"]["details"] == {
-            "declared": "malkuth/agent-base:0.1.0",
-            "built": "malkuth/agent-planner:0.4.0",
+            "declared": "aaestro/agent-base:0.1.0",
+            "built": "aaestro/agent-planner:0.4.0",
         }
-        assert docker("ps", "-aq", "--filter", "name=^malkuth-planner-") == ""
+        assert docker("ps", "-aq", "--filter", "name=^aaestro-planner-") == ""
     finally:
         api("DELETE", "/v1/agents/planner/materials")
         api("DELETE", "/v1/graphs/e2e-broken")
@@ -197,17 +197,17 @@ def test_claude_code_bakes_from_its_seed_deploys_and_completes_a_run(plane):
 
         built = cli("agent-build", "claude-code", "--wait", "--timeout-s", str(BUILD_DEADLINE_S))
         assert built.returncode == 0, built.stdout + built.stderr
-        assert json.loads(built.stdout)["image"] == "malkuth/agent-claude-code:0.1.0"
+        assert json.loads(built.stdout)["image"] == "aaestro/agent-claude-code:0.1.0"
 
         # --- 구운 뒤에는 배포되고, 구운 이미지로 돈다
         status, deployment = api("POST", "/v1/deployments", {"graph": "e2e-code"})
         assert status == 201, deployment
         deployment_id = deployment["deployment_id"]
         assert deployment["status"] == "ready", deployment
-        assert image_of("malkuth-claude-code-0") == "malkuth/agent-claude-code:0.1.0"
+        assert image_of("aaestro-claude-code-0") == "aaestro/agent-claude-code:0.1.0"
         loaded = docker(
             "exec",
-            "malkuth-claude-code-0",
+            "aaestro-claude-code-0",
             "python",
             "-c",
             "import agent; print(agent.ClaudeCodeExecutor.__name__)",
@@ -232,4 +232,4 @@ def test_claude_code_bakes_from_its_seed_deploys_and_completes_a_run(plane):
             api("DELETE", f"/v1/deployments/{deployment_id}")
         api("DELETE", "/v1/graphs/e2e-code")
         # 구운 이미지를 남기면 다음 실행이 **굽지 않고도** 태그를 찾는다 — 매번 시드에서 굽는다
-        docker("rmi", "-f", "malkuth/agent-claude-code:0.1.0", check=False)
+        docker("rmi", "-f", "aaestro/agent-claude-code:0.1.0", check=False)

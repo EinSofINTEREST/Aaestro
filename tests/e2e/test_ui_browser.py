@@ -68,7 +68,7 @@ def start_browser_server(playwright, attempts: int = 3):
     failures = []
     for _ in range(attempts):
         port = free_port()
-        name = f"malkuth-e2e-playwright-{os.getpid()}-{port}"
+        name = f"aaestro-e2e-playwright-{os.getpid()}-{port}"
         docker("rm", "-f", name, check=False)
         docker(
             "run",
@@ -196,7 +196,7 @@ def _compose_graph(page) -> None:
     page.fill("#graph-form [name=version]", "0.1.0")
     page.fill("#graph-form [name=description]", "clicked together in the ui")
     page.fill("#graph-form [name=goal]", "assemble a system by clicking")
-    page.fill("#graph-form [name=state_schema]", "malkuth.graphs.schemas:ResearchState")
+    page.fill("#graph-form [name=state_schema]", "aaestro.graphs.schemas:ResearchState")
 
     # 노드 — 에이전트는 카탈로그에서 온 드롭다운이다
     page.click("[data-add=node]")
@@ -243,7 +243,7 @@ def _deploy(page) -> None:
     # 배포는 에이전트가 healthy 가 될 때까지 기다린다 — manager 의 상한(기본 60s)보다
     # 짧게 잡으면 느린 기동에서 화면이 아니라 테스트가 먼저 포기한다
     row.locator("td.status-ready").wait_for(timeout=DEPLOY_TIMEOUT_MS)
-    assert "malkuth-planner-0" in deployed_containers()
+    assert "aaestro-planner-0" in deployed_containers()
 
 
 def _run(page) -> None:
@@ -302,13 +302,13 @@ MATERIAL_PATHS = [
 def test_the_page_checks_material_paths_like_the_server(page):
     """화면이 저장 전에 보여 주는 판정이 서버의 판정과 어긋나면, 통과시킨 것을 서버가 거절하거나
     막은 것을 서버가 받는다 — 같은 경로 표로 양쪽을 대조한다."""
-    from malkuth.core.errors import MalkuthError
-    from malkuth.materials import check_path
+    from aaestro.core.errors import AaestroError
+    from aaestro.materials import check_path
 
     def server_accepts(path: str) -> bool:
         try:
             check_path(path)
-        except MalkuthError:
+        except AaestroError:
             return False
         return True
 
@@ -351,7 +351,7 @@ def test_a_custom_agent_is_built_deployed_and_run_by_clicking(page):
         if leftover.is_dir() and not any(leftover.iterdir()):
             leftover.rmdir()  # 삭제는 매니페스트만 지운다 (#258)
         for version in ("0.1.0", "0.1.1"):
-            docker("rmi", "-f", f"malkuth/agent-{CUSTOM}:{version}", check=False)
+            docker("rmi", "-f", f"aaestro/agent-{CUSTOM}:{version}", check=False)
 
 
 def _status_includes(page, text: str, *, timeout: int = UI_TIMEOUT_MS) -> None:
@@ -391,7 +391,7 @@ def _fail_a_build_and_read_why(page) -> None:
     # --- 규약은 지키지만 굽는 도중 실패하는 Dockerfile
     _material_row(page, 0).locator("[name=material_path]").fill("Dockerfile")
     _material_row(page, 0).locator("[name=material_content]").fill(
-        "FROM malkuth/agent-base:0.1.0\nRUN echo broken-on-purpose && exit 3\n"
+        "FROM aaestro/agent-base:0.1.0\nRUN echo broken-on-purpose && exit 3\n"
     )
     page.click("#material-add")
     _material_row(page, 1).locator("[name=material_path]").fill("src/marker.py")
@@ -435,7 +435,7 @@ def _compose_custom_graph(page) -> None:
     page.fill("#graph-form [name=name]", GRAPH_NAME)
     page.fill("#graph-form [name=version]", "0.1.0")
     page.fill("#graph-form [name=goal]", "run a custom agent made in the ui")
-    page.fill("#graph-form [name=state_schema]", "malkuth.graphs.schemas:ResearchState")
+    page.fill("#graph-form [name=state_schema]", "aaestro.graphs.schemas:ResearchState")
     page.click("[data-add=node]")
     row = page.locator("#graph-nodes tbody tr").first
     row.locator("[name=node_id]").fill("planner")
@@ -468,7 +468,7 @@ def _build(page) -> None:
     tab(page, "agent")
     page.click("#image-build")
     page.wait_for_selector("#image-status.status-built", timeout=UI_TIMEOUT_MS * 3)
-    assert "malkuth/agent-ui-custom:0.1.1" in page.locator("#image-status").inner_text()
+    assert "aaestro/agent-ui-custom:0.1.1" in page.locator("#image-status").inner_text()
 
 
 def _deploy_run_and_tear_down_custom(page) -> None:
@@ -481,8 +481,8 @@ def _deploy_run_and_tear_down_custom(page) -> None:
     page.click("#deploy-form button[type=submit]")
     row = page.locator("#deployments tbody tr", has_text=GRAPH_NAME).first
     row.locator("td.status-ready").wait_for(timeout=DEPLOY_TIMEOUT_MS)
-    image = docker("inspect", "--format", "{{.Config.Image}}", f"malkuth-{CUSTOM}-0")
-    assert image == "malkuth/agent-ui-custom:0.1.1", "구운 이미지가 아닌 것으로 돌았다"
+    image = docker("inspect", "--format", "{{.Config.Image}}", f"aaestro-{CUSTOM}-0")
+    assert image == "aaestro/agent-ui-custom:0.1.1", "구운 이미지가 아닌 것으로 돌았다"
 
     _run(page)
 

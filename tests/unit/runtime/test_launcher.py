@@ -11,11 +11,11 @@ from pathlib import Path
 import pytest
 import yaml
 
-from malkuth.core.errors import ErrorCode, MalkuthError
-from malkuth.core.manifest import AgentManifest
-from malkuth.runtime.docker.engine import DockerEngine
-from malkuth.runtime.launcher import AgentLauncher
-from malkuth.runtime.tokens import AGENT_TOKEN_ENV
+from aaestro.core.errors import AaestroError, ErrorCode
+from aaestro.core.manifest import AgentManifest
+from aaestro.runtime.docker.engine import DockerEngine
+from aaestro.runtime.launcher import AgentLauncher
+from aaestro.runtime.tokens import AGENT_TOKEN_ENV
 from tests.fixtures.fake_docker import FakeDockerClient
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -137,7 +137,7 @@ async def test_launching_the_same_replica_twice_is_rejected():
     launch = launcher(client)
     await launch.start(manifest())
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await launch.start(manifest(), replica=0)
 
     assert exc_info.value.code == ErrorCode.RT_010
@@ -196,7 +196,7 @@ async def test_stop_all_cleans_every_agent_before_reporting_failure():
         )
     )
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await launch.stop_all()
 
     assert exc_info.value.code == ErrorCode.RT_005
@@ -211,8 +211,8 @@ async def test_stop_all_cleans_every_agent_before_reporting_failure():
 
 async def test_memory_endpoint_reaches_the_container():
     """주소와 불투명 토큰만 넣는다 — DB 자격증명은 컨테이너에 들어가지 않는다."""
-    from malkuth.memory.http import MEMORY_TOKEN_ENV, MEMORY_URL_ENV
-    from malkuth.runtime.launcher import MemoryEndpoint
+    from aaestro.memory.http import MEMORY_TOKEN_ENV, MEMORY_URL_ENV
+    from aaestro.runtime.launcher import MemoryEndpoint
 
     client = FakeDockerClient()
 
@@ -227,7 +227,7 @@ async def test_memory_endpoint_reaches_the_container():
 
 async def test_no_memory_endpoint_leaves_the_environment_alone():
     """메모리를 쓰지 않는 에이전트에게 빈 값을 넣으면 기동이 헷갈린다."""
-    from malkuth.memory.http import MEMORY_TOKEN_ENV, MEMORY_URL_ENV
+    from aaestro.memory.http import MEMORY_TOKEN_ENV, MEMORY_URL_ENV
 
     client = FakeDockerClient()
 
@@ -240,7 +240,7 @@ async def test_no_memory_endpoint_leaves_the_environment_alone():
 
 async def test_storage_credentials_never_reach_the_container():
     """09 Access Enforcement 1 — 저장소 자격증명은 서비스만 보유한다."""
-    from malkuth.runtime.launcher import MemoryEndpoint
+    from aaestro.runtime.launcher import MemoryEndpoint
 
     client = FakeDockerClient()
 

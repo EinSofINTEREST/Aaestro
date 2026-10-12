@@ -2,7 +2,7 @@
 
 **[한국어](../../ko/runbooks/incident-response.md)** | English
 
-How to respond when a Malkuth alert fires. Normative rules:
+How to respond when an Aaestro alert fires. Normative rules:
 [05-error-handling.md](../../../.claude/rules/05-error-handling.md).
 
 ## Severity
@@ -28,7 +28,7 @@ How to respond when a Malkuth alert fires. Normative rules:
 
 Task failures exceed 10% for one agent.
 
-1. `malkuth agent logs <agent>` — read the dominant `error_code`.
+1. `aaestro agent logs <agent>` — read the dominant `error_code`.
 2. `LLM_001` (rate limit) → see [ModelRateLimited](#modelratelimited).
    `LLM_005` (max turns) → the prompt is likely looping; check the promptset version.
    `MCP_003` → a tool is failing; see the Protocol dashboard.
@@ -37,9 +37,9 @@ Task failures exceed 10% for one agent.
 
 ### AgentDown
 
-`malkuth_agent_health == 0` for 3 minutes.
+`aaestro_agent_health == 0` for 3 minutes.
 
-1. `malkuth agent inspect <agent>` — compare the manifest against what actually loaded.
+1. `aaestro agent inspect <agent>` — compare the manifest against what actually loaded.
 2. A failed `initialize()` keeps the container from reaching Ready. The usual causes are
    `MCP_001` (a required MCP server failed to start) and `CFG_002` (a secret key does
    not resolve in any scope).
@@ -49,7 +49,7 @@ Task failures exceed 10% for one agent.
 
 More than five restarts in ten minutes.
 
-1. Check `reason` on `malkuth_container_restarts_total`. `RT_003` means OOM — raise
+1. Check `reason` on `aaestro_container_restarts_total`. `RT_003` means OOM — raise
    `runtime.resources.memory` or lower concurrency.
 2. Repeated `RT_001` usually means the image or entrypoint is wrong; the container never
    gets far enough to report health.
@@ -74,7 +74,7 @@ The provider is rejecting requests.
 A decisionset question answers `uncertain` more than half the time, so the decision model is
 mostly handing work back to the LLM path.
 
-1. Check `malkuth_decision_bands_total` per question — one question, or all of them? One
+1. Check `aaestro_decision_bands_total` per question — one question, or all of them? One
    question means its wording or bands; all of them means the provider or the locale.
 2. Re-run the calibration for that decisionset version (06 Calibration — the labeled set under
    the module's `calibration/`) and compare the report with the declared `act_at` / `reject_at`.
@@ -96,7 +96,7 @@ Decisions are falling back because the provider times out, errors, or its circui
 
 A service run is active but has made no progress for 30 minutes.
 
-1. Check `malkuth_service_idle_delay_seconds` — a run sitting at the idle ceiling is
+1. Check `aaestro_service_idle_delay_seconds` — a run sitting at the idle ceiling is
    **working as designed** if there is genuinely no input.
 2. If input exists, the watcher node is likely failing silently. Read the iteration logs
    (`iteration` field) and confirm the `is_idle` predicate is not always true.

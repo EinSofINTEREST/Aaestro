@@ -6,21 +6,21 @@
 set -euo pipefail
 
 ROOT="${1:-.}"
-ECHO_URL="${MALKUTH_ECHO_URL:-http://127.0.0.1:18081}"
+ECHO_URL="${AAESTRO_ECHO_URL:-http://127.0.0.1:18081}"
 
 say() { printf '\n== %s\n' "$1"; }
 
 say "1/3 declared contracts validate"
 # CLI 가 아직 설치되지 않은 환경(부분 배포)에서도 스모크가 멈추지 않도록,
 # entry point 가 없으면 모듈 경로로 떨어진다
-if command -v malkuth >/dev/null 2>&1; then
-  malkuth --root "$ROOT" validate
+if command -v aaestro >/dev/null 2>&1; then
+  aaestro --root "$ROOT" validate
 elif command -v uv >/dev/null 2>&1; then
-  uv run python -m malkuth.cli --root "$ROOT" validate
+  uv run python -m aaestro.cli --root "$ROOT" validate
 else
   # uv 도 없으면 현재 인터프리터로 — CLI 미설치 환경을 가정하면서
   # uv 를 전제하는 것은 모순이다
-  python3 -m malkuth.cli --root "$ROOT" validate
+  python3 -m aaestro.cli --root "$ROOT" validate
 fi
 
 say "2/3 agent reports healthy"

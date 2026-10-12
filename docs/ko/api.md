@@ -8,15 +8,15 @@ Control Plane 은 에이전트 컨테이너 **바깥의 모든 것**을 소유�
 하나다.
 
 ```bash
-python -m malkuth.orchestrator
+python -m aaestro.orchestrator
 ```
 
-`configs/{MALKUTH_ENV}.yaml` 을 읽는다. 어떤 표면이 열리는지는 그 파일이 정한다:
+`configs/{AAESTRO_ENV}.yaml` 을 읽는다. 어떤 표면이 열리는지는 그 파일이 정한다:
 
 | 표면 | 열리는 조건 |
 |---|---|
 | Run 조회·drain | 항상 |
-| 카탈로그·저작 | 항상 — `registry.roots` 는 `MALKUTH_REPO_ROOT` 기준으로 해석된다 |
+| 카탈로그·저작 | 항상 — `registry.roots` 는 `AAESTRO_REPO_ROOT` 기준으로 해석된다 |
 | 배포·run 제출·재개 | `orchestrator.deployment_store` 가 설정된 경우 |
 | 빌드 재료 | `orchestrator.material_store` 가 설정된 경우 — 아니면 라우트가 `400` (`CFG_001`) 로 답한다 |
 | 이미지 빌드, 커스텀 에이전트의 배포 게이트 | `orchestrator.material_store` **와** `orchestrator.build_store` 가 모두 설정된 경우 — 아니면 이미지 라우트가 없다 (`404`) |
@@ -33,7 +33,7 @@ python -m malkuth.orchestrator
 `/v1/*` 라우트가 그것을 bearer 토큰으로 요구한다:
 
 ```bash
-curl -H "Authorization: Bearer $MALKUTH_CONTROL_TOKEN" http://127.0.0.1:8700/v1/graphs
+curl -H "Authorization: Bearer $AAESTRO_CONTROL_TOKEN" http://127.0.0.1:8700/v1/graphs
 ```
 
 **토큰이 없으면 검사가 꺼지고 모든 라우트가 열린다.** 이 구성은 loopback 바인드에서만
@@ -274,11 +274,11 @@ curl -X PUT -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json
 
 ```json
 {"agent": "docs-custom", "version": "0.1.0", "status": "building",
- "image": "malkuth/agent-docs-custom:0.1.0", "error": null, "log": "",
+ "image": "aaestro/agent-docs-custom:0.1.0", "error": null, "log": "",
  "updated_at": "2026-09-14T11:02:03.123456+00:00"}
 ```
 
-빌더는 카탈로그와 스토어에서 임시 빌드 컨텍스트를 조립해 `malkuth/agent-<name>:<version>`
+빌더는 카탈로그와 스토어에서 임시 빌드 컨텍스트를 조립해 `aaestro/agent-<name>:<version>`
 으로 굽고, 그 디렉토리를 지운다:
 
 ```
@@ -292,7 +292,7 @@ src/              # 재료
 매니페스트의 `spec.entrypoint: agent:MyAgent` 는 `src/agent.py` 로 해석된다. 직접 쓴
 `Dockerfile` 은 다음을 지켜야 한다:
 
-- `FROM malkuth/agent-base:<tag>` 로 시작한다 — base 에 `agentd` 가 들어 있다
+- `FROM aaestro/agent-base:<tag>` 로 시작한다 — base 에 `agentd` 가 들어 있다
 - `root` 로 끝나지 않는다 (설치하려고 올라갔다 내려오는 것은 괜찮다)
 - `COPY`/`ADD` 는 컨텍스트 안에서만 — 절대 경로, `..`, 원격 URL 금지
 
@@ -318,9 +318,9 @@ The command '/bin/sh -c exit 3' returned a non-zero code: 3
 
 ```json
 {"agent": "docs-custom", "version": "0.1.2", "status": "failed",
- "image": "malkuth/agent-docs-custom:0.1.2", "needs_build": true,
- "error": "image build failed: malkuth/agent-docs-custom:0.1.2",
- "log": "Step 1/2 : FROM malkuth/agent-base:0.1.0\n ... returned a non-zero code: 3",
+ "image": "aaestro/agent-docs-custom:0.1.2", "needs_build": true,
+ "error": "image build failed: aaestro/agent-docs-custom:0.1.2",
+ "log": "Step 1/2 : FROM aaestro/agent-base:0.1.0\n ... returned a non-zero code: 3",
  "updated_at": "..."}
 ```
 
@@ -373,7 +373,7 @@ primary 와 같은 fallback 은 거절됩니다.
   "model_overrides": {},
   "agents": [
     {"name": "planner", "replica": 0, "container_id": "0f2edbe1aa5a",
-     "image": "malkuth/agent-base:0.1.0", "control_port": 32852, "a2a_port": 9100}
+     "image": "aaestro/agent-base:0.1.0", "control_port": 32852, "a2a_port": 9100}
   ]
 }
 ```
@@ -397,7 +397,7 @@ primary 와 같은 fallback 은 거절됩니다.
 - `400` (`VAL_001`) — 그래프가 검증을 통과하지 못했다. 아무것도 기동하지 않았다. `model_providers`
   검사도 여기에 해당한다: 모르는 provider, `runtime.egress_proxy.providers` 에 없는 provider,
   manifest 의 provider 집합을 벗어나는 override — 사유는 `details.findings` 에 실린다.
-- `400` (`VAL_002`) — 빌드 재료가 있는 에이전트가 빌드 태그(`malkuth/agent-<name>:<version>`)
+- `400` (`VAL_002`) — 빌드 재료가 있는 에이전트가 빌드 태그(`aaestro/agent-<name>:<version>`)
   와 다른 `runtime.image` 를 선언했다. 두 곳이 다른 이미지를 가리키면 무엇이 도는지 알 수 없다.
 - `400` (`VAL_002`) — `model_overrides` 가 그래프에 없는 노드를 가리키거나 override 본문이 잘못됐다
   (provider 만 적음, 모르는 키). 아무것도 기동하지 않았다.
@@ -526,7 +526,7 @@ orchestrator:
 
 ### 에이전트 신원
 
-배포는 에이전트마다 신원을 하나씩 발급해 `MALKUTH_ACCESS_CREDENTIAL` 로 주입한다. 레지스트리는
+배포는 에이전트마다 신원을 하나씩 발급해 `AAESTRO_ACCESS_CREDENTIAL` 로 주입한다. 레지스트리는
 SHA-256 해시만 저장하며, 값은 어떤 API 응답에도 실리지 않는다. 신원은 control plane 재시작을
 넘어 유지되고, 감독이 컨테이너를 교체하면 다시 주입되며, 배포를 해체하거나 되감는 순간 통하지
 않게 된다.
@@ -582,7 +582,7 @@ spec:
 ### `POST /v1/access/grants` — 권한 에이전트
 
 ```bash
-curl -X POST -H "Authorization: Bearer $MALKUTH_ACCESS_CREDENTIAL" \
+curl -X POST -H "Authorization: Bearer $AAESTRO_ACCESS_CREDENTIAL" \
   -H 'content-type: application/json' \
   -d '{"agent": "researcher", "kind": "egress", "target": "api.search.example.com",
        "ttl_s": 600, "reason": "fetch sources for run r-12", "requested_by": "researcher"}' \
@@ -603,7 +603,7 @@ curl -X POST -H "Authorization: Bearer $MALKUTH_ACCESS_CREDENTIAL" \
 }
 ```
 
-거절은 `403` + `ACC_003` 이며 로그와 계측(`malkuth_access_grants_total{op="refuse"}`)에 남는다.
+거절은 `403` + `ACC_003` 이며 로그와 계측(`aaestro_access_grants_total{op="refuse"}`)에 남는다.
 호출자가 `access_stewards` 에 없을 때, 자기 자신에게 부여할 때, 메모리 권한에 mode 를 빠뜨렸을
 때, 상한이나 `max_ttl_s` 를 넘을 때, 운영자가 회수한 것을 요청할 때 거절한다 — 회수를 되돌리는
 것은 운영자뿐이다. 모르거나 폐기된 신원은 `403` + `ACC_001`, 없는 에이전트는 `404` 다.
@@ -612,7 +612,7 @@ curl -X POST -H "Authorization: Bearer $MALKUTH_ACCESS_CREDENTIAL" \
 
 작업 에이전트는 부여 경로를 부르지 않는다. A2A 로 **권한 에이전트**에게 요청하고, 권한 에이전트가
 자기 신원으로 그 경로를 부른다. 참조 구현은 `agents/permission-agent`
-(`malkuth.access.steward:PermissionAgent`) 이고 `graphs/permissions.yaml` 로 배포한다. 규칙만으로
+(`aaestro.access.steward:PermissionAgent`) 이고 `graphs/permissions.yaml` 로 배포한다. 규칙만으로
 결정하며 매니페스트에 선언된 모델을 부르지 않는다 — 요청 문구로 무엇을 넘기도록 설득할 수 없다.
 어느 쪽이든 상한은 레지스트리가 강제한다.
 
@@ -765,13 +765,13 @@ Memory Service 는 환경에 아래 둘이 **모두** 있으면 **레지스트�
 
 | 변수 | 값 |
 |---|---|
-| `MALKUTH_ACCESS_URL` | Memory Service 에서 닿는 control plane 주소 |
-| `MALKUTH_ACCESS_ENFORCER_TOKEN` | control plane 의 `access_enforcer_token` |
+| `AAESTRO_ACCESS_URL` | Memory Service 에서 닿는 control plane 주소 |
+| `AAESTRO_ACCESS_ENFORCER_TOKEN` | control plane 의 `access_enforcer_token` |
 
 레지스트리 모드에서는:
 
 - **메모리 토큰을 발급하지 않는다.** 에이전트는 배포가 주입한 신원을 내민다. 레지스트리가 설정된
-  control plane 은 그 신원을 `MALKUTH_MEMORY_TOKEN` 으로 넣으며, 정적 토큰으로 되돌아가지 않는다.
+  control plane 은 그 신원을 `AAESTRO_MEMORY_TOKEN` 으로 넣으며, 정적 토큰으로 되돌아가지 않는다.
 - **모든 요청을 판정한다.** 서비스는 에이전트의 현재 선언으로 별칭을 해석한 뒤 그 space id 에 대해
   `ro`(읽기·검색·latest) 또는 `rw`(append) 를 묻는다. 거부는 기존과 같은 `401` + `MEM_001` 이고
   감사 로그에 남는다.
@@ -792,7 +792,7 @@ Memory Service 는 환경에 아래 둘이 **모두** 있으면 **레지스트�
 
 ### 이그레스 강제
 
-이그레스 프록시(`python -m malkuth.egress`, 이미지 `malkuth/egress-proxy`)는 에이전트가 바깥으로 나가는
+이그레스 프록시(`python -m aaestro.egress`, 이미지 `aaestro/egress-proxy`)는 에이전트가 바깥으로 나가는
 길이다. 도구를 호스팅하지 않고, 판정하고 전달만 한다.
 
 | 창구 | 에이전트가 보내는 것 | 판정 |
@@ -808,9 +808,9 @@ control plane 에서 켠다:
 ```yaml
 runtime:
   egress_proxy:
-    connect_url: http://malkuth-egress:8080
-    providers_url: http://malkuth-egress:8081
-    container: malkuth-egress   # MCP 사이드카를 쓸 때만 필요 — 아래 참조
+    connect_url: http://aaestro-egress:8080
+    providers_url: http://aaestro-egress:8081
+    container: aaestro-egress   # MCP 사이드카를 쓸 때만 필요 — 아래 참조
     providers: [anthropic]      # 프록시가 종단하는 provider — 실제 upstream 구성과 맞춘다 (기본값 [anthropic])
 ```
 
@@ -863,13 +863,13 @@ spec:
 
 | 변수 | 의미 |
 |---|---|
-| `MALKUTH_ACCESS_URL`, `MALKUTH_ACCESS_ENFORCER_TOKEN` | 레지스트리 — 둘 다 필수, 없으면 기동 거부 |
+| `AAESTRO_ACCESS_URL`, `AAESTRO_ACCESS_ENFORCER_TOKEN` | 레지스트리 — 둘 다 필수, 없으면 기동 거부 |
 | `ANTHROPIC_API_KEY` | 프록시가 모델 호출에 붙이는 키 |
-| `MALKUTH_EGRESS_ANTHROPIC_UPSTREAM` | 모델 호출이 가는 곳 (기본 `https://api.anthropic.com`) |
-| `MALKUTH_EGRESS_ALLOW_PLAINTEXT_UPSTREAM` | `true` 이고 목적지가 `MALKUTH_EGRESS_PRIVATE_DESTINATIONS` 에도 **있을 때만** 평문 `http` 를 받는다 — 사설망의 테스트 대역용. 요청마다 이름을 풀어 사설 주소로만 붙고, 목록의 이름이 공인 주소로 풀리면 거부한다(`502`). 공인 주소로는 설정을 어떻게 해도 평문이 나가지 않는다 |
-| `MALKUTH_EGRESS_PORT`, `MALKUTH_EGRESS_PROVIDER_PORT` | CONNECT 창구와 provider 창구 (기본 `8080`, `8081`) |
-| `MALKUTH_EGRESS_MODE` | `enforce`(기본) 또는 `record` |
-| `MALKUTH_EGRESS_PRIVATE_DESTINATIONS` | 사설 주소로 풀려도 되는 목적지, 쉼표로 |
+| `AAESTRO_EGRESS_ANTHROPIC_UPSTREAM` | 모델 호출이 가는 곳 (기본 `https://api.anthropic.com`) |
+| `AAESTRO_EGRESS_ALLOW_PLAINTEXT_UPSTREAM` | `true` 이고 목적지가 `AAESTRO_EGRESS_PRIVATE_DESTINATIONS` 에도 **있을 때만** 평문 `http` 를 받는다 — 사설망의 테스트 대역용. 요청마다 이름을 풀어 사설 주소로만 붙고, 목록의 이름이 공인 주소로 풀리면 거부한다(`502`). 공인 주소로는 설정을 어떻게 해도 평문이 나가지 않는다 |
+| `AAESTRO_EGRESS_PORT`, `AAESTRO_EGRESS_PROVIDER_PORT` | CONNECT 창구와 provider 창구 (기본 `8080`, `8081`) |
+| `AAESTRO_EGRESS_MODE` | `enforce`(기본) 또는 `record` |
+| `AAESTRO_EGRESS_PRIVATE_DESTINATIONS` | 사설 주소로 풀려도 되는 목적지, 쉼표로 |
 
 응답: 거부된 목적지는 `403`(`ACC_001`), 레지스트리에 닿지 않고 캐시도 없어 판정하지 못하면
 `503`(`ACC_002`), 신원이 없거나 모르는 신원이면 CONNECT 는 `407`, provider 창구는 `401` 이다. 설정 형식이
@@ -878,7 +878,7 @@ spec:
 
 **사설 주소.** 프록시는 외부 네트워크에 있으므로 에이전트가 닿지 못하는 곳 — 클라우드 메타데이터 주소,
 호스트의 서비스 — 에 닿을 수 있다. 사설·루프백·링크 로컬·공유(CGNAT) 주소로 풀리는 목적지는
-`MALKUTH_EGRESS_PRIVATE_DESTINATIONS` 에 없으면 거부하고, 프록시는 확인한 주소로 연결하므로 판정과 연결
+`AAESTRO_EGRESS_PRIVATE_DESTINATIONS` 에 없으면 거부하고, 프록시는 확인한 주소로 연결하므로 판정과 연결
 사이에 이름이 다른 주소로 바뀌지 못한다.
 
 **기록 모드.** `record` 는 거부를 로그(`egress denied but recorded only`)로 남기고 통과시킨다. 강제하기
@@ -910,13 +910,13 @@ spec:
 
 | 변수 | 의미 |
 |---|---|
-| `MALKUTH_REPO_ROOT` | 읽기 전용으로 마운트한 선언 — 없으면 원격 MCP 호출은 `404` |
-| `MALKUTH_EGRESS_MCP_TOKENS` | 프록시가 MCP 서버에 보내도 되는 자격 이름, 쉼표로. 각 값은 프록시 env 에 둔다 |
+| `AAESTRO_REPO_ROOT` | 읽기 전용으로 마운트한 선언 — 없으면 원격 MCP 호출은 `404` |
+| `AAESTRO_EGRESS_MCP_TOKENS` | 프록시가 MCP 서버에 보내도 되는 자격 이름, 쉼표로. 각 값은 프록시 env 에 둔다 |
 
 **목록에 있는 자격 이름만 보낸다.** 선언이 다른 비밀을 `auth.token_env` 로 적으면 그 값 대신
 `502`(`CFG_002`) 로 답한다. 목록에도 프록시가 다른 용도로 쥔 비밀은 올리지 못한다 — `ANTHROPIC_API_KEY` 나
-`MALKUTH_*` 이름이 있으면 기동을 거부한다(`CFG_001`). 원격 MCP 서버는 `https` 여야 한다: 평문 `http` 는
-`MALKUTH_EGRESS_ALLOW_PLAINTEXT_UPSTREAM=true` 이고 **동시에** 그 서버가 `MALKUTH_EGRESS_PRIVATE_DESTINATIONS`
+`AAESTRO_*` 이름이 있으면 기동을 거부한다(`CFG_001`). 원격 MCP 서버는 `https` 여야 한다: 평문 `http` 는
+`AAESTRO_EGRESS_ALLOW_PLAINTEXT_UPSTREAM=true` 이고 **동시에** 그 서버가 `AAESTRO_EGRESS_PRIVATE_DESTINATIONS`
 에 있을 때만 받고, 아니면 거부한다(`502`). 스위치 하나로는 아무것도 열리지 않으므로 운영 설정에 스위치가 남아
 있어도 공인 호스트로 자격이 평문으로 나가지 않는다. 사설 주소로 풀리는 서버는 여느 목적지처럼 그 목록에 있어야
 한다.
@@ -955,10 +955,10 @@ spec:
         allowed_tools: [navigate, screenshot]
 ```
 
-runtime 이 에이전트보다 먼저 `malkuth-<agent>--mcp-<server>` 라는 이름으로 띄우고, 배포를 해체하거나 되감을
+runtime 이 에이전트보다 먼저 `aaestro-<agent>--mcp-<server>` 라는 이름으로 띄우고, 배포를 해체하거나 되감을
 때 지운다. 주소는 그 이름에서 나온다 — 사이드카는 URL 을 선언하지 않는다.
 
-- **자기 네트워크.** 에이전트의 사이드카는 에이전트 네트워크가 아니라 내부 네트워크 `malkuth-<agent>--mcp` 에
+- **자기 네트워크.** 에이전트의 사이드카는 에이전트 네트워크가 아니라 내부 네트워크 `aaestro-<agent>--mcp` 에
   있다. `runtime.egress_proxy` 를 켜면 거기 함께 붙는 컨테이너는 프록시뿐이다: 에이전트는 원격 서버처럼
   `…/mcp/<server>` 를 부르고, 프록시가 `tools/call` 마다 `mcp_tool` 을 판정한다. 도구 하나를 회수하면 그
   도구의 다음 호출이 거부되고 같은 서버의 다른 도구는 계속 동작하며, 아무것도 재시작하지 않는다. 사이드카는
@@ -987,7 +987,7 @@ runtime 이 에이전트보다 먼저 `malkuth-<agent>--mcp-<server>` 라는 이
 
 1. 호출자는 **자기 신원**으로 인증해 피호출자 하나에 쓸 **표**를 레지스트리에서 받는다. 표는 5분
    살고, 만료 30초 전까지 재사용한다.
-2. 호출자는 표를 `x-malkuth-a2a-ticket` 에 실어 보낸다. 호출자 신원 자체는 피호출자에게 가지 않는다.
+2. 호출자는 표를 `x-aaestro-a2a-ticket` 에 실어 보낸다. 호출자 신원 자체는 피호출자에게 가지 않는다.
 3. 피호출자의 A2A 서버는 **자기 신원**으로 인증해 표를 레지스트리에 보낸다. 레지스트리는 다른
    피호출자의 표, 만료된 표, 호출자 신원이 폐기된 표를 거부하고, 그 밖에는 (호출자, 피호출자) 에 대해
    `a2a` 를 판정한다.
@@ -1047,18 +1047,18 @@ runtime 이 에이전트보다 먼저 `malkuth-<agent>--mcp-<server>` 라는 이
 
 | API | CLI |
 |---|---|
-| `POST /v1/runs` | `malkuth run --deployment <id> --input '{...}'` |
-| `GET /v1/runs` | `malkuth run-list [--mode service]` |
-| `POST /v1/runs/{id}/drain` | `malkuth run-drain <id>` |
-| `POST /v1/runs/{id}/resume` | `malkuth run-resume <id>` |
-| `PUT /v1/agents/{name}/materials` | `malkuth agent-push <name> <directory>` |
-| `POST` + `GET /v1/agents/{name}/image` | `malkuth agent-build <name> [--wait]` |
+| `POST /v1/runs` | `aaestro run --deployment <id> --input '{...}'` |
+| `GET /v1/runs` | `aaestro run-list [--mode service]` |
+| `POST /v1/runs/{id}/drain` | `aaestro run-drain <id>` |
+| `POST /v1/runs/{id}/resume` | `aaestro run-resume <id>` |
+| `PUT /v1/agents/{name}/materials` | `aaestro agent-push <name> <directory>` |
+| `POST` + `GET /v1/agents/{name}/image` | `aaestro agent-build <name> [--wait]` |
 
-이 명령들은 `--control-url` 과 `--control-token` (또는 `MALKUTH_CONTROL_TOKEN`) 을 받는다.
+이 명령들은 `--control-url` 과 `--control-token` (또는 `AAESTRO_CONTROL_TOKEN`) 을 받는다.
 `agent-push` 는 디렉토리를 읽되 `__pycache__` 같은 캐시 디렉토리는 건너뛰고 심볼릭 링크는
 거절한다. `agent-build --wait` 은 빌드가 실패하면 로그 꼬리를 출력하고 0 이 아닌 코드로
 끝난다.
 
-`malkuth validate` 를 표에서 뺀 것은 의도적이다 — 저장소를 직접 읽는 **로컬** 명령이고
+`aaestro validate` 를 표에서 뺀 것은 의도적이다 — 저장소를 직접 읽는 **로컬** 명령이고
 control plane 플래그를 받지 않는다. 저장하지 않은 초안을 검증하는 원격 대응이
 `POST /v1/validate` 다. 전체 명령 레퍼런스는 [루트 README](../../README.md#commands) 참조.

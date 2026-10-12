@@ -5,10 +5,10 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from malkuth.core.errors import ErrorCategory, ErrorCode, MalkuthError
-from malkuth.orchestrator.control import create_app
-from malkuth.orchestrator.runstore import InMemoryRunStore
-from malkuth.runtime.images import BuildRecord, BuildStatus
+from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.orchestrator.control import create_app
+from aaestro.orchestrator.runstore import InMemoryRunStore
+from aaestro.runtime.images import BuildRecord, BuildStatus
 
 
 class FakeBuilder:
@@ -17,7 +17,7 @@ class FakeBuilder:
     class _Catalog:
         def agent(self, name: str):
             if name == "nobody":
-                raise MalkuthError(
+                raise AaestroError(
                     category=ErrorCategory.NOT_FOUND, code=ErrorCode.NF_001, message="unknown agent"
                 )
             return type("M", (), {"metadata": type("Meta", (), {"version": "0.1.0"})()})()
@@ -38,13 +38,13 @@ class FakeBuilder:
         """굽지 않고 접수만 한다 — 라우트가 기다리지 않는지 보려면 끝나지 않아야 한다."""
         self.catalog.agent(agent)
         if agent not in self.custom:
-            raise MalkuthError(
+            raise AaestroError(
                 category=ErrorCategory.VALIDATION,
                 code=ErrorCode.VAL_002,
                 message="agent has no build materials",
             )
         if agent in self.running:
-            raise MalkuthError(
+            raise AaestroError(
                 category=ErrorCategory.RUNTIME,
                 code=ErrorCode.RT_011,
                 message="an image build for this version is already running",
@@ -62,7 +62,7 @@ class FakeBuilder:
             agent=agent,
             version="0.1.0",
             status=status,
-            image=f"malkuth/agent-{agent}:0.1.0",
+            image=f"aaestro/agent-{agent}:0.1.0",
             log="Step 1/3" if status is BuildStatus.BUILT else "",
         )
         self.records[agent, "0.1.0"] = record
@@ -89,7 +89,7 @@ async def test_a_build_is_accepted_without_waiting_for_it(api):
     assert response.status_code == 202
     body = response.json()
     assert body["status"] == BuildStatus.BUILDING
-    assert body["image"] == "malkuth/agent-custom:0.1.0"
+    assert body["image"] == "aaestro/agent-custom:0.1.0"
 
 
 async def test_a_second_build_while_one_runs_is_409(api, builder):
@@ -110,7 +110,7 @@ async def test_an_agent_that_was_never_built_says_so(api):
 
     assert body["status"] is None
     assert body["needs_build"] is True
-    assert body["image"] == "malkuth/agent-custom:0.1.0"
+    assert body["image"] == "aaestro/agent-custom:0.1.0"
 
 
 async def test_the_status_follows_the_build(api, builder):

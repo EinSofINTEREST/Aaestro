@@ -1,6 +1,6 @@
 """Declarative edge conditions (#316).
 
-조건이 코드(``malkuth.graphs.conditions``)에만 있으면 새 그래프마다 ``src/`` 를 고쳐야 한다.
+조건이 코드(``aaestro.graphs.conditions``)에만 있으면 새 그래프마다 ``src/`` 를 고쳐야 한다.
 선언식은 YAML 안에서 끝나되 순수 판정이어야 한다 — 함수 호출·임의 이름·속성 접근은 읽는
 시점에 거부한다.
 """
@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import pytest
 
-from malkuth.core.conditions import is_import_ref, parse_condition
-from malkuth.core.errors import MalkuthError
+from aaestro.core.conditions import is_import_ref, parse_condition
+from aaestro.core.errors import AaestroError
 
 STATE = {
     "needs_research": True,
@@ -69,7 +69,7 @@ def test_a_condition_reads_the_state(expression, expected):
 )
 def test_anything_outside_the_grammar_is_refused_when_read(expression):
     """run 도중에야 드러나면 그래프가 반쯤 돈 뒤 멈춘다 — 읽는 시점에 GRAPH_001."""
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         parse_condition(expression)
 
     assert exc_info.value.code == "GRAPH_001"
@@ -79,7 +79,7 @@ def test_an_uncomparable_value_is_an_error_not_a_silent_false():
     """조용히 거짓이면 다른 가지로 새어 나간다."""
     predicate = parse_condition("state.plan > 3")
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         predicate(STATE)
 
     assert exc_info.value.code == "GRAPH_003"
@@ -88,7 +88,7 @@ def test_an_uncomparable_value_is_an_error_not_a_silent_false():
 @pytest.mark.parametrize(
     ("condition", "expected"),
     [
-        ("malkuth.graphs.conditions:needs_research", True),
+        ("aaestro.graphs.conditions:needs_research", True),
         ("state.needs_research", False),
         ("state.meta.stage == 'x:y'", False),
     ],

@@ -1,6 +1,6 @@
 {
-  "title": "Malkuth — System",
-  "uid": "malkuth-system",
+  "title": "Aaestro — System",
+  "uid": "aaestro-system",
   "description": "Container counts, memory service load, index lag",
   "panels": [
     {
@@ -8,7 +8,7 @@
       "type": "timeseries",
       "targets": [
         {
-          "expr": "malkuth_containers_running"
+          "expr": "aaestro_containers_running"
         }
       ]
     },
@@ -17,7 +17,7 @@
       "type": "timeseries",
       "targets": [
         {
-          "expr": "sum by (agent) (rate(malkuth_container_restarts_total[15m]))"
+          "expr": "sum by (agent) (rate(aaestro_container_restarts_total[15m]))"
         }
       ]
     },
@@ -26,7 +26,7 @@
       "type": "timeseries",
       "targets": [
         {
-          "expr": "sum by (space, op, status) (rate(malkuth_memory_operations_total[5m]))"
+          "expr": "sum by (space, op, status) (rate(aaestro_memory_operations_total[5m]))"
         }
       ]
     },
@@ -35,7 +35,7 @@
       "type": "timeseries",
       "targets": [
         {
-          "expr": "histogram_quantile(0.95, sum by (le, space) (rate(malkuth_memory_search_duration_seconds_bucket[5m])))"
+          "expr": "histogram_quantile(0.95, sum by (le, space) (rate(aaestro_memory_search_duration_seconds_bucket[5m])))"
         }
       ]
     },
@@ -44,7 +44,7 @@
       "type": "timeseries",
       "targets": [
         {
-          "expr": "malkuth_memory_entries"
+          "expr": "aaestro_memory_entries"
         }
       ]
     },
@@ -53,7 +53,7 @@
       "type": "timeseries",
       "targets": [
         {
-          "expr": "malkuth_memory_index_lag_seconds"
+          "expr": "aaestro_memory_index_lag_seconds"
         }
       ]
     },
@@ -62,7 +62,7 @@
       "type": "timeseries",
       "targets": [
         {
-          "expr": "sum by (resource, decision, source) (rate(malkuth_access_decisions_total[5m]))"
+          "expr": "sum by (resource, decision, source) (rate(aaestro_access_decisions_total[5m]))"
         }
       ]
     },
@@ -71,7 +71,7 @@
       "type": "timeseries",
       "targets": [
         {
-          "expr": "sum by (op, decided_by) (increase(malkuth_access_grants_total[1h]))"
+          "expr": "sum by (op, decided_by) (increase(aaestro_access_grants_total[1h]))"
         }
       ]
     },
@@ -80,7 +80,7 @@
       "type": "stat",
       "targets": [
         {
-          "expr": "malkuth_access_registry_reachable"
+          "expr": "aaestro_access_registry_reachable"
         }
       ]
     },
@@ -89,7 +89,7 @@
       "type": "timeseries",
       "targets": [
         {
-          "expr": "sum by (component) (rate(malkuth_access_cache_invalidations_total[5m]))"
+          "expr": "sum by (component) (rate(aaestro_access_cache_invalidations_total[5m]))"
         }
       ]
     }

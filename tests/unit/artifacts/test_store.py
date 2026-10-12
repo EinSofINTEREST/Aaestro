@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import pytest
 
-from malkuth.artifacts import FilesystemArtifactStore, parse_ref
-from malkuth.artifacts.store import ArtifactRef, digest_key, validate_key
-from malkuth.core.errors import ErrorCode, MalkuthError
+from aaestro.artifacts import FilesystemArtifactStore, parse_ref
+from aaestro.artifacts.store import ArtifactRef, digest_key, validate_key
+from aaestro.core.errors import AaestroError, ErrorCode
 
 
 @pytest.fixture
@@ -46,7 +46,7 @@ async def test_nested_keys_are_supported(store):
 
 
 async def test_an_unknown_reference_is_not_found(store):
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await store.get("artifact://researcher/never-stored")
 
     assert exc_info.value.code == ErrorCode.NF_001
@@ -68,7 +68,7 @@ async def test_storing_the_same_key_twice_overwrites(store):
 )
 async def test_a_key_cannot_escape_the_store_root(store, key):
     """`../` 한 조각이면 루트 밖 어디든 쓸 수 있다."""
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await store.put(key, b"x")
 
     assert exc_info.value.code == ErrorCode.VAL_002
@@ -81,7 +81,7 @@ def test_safe_keys_are_accepted(key):
 
 async def test_a_traversing_reference_is_rejected_on_read(store):
     """쓰기만 막고 읽기를 열어두면 탈출 경로가 그대로 남는다."""
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await store.get("artifact://researcher/../../etc/passwd")
 
     assert exc_info.value.code == ErrorCode.VAL_002
@@ -92,7 +92,7 @@ async def test_a_traversing_reference_is_rejected_on_read(store):
 
 async def test_a_reference_from_another_scope_is_refused(store):
     """다른 스코프의 참조를 읽어주면 스코프 경계가 무의미해진다."""
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await store.get("artifact://someone-else/thing")
 
     assert exc_info.value.code == ErrorCode.NF_001
@@ -123,7 +123,7 @@ def test_a_reference_round_trips():
     ["not-a-ref", "artifact://", "artifact://scope", "http://scope/key", ""],
 )
 def test_a_malformed_reference_is_rejected(raw):
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         parse_ref(raw)
 
     assert exc_info.value.code == ErrorCode.VAL_002

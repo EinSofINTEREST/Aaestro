@@ -8,7 +8,7 @@
 - 적용 후에도 호스트가 먼저 여는 연결(control plane → 에이전트)은 된다
 - 제거하면 원래대로 돌아간다
 
-**호스트 방화벽(INPUT 체인)을 바꾼다** — 기본 E2E 에서는 건너뛰고 ``MALKUTH_E2E_HOST_FIREWALL=1``
+**호스트 방화벽(INPUT 체인)을 바꾼다** — 기본 E2E 에서는 건너뛰고 ``AAESTRO_E2E_HOST_FIREWALL=1``
 일 때만 돈다. 규칙은 이 테스트가 만든 네트워크의 브리지에만 걸고, 끝나면 반드시 지운다. iptables 는
 ``--net=host --cap-add NET_ADMIN`` 컨테이너로 실행하므로 호스트에 root 셸이 없어도 된다.
 """
@@ -31,14 +31,14 @@ pytestmark = [
     pytest.mark.e2e,
     requires_docker,
     pytest.mark.skipif(
-        os.environ.get("MALKUTH_E2E_HOST_FIREWALL") != "1",
-        reason="changes the host firewall — set MALKUTH_E2E_HOST_FIREWALL=1 to run",
+        os.environ.get("AAESTRO_E2E_HOST_FIREWALL") != "1",
+        reason="changes the host firewall — set AAESTRO_E2E_HOST_FIREWALL=1 to run",
     ),
 ]
 
-NETWORK = "malkuth-e2e-isolate"
-AGENT = "malkuth-e2e-isolate-agent"
-IPTABLES_IMAGE = "malkuth/e2e-iptables:0.1.0"
+NETWORK = "aaestro-e2e-isolate"
+AGENT = "aaestro-e2e-isolate-agent"
+IPTABLES_IMAGE = "aaestro/e2e-iptables:0.1.0"
 ADDRESS_FORMAT = '{{(index .NetworkSettings.Networks "' + NETWORK + '").IPAddress}}'
 SCRIPT = REPO_ROOT / "deployments" / "docker" / "isolate-agent-network.sh"
 PROBE = """
@@ -91,7 +91,7 @@ def isolated(tmp_path: Path) -> Iterator[dict[str, str]]:
     docker(
         "run", "-d", "--name", AGENT, "--network", NETWORK,
         "--read-only", "--user", "1000:1000", "--cap-drop", "ALL",
-        "--entrypoint", "python", "malkuth/agent-base:0.1.0", "-m", "http.server", "8080",
+        "--entrypoint", "python", "aaestro/agent-base:0.1.0", "-m", "http.server", "8080",
     )  # fmt: skip
     port = free_port()
     handler = http.server.SimpleHTTPRequestHandler

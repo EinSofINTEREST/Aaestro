@@ -36,7 +36,7 @@ from tests.e2e.test_stack import docker, requires_docker
 
 pytestmark = [pytest.mark.e2e, requires_docker]
 
-WRITER = "malkuth-writer-0"
+WRITER = "aaestro-writer-0"
 SLOW_SERVER = {
     "name": "slow",
     "transport": "stdio",
@@ -69,7 +69,7 @@ def plane_with(tmp_path: Path, grace: float, ready_timeout: float) -> Iterator[d
     tokens_path = tmp_path / "memory.json"
     tokens_path.write_text(json.dumps(memory_tokens()), encoding="utf-8")
     process = start_plane(
-        config_dir, tokens_path, env={"MALKUTH_REPO_ROOT": str(workspace(tmp_path))}
+        config_dir, tokens_path, env={"AAESTRO_REPO_ROOT": str(workspace(tmp_path))}
     )
     try:
         until(plane_healthy, what="control plane health")

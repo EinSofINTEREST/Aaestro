@@ -11,10 +11,10 @@ import asyncio
 import pytest
 from fastapi.testclient import TestClient
 
-from malkuth.agentd.server import AgentRuntime, create_app
-from malkuth.core.agent import ComponentHealth, HealthState, HealthStatus, TaskResult, TaskStatus
-from malkuth.core.errors import ErrorCategory, ErrorCode, MalkuthError
-from malkuth.core.events import DoneEvent, TokenEvent
+from aaestro.agentd.server import AgentRuntime, create_app
+from aaestro.core.agent import ComponentHealth, HealthState, HealthStatus, TaskResult, TaskStatus
+from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.core.events import DoneEvent, TokenEvent
 from tests.fixtures.builders import make_task
 
 TOKEN = "agent-token"
@@ -189,7 +189,7 @@ def test_structured_error_keeps_its_payload():
     400 으로 답하면 "요청이 잘못됐다" 는 뜻이라 호출자가 입력을 의심하고,
     05 의 사고 대응에서도 서버 결함이 4xx 버킷에 숨는다.
     """
-    error = MalkuthError(
+    error = AaestroError(
         category=ErrorCategory.MODEL,
         code=ErrorCode.LLM_005,
         message="max turns exceeded",
@@ -204,7 +204,7 @@ def test_structured_error_keeps_its_payload():
 
 def test_retryable_error_reports_service_unavailable():
     """재시도 가능 실패는 503 이어야 호출자가 재시도를 판단할 수 있다."""
-    error = MalkuthError(
+    error = AaestroError(
         category=ErrorCategory.TIMEOUT,
         code=ErrorCode.TO_001,
         message="task timeout",
@@ -294,10 +294,10 @@ def test_reload_replaces_the_card_the_hook_returns():
 
 
 def test_a_failed_reload_is_a_typed_error_and_keeps_the_card():
-    from malkuth.core.errors import ErrorCategory, ErrorCode, MalkuthError
+    from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 
     async def reload() -> dict:
-        raise MalkuthError(
+        raise AaestroError(
             category=ErrorCategory.MODULE, code=ErrorCode.MOD_001, message="promptset not found"
         )
 

@@ -8,10 +8,10 @@ from __future__ import annotations
 
 import pytest
 
-from malkuth.core.agent import TraceContext
-from malkuth.core.errors import ErrorCategory, MalkuthError
-from malkuth.orchestrator.topology import ConnectionSpec
-from malkuth.protocols.a2a.allowlist import Allowlist, Edge, edges_from, issue_token
+from aaestro.core.agent import TraceContext
+from aaestro.core.errors import AaestroError, ErrorCategory
+from aaestro.orchestrator.topology import ConnectionSpec
+from aaestro.protocols.a2a.allowlist import Allowlist, Edge, edges_from, issue_token
 
 SECRET = b"runtime-signing-secret"
 
@@ -55,7 +55,7 @@ def test_mutual_declaration_enables_both_directions():
 def test_undeclared_call_is_a2a_004():
     allowlist = make_allowlist(("researcher", "planner"))
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         allowlist.check_call("writer", "planner", trace())
 
     assert exc_info.value.code == "A2A_004"
@@ -70,7 +70,7 @@ def test_group_membership_grants_nothing():
     """
     allowlist = make_allowlist(("researcher", "planner"))
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         allowlist.check_call("researcher", "summarizer", trace())
 
     assert exc_info.value.code == "A2A_004"
@@ -114,7 +114,7 @@ def test_depth_limit_blocks_deep_delegation():
     """순환 위임 폭주를 막는 유일한 장치."""
     allowlist = make_allowlist(("a", "b"), max_depth=3)
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         allowlist.check_call("a", "b", trace(depth=3))
 
     assert exc_info.value.code == "A2A_005"
@@ -126,7 +126,7 @@ def test_allowlist_is_checked_before_depth():
     """선언 위반이 먼저다 — 깊이만 줄여도 통과하는 것처럼 보이면 안 된다."""
     allowlist = make_allowlist(("a", "b"), max_depth=1)
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         allowlist.check_call("x", "y", trace(depth=9))
 
     assert exc_info.value.code == "A2A_004"
@@ -153,7 +153,7 @@ def test_wrong_token_is_rejected():
     """caller 가 이름을 주장하는 것만으로는 부족하다 — 이중 방어의 두 번째 축."""
     allowlist = make_allowlist(("researcher", "planner"))
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         allowlist.verify("researcher", "planner", "forged")
 
     assert exc_info.value.code == "A2A_004"
@@ -163,7 +163,7 @@ def test_token_from_another_edge_does_not_transfer():
     allowlist = make_allowlist(("a", "b"), ("c", "b"))
     other = allowlist.token_for("c", "b")
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         allowlist.verify("a", "b", other)
 
     assert exc_info.value.code == "A2A_004"
@@ -172,7 +172,7 @@ def test_token_from_another_edge_does_not_transfer():
 def test_undeclared_edge_gets_no_token():
     allowlist = make_allowlist(("a", "b"))
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         allowlist.token_for("x", "y")
 
     assert exc_info.value.code == "A2A_004"
@@ -207,7 +207,7 @@ def test_edges_are_built_from_graph_connections():
 
 def test_empty_secret_is_rejected():
     """빈 secret 이면 token 을 누구나 계산할 수 있어 callee 측 방어가 무력화된다."""
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         Allowlist(edges=frozenset({Edge(caller="a", callee="b")}), secret=b"")
 
     assert exc_info.value.code == "CFG_002"
@@ -221,7 +221,7 @@ def test_forged_token_from_an_empty_key_is_rejected():
     allowlist = make_allowlist(("researcher", "planner"))
     forged = hmac.new(b"", b"researcher->planner", hashlib.sha256).hexdigest()
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         allowlist.verify("researcher", "planner", forged)
 
     assert exc_info.value.code == "A2A_004"
@@ -231,7 +231,7 @@ def test_verify_attributes_the_error_to_the_callee():
     """수신 측 판정이므로 callee 에 귀속한다 — caller 이름으로 우리 로그가 오염되면 안 된다."""
     allowlist = make_allowlist(("researcher", "planner"))
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         allowlist.verify("researcher", "planner", "forged")
 
     assert exc_info.value.agent == "planner"
@@ -240,7 +240,7 @@ def test_verify_attributes_the_error_to_the_callee():
 def test_caller_side_error_stays_with_the_caller():
     allowlist = make_allowlist(("researcher", "planner"))
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         allowlist.check_call("writer", "planner", trace())
 
     assert exc_info.value.agent == "writer"
@@ -248,7 +248,7 @@ def test_caller_side_error_stays_with_the_caller():
 
 def test_details_cannot_overwrite_the_standard_fields():
     """details 가 호출 방향을 덮어쓰면 로그·메트릭이 조용히 틀어진다."""
-    from malkuth.protocols.a2a.errors import a2a_error
+    from aaestro.protocols.a2a.errors import a2a_error
 
     error = a2a_error(
         "A2A_004",

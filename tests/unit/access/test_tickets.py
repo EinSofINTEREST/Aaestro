@@ -10,12 +10,12 @@ from pathlib import Path
 
 import pytest
 
-from malkuth.access.baselines import A2ABaseline
-from malkuth.access.model import ResourceKind
-from malkuth.access.registry import INVALID_TICKET, TICKET_TTL_S, AccessRegistry
-from malkuth.access.store import InMemoryAccessStore, SqliteAccessStore
-from malkuth.catalog import Catalog
-from malkuth.core.errors import ErrorCode, MalkuthError
+from aaestro.access.baselines import A2ABaseline
+from aaestro.access.model import ResourceKind
+from aaestro.access.registry import INVALID_TICKET, TICKET_TTL_S, AccessRegistry
+from aaestro.access.store import InMemoryAccessStore, SqliteAccessStore
+from aaestro.catalog import Catalog
+from aaestro.core.errors import AaestroError, ErrorCode
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 GRAPH = "research-pipeline"
@@ -135,7 +135,7 @@ def test_a_ticket_is_the_callers_own_identity_and_not_a_credential(registry, age
     """표로는 신원이 되지 않는다 — Memory Service 같은 다른 강제 지점에서 쓸 수 없다."""
     ticket, _ = registry.issue_ticket(agents["researcher"], "planner")
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         registry.identify(ticket)
 
     assert exc_info.value.code == ErrorCode.ACC_001
@@ -150,7 +150,7 @@ def test_a_ticket_is_the_callers_own_identity_and_not_a_credential(registry, age
     ],
 )
 def test_tickets_need_a_real_caller_callee_and_verifier(registry, agents, call, code):
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         call(registry, agents)
 
     assert exc_info.value.code == code
@@ -244,7 +244,7 @@ def test_a_ticket_is_judged_by_the_graph_its_own_identity_was_deployed_in(tmp_pa
 @pytest.mark.parametrize("store_kind", ["memory", "sqlite"])
 def test_expired_and_excess_tickets_are_pruned(tmp_path, clock, store_kind):
     """갱신마다 새 표가 생긴다 — 지우지 않으면 저장소가 끝없이 자란다."""
-    from malkuth.access.store import TICKETS_PER_EDGE
+    from aaestro.access.store import TICKETS_PER_EDGE
 
     catalog = Catalog.under(REPO_ROOT)
     store = (
@@ -264,7 +264,7 @@ def test_expired_and_excess_tickets_are_pruned(tmp_path, clock, store_kind):
     clock.now += TICKET_TTL_S + 1
     fresh = [registry.issue_ticket(caller, "planner")[0] for _ in range(TICKETS_PER_EDGE + 3)]
 
-    from malkuth.access.registry import credential_hash
+    from aaestro.access.registry import credential_hash
 
     assert store.ticket(credential_hash(old)) is None, "만료된 표가 남았다"
     kept = [t for t in fresh if store.ticket(credential_hash(t)) is not None]

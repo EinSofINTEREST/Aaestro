@@ -14,15 +14,15 @@ from pathlib import Path
 import httpx
 import pytest
 
-from malkuth.access.model import Effect, ResourceKind
-from malkuth.access.registry import AccessRegistry
-from malkuth.access.steward import PermissionAgent
-from malkuth.access.store import InMemoryAccessStore
-from malkuth.catalog import Catalog
-from malkuth.core.agent import TaskStatus
-from malkuth.core.errors import ErrorCode, MalkuthError
-from malkuth.orchestrator.control import create_app
-from malkuth.orchestrator.runstore import InMemoryRunStore
+from aaestro.access.model import Effect, ResourceKind
+from aaestro.access.registry import AccessRegistry
+from aaestro.access.steward import PermissionAgent
+from aaestro.access.store import InMemoryAccessStore
+from aaestro.catalog import Catalog
+from aaestro.core.agent import TaskStatus
+from aaestro.core.errors import AaestroError, ErrorCode
+from aaestro.orchestrator.control import create_app
+from aaestro.orchestrator.runstore import InMemoryRunStore
 from tests.fixtures.access import KNOWLEDGE, STEWARD, access_workspace
 from tests.fixtures.builders import make_task
 
@@ -230,7 +230,7 @@ async def test_another_caller_reusing_a_task_id_gets_its_own_answer(registry):
 
 
 async def test_remembered_answers_are_bounded(registry, monkeypatch):
-    monkeypatch.setattr("malkuth.access.steward.REMEMBERED_ANSWERS", 2)
+    monkeypatch.setattr("aaestro.access.steward.REMEMBERED_ANSWERS", 2)
     steward = steward_for(registry)
 
     for task_id in ("a", "b", "c"):
@@ -263,10 +263,10 @@ async def test_the_stream_path_reports_the_same_outcome(registry):
 
 
 def test_the_agent_does_not_start_without_its_identity(monkeypatch):
-    monkeypatch.delenv("MALKUTH_ACCESS_URL", raising=False)
-    monkeypatch.delenv("MALKUTH_ACCESS_CREDENTIAL", raising=False)
+    monkeypatch.delenv("AAESTRO_ACCESS_URL", raising=False)
+    monkeypatch.delenv("AAESTRO_ACCESS_CREDENTIAL", raising=False)
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         PermissionAgent()
 
     assert exc_info.value.code == ErrorCode.CFG_001

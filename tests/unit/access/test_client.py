@@ -9,9 +9,9 @@ import json
 import httpx
 import pytest
 
-from malkuth.access.client import AccessClient, DecisionSource
-from malkuth.access.model import Mode, ResourceKind
-from malkuth.observability.metrics import Metrics
+from aaestro.access.client import AccessClient, DecisionSource
+from aaestro.access.model import Mode, ResourceKind
+from aaestro.observability.metrics import Metrics
 from tests.fixtures.waiting import until
 
 SPACE = "group:research:knowledge"
@@ -163,7 +163,7 @@ async def test_with_the_change_feed_a_change_drops_the_cache_at_once(client, reg
 
         assert not (await decide(client)).allowed
     assert (
-        client.metrics.counter("malkuth_access_cache_invalidations_total")
+        client.metrics.counter("aaestro_access_cache_invalidations_total")
         .labels(component="memory")
         ._value.get()
         == 1
@@ -200,7 +200,7 @@ async def test_an_uncached_decision_is_denied_while_the_registry_is_unreachable(
 
     assert (verdict.allowed, verdict.source) == (False, DecisionSource.UNREACHABLE)
     assert (
-        client.metrics.gauge("malkuth_access_registry_reachable")
+        client.metrics.gauge("aaestro_access_registry_reachable")
         .labels(component="memory")
         ._value.get()
         == 0

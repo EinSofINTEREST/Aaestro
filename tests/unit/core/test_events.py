@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from pydantic import TypeAdapter
 
-from malkuth.core.agent import ModelUsage, TaskStatus
-from malkuth.core.errors import ErrorCategory, ErrorCode, MalkuthError
-from malkuth.core.events import (
+from aaestro.core.agent import ModelUsage, TaskStatus
+from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.core.events import (
     DoneEvent,
     ErrorEvent,
     EventType,
@@ -48,7 +48,7 @@ def test_tool_call_event_discriminates():
 
 
 def test_tool_result_event_carries_error_payload():
-    payload = MalkuthError(
+    payload = AaestroError(
         category=ErrorCategory.MCP, code=ErrorCode.MCP_003, message="tool call failed"
     ).payload()
 
@@ -67,7 +67,7 @@ def test_done_event_defaults_to_completed():
 
 
 def test_error_event_requires_payload():
-    payload = MalkuthError(
+    payload = AaestroError(
         category=ErrorCategory.MODEL, code=ErrorCode.LLM_005, message="max turns exceeded"
     ).payload()
 

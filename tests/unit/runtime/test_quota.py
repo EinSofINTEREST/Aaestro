@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from malkuth.core.errors import ErrorCategory, MalkuthError
-from malkuth.core.manifest import GroupManifest
-from malkuth.runtime.quota import (
+from aaestro.core.errors import AaestroError, ErrorCategory
+from aaestro.core.manifest import GroupManifest
+from aaestro.runtime.quota import (
     ResourceTotals,
     check_group_quota,
     check_host_capacity,
@@ -44,7 +44,7 @@ def group(cpu: str | None = "8.0", memory: str | None = "16Gi", max_agents: int 
         quotas["max_agents"] = max_agents
     return GroupManifest.model_validate(
         {
-            "apiVersion": "malkuth/v1",
+            "apiVersion": "aaestro/v1",
             "kind": "Group",
             "metadata": {"name": "research", "version": "0.1.0"},
             "spec": {"quotas": quotas},
@@ -52,7 +52,7 @@ def group(cpu: str | None = "8.0", memory: str | None = "16Gi", max_agents: int 
     )
 
 
-def assert_rt_006(exc_info: pytest.ExceptionInfo[MalkuthError]) -> None:
+def assert_rt_006(exc_info: pytest.ExceptionInfo[AaestroError]) -> None:
     """quota 초과는 RT_006 으로 기동을 거부한다."""
     assert exc_info.value.code == "RT_006"
     assert exc_info.value.category is ErrorCategory.RUNTIME
@@ -133,7 +133,7 @@ def test_exactly_at_quota_passes():
 
 
 def test_cpu_quota_exceeded_is_rejected():
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         check_group_quota(group(cpu="1.5"), [agent("a"), agent("b")])
 
     assert_rt_006(exc_info)
@@ -142,7 +142,7 @@ def test_cpu_quota_exceeded_is_rejected():
 
 
 def test_memory_quota_exceeded_is_rejected():
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         check_group_quota(group(cpu=None, memory="1Gi"), [agent("a"), agent("b")])
 
     assert_rt_006(exc_info)
@@ -150,7 +150,7 @@ def test_memory_quota_exceeded_is_rejected():
 
 
 def test_max_agents_quota_exceeded_is_rejected():
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         check_group_quota(group(cpu=None, memory=None, max_agents=1), [agent("a"), agent("b")])
 
     assert_rt_006(exc_info)
@@ -163,7 +163,7 @@ def test_candidate_is_counted_against_the_quota():
 
     check_group_quota(group(cpu="3.0"), members, candidate=agent("c"))
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         check_group_quota(group(cpu="2.5"), members, candidate=agent("c"))
 
     assert exc_info.value.details["agent"] == "c"
@@ -176,14 +176,14 @@ def test_unset_quota_dimension_is_unbounded():
 
 
 def test_replicas_count_toward_max_agents():
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         check_group_quota(group(cpu=None, memory=None, max_agents=2), [agent("a", replicas=3)])
 
     assert exc_info.value.details["requested_agents"] == 3
 
 
 def test_quota_error_carries_group_context():
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         check_group_quota(group(cpu="0.5"), [agent("a")])
 
     assert exc_info.value.details["group"] == "research"
@@ -199,7 +199,7 @@ def test_host_capacity_within_limits_passes():
 
 
 def test_host_cpu_capacity_exceeded_is_rejected():
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         check_host_capacity([agent("a", cpu="4.0")], cpu_cores=2.0)
 
     assert_rt_006(exc_info)
@@ -207,7 +207,7 @@ def test_host_cpu_capacity_exceeded_is_rejected():
 
 
 def test_host_memory_capacity_exceeded_is_rejected():
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         check_host_capacity([agent("a", memory="8Gi")], memory_bytes=4 * GIB)
 
     assert_rt_006(exc_info)
@@ -221,7 +221,7 @@ def test_host_capacity_without_limits_is_unbounded():
 @pytest.mark.parametrize("replicas", [0, -1])
 def test_non_positive_replicas_is_a_config_error(replicas):
     """조용히 1 로 보정하면 잘못된 manifest 가 quota 검증을 통과한다."""
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         demand_of(agent(replicas=replicas))
 
     assert exc_info.value.code == "VAL_002"

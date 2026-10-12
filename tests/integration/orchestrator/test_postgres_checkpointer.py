@@ -16,16 +16,16 @@ import os
 
 import pytest
 
-from malkuth.core.agent import TaskResult
-from malkuth.orchestrator.checkpoint import build_checkpointer, close_checkpointer
-from malkuth.orchestrator.run import RunStatus
-from malkuth.orchestrator.submit import RunSubmitter
+from aaestro.core.agent import TaskResult
+from aaestro.orchestrator.checkpoint import build_checkpointer, close_checkpointer
+from aaestro.orchestrator.run import RunStatus
+from aaestro.orchestrator.submit import RunSubmitter
 from tests.fixtures.topologies import make_mission
 
 pytestmark = pytest.mark.integration
 
-URL = os.environ.get("MALKUTH_TEST_POSTGRES_URL", "")
-requires_postgres = pytest.mark.skipif(not URL, reason="MALKUTH_TEST_POSTGRES_URL not set")
+URL = os.environ.get("AAESTRO_TEST_POSTGRES_URL", "")
+requires_postgres = pytest.mark.skipif(not URL, reason="AAESTRO_TEST_POSTGRES_URL not set")
 
 
 class EchoRuntime:

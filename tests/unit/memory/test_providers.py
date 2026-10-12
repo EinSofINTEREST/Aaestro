@@ -14,14 +14,14 @@ import json
 import httpx
 import pytest
 
-from malkuth.core.errors import ErrorCode, MalkuthError
-from malkuth.memory.providers import (
+from aaestro.core.errors import AaestroError, ErrorCode
+from aaestro.memory.providers import (
     BASE_URL_ENV,
     OpenAICompatibleEmbedder,
     build_embedder,
     build_index_registry,
 )
-from malkuth.modules.memoryset import EmbeddingSpec
+from aaestro.modules.memoryset import EmbeddingSpec
 
 DIMENSIONS = 8
 
@@ -92,7 +92,7 @@ def test_wrong_dimensions_are_refused():
     """차원이 어긋난 벡터를 섞으면 같은 인덱스 안에 두 공간이 생긴다 (09)."""
     built = embedder(client=endpoint(dimensions=DIMENSIONS + 4))
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         built.embed(["x"])
 
     assert exc_info.value.code == ErrorCode.MEM_003
@@ -102,7 +102,7 @@ def test_wrong_dimensions_are_refused():
 def test_an_endpoint_error_becomes_mem_003():
     built = embedder(client=endpoint(status=500))
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         built.embed(["x"])
 
     assert exc_info.value.code == ErrorCode.MEM_003
@@ -111,7 +111,7 @@ def test_an_endpoint_error_becomes_mem_003():
 def test_an_unreachable_endpoint_becomes_mem_003():
     built = embedder(base_url="http://127.0.0.1:1", client=httpx, timeout_s=0.2)
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         built.embed(["x"])
 
     assert exc_info.value.code == ErrorCode.MEM_003
@@ -122,7 +122,7 @@ def test_an_uninterpretable_response_becomes_mem_003(body):
     """조용히 빈 벡터로 처리하면 그 기억은 검색에서 영원히 사라진다."""
     built = embedder(client=endpoint(body=body))
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         built.embed(["x"])
 
     assert exc_info.value.code == ErrorCode.MEM_003
@@ -143,7 +143,7 @@ def test_an_unbound_provider_is_refused(monkeypatch):
     monkeypatch.setenv(BASE_URL_ENV, "http://embeddings.test")
     spec = EmbeddingSpec(provider="some-other-vendor", model="m", dimensions=DIMENSIONS)
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         build_embedder(spec)
 
     assert exc_info.value.code == ErrorCode.MEM_003
@@ -166,7 +166,7 @@ def test_no_declaration_keeps_the_default():
 
 def test_the_registry_uses_the_declared_embedder(monkeypatch):
     """embedder 를 고르는 자리가 흩어지면 한 space 만 다른 공간을 쓰게 된다."""
-    from malkuth.memory.embedding import HashEmbedder
+    from aaestro.memory.embedding import HashEmbedder
 
     monkeypatch.setenv(BASE_URL_ENV, "http://embeddings.test")
     spec = EmbeddingSpec(provider="openai-compatible", model="m", dimensions=DIMENSIONS)
@@ -178,7 +178,7 @@ def test_the_registry_uses_the_declared_embedder(monkeypatch):
 
 
 def test_the_registry_falls_back_offline(monkeypatch):
-    from malkuth.memory.embedding import HashEmbedder
+    from aaestro.memory.embedding import HashEmbedder
 
     monkeypatch.delenv(BASE_URL_ENV, raising=False)
     spec = EmbeddingSpec(provider="openai-compatible", model="m", dimensions=DIMENSIONS)

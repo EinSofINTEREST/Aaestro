@@ -10,7 +10,7 @@ import asyncio
 
 from mcp.server import MCPServer
 
-server = MCPServer(name="malkuth-test-server", version="0.1.0")
+server = MCPServer(name="aaestro-test-server", version="0.1.0")
 
 
 def echo(text: str) -> str:

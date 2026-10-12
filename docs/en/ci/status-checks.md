@@ -20,7 +20,7 @@ as PR merge gates. The GitHub Ruleset and the PR template must match these names
 | Name | Workflow / Job | Description | Required |
 |------|---------------|-------------|----------|
 | `Lint` | `ci-quality.yml` / `lint` | `make lint` — ruff check + ruff format --check | Yes |
-| `Type Check` | `ci-quality.yml` / `typecheck` | `make typecheck` — mypy (strict on `src/malkuth/core`) | Yes |
+| `Type Check` | `ci-quality.yml` / `typecheck` | `make typecheck` — mypy (strict on `src/aaestro/core`) | Yes |
 | `Test` | `ci-quality.yml` / `test` | `make test` — pytest unit + coverage ≥ 70% enforced | Yes |
 | `Integration Test` | `ci-quality.yml` / `integration` | `make test-integration` — Docker-based integration tests | Yes |
 | `Commit Lint` | `ci-convention.yml` / `commit-lint` | Enforces `[카테고리]:` commit message format on all PR commits | Yes |
@@ -32,7 +32,7 @@ as PR merge gates. The GitHub Ruleset and the PR template must match these names
 
 ## Evolution Notes (from the IssueTracker origin)
 
-This gate set is ported from the IssueTracker repository and evolved for Malkuth:
+This gate set is ported from the IssueTracker repository and evolved for Aaestro:
 
 - `Format Check` + `Lint` (gofmt / golangci-lint) → merged into a single `Lint`
   (ruff handles both linting and format checking)

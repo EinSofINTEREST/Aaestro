@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from malkuth.core.errors import MalkuthError
-from malkuth.core.skill import SkillContext
-from malkuth.modules.registry import ModuleRegistry, RegistryRoots
-from malkuth.modules.skillset import SkillsetLoader
+from aaestro.core.errors import AaestroError
+from aaestro.core.skill import SkillContext
+from aaestro.modules.registry import ModuleRegistry, RegistryRoots
+from aaestro.modules.skillset import SkillsetLoader
 from tests.fixtures.registry import fixture_registry
 
 REF = "skillsets/web-search@0.2.0"
@@ -72,7 +72,7 @@ def test_tools_returns_all_specs(loader):
 def test_get_unknown_skill_raises_mod_001(loader):
     skillset = loader.load(REF)
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         skillset.get("nonexistent")
 
     assert exc_info.value.code == "MOD_001"
@@ -97,7 +97,7 @@ def _write_skillset(tmp_path, *, yaml_body: str, modules: dict[str, str] | None 
     return SkillsetLoader(ModuleRegistry.under(tmp_path))
 
 
-HEADER = """apiVersion: malkuth/v1
+HEADER = """apiVersion: aaestro/v1
 kind: Skillset
 metadata:
   name: custom
@@ -113,7 +113,7 @@ def test_missing_skill_module_raises_mod_003(tmp_path):
         yaml_body=HEADER + "    - name: a\n      entrypoint: skills.absent:a\n",
     )
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         loader.load("skillsets/custom@0.1.0")
 
     assert exc_info.value.code == "MOD_003"
@@ -127,7 +127,7 @@ def test_missing_entrypoint_function_raises_mod_003(tmp_path):
         modules={"mod": "value = 1\n"},
     )
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         loader.load("skillsets/custom@0.1.0")
 
     assert exc_info.value.code == "MOD_003"
@@ -142,7 +142,7 @@ def test_sync_skill_raises_mod_003(tmp_path):
         modules={"mod": "def a(ctx, q: str) -> str:\n    '''동기.'''\n    return q\n"},
     )
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         loader.load("skillsets/custom@0.1.0")
 
     assert exc_info.value.code == "MOD_003"
@@ -155,7 +155,7 @@ def test_module_import_failure_raises_mod_003(tmp_path):
         modules={"mod": "raise RuntimeError('boom')\n"},
     )
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         loader.load("skillsets/custom@0.1.0")
 
     assert exc_info.value.code == "MOD_003"
@@ -180,7 +180,7 @@ def test_declared_name_overrides_function_name(tmp_path):
         yaml_body=HEADER + "    - name: renamed\n      entrypoint: skills.mod:original\n",
         modules={
             "mod": (
-                "from malkuth.core.skill import SkillContext, skill\n\n\n"
+                "from aaestro.core.skill import SkillContext, skill\n\n\n"
                 "@skill\nasync def original(ctx: SkillContext, q: str) -> str:\n"
                 "    '''설명.'''\n    return q\n"
             )
@@ -201,7 +201,7 @@ def test_duplicate_skill_names_raise_mod_003(tmp_path):
         modules={"mod": "async def a(ctx) -> None:\n    '''설명.'''\n"},
     )
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         loader.load("skillsets/custom@0.1.0")
 
     assert exc_info.value.code == "MOD_003"
@@ -210,7 +210,7 @@ def test_duplicate_skill_names_raise_mod_003(tmp_path):
 def test_empty_skillset_raises_mod_003(tmp_path):
     loader = _write_skillset(tmp_path, yaml_body=HEADER + "    []\n")
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         loader.load("skillsets/custom@0.1.0")
 
     assert exc_info.value.code == "MOD_003"
@@ -223,7 +223,7 @@ def test_malformed_entrypoint_raises_mod_003(tmp_path, entrypoint):
         yaml_body=HEADER + f"    - name: a\n      entrypoint: '{entrypoint}'\n",
     )
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         loader.load("skillsets/custom@0.1.0")
 
     assert exc_info.value.code == "MOD_003"
@@ -238,7 +238,7 @@ def test_skillset_supports_intra_package_imports(tmp_path):
     root = tmp_path / "web-search" / "0.1.0"
     (root / "skills").mkdir(parents=True)
     (root / "skillset.yaml").write_text(
-        "apiVersion: malkuth/v1\n"
+        "apiVersion: aaestro/v1\n"
         "kind: Skillset\n"
         "metadata: {name: web-search, version: 0.1.0}\n"
         "spec:\n"
@@ -250,7 +250,7 @@ def test_skillset_supports_intra_package_imports(tmp_path):
     (root / "skills" / "__init__.py").write_text("")
     (root / "skills" / "util.py").write_text("HELPER = 'ok'\n")
     (root / "skills" / "search.py").write_text(
-        "from malkuth.core.skill import SkillContext, skill\n"
+        "from aaestro.core.skill import SkillContext, skill\n"
         "from .util import HELPER\n"
         "\n"
         "@skill\n"
@@ -279,7 +279,7 @@ def test_reference_skillset_has_no_untyped_parameters(tmp_path):
     """배포되는 스킬셋이 타입 없는 tool 을 모델에 노출하면 안 된다."""
     from pathlib import Path
 
-    from malkuth.modules.registry import ModuleRegistry
+    from aaestro.modules.registry import ModuleRegistry
 
     repo_root = Path(__file__).resolve().parents[3]
     loaded = SkillsetLoader(ModuleRegistry.under(repo_root)).load("skillsets/web-search@0.2.0")
@@ -294,7 +294,7 @@ def _captured_loader_warnings(monkeypatch) -> list[dict]:
     def capture(event: str, **fields: object) -> None:
         recorded.append({"event": event, **fields})
 
-    monkeypatch.setattr("malkuth.modules.skillset.log.warning", capture)
+    monkeypatch.setattr("aaestro.modules.skillset.log.warning", capture)
     return recorded
 
 
@@ -306,7 +306,7 @@ def test_loader_warns_with_the_skillset_ref(tmp_path, monkeypatch):
         yaml_body=HEADER + "    - name: loose\n      entrypoint: skills.loose:loose\n",
         modules={
             "loose": (
-                "from malkuth.core.skill import SkillContext, skill\n"
+                "from aaestro.core.skill import SkillContext, skill\n"
                 "@skill\n"
                 "async def loose(ctx: SkillContext, thing, count: int = 1) -> str:\n"
                 '    """설명."""\n'
@@ -332,7 +332,7 @@ def test_loader_stays_quiet_when_every_parameter_is_typed(tmp_path, monkeypatch)
         yaml_body=HEADER + "    - name: tidy\n      entrypoint: skills.tidy:tidy\n",
         modules={
             "tidy": (
-                "from malkuth.core.skill import SkillContext, skill\n"
+                "from aaestro.core.skill import SkillContext, skill\n"
                 "@skill\n"
                 "async def tidy(ctx: SkillContext, query: str) -> str:\n"
                 '    """설명."""\n'
@@ -351,7 +351,7 @@ def test_loader_stays_quiet_when_every_parameter_is_typed(tmp_path, monkeypatch)
 
 def _versioned_skill(value: str) -> str:
     return (
-        "from malkuth.core.skill import SkillContext, skill\n"
+        "from aaestro.core.skill import SkillContext, skill\n"
         "from .helper import SUFFIX\n"
         "@skill\n"
         "async def answer(ctx: SkillContext) -> str:\n"

@@ -97,7 +97,7 @@ modules/memorysets/agent-longterm/
 ### memoryset.yaml
 
 ```yaml
-apiVersion: malkuth/v1
+apiVersion: aaestro/v1
 kind: Memoryset
 metadata:
   name: agent-longterm
@@ -219,7 +219,7 @@ append() ──▶ 저장 (즉시 commit) ──▶ 인덱싱 큐 ──▶ embe
 2. **Eventual consistency 명시**: 방금 저장한 항목은 검색에 즉시 안 나올 수 있다 —
    같은 태스크 안에서 self-read 가 필요한 데이터는 memory 가 아니라 작업 컨텍스트로
 3. 인덱싱 실패는 재시도 (retry policy) — 누적 실패 시 `MEM_003` + 메트릭 경보
-4. `malkuth memory reindex <space>` — embedding 모델 교체/장애 복구용 전체 재인덱싱
+4. `aaestro memory reindex <space>` — embedding 모델 교체/장애 복구용 전체 재인덱싱
 
 ### Embedding Model Pinning
 
@@ -258,7 +258,7 @@ Agent 컨테이너 (agentd) ──HTTP──▶ Memory Service (강제 지점) �
         └── control plane 발급 에이전트 신원
 ```
 
-1. Memory Service 는 프레임워크 컴포넌트 (`src/malkuth/memory/`) — 저장소 자격증명은
+1. Memory Service 는 프레임워크 컴포넌트 (`src/aaestro/memory/`) — 저장소 자격증명은
    서비스만 보유, 에이전트 컨테이너에 DB 자격증명 주입 금지
 2. **토큰은 권한이 아니라 신원이다**: 에이전트가 내미는 것은 control plane 이 발급한 에이전트
    신원이다. 어떤 space 에 어떤 mode 로 닿는지는 Memory Service 가 **요청마다** 레지스트리에
@@ -352,12 +352,12 @@ MEM_004: 검색 실패 / 인덱스 손상
 메트릭:
 
 ```python
-malkuth_memory_operations_total{space, op, status}     # op: append|read|latest|search|recall
-malkuth_memory_search_duration_seconds{space}
-malkuth_memory_entries{space}                          # Gauge
-malkuth_memory_index_lag_seconds{space}                # 인덱싱 큐 지연
-malkuth_memory_recall_injected_tokens{agent}           # 프롬프트 주입량 추적
-malkuth_memory_recall_filtered_total{agent, band}      # 회상 필터가 본 항목 — act|uncertain|reject
+aaestro_memory_operations_total{space, op, status}     # op: append|read|latest|search|recall
+aaestro_memory_search_duration_seconds{space}
+aaestro_memory_entries{space}                          # Gauge
+aaestro_memory_index_lag_seconds{space}                # 인덱싱 큐 지연
+aaestro_memory_recall_injected_tokens{agent}           # 프롬프트 주입량 추적
+aaestro_memory_recall_filtered_total{agent, band}      # 회상 필터가 본 항목 — act|uncertain|reject
 ```
 
 로그 필드: `memory_space`, `op`, `entry_id`, `k`, `min_score` — 표준 필드 규칙

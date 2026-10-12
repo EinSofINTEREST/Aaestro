@@ -8,14 +8,14 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from malkuth.memory.compaction import (
+from aaestro.memory.compaction import (
     Summarizer,
     build_summary,
     expired_entries,
     plan_compaction,
 )
-from malkuth.memory.entry import MemoryEntry, MemorySource
-from malkuth.modules.memoryset import (
+from aaestro.memory.entry import MemoryEntry, MemorySource
+from aaestro.modules.memoryset import (
     CompactionSpec,
     MemoryKind,
     RetentionSpec,

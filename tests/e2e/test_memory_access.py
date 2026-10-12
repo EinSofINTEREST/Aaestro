@@ -35,9 +35,9 @@ from tests.e2e.test_stack import docker, requires_docker
 pytestmark = [pytest.mark.e2e, requires_docker]
 
 ENFORCER_TOKEN = "e2e-enforcer-token"  # noqa: S105
-MEMORY = "malkuth-e2e-memory-registry"
+MEMORY = "aaestro-e2e-memory-registry"
 MEMORY_ALIAS = "memory-registry"
-AGENT = "malkuth-researcher-0"
+AGENT = "aaestro-researcher-0"
 LONGTERM = "local:researcher:longterm"
 KNOWLEDGE = "group:research:knowledge"
 ORG = "global:global:org"
@@ -51,9 +51,9 @@ if op == "append":
     source = {"agent": "researcher"}
     body["entry"] = {"space": space, "kind": "fact", "content": "e2e", "source": source}
 request = urllib.request.Request(
-    os.environ["MALKUTH_MEMORY_URL"] + "/v1/" + op,
+    os.environ["AAESTRO_MEMORY_URL"] + "/v1/" + op,
     data=json.dumps(body).encode(),
-    headers={"Authorization": "Bearer " + os.environ["MALKUTH_MEMORY_TOKEN"],
+    headers={"Authorization": "Bearer " + os.environ["AAESTRO_MEMORY_TOKEN"],
              "content-type": "application/json"},
 )
 try:
@@ -73,10 +73,10 @@ def start_memory(network: str = NETWORK, *, also: tuple[str, ...] = ()) -> None:
         "--read-only", "--tmpfs", "/tmp:size=16m",  # noqa: S108 — 컨테이너 안 tmpfs
         "--user", "1000:1000", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
         "-v", f"{REPO_ROOT}:/repo:ro",
-        "-e", "MALKUTH_EMBEDDING_BASE_URL=http://fake-provider:8000",
-        "-e", f"MALKUTH_ACCESS_URL=http://host.docker.internal:{CONTROL_PORT}",
-        "-e", f"MALKUTH_ACCESS_ENFORCER_TOKEN={ENFORCER_TOKEN}",
-        "malkuth/memory-service:0.1.0",
+        "-e", "AAESTRO_EMBEDDING_BASE_URL=http://fake-provider:8000",
+        "-e", f"AAESTRO_ACCESS_URL=http://host.docker.internal:{CONTROL_PORT}",
+        "-e", f"AAESTRO_ACCESS_ENFORCER_TOKEN={ENFORCER_TOKEN}",
+        "aaestro/memory-service:0.1.0",
     )  # fmt: skip
     for extra in also:
         docker("network", "connect", "--alias", MEMORY_ALIAS, extra, MEMORY)
@@ -99,7 +99,7 @@ def plane(stack, tmp_path) -> Iterator[dict[str, Any]]:
     )
     tokens_path = tmp_path / "memory.json"
     tokens_path.write_text(json.dumps(memory_tokens()), encoding="utf-8")
-    env = {"MALKUTH_MEMORY_URL": f"http://{MEMORY_ALIAS}:8090"}
+    env = {"AAESTRO_MEMORY_URL": f"http://{MEMORY_ALIAS}:8090"}
     state = {"start": lambda: start_plane(config_dir, tokens_path, env=env)}
     state["process"] = state["start"]()
     start_memory()

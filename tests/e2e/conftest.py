@@ -27,10 +27,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 CONTROL_PORT = 18702
 CONTROL_TOKEN = "e2e-control-token"  # noqa: S105
 METRICS_PORT = 19702
-NETWORK = "malkuth-e2e-net"
+NETWORK = "aaestro-e2e-net"
 GRAPH = "research-pipeline"
 AGENTS = ("planner", "researcher", "writer")
-CONTAINER_NAME = re.compile(rf"malkuth-({'|'.join(AGENTS)})-\d+")
+CONTAINER_NAME = re.compile(rf"aaestro-({'|'.join(AGENTS)})-\d+")
 DEADLINE_S = 120.0
 HEADERS = {"Authorization": f"Bearer {CONTROL_TOKEN}"}
 
@@ -103,19 +103,19 @@ def start_plane(
     config_dir: Path, tokens_path: Path, *, env: dict[str, str] | None = None
 ) -> subprocess.Popen[str]:
     return subprocess.Popen(  # noqa: S603
-        [sys.executable, "-m", "malkuth.orchestrator"],
+        [sys.executable, "-m", "aaestro.orchestrator"],
         cwd=REPO_ROOT,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
         env={
             **os.environ,
-            "MALKUTH_ENV": "e2e",
-            "MALKUTH_CONFIG_DIR": str(config_dir),
-            "MALKUTH_REPO_ROOT": str(REPO_ROOT),
-            "MALKUTH_METRICS_PORT": str(METRICS_PORT),
-            "MALKUTH_MEMORY_URL": "http://memory-service:8090",
-            "MALKUTH_MEMORY_TOKENS_PATH": str(tokens_path),
+            "AAESTRO_ENV": "e2e",
+            "AAESTRO_CONFIG_DIR": str(config_dir),
+            "AAESTRO_REPO_ROOT": str(REPO_ROOT),
+            "AAESTRO_METRICS_PORT": str(METRICS_PORT),
+            "AAESTRO_MEMORY_URL": "http://memory-service:8090",
+            "AAESTRO_MEMORY_TOKENS_PATH": str(tokens_path),
             # secrets 의 값 원천은 control plane 의 환경이다 (02 Secrets Injection)
             "ANTHROPIC_API_KEY": "e2e-fake-key",
             "SEARCH_API_KEY": "e2e-search-key",
@@ -162,11 +162,11 @@ def api(method: str, path: str, body: dict[str, Any] | None = None) -> tuple[int
 
 
 def deployed_containers() -> dict[str, str]:
-    """이 그래프의 에이전트 자리(`malkuth-{agent}-{replica}`)에 서 있는 컨테이너 — 이름 → 상태.
+    """이 그래프의 에이전트 자리(`aaestro-{agent}-{replica}`)에 서 있는 컨테이너 — 이름 → 상태.
 
-    compose 의 `malkuth-e2e-*` 와 다른 테스트가 남긴 `malkuth-echo-*` 는 제외한다.
+    compose 의 `aaestro-e2e-*` 와 다른 테스트가 남긴 `aaestro-echo-*` 는 제외한다.
     """
-    out = docker("ps", "-a", "--format", "{{.Names}}\t{{.Status}}", "--filter", "name=^malkuth-")
+    out = docker("ps", "-a", "--format", "{{.Names}}\t{{.Status}}", "--filter", "name=^aaestro-")
     return {
         name: status
         for line in out.splitlines()

@@ -2,7 +2,7 @@
 
 **[한국어](../ko/modules.md)** | English
 
-Everything deployable in Malkuth is a module: a solution is assembled by wiring versioned
+Everything deployable in Aaestro is a module: a solution is assembled by wiring versioned
 modules, never by editing framework code. Normative rules:
 [04-module-system.md](../../.claude/rules/04-module-system.md) and
 [09-memory-context.md](../../.claude/rules/09-memory-context.md).
@@ -64,10 +64,10 @@ the model then sees untyped parameters and cannot tell what to pass:
 ```python
 # Wrong — get_type_hints() raises NameError, every parameter loses its type
 if TYPE_CHECKING:
-    from malkuth.core.skill import SkillContext
+    from aaestro.core.skill import SkillContext
 
 # Right
-from malkuth.core.skill import SkillContext, skill
+from aaestro.core.skill import SkillContext, skill
 ```
 
 The framework warns (`skill type hints could not be resolved` /
@@ -131,8 +131,8 @@ spec:
   that cannot be compared, such as `null < 3`, fails the run (`GRAPH_003`) rather than
   silently taking the other branch.
 - **Deprecated**: `state.schema` and conditions written as import references
-  (`malkuth.graphs.conditions:needs_research`) still work for one version. They may only
-  point into `malkuth.graphs`, and validation logs a warning for each import-reference
+  (`aaestro.graphs.conditions:needs_research`) still work for one version. They may only
+  point into `aaestro.graphs`, and validation logs a warning for each import-reference
   condition.
 
 ## Agents — model resilience
@@ -217,12 +217,12 @@ An unparseable response (`LLM_004`) and configuration errors never trigger a swi
   are not sent and the call goes straight to the next candidate. The same model shares one breaker
   across tasks and chains. When all candidates are open the call fails with the failure that
   opened the last breaker (`LLM_001` or `LLM_003`), retryable. State is exported as
-  `malkuth_circuit_state{target="model:<provider>/<name>"}`.
+  `aaestro_circuit_state{target="model:<provider>/<name>"}`.
 - A fallback inherits `max_tokens` and `effort` from the primary.
 - **Observability**: `TaskResult.usage.model` / `.provider` name the model that **actually
   answered the **last** turn; token totals are summed across turns. Per-attempt accuracy lives in
-  the `malkuth_model_requests_total` / `malkuth_model_tokens_total` labels.
-  `malkuth_model_requests_total` carries a `fallback_index` label (0 = primary). Each
+  the `aaestro_model_requests_total` / `aaestro_model_tokens_total` labels.
+  `aaestro_model_requests_total` carries a `fallback_index` label (0 = primary). Each
   switch logs a WARN with `model`, `provider`, `fallback_index`, `error_code`, `next_model`,
   `next_provider`. Skipping an open circuit also logs a WARN with `opened_by`.
 - Out of scope: switching to a non-Anthropic provider needs the adapters (#361) — until then the
@@ -245,7 +245,7 @@ The check is named `model_providers`; its findings carry code `VAL_002`, and the
 - the egress baseline includes the fallback providers' hosts automatically (a manifest
   declaration is the default permission)
 
-`malkuth validate` and `malkuth deploy` print a `models` entry showing, per node, the resolved
+`aaestro validate` and `aaestro deploy` print a `models` entry showing, per node, the resolved
 model layering.
 
 ## Groups

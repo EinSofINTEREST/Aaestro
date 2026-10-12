@@ -14,7 +14,7 @@ import httpx
 import pytest
 from prometheus_client import CollectorRegistry
 
-from malkuth.agentd.executor import (
+from aaestro.agentd.executor import (
     AssistantTurn,
     Executor,
     ExecutorConfig,
@@ -22,14 +22,14 @@ from malkuth.agentd.executor import (
     ToolTurn,
     UserTurn,
 )
-from malkuth.agentd.models import ModelChains
-from malkuth.agentd.server import AgentRuntime, create_app
-from malkuth.core.agent import TaskConfig, TaskStatus
-from malkuth.core.errors import NETWORK_RETRY, RATE_LIMIT_RETRY, ErrorCategory, ErrorCode
-from malkuth.core.events import DoneEvent, ErrorEvent
-from malkuth.core.manifest import CircuitDeclaration, ModelRetry, RetryDeclaration
-from malkuth.observability.metrics import Metrics
-from malkuth.runtime.control import ControlClient
+from aaestro.agentd.models import ModelChains
+from aaestro.agentd.server import AgentRuntime, create_app
+from aaestro.core.agent import TaskConfig, TaskStatus
+from aaestro.core.errors import NETWORK_RETRY, RATE_LIMIT_RETRY, ErrorCategory, ErrorCode
+from aaestro.core.events import DoneEvent, ErrorEvent
+from aaestro.core.manifest import CircuitDeclaration, ModelRetry, RetryDeclaration
+from aaestro.observability.metrics import Metrics
+from aaestro.runtime.control import ControlClient
 from tests.fixtures.builders import make_task
 from tests.fixtures.fake_model import FakeModel, FakeTools, calls, text
 from tests.unit.agentd.test_model_fallback import (

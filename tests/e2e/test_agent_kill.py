@@ -17,14 +17,14 @@ from typing import Any
 import pytest
 import yaml
 
-from malkuth.core.errors import ErrorCode
-from malkuth.orchestrator.checkpoint import build_checkpointer, close_checkpointer
-from malkuth.orchestrator.run import RunManager, RunStatus
-from malkuth.orchestrator.runstore import SqliteRunStore
-from malkuth.orchestrator.submit import RunSubmitter
-from malkuth.orchestrator.topology import GraphTopology
-from malkuth.runtime.control import ControlClient
-from malkuth.runtime.nodes import ControlNodeRuntime
+from aaestro.core.errors import ErrorCode
+from aaestro.orchestrator.checkpoint import build_checkpointer, close_checkpointer
+from aaestro.orchestrator.run import RunManager, RunStatus
+from aaestro.orchestrator.runstore import SqliteRunStore
+from aaestro.orchestrator.submit import RunSubmitter
+from aaestro.orchestrator.topology import GraphTopology
+from aaestro.runtime.control import ControlClient
+from aaestro.runtime.nodes import ControlNodeRuntime
 from tests.e2e.test_stack import (
     AGENT_TOKEN,
     COMPOSE_FILE,
@@ -44,7 +44,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 AGENT_PORTS = {"planner": 18082, "researcher": 18083, "writer": 18084}
 # feed-monitor 의 watcher 는 researcher 에이전트로 돈다 — 그 컨테이너를 죽인다
 WATCHER_SERVICE = "agent-researcher"
-CHECKPOINT_URL = "postgresql://malkuth:malkuth@127.0.0.1:15433/malkuth"
+CHECKPOINT_URL = "postgresql://aaestro:aaestro@127.0.0.1:15433/aaestro"
 
 INITIAL_STATE = {"feeds": ["https://example.test/feed.xml"]}
 """빈 state 로 시작하면 promptset 의 필수 변수가 비어 `MOD_004` 로 실패한다 —

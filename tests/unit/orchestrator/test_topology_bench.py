@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from malkuth.orchestrator.topology import GraphTopology, validate_topology
+from aaestro.orchestrator.topology import GraphTopology, validate_topology
 
 NODE_COUNT = 50
 
@@ -24,13 +24,13 @@ def _large_topology(node_count: int = NODE_COUNT) -> GraphTopology:
 
     return GraphTopology.model_validate(
         {
-            "apiVersion": "malkuth/v1",
+            "apiVersion": "aaestro/v1",
             "kind": "Graph",
             "metadata": {"name": "large-graph", "version": "1.0.0"},
             "spec": {
                 "mode": "mission",
                 "goal": "대형 그래프 검증 벤치마크",
-                "state": {"schema": "malkuth.graphs.schemas:ResearchState"},
+                "state": {"schema": "aaestro.graphs.schemas:ResearchState"},
                 "nodes": nodes,
                 "edges": edges,
             },

@@ -7,11 +7,11 @@ from __future__ import annotations
 
 import pytest
 
-from malkuth.core.agent import HealthState
-from malkuth.core.errors import MalkuthError
-from malkuth.core.manifest import McpServerSpec
-from malkuth.protocols.mcp.client import McpClient, split_namespaced
-from malkuth.protocols.mcp.transport import (
+from aaestro.core.agent import HealthState
+from aaestro.core.errors import AaestroError
+from aaestro.core.manifest import McpServerSpec
+from aaestro.protocols.mcp.client import McpClient, split_namespaced
+from aaestro.protocols.mcp.transport import (
     SIDECAR_CONNECT_ATTEMPTS,
     HttpTransport,
     StdioTransport,
@@ -130,7 +130,7 @@ async def test_a_sidecar_is_reached_by_the_name_the_runtime_gives_it():
 
     await make_client(http=http).start(McpServerSpec.model_validate(BROWSER))
 
-    assert http.connections == [("http://malkuth-researcher--mcp-browser:8000/mcp", {})]
+    assert http.connections == [("http://aaestro-researcher--mcp-browser:8000/mcp", {})]
 
 
 async def test_a_sidecar_that_is_still_starting_is_waited_for():
@@ -145,7 +145,7 @@ async def test_a_sidecar_that_is_still_starting_is_waited_for():
 async def test_a_sidecar_that_never_answers_fails_startup():
     http = FakeHttpClient(refusals=1000)
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await make_client(http=http).start(McpServerSpec.model_validate(BROWSER))
 
     assert exc_info.value.code == "MCP_001"
@@ -157,7 +157,7 @@ async def test_an_external_server_is_not_waited_for():
     http = FakeHttpClient(refusals=1)
     external = {"name": "corp", "transport": "streamable-http", "url": "https://mcp.example/mcp"}
 
-    with pytest.raises(MalkuthError):
+    with pytest.raises(AaestroError):
         await make_client(http=http).start(McpServerSpec.model_validate(external))
 
     assert len(http.connections) == 1
@@ -193,7 +193,7 @@ async def test_missing_auth_token_fails_startup():
         }
     )
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await client.start(declared)
 
     assert exc_info.value.code == "MCP_001"
@@ -217,7 +217,7 @@ def proxied(http: FakeHttpClient, identity: str | None = "cred-researcher") -> M
                 agent="researcher",
                 client=http,
                 environ={"CORP_TOKEN": "s3cret"},
-                proxy_url="http://malkuth-egress:8081/mcp/",
+                proxy_url="http://aaestro-egress:8081/mcp/",
                 identity=identity,
             ),
         ),
@@ -231,12 +231,12 @@ async def test_behind_the_egress_proxy_a_remote_server_goes_through_it_with_the_
     await proxied(http).start(McpServerSpec.model_validate(REMOTE))
 
     assert http.connections == [
-        ("http://malkuth-egress:8081/mcp/corp-search", {"authorization": "Bearer cred-researcher"})
+        ("http://aaestro-egress:8081/mcp/corp-search", {"authorization": "Bearer cred-researcher"})
     ]
 
 
 async def test_behind_the_proxy_without_an_identity_startup_fails():
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await proxied(FakeHttpClient(), identity=None).start(McpServerSpec.model_validate(REMOTE))
 
     assert exc_info.value.code == "MCP_001"
@@ -249,7 +249,7 @@ async def test_behind_the_proxy_a_sidecar_also_goes_through_it_with_the_identity
     await proxied(http).start(McpServerSpec.model_validate(BROWSER))
 
     assert http.connections == [
-        ("http://malkuth-egress:8081/mcp/browser", {"authorization": "Bearer cred-researcher"})
+        ("http://aaestro-egress:8081/mcp/browser", {"authorization": "Bearer cred-researcher"})
     ]
 
 
@@ -268,7 +268,7 @@ async def test_call_tool_routes_to_the_owning_session():
 async def test_unknown_server_is_mcp_002():
     client = make_client()
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await client.call_tool("mcp__absent__read_file", {})
 
     assert exc_info.value.code == "MCP_002"
@@ -278,7 +278,7 @@ async def test_unnamespaced_name_is_mcp_002():
     """skillset tool 이름이 MCP 클라이언트로 새어 들어오면 안 된다."""
     client = make_client()
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await client.call_tool("read_file", {})
 
     assert exc_info.value.code == "MCP_002"
@@ -319,7 +319,7 @@ def test_selector_picks_transport_by_declaration():
 
 async def test_client_satisfies_the_bootstrap_launcher_contract():
     """bootstrap 이 이 클라이언트를 그대로 물 수 있어야 한다 — #45 의 존재 이유."""
-    from malkuth.agentd.bootstrap import Bootstrap, McpLauncher
+    from aaestro.agentd.bootstrap import Bootstrap, McpLauncher
     from tests.fixtures.builders import make_manifest
 
     client = make_client(FakeStdioClient(["read_file"]))

@@ -2,7 +2,7 @@
 
 한국어 | **[English](../en/testing.md)**
 
-비결정적인 모델 주변에서 Malkuth 가 결정성을 유지하는 방법. 규범 규칙:
+비결정적인 모델 주변에서 Aaestro 가 결정성을 유지하는 방법. 규범 규칙:
 [06-testing.md](../../.claude/rules/06-testing.md).
 
 ## 원칙
@@ -19,7 +19,7 @@
 
 ```
 tests/
-├── unit/           # 외부 의존 없음 — src/malkuth 구조 미러링          (~70%)
+├── unit/           # 외부 의존 없음 — src/aaestro 구조 미러링          (~70%)
 ├── integration/    # Docker / 실제 MCP 서버 fixture                    (~25%)
 ├── e2e/            # 전체 compose 스택, fake LLM provider 컨테이너      (~5%)
 └── fixtures/       # FakeModel, fake MCP 서버, builder, 테스트 yaml
@@ -50,7 +50,7 @@ tests/
 |---|---|
 | core | manifest / topology / group 스키마 검증, 스코프 해석 |
 | orchestrator | config → StateGraph 빌드, 라우팅, state 병합, mission/service 모드 규칙 |
-| protocols | `MalkuthError` 변환, A2A allowlist, tool 네임스페이싱 |
+| protocols | `AaestroError` 변환, A2A allowlist, tool 네임스페이싱 |
 | modules | ref 파싱, 스키마 스냅샷(스킬셋), 렌더 골든(프롬프트셋) |
 | memory | space ACL, 별칭 해석 (local > group > global), 하이브리드 검색 병합, recall 예산 |
 | agentd | tool loop 상한, cancellation 정리, direct 태스크 처리 |
@@ -63,12 +63,12 @@ Service 그래프는 추가로: iteration 누적, idle backoff 진행, drain 중
 
 ```bash
 make lint          # ruff check + ruff format --check
-make typecheck     # mypy — src/malkuth/core 는 strict
+make typecheck     # mypy — src/aaestro/core 는 strict
 make test          # pytest unit + 커버리지 ≥ 70% (미달 시 실패)
 make test-integration
 ```
 
-커버리지: **강제 게이트는 하나** — `src/malkuth` 전체 기준 70% 이상, `make test` 의
+커버리지: **강제 게이트는 하나** — `src/aaestro` 전체 기준 70% 이상, `make test` 의
 pytest-cov `--cov-fail-under=70` 로 강제. 핵심 경로 90%+ 와 에러 변환 경로 100% 는
 리뷰 목표치이며 별도 CI 게이트가 아닙니다.
 체크 이름과 머지 게이트 연결: [ci/status-checks.md](ci/status-checks.md).

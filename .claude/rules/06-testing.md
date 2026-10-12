@@ -5,7 +5,7 @@
 ### Core Principles
 
 1. **Test Coverage**
-   - **강제 게이트는 하나**: `src/malkuth` 전체 기준 70% — `make test` 의
+   - **강제 게이트는 하나**: `src/aaestro` 전체 기준 70% — `make test` 의
      pytest-cov `--cov-fail-under=70` 가 유일한 CI 강제 수단
    - 90%+ coverage for critical paths (`core/`, `orchestrator/`, protocol boundaries)
      — 목표치 (리뷰에서 확인, CI 강제 아님)
@@ -48,7 +48,7 @@
 tests/
 ├── unit/                          # 외부 의존 없음, 빠름
 │   ├── core/
-│   │   ├── test_manifest.py       # ← src/malkuth/core/manifest.py
+│   │   ├── test_manifest.py       # ← src/aaestro/core/manifest.py
 │   │   └── test_errors.py
 │   ├── orchestrator/
 │   │   ├── test_builder.py
@@ -101,7 +101,7 @@ tests/
    에러 타입 동작
 2. **orchestrator/**: config → StateGraph 빌드 결과, edge 조건 라우팅, state 병합 규칙,
    토폴로지 검증기의 각 실패 케이스
-3. **protocols/**: 에러 변환 (원 예외 → MalkuthError 카테고리/코드/retryable),
+3. **protocols/**: 에러 변환 (원 예외 → AaestroError 카테고리/코드/retryable),
    allowlist 검사, tool 네임스페이싱
 4. **modules/**: ref 파싱/해석, skillset schema 자동 생성, promptset 변수 검증·렌더링,
    memoryset 정책 스키마 검증
@@ -219,7 +219,7 @@ def test_parse_ref_valid(ref, expected_type, expected_name, expected_version):
 
 @pytest.mark.parametrize("ref", ["web-search", "skillsets/x@latest", "skillsets/@1.0.0"])
 def test_parse_ref_invalid_raises(ref):
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         ModuleRef.parse(ref)
     assert exc_info.value.code == "MOD_001"
 ```
@@ -244,7 +244,7 @@ async def test_agent_container_lifecycle(docker_runtime):
         await docker_runtime.stop(handle)
 ```
 
-- 테스트 전용 경량 에이전트 이미지 (`malkuth/agent-echo`) 를 fixture 로 유지 —
+- 테스트 전용 경량 에이전트 이미지 (`aaestro/agent-echo`) 를 fixture 로 유지 —
   모델 호출 없이 입력을 echo (프로토콜/lifecycle 검증용)
 - 테스트 후 컨테이너/네트워크 정리 보장 (fixture finalizer)
 - 그룹 quota 초과 manifest 기동 시도 → `RT_006` 으로 거부되는지 검증
@@ -297,7 +297,7 @@ async def test_graph_conditional_routing(fake_runtime):
 @pytest.mark.e2e
 async def test_research_pipeline_full_stack(compose_stack):
     """compose 로 전체 스택 기동 후 실제 그래프 run 검증. 모델은 fake provider 컨테이너."""
-    client = MalkuthClient(compose_stack.control_plane_url)
+    client = AaestroClient(compose_stack.control_plane_url)
 
     run = await client.submit("research-pipeline", {"query": "test"})
     result = await client.wait(run.run_id, timeout=120)
@@ -325,7 +325,7 @@ decisionset 의 `act_at` / `reject_at` 은 추측이 아니라 **라벨 데이�
    도구 결과를 그대로 넣지 않는다** — 모듈은 git 에 실리고, 비밀값이 아니라도 개인정보·테넌트
    기밀이 섞인다. 합성 예시이거나 되돌릴 수 없게 비식별화한 것만 두고, 실 데이터에서 파생한
    세트는 커밋 전에 프라이버시 검토를 거친다 (PR 본문에 검토자 명시)
-2. **구간 계산**: `malkuth decision calibrate <ref>` 가 실 provider 로 라벨 세트를 돌려 구간별
+2. **구간 계산**: `aaestro decision calibrate <ref>` 가 실 provider 로 라벨 세트를 돌려 구간별
    정밀도 표를 낸다. 이것이 **유일한 실 provider 호출**이고, 비용이 드는 명시적 작업이다
    (08 규약 5 — 실 API 호출은 사전 확인). CI 에서는 돌지 않는다
 3. **locale 검증**: provider 의 `locales` 는 그 언어의 라벨 세트로 calibration 을 통과한
@@ -420,7 +420,7 @@ select = ["E", "F", "W", "I", "N", "UP", "B", "ASYNC", "S", "C4", "RET", "SIM", 
 
 [tool.mypy]
 python_version = "3.12"
-strict = true                      # src/malkuth/core 는 strict 필수
+strict = true                      # src/aaestro/core 는 strict 필수
 ```
 
 ### Pre-Merge Checklist (CI 강제)
@@ -451,7 +451,7 @@ make test-integration   # PR gate (Docker 가용 환경)
 
 배포 직후 실행하는 최소 검증:
 
-1. `malkuth status` — 모든 에이전트 healthy
+1. `aaestro status` — 모든 에이전트 healthy
 2. 각 그래프의 canary run 1회 (fake 입력) — END 도달 확인
 3. 메트릭 endpoint 응답 확인
 

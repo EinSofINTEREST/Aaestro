@@ -65,7 +65,7 @@ class TaskResult(BaseModel):
     status: TaskStatus                    # completed | failed | canceled
     output: dict[str, Any]                # state 로 병합될 출력
     usage: ModelUsage                     # 토큰/비용 집계
-    error: MalkuthErrorPayload | None
+    error: AaestroErrorPayload | None
 ```
 
 ### Rules for All Agents
@@ -86,7 +86,7 @@ class TaskResult(BaseModel):
    - 외부 부수효과가 있는 tool 은 task_id 기반 중복 방지 적용
 
 4. **Error Handling**
-   - MUST return typed errors (`MalkuthError` payload) — [05-error-handling.md](05-error-handling.md)
+   - MUST return typed errors (`AaestroError` payload) — [05-error-handling.md](05-error-handling.md)
    - MUST NOT crash the daemon on task failure — 태스크 실패는 TaskResult 로 보고
    - Uncaught exception 은 agentd 최상위 핸들러에서 `INTERNAL` 카테고리로 변환
 
@@ -109,7 +109,7 @@ class TaskResult(BaseModel):
 소스**이며, 코드에 하드코딩된 모델명/프롬프트/tool 목록은 금지한다.
 
 ```yaml
-apiVersion: malkuth/v1
+apiVersion: aaestro/v1
 kind: Agent
 metadata:
   name: researcher              # 소문자 + 하이픈, 그래프에서 참조하는 id
@@ -169,7 +169,7 @@ spec:
       streaming: true
 
   runtime:
-    image: malkuth/agent-base:0.1.0   # 빌드 재료가 있으면 malkuth/agent-<name>:<version> 과 같아야 함
+    image: aaestro/agent-base:0.1.0   # 빌드 재료가 있으면 aaestro/agent-<name>:<version> 과 같아야 함
     resources:
       cpu: "1.0"
       memory: 1Gi
@@ -222,7 +222,7 @@ spec:
    - 서로 다른 에이전트의 프로세스 동거 금지
 
 2. **Base Image**
-   - 모든 에이전트는 `malkuth/agent-base` 에서 시작 (agentd 포함)
+   - 모든 에이전트는 `aaestro/agent-base` 에서 시작 (agentd 포함)
    - 커스텀 의존성은 에이전트별 **빌드 재료**의 `Dockerfile` 에서 base 를 확장
      (재료는 스토어에 둔다 — 아래 Registering Agents)
    - 이미지 태그는 semver — `latest` 태그로 배포 금지
@@ -231,7 +231,7 @@ spec:
    ```dockerfile
    # 빌드 재료의 Dockerfile — 컨텍스트 루트는 빌더가 조립하는 임시 디렉토리
    # (Dockerfile, manifest.yaml, modules/, src/)
-   FROM malkuth/agent-base:0.1.0
+   FROM aaestro/agent-base:0.1.0
 
    # 에이전트별 추가 의존성만 여기서 설치
    COPY src/requirements.txt /tmp/requirements.txt
@@ -240,7 +240,7 @@ spec:
    COPY --chown=1000:1000 src/ /app/src/
    # base 이미지가 이미 non-root (uid 1000, user: agent) 로 실행
    ```
-   - 빌더가 **굽기 전에** 검사한다 (`VAL_002`): `FROM malkuth/agent-base:<tag>` 로 시작,
+   - 빌더가 **굽기 전에** 검사한다 (`VAL_002`): `FROM aaestro/agent-base:<tag>` 로 시작,
      root 로 끝나지 않음, `COPY`/`ADD` 소스가 컨텍스트 안의 로컬 경로 (원격 `ADD` 금지)
    - MUST run as non-root user
    - MUST NOT bake secrets into images (빌드 arg 로도 금지)
@@ -387,7 +387,7 @@ async def execute(self, task: TaskRequest) -> TaskResult:
             results = await self.run_tools(response.tool_calls, task)
             prompt = prompt.extend(response, results)
 
-    raise MalkuthError(category=ErrorCategory.MODEL, code="LLM_005",
+    raise AaestroError(category=ErrorCategory.MODEL, code="LLM_005",
                        message="max turns exceeded", retryable=False)
 ```
 
@@ -437,7 +437,7 @@ if gate is not None:
    모델이 인자를 고치거나 다른 길을 택할 수 있다. 같은 도구가 한 태스크에서 두 번 차단되면 그
    태스크의 이후 호출도 차단한다 (게이트를 두드리는 루프 방지)
 4. **판별은 신호다**: 입력 판별의 `act` 는 경계 표시(`[untrusted: instructions detected]`)와
-   `error_code` 없는 WARN 로그, `malkuth_decision_bands_total{use="input_screen"}` 로 남는다.
+   `error_code` 없는 WARN 로그, `aaestro_decision_bands_total{use="input_screen"}` 로 남는다.
    결과를 버리거나 태스크를 멈추지 않는다 — 03/09 의 경계 규칙은 결정 모델 없이도 유지된다
 5. **게이트에 넣는 state**: 태스크 입력(렌더된 프롬프트가 아니라 `TaskRequest.input`)과 도구
    호출(이름·인자)만. 대화 전체를 보내지 않는다 — 비용이자 외부 반출이다
@@ -525,9 +525,9 @@ Material store (agent, version) → files      # 커스텀 에이전트의 빌�
    `spec.entrypoint: agent:ResearchAgent` 로 지정. 커스텀 구현도 모든 계약 규칙 준수
 3. **Build Materials**: 커스텀 에이전트의 `Dockerfile` 과 `src/` 는 저장소가 아니라
    **재료 스토어**에 `(에이전트, 버전)` 단위로 둔다 (`PUT /v1/agents/{name}/materials`,
-   `malkuth agent-push`). 같은 버전의 재료는 불변이고, 배포 중인 에이전트의 재료는 바꾸지
-   못한다. 굽는 것은 명시적 단계다 (`POST /v1/agents/{name}/image`, `malkuth agent-build`):
-   임시 디렉토리에 선언과 재료를 조립해 `malkuth/agent-<name>:<version>` 으로 굽고 지운다.
+   `aaestro agent-push`). 같은 버전의 재료는 불변이고, 배포 중인 에이전트의 재료는 바꾸지
+   못한다. 굽는 것은 명시적 단계다 (`POST /v1/agents/{name}/image`, `aaestro agent-build`):
+   임시 디렉토리에 선언과 재료를 조립해 `aaestro/agent-<name>:<version>` 으로 굽고 지운다.
    manifest 가 `runtime.image` 를 선언하면 그 태그와 같아야 한다 (다르면 `VAL_002`)
 4. 그래프는 에이전트를 `agents/{name}@{version}` 으로만 참조
 

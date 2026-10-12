@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from malkuth.core.errors import ErrorCode, MalkuthError
-from malkuth.runtime.docker.errors import NetworkIsolationError
-from malkuth.runtime.sidecars import (
+from aaestro.core.errors import AaestroError, ErrorCode
+from aaestro.runtime.docker.errors import NetworkIsolationError
+from aaestro.runtime.sidecars import (
     McpSidecars,
     ProxyAttachment,
     sidecar_env,
@@ -15,7 +15,7 @@ from malkuth.runtime.sidecars import (
 from tests.fixtures.builders import make_manifest
 from tests.fixtures.fake_docker import FakeDockerClient
 
-PROXY = ProxyAttachment(container="malkuth-egress-1", alias="malkuth-egress")
+PROXY = ProxyAttachment(container="aaestro-egress-1", alias="aaestro-egress")
 
 
 def with_servers(*servers, env_allowlist=()):
@@ -47,9 +47,9 @@ AGENT_ENV = {
     "BROWSER_KEY": "k-browser",
     "OTHER_SECRET": "k-other",
     "ANTHROPIC_API_KEY": "identity",
-    "MALKUTH_ACCESS_CREDENTIAL": "identity",
-    "HTTPS_PROXY": "http://researcher:identity@malkuth-egress:8080",
-    "https_proxy": "http://researcher:identity@malkuth-egress:8080",
+    "AAESTRO_ACCESS_CREDENTIAL": "identity",
+    "HTTPS_PROXY": "http://researcher:identity@aaestro-egress:8080",
+    "https_proxy": "http://researcher:identity@aaestro-egress:8080",
 }
 
 
@@ -57,7 +57,7 @@ def sidecar_ids(docker: FakeDockerClient) -> list[str]:
     return [
         f"container-{index:04d}" + "0" * 20
         for index, kwargs in enumerate(docker.created, start=1)
-        if kwargs["labels"].get("malkuth.role") == "mcp-sidecar"
+        if kwargs["labels"].get("aaestro.role") == "mcp-sidecar"
     ]
 
 
@@ -67,12 +67,12 @@ async def test_start_runs_each_sidecar_hardened_on_its_own_internal_network():
 
     await McpSidecars(docker).start(manifest, AGENT_ENV)
 
-    network = "malkuth-researcher--mcp"
+    network = "aaestro-researcher--mcp"
     assert sidecar_network("researcher") == network
     assert (network, True) in zip(docker.networks, docker.internal_requests, strict=True)
     browser, search = docker.created
-    assert browser["name"] == "malkuth-researcher--mcp-browser"
-    assert search["name"] == "malkuth-researcher--mcp-search"
+    assert browser["name"] == "aaestro-researcher--mcp-browser"
+    assert search["name"] == "aaestro-researcher--mcp-search"
     assert browser["network"] == network
     assert browser["ports"] == {}
     assert browser["user"] == "1000:1000"
@@ -107,7 +107,7 @@ async def test_with_the_proxy_only_the_proxy_joins_the_sidecar_network():
 
     await sidecars.start(manifest, {})
 
-    assert docker.connected == [("malkuth-researcher--mcp", PROXY.container, (PROXY.alias,))]
+    assert docker.connected == [("aaestro-researcher--mcp", PROXY.container, (PROXY.alias,))]
     assert sidecars.agent_networks(manifest) == ()
 
 
@@ -119,7 +119,7 @@ async def test_without_the_proxy_the_agent_joins_its_own_sidecar_network():
     await sidecars.start(manifest, {})
 
     assert docker.connected == []
-    assert sidecars.agent_networks(manifest) == ("malkuth-researcher--mcp",)
+    assert sidecars.agent_networks(manifest) == ("aaestro-researcher--mcp",)
 
 
 async def test_an_agent_without_sidecars_touches_nothing():
@@ -139,7 +139,7 @@ async def test_stop_removes_the_sidecars_but_not_the_agent_replicas():
     docker = FakeDockerClient()
     sidecars = McpSidecars(docker, proxy=PROXY)
     # 같은 에이전트 라벨을 단 레플리카 컨테이너 — 사이드카 정리가 건드리면 안 된다
-    replica = docker.create(name="malkuth-researcher-0", labels={"malkuth.agent": "researcher"})
+    replica = docker.create(name="aaestro-researcher-0", labels={"aaestro.agent": "researcher"})
     await sidecars.start(with_servers(BROWSER, SEARCH, env_allowlist=["BROWSER_KEY"]), AGENT_ENV)
     started = sidecar_ids(docker)
 
@@ -148,8 +148,8 @@ async def test_stop_removes_the_sidecars_but_not_the_agent_replicas():
     assert len(started) == 2
     assert replica not in docker.removed
     assert sorted(docker.removed) == sorted(started)
-    assert docker.disconnected == [("malkuth-researcher--mcp", PROXY.container)]
-    assert docker.removed_networks == ["malkuth-researcher--mcp"]
+    assert docker.disconnected == [("aaestro-researcher--mcp", PROXY.container)]
+    assert docker.removed_networks == ["aaestro-researcher--mcp"]
 
 
 async def test_stop_keeps_cleaning_when_a_step_fails():
@@ -163,7 +163,7 @@ async def test_stop_keeps_cleaning_when_a_step_fails():
 
     await sidecars.stop("researcher")
 
-    assert docker.removed and docker.removed_networks == ["malkuth-researcher--mcp"]
+    assert docker.removed and docker.removed_networks == ["aaestro-researcher--mcp"]
 
 
 async def test_a_deploy_replaces_a_leftover_sidecar_but_reattach_reuses_a_sound_one():
@@ -171,14 +171,14 @@ async def test_a_deploy_replaces_a_leftover_sidecar_but_reattach_reuses_a_sound_
     sidecars = McpSidecars(docker)
     manifest = with_servers(SEARCH)
     await sidecars.start(manifest, {})
-    first = docker.find("malkuth-researcher--mcp-search")
+    first = docker.find("aaestro-researcher--mcp-search")
 
     await sidecars.start(manifest, {}, reuse=True)
-    assert docker.find("malkuth-researcher--mcp-search") == first
+    assert docker.find("aaestro-researcher--mcp-search") == first
 
     await sidecars.start(manifest, {})
     assert first in docker.removed
-    assert docker.find("malkuth-researcher--mcp-search") not in (None, first)
+    assert docker.find("aaestro-researcher--mcp-search") not in (None, first)
 
 
 async def test_reattach_replaces_a_sidecar_that_is_not_running():
@@ -186,7 +186,7 @@ async def test_reattach_replaces_a_sidecar_that_is_not_running():
     sidecars = McpSidecars(docker)
     manifest = with_servers(SEARCH)
     await sidecars.start(manifest, {})
-    first = docker.find("malkuth-researcher--mcp-search")
+    first = docker.find("aaestro-researcher--mcp-search")
 
     await sidecars.start(manifest, {}, reuse=True)
 
@@ -194,11 +194,11 @@ async def test_reattach_replaces_a_sidecar_that_is_not_running():
 
 
 async def test_reattach_replaces_a_sidecar_attached_to_another_network():
-    docker = FakeDockerClient(attached=("malkuth-researcher--mcp", "bridge"))
+    docker = FakeDockerClient(attached=("aaestro-researcher--mcp", "bridge"))
     sidecars = McpSidecars(docker)
     manifest = with_servers(SEARCH)
     await sidecars.start(manifest, {})
-    first = docker.find("malkuth-researcher--mcp-search")
+    first = docker.find("aaestro-researcher--mcp-search")
 
     await sidecars.start(manifest, {}, reuse=True)
 
@@ -208,7 +208,7 @@ async def test_reattach_replaces_a_sidecar_attached_to_another_network():
 async def test_a_sidecar_that_fails_to_start_is_removed_and_reported():
     docker = FakeDockerClient(start_error=RuntimeError("boom"))
 
-    with pytest.raises(MalkuthError) as caught:
+    with pytest.raises(AaestroError) as caught:
         await McpSidecars(docker).start(with_servers(SEARCH), {})
 
     assert caught.value.code == ErrorCode.RT_001
@@ -219,7 +219,7 @@ async def test_a_sidecar_that_fails_to_start_is_removed_and_reported():
 async def test_a_missing_sidecar_image_is_rt_004():
     docker = FakeDockerClient(image_error=RuntimeError("pull denied"))
 
-    with pytest.raises(MalkuthError) as caught:
+    with pytest.raises(AaestroError) as caught:
         await McpSidecars(docker).start(with_servers(SEARCH), {})
 
     assert caught.value.code == ErrorCode.RT_004
@@ -228,10 +228,10 @@ async def test_a_missing_sidecar_image_is_rt_004():
 
 async def test_a_sidecar_network_that_is_not_internal_is_refused():
     docker = FakeDockerClient(
-        network_error=NetworkIsolationError("malkuth-researcher--mcp", expected=True, actual=False)
+        network_error=NetworkIsolationError("aaestro-researcher--mcp", expected=True, actual=False)
     )
 
-    with pytest.raises(MalkuthError) as caught:
+    with pytest.raises(AaestroError) as caught:
         await McpSidecars(docker, proxy=PROXY).start(with_servers(SEARCH), {})
 
     assert caught.value.code == ErrorCode.RT_001

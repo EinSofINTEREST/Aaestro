@@ -9,8 +9,8 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from malkuth.core.errors import ErrorCategory, MalkuthError
-from malkuth.orchestrator.topology import (
+from aaestro.core.errors import AaestroError, ErrorCategory
+from aaestro.orchestrator.topology import (
     GraphMode,
     GraphTopology,
     IdlePolicy,
@@ -26,7 +26,7 @@ from tests.fixtures.topologies import (
 )
 
 
-def assert_graph_001(exc_info: pytest.ExceptionInfo[MalkuthError]) -> None:
+def assert_graph_001(exc_info: pytest.ExceptionInfo[AaestroError]) -> None:
     """토폴로지 검증 실패는 전부 GRAPH_001 로 보고된다."""
     assert exc_info.value.code == "GRAPH_001"
     assert exc_info.value.category is ErrorCategory.GRAPH
@@ -155,7 +155,7 @@ def test_dangling_edge_target_is_rejected():
         ]
     )
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         validate_topology(topology)
 
     assert_graph_001(exc_info)
@@ -171,7 +171,7 @@ def test_dangling_edge_source_is_rejected():
         ]
     )
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         validate_topology(topology)
 
     assert_graph_001(exc_info)
@@ -188,7 +188,7 @@ def test_edge_out_of_end_is_rejected():
         ]
     )
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         validate_topology(topology)
 
     assert "END must not have outgoing edges" in exc_info.value.message
@@ -204,7 +204,7 @@ def test_edge_into_start_is_rejected():
         ]
     )
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         validate_topology(topology)
 
     assert "START must not have incoming edges" in exc_info.value.message
@@ -219,7 +219,7 @@ def test_unreachable_node_is_rejected():
         edges=[{"from": "START", "to": "planner"}, {"from": "planner", "to": "END"}],
     )
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         validate_topology(topology)
 
     assert_graph_001(exc_info)
@@ -233,7 +233,7 @@ def test_mission_without_end_reachability_is_rejected():
         edges=[{"from": "START", "to": "planner"}],
     )
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         validate_topology(topology)
 
     assert "must be able to reach END" in exc_info.value.message
@@ -249,7 +249,7 @@ def test_mission_cycle_without_max_iterations_is_rejected():
         ]
     )
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         validate_topology(topology)
 
     assert "requires 'max_iterations'" in exc_info.value.message
@@ -287,7 +287,7 @@ def test_unconditional_fan_out_is_rejected(source):
     edges.append({"from": source, "to": "researcher" if source == "START" else "END"})
     topology = make_mission(edges=edges)
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         validate_topology(topology)
 
     assert_graph_001(exc_info)
@@ -307,7 +307,7 @@ def test_a_second_fallback_beside_conditions_is_rejected():
         ]
     )
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         validate_topology(topology)
 
     assert_graph_001(exc_info)
@@ -342,7 +342,7 @@ def test_service_graph_must_reach_end():
         ]
     )
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         validate_topology(topology)
 
     assert "service graph must be able to reach END" in exc_info.value.message
@@ -359,7 +359,7 @@ def test_service_cycle_requires_max_iterations():
         ]
     )
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         validate_topology(topology)
 
     assert "max_iterations" in exc_info.value.message
@@ -368,7 +368,7 @@ def test_service_cycle_requires_max_iterations():
 def test_connection_caller_must_be_a_node():
     topology = make_mission(connections=[{"caller": "ghost", "callee": "planner"}])
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         validate_topology(topology)
 
     assert "connection caller is not a graph node" in exc_info.value.message
@@ -377,7 +377,7 @@ def test_connection_caller_must_be_a_node():
 def test_connection_callee_must_be_a_node():
     topology = make_mission(connections=[{"caller": "planner", "callee": "ghost"}])
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         validate_topology(topology)
 
     assert "connection callee is not a graph node" in exc_info.value.message
@@ -391,12 +391,12 @@ def test_unimportable_condition_is_rejected():
     topology = make_mission(
         edges=[
             {"from": "START", "to": "planner"},
-            {"from": "planner", "to": "researcher", "condition": "malkuth.graphs.nope:fn"},
+            {"from": "planner", "to": "researcher", "condition": "aaestro.graphs.nope:fn"},
             {"from": "researcher", "to": "END"},
         ]
     )
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         validate_topology(topology)
 
     assert_graph_001(exc_info)
@@ -410,13 +410,13 @@ def test_missing_condition_attribute_is_rejected():
             {
                 "from": "planner",
                 "to": "researcher",
-                "condition": "malkuth.graphs.conditions:no_such_fn",
+                "condition": "aaestro.graphs.conditions:no_such_fn",
             },
             {"from": "researcher", "to": "END"},
         ]
     )
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         validate_topology(topology)
 
     assert "attribute not found" in exc_info.value.message
@@ -434,7 +434,7 @@ def test_input_map_unknown_state_field_is_rejected():
         ]
     )
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         validate_topology(topology, state_fields=frozenset({"query", "plan"}))
 
     assert_graph_001(exc_info)
@@ -461,14 +461,14 @@ def test_input_map_literal_source_is_not_checked():
 
 
 def test_resolve_import_ref_returns_attribute():
-    fn = resolve_import_ref("malkuth.graphs.conditions:needs_research")
+    fn = resolve_import_ref("aaestro.graphs.conditions:needs_research")
 
     assert fn({"needs_research": True}) is True
 
 
 def test_resolve_import_ref_rejects_missing_separator():
-    with pytest.raises(MalkuthError) as exc_info:
-        resolve_import_ref("malkuth.graphs.conditions.needs_research")
+    with pytest.raises(AaestroError) as exc_info:
+        resolve_import_ref("aaestro.graphs.conditions.needs_research")
 
     assert "invalid import ref" in exc_info.value.message
 
@@ -509,16 +509,16 @@ def test_subgraph_node_ref():
 
 @pytest.mark.parametrize(
     "ref",
-    ["os:system", "subprocess:run", "malkuth.graphsx.evil:fn", "tests.fixtures.anything:fn"],
+    ["os:system", "subprocess:run", "aaestro.graphsx.evil:fn", "tests.fixtures.anything:fn"],
 )
 def test_an_import_ref_outside_the_graphs_package_is_refused_before_import(ref, monkeypatch):
     """검증이 import 하는 순간 모듈 최상위 코드가 돈다 — YAML 문자열 하나로 돌면 안 된다."""
     imported = []
     monkeypatch.setattr(
-        "malkuth.orchestrator.topology.importlib.import_module", lambda name: imported.append(name)
+        "aaestro.orchestrator.topology.importlib.import_module", lambda name: imported.append(name)
     )
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         resolve_import_ref(ref)
 
     assert_graph_001(exc_info)
@@ -540,7 +540,7 @@ def test_a_condition_import_ref_is_still_honoured_but_flagged_deprecated(monkeyp
     """한 버전은 그대로 동작한다 — 대신 운영자가 옮길 곳을 알게 한다."""
     warnings = []
     monkeypatch.setattr(
-        "malkuth.orchestrator.topology.log.warning", lambda event, **fields: warnings.append(fields)
+        "aaestro.orchestrator.topology.log.warning", lambda event, **fields: warnings.append(fields)
     )
 
     validate_topology(
@@ -559,7 +559,7 @@ def test_a_condition_import_ref_is_still_honoured_but_flagged_deprecated(monkeyp
 
 def test_import_ref_with_empty_module_is_wrapped_as_graph_001():
     """빈 모듈명은 ValueError 를 내지만, 계약상 GRAPH_001 로 보고돼야 한다."""
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         resolve_import_ref(":attr")
 
     assert_graph_001(exc_info)
@@ -617,7 +617,7 @@ def test_max_iterations_outside_the_cycle_does_not_satisfy_the_rule():
         ]
     )
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         validate_topology(topology)
 
     assert_graph_001(exc_info)
@@ -652,7 +652,7 @@ def test_self_loop_requires_max_iterations():
         ]
     )
 
-    with pytest.raises(MalkuthError):
+    with pytest.raises(AaestroError):
         validate_topology(topology)
 
 
@@ -697,10 +697,10 @@ def test_a_yaml_node_model_keeps_only_the_keys_it_wrote():
     import yaml
 
     document = yaml.safe_load(
-        "apiVersion: malkuth/v1\nkind: Graph\n"
+        "apiVersion: aaestro/v1\nkind: Graph\n"
         "metadata: {name: g, version: 1.0.0}\n"
         "spec:\n  mode: mission\n  goal: g\n"
-        "  state: {schema: 'malkuth.graphs.schemas:ResearchState'}\n"
+        "  state: {schema: 'aaestro.graphs.schemas:ResearchState'}\n"
         "  nodes:\n"
         "    - id: planner\n      agent: agents/planner@0.1.0\n      model: {fallbacks: []}\n"
         "    - id: writer\n      agent: agents/writer@0.1.0\n"
@@ -718,13 +718,13 @@ def test_a_yaml_node_model_keeps_only_the_keys_it_wrote():
 
 def test_model_overrides_keep_the_api_version_alias_when_dumped():
     """model_copy 가 alias 를 보존해야 override 를 입힌 토폴로지가 다시 YAML 로 읽힌다."""
-    from malkuth.core.manifest import ModelOverride
+    from aaestro.core.manifest import ModelOverride
 
     topology = make_mission().with_model_overrides({"planner": ModelOverride(name="m")})
 
     # Author 가 파일로 쓰는 것과 같은 덤프
     dumped = topology.model_dump(mode="json", by_alias=True, exclude_none=True)
 
-    assert dumped["apiVersion"] == "malkuth/v1"
+    assert dumped["apiVersion"] == "aaestro/v1"
     assert "api_version" not in dumped
     assert GraphTopology.model_validate(dumped).node("planner").model.name == "m"

@@ -1,4 +1,4 @@
-apiVersion: malkuth/v1
+apiVersion: aaestro/v1
 kind: Graph
 metadata:
   name: feed-monitor
@@ -17,7 +17,7 @@ spec:
     max_failure_streak: 5
 
   state:
-    schema: malkuth.graphs.schemas:FeedMonitorState
+    schema: aaestro.graphs.schemas:FeedMonitorState
 
   memory:
     spaces:
@@ -47,9 +47,9 @@ spec:
     - {from: START, to: watcher}
     - from: watcher
       to: classifier
-      condition: malkuth.graphs.conditions:has_new_items
+      condition: aaestro.graphs.conditions:has_new_items
     - from: watcher
       to: END
-      condition: malkuth.graphs.conditions:idle
+      condition: aaestro.graphs.conditions:idle
     - {from: classifier, to: notifier}
     - {from: notifier, to: END}

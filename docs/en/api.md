@@ -9,15 +9,15 @@ graph into running containers, and the runs that drive those containers. The
 below.
 
 ```bash
-python -m malkuth.orchestrator
+python -m aaestro.orchestrator
 ```
 
-It reads `configs/{MALKUTH_ENV}.yaml`. Which surfaces open depends on that file:
+It reads `configs/{AAESTRO_ENV}.yaml`. Which surfaces open depends on that file:
 
 | Surface | Opens when |
 |---|---|
 | Runs (read, drain) | always |
-| Catalog, authoring | always — `registry.roots` resolves against `MALKUTH_REPO_ROOT` |
+| Catalog, authoring | always — `registry.roots` resolves against `AAESTRO_REPO_ROOT` |
 | Deployments, run submission, resume | `orchestrator.deployment_store` is set |
 | Build materials | `orchestrator.material_store` is set — otherwise the routes answer `400` (`CFG_001`) |
 | Image builds, and the deploy gate on custom agents | `orchestrator.material_store` **and** `orchestrator.build_store` are set — otherwise the image routes are absent (`404`) |
@@ -33,7 +33,7 @@ Without `orchestrator.deployment_store` the process refuses to start containers 
 `/v1/*` route requires it as a bearer token:
 
 ```bash
-curl -H "Authorization: Bearer $MALKUTH_CONTROL_TOKEN" http://127.0.0.1:8700/v1/graphs
+curl -H "Authorization: Bearer $AAESTRO_CONTROL_TOKEN" http://127.0.0.1:8700/v1/graphs
 ```
 
 **Without a token the guard is off and every route is open.** That configuration is allowed
@@ -286,12 +286,12 @@ Submits a build and returns at once with `202`:
 
 ```json
 {"agent": "docs-custom", "version": "0.1.0", "status": "building",
- "image": "malkuth/agent-docs-custom:0.1.0", "error": null, "log": "",
+ "image": "aaestro/agent-docs-custom:0.1.0", "error": null, "log": "",
  "updated_at": "2026-09-14T11:02:03.123456+00:00"}
 ```
 
 The builder assembles a temporary build context from the catalog and the store, bakes it as
-`malkuth/agent-<name>:<version>`, and deletes the directory:
+`aaestro/agent-<name>:<version>`, and deletes the directory:
 
 ```
 Dockerfile        # yours, or the skeleton when you saved none
@@ -303,7 +303,7 @@ src/              # your materials
 The skeleton copies those three into `/app` and puts `/app/src` on `PYTHONPATH`, so a manifest
 `spec.entrypoint: agent:MyAgent` resolves to `src/agent.py`. A `Dockerfile` of your own must:
 
-- start `FROM malkuth/agent-base:<tag>` — the base carries `agentd`;
+- start `FROM aaestro/agent-base:<tag>` — the base carries `agentd`;
 - not end as `root` (going up to install and back down is fine);
 - `COPY`/`ADD` only from inside the context — no absolute paths, no `..`, no remote URLs.
 
@@ -331,9 +331,9 @@ The build record for the agent's current version, plus whether it needs one:
 
 ```json
 {"agent": "docs-custom", "version": "0.1.2", "status": "failed",
- "image": "malkuth/agent-docs-custom:0.1.2", "needs_build": true,
- "error": "image build failed: malkuth/agent-docs-custom:0.1.2",
- "log": "Step 1/2 : FROM malkuth/agent-base:0.1.0\n ... returned a non-zero code: 3",
+ "image": "aaestro/agent-docs-custom:0.1.2", "needs_build": true,
+ "error": "image build failed: aaestro/agent-docs-custom:0.1.2",
+ "log": "Step 1/2 : FROM aaestro/agent-base:0.1.0\n ... returned a non-zero code: 3",
  "updated_at": "..."}
 ```
 
@@ -386,7 +386,7 @@ a fallback equal to the primary is refused.
   "model_overrides": {},
   "agents": [
     {"name": "planner", "replica": 0, "container_id": "0f2edbe1aa5a",
-     "image": "malkuth/agent-base:0.1.0", "control_port": 32852, "a2a_port": 9100}
+     "image": "aaestro/agent-base:0.1.0", "control_port": 32852, "a2a_port": 9100}
   ]
 }
 ```
@@ -412,7 +412,7 @@ Failures leave no ghost containers. What you get back tells you which kind it wa
   `runtime.egress_proxy.providers`, or an override leaving the manifest's provider set — the finding
   is in `details.findings`.
 - `400` (`VAL_002`) — an agent with build materials declares a `runtime.image` other than the
-  tag its build produces (`malkuth/agent-<name>:<version>`). Two places naming two images
+  tag its build produces (`aaestro/agent-<name>:<version>`). Two places naming two images
   leave no way to tell what runs.
 - `400` (`VAL_002`) — `model_overrides` names a node that is not in the graph, or an override
   body is malformed (provider without name, unknown key). Nothing was started.
@@ -548,7 +548,7 @@ agent the ability to read every decision. So each audience authenticates as itse
 ### Agent identity
 
 Every deployment issues one identity per agent and injects it as
-`MALKUTH_ACCESS_CREDENTIAL`. The registry stores only its SHA-256 hash; the value appears in no
+`AAESTRO_ACCESS_CREDENTIAL`. The registry stores only its SHA-256 hash; the value appears in no
 API response. Identities survive control plane restarts, are re-injected when supervision
 replaces a container, and stop working the moment the deployment is torn down or rolled back.
 
@@ -606,7 +606,7 @@ wildcard. Changing a ceiling is a declaration change; a permission agent cannot 
 ### `POST /v1/access/grants` — permission agent
 
 ```bash
-curl -X POST -H "Authorization: Bearer $MALKUTH_ACCESS_CREDENTIAL" \
+curl -X POST -H "Authorization: Bearer $AAESTRO_ACCESS_CREDENTIAL" \
   -H 'content-type: application/json' \
   -d '{"agent": "researcher", "kind": "egress", "target": "api.search.example.com",
        "ttl_s": 600, "reason": "fetch sources for run r-12", "requested_by": "researcher"}' \
@@ -628,7 +628,7 @@ access route, including revocations and decisions. `201` returns the record:
 ```
 
 A refusal is `403` with `ACC_003`, and it is logged and counted
-(`malkuth_access_grants_total{op="refuse"}`). It is refused when the caller is not listed in
+(`aaestro_access_grants_total{op="refuse"}`). It is refused when the caller is not listed in
 `access_stewards`, grants to itself, names a memory permission without a mode, exceeds the
 ceiling or its `max_ttl_s`, or asks for something an operator revoked — only an operator
 undoes a revocation. An unknown or revoked identity is `403` with `ACC_001`; an unknown agent
@@ -638,7 +638,7 @@ is `404`.
 
 Workers do not call the grant route; they ask the **permission agent** over A2A, and it calls the
 route with its own identity. The reference agent is `agents/permission-agent`
-(`malkuth.access.steward:PermissionAgent`), deployed by `graphs/permissions.yaml`. It decides by
+(`aaestro.access.steward:PermissionAgent`), deployed by `graphs/permissions.yaml`. It decides by
 rules only — it never calls the model its manifest declares — so the text of a request cannot talk
 it past anything. The ceiling is enforced by the registry either way.
 
@@ -797,13 +797,13 @@ The Memory Service switches to **registry mode** when both of these are set in i
 
 | Variable | Value |
 |---|---|
-| `MALKUTH_ACCESS_URL` | the control plane, reachable from the Memory Service |
-| `MALKUTH_ACCESS_ENFORCER_TOKEN` | the control plane's `access_enforcer_token` |
+| `AAESTRO_ACCESS_URL` | the control plane, reachable from the Memory Service |
+| `AAESTRO_ACCESS_ENFORCER_TOKEN` | the control plane's `access_enforcer_token` |
 
 In registry mode:
 
 - **No memory tokens are issued.** An agent presents the identity its deployment injected;
-  the control plane passes it as `MALKUTH_MEMORY_TOKEN` when a registry is configured, and never
+  the control plane passes it as `AAESTRO_MEMORY_TOKEN` when a registry is configured, and never
   falls back to a static token.
 - **Every request is decided.** The service resolves the alias through the agent's current
   declarations, then asks for `ro` (read, search, latest) or `rw` (append) on that space id.
@@ -826,7 +826,7 @@ every agent too, because nothing issues identities.
 
 ### Egress enforcement
 
-The egress proxy (`python -m malkuth.egress`, image `malkuth/egress-proxy`) is the path agents take
+The egress proxy (`python -m aaestro.egress`, image `aaestro/egress-proxy`) is the path agents take
 to anything outside. It hosts no tools; it decides and forwards.
 
 | Listener | What agents send | Decided as |
@@ -843,9 +843,9 @@ Turn it on in the control plane:
 ```yaml
 runtime:
   egress_proxy:
-    connect_url: http://malkuth-egress:8080
-    providers_url: http://malkuth-egress:8081
-    container: malkuth-egress   # needed only for MCP sidecars — see below
+    connect_url: http://aaestro-egress:8080
+    providers_url: http://aaestro-egress:8081
+    container: aaestro-egress   # needed only for MCP sidecars — see below
     providers: [anthropic]      # providers the proxy terminates; match the real upstream setup (default [anthropic])
 ```
 
@@ -904,13 +904,13 @@ The proxy process takes:
 
 | Variable | Meaning |
 |---|---|
-| `MALKUTH_ACCESS_URL`, `MALKUTH_ACCESS_ENFORCER_TOKEN` | the registry — both required, or it refuses to start |
+| `AAESTRO_ACCESS_URL`, `AAESTRO_ACCESS_ENFORCER_TOKEN` | the registry — both required, or it refuses to start |
 | `ANTHROPIC_API_KEY` | the key the proxy adds to model calls |
-| `MALKUTH_EGRESS_ANTHROPIC_UPSTREAM` | where model calls go (default `https://api.anthropic.com`) |
-| `MALKUTH_EGRESS_ALLOW_PLAINTEXT_UPSTREAM` | `true` to accept plain `http` to a destination **also listed** in `MALKUTH_EGRESS_PRIVATE_DESTINATIONS` — for a test double on a private network. Each request resolves the name and connects only to a private address; a listed name that resolves publicly is refused (`502`). A public address is never reached over plain `http`, whatever the settings |
-| `MALKUTH_EGRESS_PORT`, `MALKUTH_EGRESS_PROVIDER_PORT` | the CONNECT and provider listeners (default `8080`, `8081`) |
-| `MALKUTH_EGRESS_MODE` | `enforce` (default) or `record` |
-| `MALKUTH_EGRESS_PRIVATE_DESTINATIONS` | comma-separated targets allowed to resolve to private addresses |
+| `AAESTRO_EGRESS_ANTHROPIC_UPSTREAM` | where model calls go (default `https://api.anthropic.com`) |
+| `AAESTRO_EGRESS_ALLOW_PLAINTEXT_UPSTREAM` | `true` to accept plain `http` to a destination **also listed** in `AAESTRO_EGRESS_PRIVATE_DESTINATIONS` — for a test double on a private network. Each request resolves the name and connects only to a private address; a listed name that resolves publicly is refused (`502`). A public address is never reached over plain `http`, whatever the settings |
+| `AAESTRO_EGRESS_PORT`, `AAESTRO_EGRESS_PROVIDER_PORT` | the CONNECT and provider listeners (default `8080`, `8081`) |
+| `AAESTRO_EGRESS_MODE` | `enforce` (default) or `record` |
+| `AAESTRO_EGRESS_PRIVATE_DESTINATIONS` | comma-separated targets allowed to resolve to private addresses |
 
 Responses: a denied destination is `403` (`ACC_001`); no decision while the registry is unreachable
 and nothing is cached is `503` (`ACC_002`); a missing or unknown identity is `407` on CONNECT and
@@ -920,7 +920,7 @@ when its registry feed or either listener ends — run it under a restart policy
 **Private addresses.** The proxy sits on the external network, so it can reach what agents cannot —
 cloud metadata addresses, services on the host. A destination that resolves to a private, loopback,
 link-local or shared (CGNAT) address is refused unless it is listed in
-`MALKUTH_EGRESS_PRIVATE_DESTINATIONS`, and the proxy connects to the address it checked, so a name
+`AAESTRO_EGRESS_PRIVATE_DESTINATIONS`, and the proxy connects to the address it checked, so a name
 cannot be re-pointed between the decision and the connection.
 
 **Record mode.** `record` logs a denial (`egress denied but recorded only`) and lets the call
@@ -953,15 +953,15 @@ The proxy needs two more settings for this:
 
 | Variable | Meaning |
 |---|---|
-| `MALKUTH_REPO_ROOT` | the declarations, mounted read-only — without it, remote MCP calls are `404` |
-| `MALKUTH_EGRESS_MCP_TOKENS` | comma-separated credential names the proxy may send to MCP servers, each set in the proxy's environment |
+| `AAESTRO_REPO_ROOT` | the declarations, mounted read-only — without it, remote MCP calls are `404` |
+| `AAESTRO_EGRESS_MCP_TOKENS` | comma-separated credential names the proxy may send to MCP servers, each set in the proxy's environment |
 
 **Only listed credential names are sent.** A declaration that names another secret as
 `auth.token_env` gets `502` (`CFG_002`) instead of that value. The list itself may not name secrets the
-proxy holds for other purposes — `ANTHROPIC_API_KEY` or any `MALKUTH_*` name refuses to start
+proxy holds for other purposes — `ANTHROPIC_API_KEY` or any `AAESTRO_*` name refuses to start
 (`CFG_001`). A remote MCP server must use `https`: plain `http` is refused (`502`) unless
-`MALKUTH_EGRESS_ALLOW_PLAINTEXT_UPSTREAM=true` **and** the server is listed in
-`MALKUTH_EGRESS_PRIVATE_DESTINATIONS` — the switch alone opens nothing, so a switch left on in a
+`AAESTRO_EGRESS_ALLOW_PLAINTEXT_UPSTREAM=true` **and** the server is listed in
+`AAESTRO_EGRESS_PRIVATE_DESTINATIONS` — the switch alone opens nothing, so a switch left on in a
 production config cannot send a credential in the clear to a public host. A server that resolves to a
 private address must be listed there too, like any destination.
 
@@ -1002,11 +1002,11 @@ spec:
         allowed_tools: [navigate, screenshot]
 ```
 
-The runtime starts it before the agent as `malkuth-<agent>--mcp-<server>` and removes it when the
+The runtime starts it before the agent as `aaestro-<agent>--mcp-<server>` and removes it when the
 deployment is torn down or rolled back. The address comes from that name; a sidecar never declares a
 URL.
 
-- **A network of its own.** An agent's sidecars sit on an internal network, `malkuth-<agent>--mcp`,
+- **A network of its own.** An agent's sidecars sit on an internal network, `aaestro-<agent>--mcp`,
   never on the agent network. With `runtime.egress_proxy`, the only other container on it is the
   proxy: the agent calls `…/mcp/<server>` as it would a remote server, and the proxy decides
   `mcp_tool` for every `tools/call`. Revoking one tool refuses its next call, the server's other tools
@@ -1039,7 +1039,7 @@ the callee decides each call itself:
 
 1. The caller asks the registry for a **ticket** for one callee, authenticating with its own
    identity. The ticket lives five minutes and is reused until thirty seconds before it expires.
-2. The caller sends the ticket in `x-malkuth-a2a-ticket`. Its identity never leaves for the callee.
+2. The caller sends the ticket in `x-aaestro-a2a-ticket`. Its identity never leaves for the callee.
 3. The callee's A2A server sends the ticket to the registry, authenticating with **its own**
    identity. The registry refuses a ticket issued for another callee, an expired one, and one
    whose caller identity was revoked; otherwise it decides `a2a` for (caller, callee).
@@ -1100,19 +1100,19 @@ agent identity — `403` (`ACC_001`) otherwise.
 
 | API | CLI |
 |---|---|
-| `POST /v1/runs` | `malkuth run --deployment <id> --input '{...}'` |
-| `GET /v1/runs` | `malkuth run-list [--mode service]` |
-| `POST /v1/runs/{id}/drain` | `malkuth run-drain <id>` |
-| `POST /v1/runs/{id}/resume` | `malkuth run-resume <id>` |
-| `PUT /v1/agents/{name}/materials` | `malkuth agent-push <name> <directory>` |
-| `POST` + `GET /v1/agents/{name}/image` | `malkuth agent-build <name> [--wait]` |
+| `POST /v1/runs` | `aaestro run --deployment <id> --input '{...}'` |
+| `GET /v1/runs` | `aaestro run-list [--mode service]` |
+| `POST /v1/runs/{id}/drain` | `aaestro run-drain <id>` |
+| `POST /v1/runs/{id}/resume` | `aaestro run-resume <id>` |
+| `PUT /v1/agents/{name}/materials` | `aaestro agent-push <name> <directory>` |
+| `POST` + `GET /v1/agents/{name}/image` | `aaestro agent-build <name> [--wait]` |
 
-These commands take `--control-url` and `--control-token` (or `MALKUTH_CONTROL_TOKEN`).
+These commands take `--control-url` and `--control-token` (or `AAESTRO_CONTROL_TOKEN`).
 `agent-push` reads a directory, skips cache directories such as `__pycache__`, and refuses
 symbolic links. `agent-build --wait` exits non-zero when the build fails and prints the log
 tail.
 
-`malkuth validate` is deliberately absent from that table: it is a **local** command that
+`aaestro validate` is deliberately absent from that table: it is a **local** command that
 reads the repository directly and takes no control-plane flags. `POST /v1/validate` is the
 remote equivalent, and it validates a draft you have not saved. See the
 [root README](../../README.md#commands) for the full command reference.

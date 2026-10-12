@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 from prometheus_client import CollectorRegistry, generate_latest
 
-from malkuth.observability.metrics import (
+from aaestro.observability.metrics import (
     DEFAULT_METRICS_PORT,
     METRIC_SPECS,
     Metrics,
@@ -23,10 +23,10 @@ RULES_DIR = Path(".claude/rules")
 
 
 def documented_metric_names() -> set[str]:
-    """룰셋에 등장하는 malkuth_* 메트릭 이름을 모은다."""
+    """룰셋에 등장하는 aaestro_* 메트릭 이름을 모은다."""
     names: set[str] = set()
     for doc in RULES_DIR.glob("*.md"):
-        names.update(re.findall(r"malkuth_[a-z0-9_]+", doc.read_text(encoding="utf-8")))
+        names.update(re.findall(r"aaestro_[a-z0-9_]+", doc.read_text(encoding="utf-8")))
     return names
 
 
@@ -54,7 +54,7 @@ def test_metric_names_are_unique():
 
 
 def test_all_metric_names_are_prefixed():
-    assert all(spec.name.startswith("malkuth_") for spec in METRIC_SPECS)
+    assert all(spec.name.startswith("aaestro_") for spec in METRIC_SPECS)
 
 
 def test_counter_names_end_with_total():
@@ -91,91 +91,91 @@ def test_metric_contract_snapshot():
     의도한 변경인지 반드시 확인하고 운영 자산을 같은 PR 에서 갱신해야 한다.
     """
     assert snapshot() == {
-        "malkuth_agent_tasks_total": {
+        "aaestro_agent_tasks_total": {
             "kind": "counter",
             "labels": ["agent", "group", "graph", "status"],
         },
-        "malkuth_agent_task_duration_seconds": {
+        "aaestro_agent_task_duration_seconds": {
             "kind": "histogram",
             "labels": ["agent", "group", "graph"],
         },
-        "malkuth_model_requests_total": {
+        "aaestro_model_requests_total": {
             "kind": "counter",
             "labels": ["agent", "provider", "model", "status", "fallback_index"],
         },
-        "malkuth_model_tokens_total": {
+        "aaestro_model_tokens_total": {
             "kind": "counter",
             "labels": ["agent", "model", "direction"],
         },
-        "malkuth_tool_calls_total": {
+        "aaestro_tool_calls_total": {
             "kind": "counter",
             "labels": ["agent", "source", "tool", "status"],
         },
-        "malkuth_mcp_tool_calls_total": {
+        "aaestro_mcp_tool_calls_total": {
             "kind": "counter",
             "labels": ["agent", "server", "tool", "status"],
         },
-        "malkuth_a2a_calls_total": {
+        "aaestro_a2a_calls_total": {
             "kind": "counter",
             "labels": ["caller", "callee", "status"],
         },
-        "malkuth_containers_running": {"kind": "gauge", "labels": ["agent"]},
-        "malkuth_container_restarts_total": {
+        "aaestro_containers_running": {"kind": "gauge", "labels": ["agent"]},
+        "aaestro_container_restarts_total": {
             "kind": "counter",
             "labels": ["agent", "reason"],
         },
-        "malkuth_agent_health": {"kind": "gauge", "labels": ["agent"]},
-        "malkuth_runs_active": {"kind": "gauge", "labels": ["graph", "mode"]},
-        "malkuth_runs_total": {"kind": "counter", "labels": ["graph", "mode", "status"]},
-        "malkuth_node_duration_seconds": {
+        "aaestro_agent_health": {"kind": "gauge", "labels": ["agent"]},
+        "aaestro_runs_active": {"kind": "gauge", "labels": ["graph", "mode"]},
+        "aaestro_runs_total": {"kind": "counter", "labels": ["graph", "mode", "status"]},
+        "aaestro_node_duration_seconds": {
             "kind": "histogram",
             "labels": ["graph", "node_id"],
         },
-        "malkuth_checkpoint_operations_total": {
+        "aaestro_checkpoint_operations_total": {
             "kind": "counter",
             "labels": ["operation", "status"],
         },
-        "malkuth_service_iterations_total": {
+        "aaestro_service_iterations_total": {
             "kind": "counter",
             "labels": ["graph", "status"],
         },
-        "malkuth_service_idle_delay_seconds": {"kind": "gauge", "labels": ["graph"]},
-        "malkuth_memory_operations_total": {
+        "aaestro_service_idle_delay_seconds": {"kind": "gauge", "labels": ["graph"]},
+        "aaestro_memory_operations_total": {
             "kind": "counter",
             "labels": ["space", "op", "status"],
         },
-        "malkuth_memory_search_duration_seconds": {"kind": "histogram", "labels": ["space"]},
-        "malkuth_memory_entries": {"kind": "gauge", "labels": ["space"]},
-        "malkuth_memory_index_lag_seconds": {"kind": "gauge", "labels": ["space"]},
-        "malkuth_memory_recall_injected_tokens": {"kind": "gauge", "labels": ["agent"]},
-        "malkuth_memory_recall_filtered_total": {"kind": "counter", "labels": ["agent", "band"]},
-        "malkuth_decision_calls_total": {
+        "aaestro_memory_search_duration_seconds": {"kind": "histogram", "labels": ["space"]},
+        "aaestro_memory_entries": {"kind": "gauge", "labels": ["space"]},
+        "aaestro_memory_index_lag_seconds": {"kind": "gauge", "labels": ["space"]},
+        "aaestro_memory_recall_injected_tokens": {"kind": "gauge", "labels": ["agent"]},
+        "aaestro_memory_recall_filtered_total": {"kind": "counter", "labels": ["agent", "band"]},
+        "aaestro_decision_calls_total": {
             "kind": "counter",
             "labels": ["agent", "provider", "model", "use", "status"],
         },
-        "malkuth_decision_bands_total": {
+        "aaestro_decision_bands_total": {
             "kind": "counter",
             "labels": ["agent", "use", "question", "band"],
         },
-        "malkuth_decision_duration_seconds": {
+        "aaestro_decision_duration_seconds": {
             "kind": "histogram",
             "labels": ["agent", "provider"],
         },
-        "malkuth_decision_unavailable_total": {
+        "aaestro_decision_unavailable_total": {
             "kind": "counter",
             "labels": ["agent", "provider", "reason"],
         },
-        "malkuth_circuit_state": {"kind": "gauge", "labels": ["target"]},
-        "malkuth_access_decisions_total": {
+        "aaestro_circuit_state": {"kind": "gauge", "labels": ["target"]},
+        "aaestro_access_decisions_total": {
             "kind": "counter",
             "labels": ["resource", "decision", "source"],
         },
-        "malkuth_access_grants_total": {
+        "aaestro_access_grants_total": {
             "kind": "counter",
             "labels": ["resource", "op", "decided_by"],
         },
-        "malkuth_access_registry_reachable": {"kind": "gauge", "labels": ["component"]},
-        "malkuth_access_cache_invalidations_total": {"kind": "counter", "labels": ["component"]},
+        "aaestro_access_registry_reachable": {"kind": "gauge", "labels": ["component"]},
+        "aaestro_access_cache_invalidations_total": {"kind": "counter", "labels": ["component"]},
     }
 
 
@@ -201,39 +201,39 @@ def test_two_instances_do_not_collide():
 def test_counter_increments_are_exposed():
     metrics = Metrics(CollectorRegistry())
 
-    metrics["malkuth_agent_tasks_total"].labels(
+    metrics["aaestro_agent_tasks_total"].labels(
         agent="researcher", group="research", graph="pipeline", status="completed"
     ).inc()
 
     exposed = generate_latest(metrics.registry).decode()
-    assert 'malkuth_agent_tasks_total{agent="researcher"' in exposed
+    assert 'aaestro_agent_tasks_total{agent="researcher"' in exposed
     assert 'status="completed"} 1.0' in exposed
 
 
 def test_gauge_set_is_exposed():
     metrics = Metrics(CollectorRegistry())
 
-    metrics["malkuth_agent_health"].labels(agent="researcher").set(1)
+    metrics["aaestro_agent_health"].labels(agent="researcher").set(1)
 
     assert (
-        'malkuth_agent_health{agent="researcher"} 1.0' in generate_latest(metrics.registry).decode()
+        'aaestro_agent_health{agent="researcher"} 1.0' in generate_latest(metrics.registry).decode()
     )
 
 
 def test_histogram_observation_is_exposed():
     metrics = Metrics(CollectorRegistry())
 
-    metrics["malkuth_node_duration_seconds"].labels(graph="g", node_id="planner").observe(0.5)
+    metrics["aaestro_node_duration_seconds"].labels(graph="g", node_id="planner").observe(0.5)
 
     exposed = generate_latest(metrics.registry).decode()
-    assert "malkuth_node_duration_seconds_count" in exposed
-    assert "malkuth_node_duration_seconds_bucket" in exposed
+    assert "aaestro_node_duration_seconds_count" in exposed
+    assert "aaestro_node_duration_seconds_bucket" in exposed
 
 
 def test_histogram_buckets_cover_task_latency_range():
     """태스크 latency 는 초 단위로 넓게 퍼지므로 300s 까지 관찰 가능해야 한다."""
     metrics = Metrics(CollectorRegistry())
-    metrics["malkuth_agent_task_duration_seconds"].labels(agent="a", group="g", graph="p").observe(
+    metrics["aaestro_agent_task_duration_seconds"].labels(agent="a", group="g", graph="p").observe(
         120
     )
 
@@ -246,12 +246,12 @@ def test_wrong_label_set_is_rejected():
     metrics = Metrics(CollectorRegistry())
 
     with pytest.raises(ValueError, match="[Ii]ncorrect label names"):
-        metrics["malkuth_agent_health"].labels(wrong="x")
+        metrics["aaestro_agent_health"].labels(wrong="x")
 
 
 def test_unknown_metric_lookup_raises():
     with pytest.raises(KeyError):
-        Metrics(CollectorRegistry())["malkuth_not_a_metric"]
+        Metrics(CollectorRegistry())["aaestro_not_a_metric"]
 
 
 def test_metrics_is_iterable():

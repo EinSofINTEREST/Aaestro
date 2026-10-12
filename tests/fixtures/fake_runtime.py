@@ -8,9 +8,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from malkuth.core.agent import TaskRequest, TaskResult
-from malkuth.core.errors import ErrorCategory, ErrorCode, MalkuthError
-from malkuth.orchestrator.topology import NodeSpec
+from aaestro.core.agent import TaskRequest, TaskResult
+from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.orchestrator.topology import NodeSpec
 
 
 class FakeRuntime:
@@ -18,7 +18,7 @@ class FakeRuntime:
 
     def __init__(self) -> None:
         self._outputs: dict[str, dict[str, Any]] = {}
-        self._failures: dict[str, MalkuthError] = {}
+        self._failures: dict[str, AaestroError] = {}
         self._fail_once: set[str] = set()
         self.invoked: list[str] = []
         self.tasks: list[TaskRequest] = []
@@ -29,10 +29,10 @@ class FakeRuntime:
         return self
 
     def fail(
-        self, node_id: str, *, error: MalkuthError | None = None, once: bool = False
+        self, node_id: str, *, error: AaestroError | None = None, once: bool = False
     ) -> FakeRuntime:
         """노드가 실패하도록 지정한다. ``once`` 면 첫 호출만 실패한다."""
-        self._failures[node_id] = error or MalkuthError(
+        self._failures[node_id] = error or AaestroError(
             category=ErrorCategory.MODEL,
             code=ErrorCode.LLM_003,
             message="provider server error",

@@ -3,7 +3,7 @@
 한국어 | **[English](../../en/ci/conventions.md)**
 
 저장소 거버넌스와 GitHub Actions CI 설계 규칙입니다. IssueTracker 저장소에서 이식하여
-Malkuth 의 Python/uv 툴체인과 문서 정책에 맞게 발전시켰습니다.
+Aaestro 의 Python/uv 툴체인과 문서 정책에 맞게 발전시켰습니다.
 
 관련 문서: [Required Status Checks 단일 소스](status-checks.md)
 
@@ -85,7 +85,7 @@ timeline 이벤트의 actor 를 메인테이너 allowlist (현재 `juhy0987`) �
 
 ### 3.2 부트스트랩 가드
 
-Malkuth 는 문서/룰셋 우선으로 시작하는 저장소입니다. 품질 job 은
+Aaestro 는 문서/룰셋 우선으로 시작하는 저장소입니다. 품질 job 은
 `pyproject.toml` + `Makefile` 존재를 확인하고 부재 시 **skip** 합니다 — skipped 된
 required check 는 게이트를 통과하므로, Ruleset 을 첫날부터 등록해 두어도 문서 단계 PR 이
 차단되지 않습니다. 코드가 들어오는 순간 가드는 자연히 무의미해집니다.

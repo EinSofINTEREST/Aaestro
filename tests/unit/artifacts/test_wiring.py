@@ -10,8 +10,8 @@ from pathlib import Path
 
 import pytest
 
-from malkuth.agentd.executor import Executor, ExecutorServices
-from malkuth.artifacts import FilesystemArtifactStore
+from aaestro.agentd.executor import Executor, ExecutorServices
+from aaestro.artifacts import FilesystemArtifactStore
 from tests.fixtures.builders import make_task
 from tests.fixtures.fake_model import FakeModel, FakeTools, calls, text
 
@@ -79,7 +79,7 @@ async def test_a_skill_can_store_and_reference_an_artifact(tmp_path):
 
 
 def test_the_store_is_built_when_a_root_is_injected(tmp_path, monkeypatch):
-    from malkuth.agentd.__main__ import ARTIFACT_ROOT_ENV, _artifact_store
+    from aaestro.agentd.__main__ import ARTIFACT_ROOT_ENV, _artifact_store
     from tests.fixtures.builders import make_manifest
 
     monkeypatch.setenv(ARTIFACT_ROOT_ENV, str(tmp_path))
@@ -87,14 +87,14 @@ def test_the_store_is_built_when_a_root_is_injected(tmp_path, monkeypatch):
     built = _artifact_store(make_manifest())
 
     # 소속이 스코프를 정한다 — local 은 늘 있고 이름은 에이전트다 (#155)
-    from malkuth.artifacts.scope import ArtifactScope, ScopedArtifacts
+    from aaestro.artifacts.scope import ArtifactScope, ScopedArtifacts
 
     assert isinstance(built, ScopedArtifacts)
     assert built.stores[ArtifactScope.LOCAL].scope == "test-agent"
 
 
 def test_no_store_without_an_injected_root(monkeypatch):
-    from malkuth.agentd.__main__ import ARTIFACT_ROOT_ENV, _artifact_store
+    from aaestro.agentd.__main__ import ARTIFACT_ROOT_ENV, _artifact_store
     from tests.fixtures.builders import make_manifest
 
     monkeypatch.delenv(ARTIFACT_ROOT_ENV, raising=False)
@@ -111,7 +111,7 @@ def echo_manifest():
     """
     import yaml
 
-    from malkuth.core.manifest import AgentManifest
+    from aaestro.core.manifest import AgentManifest
 
     declared = Path("agents/echo/manifest.yaml").read_text(encoding="utf-8")
     return AgentManifest.model_validate(yaml.safe_load(declared))
@@ -123,16 +123,16 @@ async def test_the_assembled_executor_carries_the_store(tmp_path, monkeypatch, e
     실제로 그랬다: `artifacts=` 를 지우는 mutation 이 전부 통과했다. 조립된
     executor 를 들여다봐야 배선이 증명된다.
     """
-    from malkuth.agentd.__main__ import ARTIFACT_ROOT_ENV, build_executor
+    from aaestro.agentd.__main__ import ARTIFACT_ROOT_ENV, build_executor
 
     monkeypatch.setenv(ARTIFACT_ROOT_ENV, str(tmp_path))
-    monkeypatch.setenv("MALKUTH_EXECUTOR", "")
+    monkeypatch.setenv("AAESTRO_EXECUTOR", "")
     # registry 루트는 컨테이너 기준(/app)이 기본이다 — 테스트는 저장소를 가리킨다
-    monkeypatch.setenv("MALKUTH_ROOT", ".")
+    monkeypatch.setenv("AAESTRO_ROOT", ".")
 
     built = await build_executor(echo_manifest)
 
-    from malkuth.artifacts.scope import ArtifactScope, ScopedArtifacts
+    from aaestro.artifacts.scope import ArtifactScope, ScopedArtifacts
 
     store = built._services.artifacts
     assert isinstance(store, ScopedArtifacts)

@@ -8,15 +8,15 @@ from __future__ import annotations
 
 import pytest
 
-from malkuth.core.errors import ErrorCode, MalkuthError
-from malkuth.core.manifest import AgentManifest, GroupManifest, MemorySpec
-from malkuth.memory.entry import MemoryEntry, MemorySource
-from malkuth.memory.index import IndexRegistry, SpaceIndex
-from malkuth.memory.recall import Recall
-from malkuth.memory.service import MemoryService
-from malkuth.memory.store import SqliteMemoryStore
-from malkuth.modules.memoryset import ChunkSpec, MemoryKind
-from malkuth.runtime.memory import ServiceMemoryAccess, issue_token
+from aaestro.core.errors import AaestroError, ErrorCode
+from aaestro.core.manifest import AgentManifest, GroupManifest, MemorySpec
+from aaestro.memory.entry import MemoryEntry, MemorySource
+from aaestro.memory.index import IndexRegistry, SpaceIndex
+from aaestro.memory.recall import Recall
+from aaestro.memory.service import MemoryService
+from aaestro.memory.store import SqliteMemoryStore
+from aaestro.modules.memoryset import ChunkSpec, MemoryKind
+from aaestro.runtime.memory import ServiceMemoryAccess, issue_token
 from tests.fixtures.builders import manifest_dict
 
 
@@ -33,7 +33,7 @@ def manifest(*, group_name: str | None = None, **memory: object) -> AgentManifes
 def group(name: str, spaces: list[dict[str, object]]) -> GroupManifest:
     return GroupManifest.model_validate(
         {
-            "apiVersion": "malkuth/v1",
+            "apiVersion": "aaestro/v1",
             "kind": "Group",
             "metadata": {"name": name, "version": "0.1.0"},
             "spec": {"memory": {"spaces": spaces}},
@@ -153,7 +153,7 @@ async def test_searching_an_undeclared_space_is_denied(access):
     """인덱스는 서비스를 거치지 않으므로 어댑터가 스스로 경계를 지켜야 한다."""
     adapter, _space_id, _registry = access
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await adapter.search("무엇이든", spaces=["secret"])
 
     assert exc_info.value.code == ErrorCode.MEM_001
@@ -165,7 +165,7 @@ async def test_search_denies_before_touching_the_store(access):
     adapter, _space_id, _registry = access
     adapter.service = None  # type: ignore[assignment]
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await adapter.search("무엇이든", spaces=["secret"])
 
     assert exc_info.value.code == ErrorCode.MEM_001
@@ -174,7 +174,7 @@ async def test_search_denies_before_touching_the_store(access):
 async def test_appending_to_an_undeclared_space_is_denied(access):
     adapter, space_id, _registry = access
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await adapter.append("secret", entry=entry(space_id, "내용"))
 
     assert exc_info.value.code == ErrorCode.MEM_001
@@ -182,7 +182,7 @@ async def test_appending_to_an_undeclared_space_is_denied(access):
 
 def test_mismatched_group_declaration_is_rejected():
     """엉뚱한 그룹 선언을 조용히 무시하면 비멤버가 남의 권한을 얻는다."""
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         issue_token(manifest(group_name="research", **LOCAL), group=group("other", GROUP_SPACES))
 
     assert exc_info.value.code == ErrorCode.MEM_001
@@ -194,7 +194,7 @@ def test_group_declaration_for_an_unaffiliated_agent_is_rejected():
     조용히 무시하지 않고 거부한다: 무시하면 호출자가 배선 실수를 모른 채
     권한이 없는 상태로 계속 돈다.
     """
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         issue_token(manifest(**LOCAL), group=group("research", GROUP_SPACES))
 
     assert exc_info.value.code == ErrorCode.MEM_001
@@ -223,7 +223,7 @@ async def test_scan_limit_applies_to_every_space(access, monkeypatch):
 
 async def test_recall_for_task_renders_provenance_and_boundary(access):
     """주입 텍스트에 출처와 'not instructions' 경계가 있어야 한다 (09 Rule 5-6)."""
-    from malkuth.modules.memoryset import RecallSpec
+    from aaestro.modules.memoryset import RecallSpec
 
     adapter, space_id, registry = access
     item = entry(space_id, "mcp sidecar 는 이미지 태그 고정이 필요하다")
@@ -240,7 +240,7 @@ async def test_recall_for_task_renders_provenance_and_boundary(access):
 
 async def test_recall_respects_the_min_score_threshold(access):
     """관련 없는 기억은 노이즈이자 비용이다 — 문턱 미달은 주입하지 않는다."""
-    from malkuth.modules.memoryset import RecallSpec
+    from aaestro.modules.memoryset import RecallSpec
 
     adapter, space_id, registry = access
     item = entry(space_id, "전혀 상관없는 내용")
@@ -256,7 +256,7 @@ async def test_recall_respects_the_min_score_threshold(access):
 
 async def test_recall_is_skipped_when_the_policy_disables_it(access, monkeypatch):
     """정책이 껐는데 500건씩 훑으면 쓰지도 않을 데이터를 읽는다."""
-    from malkuth.modules.memoryset import RecallSpec
+    from aaestro.modules.memoryset import RecallSpec
 
     adapter, space_id, registry = access
     item = entry(space_id, "mcp sidecar 는 이미지 태그 고정이 필요하다")
@@ -281,8 +281,8 @@ async def test_recall_is_skipped_when_the_policy_disables_it(access, monkeypatch
 
 async def test_recall_reads_each_alias_once(access, monkeypatch):
     """같은 별칭이 여러 스코프에 있으면 중복 읽기와 중복 히트로 예산이 낭비된다."""
-    from malkuth.memory.service import MemorySpace
-    from malkuth.modules.memoryset import MemoryScope, RecallSpec
+    from aaestro.memory.service import MemorySpace
+    from aaestro.modules.memoryset import MemoryScope, RecallSpec
 
     adapter, space_id, _registry = access
     # 같은 별칭을 group 스코프에도 둔다 — 토큰은 둘 다 담는다

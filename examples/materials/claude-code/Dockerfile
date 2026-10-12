@@ -2,12 +2,12 @@
 #
 # 이 디렉토리는 **시드**다. 프레임워크는 여기를 읽지 않는다 — 스토어에 올려야 굽힌다:
 #
-#   malkuth agent-push claude-code examples/materials/claude-code
-#   malkuth agent-build claude-code --wait
+#   aaestro agent-push claude-code examples/materials/claude-code
+#   aaestro agent-build claude-code --wait
 #
 # 컨텍스트 루트는 빌더가 조립하는 임시 디렉토리다 (#263 레이아웃):
 #   Dockerfile, manifest.yaml(카탈로그의 선언), modules/(모듈 루트), src/(이 재료)
-FROM malkuth/agent-base:0.1.0
+FROM aaestro/agent-base:0.1.0
 
 # base 는 non-root 로 끝난다 — 설치 동안만 root 로 올라갔다 되돌린다
 USER root
@@ -28,7 +28,7 @@ COPY --chown=1000:1000 manifest.yaml /app/manifest.yaml
 COPY --chown=1000:1000 modules/ /app/modules/
 
 ENV PYTHONPATH=/app/src \
-    MALKUTH_ROOT=/app
+    AAESTRO_ROOT=/app
 
 # read-only rootfs 전제 — Claude Code 가 쓰는 홈 경로도 tmpfs 로 받는다
 ENV HOME=/tmp

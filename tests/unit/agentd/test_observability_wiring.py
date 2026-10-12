@@ -11,8 +11,8 @@ from pathlib import Path
 import pytest
 from prometheus_client import CollectorRegistry, generate_latest
 
-from malkuth.agentd.__main__ import build_executor, load_manifest
-from malkuth.observability.metrics import Metrics
+from aaestro.agentd.__main__ import build_executor, load_manifest
+from aaestro.observability.metrics import Metrics
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 RESEARCHER = REPO_ROOT / "agents" / "researcher" / "manifest.yaml"
@@ -21,8 +21,8 @@ RESEARCHER = REPO_ROOT / "agents" / "researcher" / "manifest.yaml"
 @pytest.fixture(autouse=True)
 def _standard_path(monkeypatch):
     """표준 executor 경로 — echo 대역을 쓰지 않는다."""
-    monkeypatch.delenv("MALKUTH_EXECUTOR", raising=False)
-    monkeypatch.setenv("MALKUTH_ROOT", str(REPO_ROOT))
+    monkeypatch.delenv("AAESTRO_EXECUTOR", raising=False)
+    monkeypatch.setenv("AAESTRO_ROOT", str(REPO_ROOT))
 
 
 async def test_executor_receives_the_registry():
@@ -55,7 +55,7 @@ async def test_executor_works_without_metrics():
 def test_the_exposed_registry_is_the_one_we_fill(monkeypatch):
     """registry 를 넘기지 않으면 prometheus 기본 registry 를 노출하게 된다 —
     우리가 채우는 곳과 달라 endpoint 가 늘 비어 있다."""
-    from malkuth.agentd import __main__ as entry
+    from aaestro.agentd import __main__ as entry
 
     metrics = Metrics(registry=CollectorRegistry())
     exposed: dict[str, object] = {}
@@ -65,9 +65,9 @@ def test_the_exposed_registry_is_the_one_we_fill(monkeypatch):
         exposed["registry"] = registry
 
     # _setup_observability 가 함수 안에서 import 하므로 원본 모듈을 패치한다
-    monkeypatch.setattr("malkuth.observability.metrics.Metrics", lambda: metrics)
-    monkeypatch.setattr("malkuth.observability.metrics.start_metrics_server", capture)
-    monkeypatch.setenv("MALKUTH_METRICS_PORT", "9123")
+    monkeypatch.setattr("aaestro.observability.metrics.Metrics", lambda: metrics)
+    monkeypatch.setattr("aaestro.observability.metrics.start_metrics_server", capture)
+    monkeypatch.setenv("AAESTRO_METRICS_PORT", "9123")
 
     entry._setup_observability()
 
@@ -84,7 +84,7 @@ async def test_recorded_metrics_reach_the_exposed_registry():
     executor._services.telemetry.task_finished(status="completed", duration_s=0.01)
 
     scraped = generate_latest(registry).decode("utf-8")
-    assert 'malkuth_agent_tasks_total{agent="researcher"' in scraped
+    assert 'aaestro_agent_tasks_total{agent="researcher"' in scraped
     assert 'group="research"' in scraped
 
 
@@ -93,8 +93,8 @@ async def test_recorded_metrics_reach_the_exposed_registry():
 
 async def test_injected_endpoint_becomes_memory_access(monkeypatch):
     """runtime 이 주입한 주소·토큰으로만 메모리에 닿는다 (09 Access Enforcement 1)."""
-    from malkuth.memory.http import MEMORY_TOKEN_ENV, MEMORY_URL_ENV
-    from malkuth.runtime.memory_http import HttpMemoryAccess
+    from aaestro.memory.http import MEMORY_TOKEN_ENV, MEMORY_URL_ENV
+    from aaestro.runtime.memory_http import HttpMemoryAccess
 
     monkeypatch.setenv(MEMORY_URL_ENV, "http://memory:8080")
     monkeypatch.setenv(MEMORY_TOKEN_ENV, "opaque")
@@ -107,7 +107,7 @@ async def test_injected_endpoint_becomes_memory_access(monkeypatch):
 
 async def test_without_an_endpoint_there_is_no_memory_access(monkeypatch):
     """주입되지 않았는데 만들면 컨테이너가 저장소를 직접 열려 든다."""
-    from malkuth.memory.http import MEMORY_TOKEN_ENV, MEMORY_URL_ENV
+    from aaestro.memory.http import MEMORY_TOKEN_ENV, MEMORY_URL_ENV
 
     monkeypatch.delenv(MEMORY_URL_ENV, raising=False)
     monkeypatch.delenv(MEMORY_TOKEN_ENV, raising=False)
@@ -121,9 +121,9 @@ async def test_memory_search_is_advertised_once_access_exists(monkeypatch):
     """노출과 실행이 일치해야 한다 — #112 에서 확인한 tool 에러 루프 방지."""
     import yaml
 
-    from malkuth.core.manifest import AgentManifest
-    from malkuth.memory.http import MEMORY_TOKEN_ENV, MEMORY_URL_ENV
-    from malkuth.memory.tool import MEMORY_SEARCH_TOOL
+    from aaestro.core.manifest import AgentManifest
+    from aaestro.memory.http import MEMORY_TOKEN_ENV, MEMORY_URL_ENV
+    from aaestro.memory.tool import MEMORY_SEARCH_TOOL
 
     monkeypatch.setenv(MEMORY_URL_ENV, "http://memory:8080")
     monkeypatch.setenv(MEMORY_TOKEN_ENV, "opaque")
@@ -150,11 +150,11 @@ async def test_the_assembly_fills_every_declared_collaborator(monkeypatch, tmp_p
     (09 Access Enforcement 1 — 자격증명이 아니라 주소가 들어온다) 그 조건을
     갖춰 놓고 본다. 그러지 않으면 "설계상 None" 과 "배선 누락" 이 구분되지 않는다.
     """
-    monkeypatch.setenv("MALKUTH_ROOT", ".")
-    monkeypatch.setenv("MALKUTH_EXECUTOR", "")
-    monkeypatch.setenv("MALKUTH_ARTIFACT_ROOT", str(tmp_path))
-    monkeypatch.setenv("MALKUTH_MEMORY_URL", "http://memory.test")
-    monkeypatch.setenv("MALKUTH_MEMORY_TOKEN", "opaque-token")
+    monkeypatch.setenv("AAESTRO_ROOT", ".")
+    monkeypatch.setenv("AAESTRO_EXECUTOR", "")
+    monkeypatch.setenv("AAESTRO_ARTIFACT_ROOT", str(tmp_path))
+    monkeypatch.setenv("AAESTRO_MEMORY_URL", "http://memory.test")
+    monkeypatch.setenv("AAESTRO_MEMORY_TOKEN", "opaque-token")
 
     executor = await build_executor(load_manifest(RESEARCHER), metrics=Metrics())
 
@@ -167,8 +167,8 @@ async def test_the_assembly_fills_every_declared_collaborator(monkeypatch, tmp_p
 
 async def test_the_assembly_turns_on_model_retry(monkeypatch):
     """재시도는 정책이므로 config 로 옮겼다 — 조립부가 켜는지 함께 본다."""
-    monkeypatch.setenv("MALKUTH_ROOT", ".")
-    monkeypatch.setenv("MALKUTH_EXECUTOR", "")
+    monkeypatch.setenv("AAESTRO_ROOT", ".")
+    monkeypatch.setenv("AAESTRO_EXECUTOR", "")
 
     executor = await build_executor(load_manifest(RESEARCHER))
 

@@ -7,15 +7,15 @@ from pathlib import Path
 
 import pytest
 
-from malkuth.core.errors import (
+from aaestro.core.errors import (
     NETWORK_RETRY,
     RATE_LIMIT_RETRY,
+    AaestroError,
+    AaestroErrorPayload,
     CircuitBreaker,
     CircuitState,
     ErrorCategory,
     ErrorCode,
-    MalkuthError,
-    MalkuthErrorPayload,
     RetryPolicy,
 )
 
@@ -37,7 +37,7 @@ class FakeClock:
 
 
 def test_error_str_includes_category_and_code():
-    err = MalkuthError(
+    err = AaestroError(
         category=ErrorCategory.MCP,
         code=ErrorCode.MCP_003,
         message="tool call failed",
@@ -47,7 +47,7 @@ def test_error_str_includes_category_and_code():
 
 
 def test_payload_round_trip_preserves_fields():
-    err = MalkuthError(
+    err = AaestroError(
         category=ErrorCategory.A2A,
         code=ErrorCode.A2A_004,
         message="connection not allowlisted",
@@ -58,9 +58,9 @@ def test_payload_round_trip_preserves_fields():
     )
 
     payload = err.payload()
-    restored = MalkuthError.from_payload(payload)
+    restored = AaestroError.from_payload(payload)
 
-    assert isinstance(payload, MalkuthErrorPayload)
+    assert isinstance(payload, AaestroErrorPayload)
     assert payload.category is ErrorCategory.A2A
     assert payload.code == "A2A_004"
     assert payload.details == {"callee": "planner"}
@@ -69,7 +69,7 @@ def test_payload_round_trip_preserves_fields():
 
 def test_payload_details_are_copied_not_shared():
     details = {"attempt": 1}
-    err = MalkuthError(
+    err = AaestroError(
         category=ErrorCategory.NETWORK,
         code=ErrorCode.NET_001,
         message="connection refused",
@@ -88,13 +88,13 @@ def test_cause_chain_is_preserved():
         try:
             raise original
         except ConnectionError as cause:
-            raise MalkuthError(
+            raise AaestroError(
                 category=ErrorCategory.MCP,
                 code=ErrorCode.MCP_004,
                 message="mcp transport disconnected",
                 retryable=True,
             ) from cause
-    except MalkuthError as err:
+    except AaestroError as err:
         assert err.__cause__ is original
 
 
@@ -109,7 +109,7 @@ def test_cause_chain_is_preserved():
     ],
 )
 def test_network_retry_should_retry(category, retryable, expected):
-    err = MalkuthError(category=category, code="X", message="m", retryable=retryable)
+    err = AaestroError(category=category, code="X", message="m", retryable=retryable)
 
     assert NETWORK_RETRY.should_retry(err) is expected
 
@@ -119,13 +119,13 @@ def test_should_retry_rejects_plain_exceptions():
 
 
 def test_rate_limit_policy_targets_rate_limit_only():
-    rate_limited = MalkuthError(
+    rate_limited = AaestroError(
         category=ErrorCategory.RATE_LIMIT,
         code=ErrorCode.LLM_001,
         message="provider rate limited",
         retryable=True,
     )
-    network = MalkuthError(
+    network = AaestroError(
         category=ErrorCategory.NETWORK, code=ErrorCode.NET_001, message="m", retryable=True
     )
 
@@ -185,7 +185,7 @@ async def test_breaker_call_raises_retryable_error_when_open():
     async def never_called() -> str:  # pragma: no cover - 호출되지 않아야 정상
         raise AssertionError("call must not reach the target while open")
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await breaker.call(never_called)
 
     assert exc_info.value.message == "circuit open"
@@ -241,7 +241,7 @@ def test_all_documented_error_codes_exist():
 
 def test_explicit_empty_details_is_preserved():
     """빈 dict 는 유효한 입력이다 — falsy 라는 이유로 대체하지 않는다."""
-    err = MalkuthError(
+    err = AaestroError(
         category=ErrorCategory.INTERNAL, code=ErrorCode.INTERNAL_001, message="m", details={}
     )
 
@@ -250,10 +250,10 @@ def test_explicit_empty_details_is_preserved():
 
 def test_payload_details_default_is_not_shared():
     """가변 기본값 공유 방지 — 인스턴스마다 새 dict."""
-    first = MalkuthErrorPayload(
+    first = AaestroErrorPayload(
         category=ErrorCategory.INTERNAL, code=ErrorCode.INTERNAL_001, message="a"
     )
-    second = MalkuthErrorPayload(
+    second = AaestroErrorPayload(
         category=ErrorCategory.INTERNAL, code=ErrorCode.INTERNAL_001, message="b"
     )
 
@@ -276,7 +276,7 @@ async def test_breaker_open_error_uses_injected_category_and_code():
     async def never_called() -> str:  # pragma: no cover - 도달하면 안 된다
         raise AssertionError("must not be called")
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await breaker.call(never_called)
 
     assert exc_info.value.category is ErrorCategory.MCP

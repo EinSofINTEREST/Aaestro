@@ -6,9 +6,9 @@ import sqlite3
 
 import pytest
 
-from malkuth.access.model import Effect, ResourceKind, Rule
-from malkuth.access.store import Identity, InMemoryAccessStore, SqliteAccessStore
-from malkuth.core.errors import ErrorCode, MalkuthError
+from aaestro.access.model import Effect, ResourceKind, Rule
+from aaestro.access.store import Identity, InMemoryAccessStore, SqliteAccessStore
+from aaestro.core.errors import AaestroError, ErrorCode
 
 
 def rule(rule_id: str = "rule-1") -> Rule:
@@ -56,7 +56,7 @@ def test_a_rule_whose_version_cannot_be_written_is_not_kept(tmp_path):
     with sqlite3.connect(path) as conn:
         conn.execute("DELETE FROM registry_version")
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         store.put_rule(rule())
 
     assert exc_info.value.code == ErrorCode.STOR_003

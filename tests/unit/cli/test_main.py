@@ -1,4 +1,4 @@
-"""Smoke tests for the malkuth CLI.
+"""Smoke tests for the aaestro CLI.
 
 실제 컨테이너 없이 명령 표면을 검증한다 — 이 계층의 계약은 인자 해석과
 종료 코드지 오케스트레이션이 아니다.
@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from malkuth.cli.main import (
+from aaestro.cli.main import (
     EXIT_FAILED,
     EXIT_OK,
     EXIT_USAGE,
@@ -19,7 +19,7 @@ from malkuth.cli.main import (
     main,
     validate_root,
 )
-from malkuth.orchestrator.topology import GraphTopology
+from aaestro.orchestrator.topology import GraphTopology
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -36,7 +36,7 @@ def workspace(tmp_path: Path) -> Path:
     (solo / "promptset.yaml").write_text(
         yaml.safe_dump(
             {
-                "apiVersion": "malkuth/v1",
+                "apiVersion": "aaestro/v1",
                 "kind": "Promptset",
                 "metadata": {"name": "solo", "version": "0.1.0"},
                 # 노드 id 와 같은 이름의 템플릿이 있어야 agentd 가 고를 수 있다
@@ -53,7 +53,7 @@ def workspace(tmp_path: Path) -> Path:
     (tmp_path / "agents" / "solo" / "manifest.yaml").write_text(
         yaml.safe_dump(
             {
-                "apiVersion": "malkuth/v1",
+                "apiVersion": "aaestro/v1",
                 "kind": "Agent",
                 "metadata": {"name": "solo", "version": "0.1.0"},
                 "spec": {
@@ -67,7 +67,7 @@ def workspace(tmp_path: Path) -> Path:
     (tmp_path / "groups" / "global.yaml").write_text(
         yaml.safe_dump(
             {
-                "apiVersion": "malkuth/v1",
+                "apiVersion": "aaestro/v1",
                 "kind": "Group",
                 "metadata": {"name": "global", "version": "0.1.0"},
                 "spec": {"secrets": ["ANTHROPIC_API_KEY"]},
@@ -78,13 +78,13 @@ def workspace(tmp_path: Path) -> Path:
     (tmp_path / "graphs" / "solo-graph.yaml").write_text(
         yaml.safe_dump(
             {
-                "apiVersion": "malkuth/v1",
+                "apiVersion": "aaestro/v1",
                 "kind": "Graph",
                 "metadata": {"name": "solo-graph", "version": "1.0.0"},
                 "spec": {
                     "mode": "mission",
                     "goal": "단일 노드 실행",
-                    "state": {"schema": "malkuth.graphs.schemas:ResearchState"},
+                    "state": {"schema": "aaestro.graphs.schemas:ResearchState"},
                     "nodes": [{"id": "solo", "agent": "agents/solo@0.1.0"}],
                     "edges": [
                         {"from": "START", "to": "solo"},
@@ -244,8 +244,8 @@ def test_a_node_whose_manifest_is_missing_is_left_to_the_findings(workspace, cap
 
 
 def test_run_hands_each_node_task_its_resolved_model(workspace, monkeypatch):
-    from malkuth.core.agent import TaskResult
-    from malkuth.runtime.nodes import ControlNodeRuntime
+    from aaestro.core.agent import TaskResult
+    from aaestro.runtime.nodes import ControlNodeRuntime
 
     graph = with_model_layers(workspace)
     seen = []
@@ -327,7 +327,7 @@ def test_repository_validates_end_to_end(capsys):
 @pytest.fixture
 def with_openai_fallback(workspace: Path, monkeypatch) -> Path:
     """프록시 upstream 이 아닐 수 있는 provider 로 넘어가는 fallback 을 가진 저장소."""
-    from malkuth.access import baselines
+    from aaestro.access import baselines
 
     monkeypatch.setitem(baselines.PROVIDER_HOSTS, "openai-compat", "api.openai.com")
     manifest = workspace / "agents" / "solo" / "manifest.yaml"
@@ -417,7 +417,7 @@ def test_run_closes_the_checkpointer_it_opened(workspace, monkeypatch):
 
     상주 실행(service)에서는 그 기대 자체가 성립하지 않는다.
     """
-    import malkuth.orchestrator.checkpoint as checkpoint_module
+    import aaestro.orchestrator.checkpoint as checkpoint_module
 
     closed: list[object] = []
     real = checkpoint_module.close_checkpointer
@@ -495,7 +495,7 @@ def test_logs_do_not_pollute_stdout(workspace, capsys):
 
 
 def test_package_entry_point_runs_without_warnings():
-    """`python -m malkuth.cli` 가 runpy 이중 import 경고를 내지 않아야 한다.
+    """`python -m aaestro.cli` 가 runpy 이중 import 경고를 내지 않아야 한다.
 
     CLI 가 설치되지 않은 환경(smoke.sh fallback)에서 그 경고가 그대로 노출된다.
     """
@@ -503,7 +503,7 @@ def test_package_entry_point_runs_without_warnings():
     import sys
 
     result = subprocess.run(  # noqa: S603
-        [sys.executable, "-W", "error::RuntimeWarning", "-m", "malkuth.cli", "status"],
+        [sys.executable, "-W", "error::RuntimeWarning", "-m", "aaestro.cli", "status"],
         capture_output=True,
         text=True,
         check=False,
@@ -521,9 +521,9 @@ def test_package_entry_point_runs_without_warnings():
 
 
 def clients_for(argv: list[str], monkeypatch, env: str | None = None):
-    """`malkuth run` 인자로 만들어지는 Control API 클라이언트."""
-    from malkuth.cli.main import _control_clients
-    from malkuth.runtime.tokens import AGENT_TOKEN_ENV
+    """`aaestro run` 인자로 만들어지는 Control API 클라이언트."""
+    from aaestro.cli.main import _control_clients
+    from aaestro.runtime.tokens import AGENT_TOKEN_ENV
 
     if env is None:
         monkeypatch.delenv(AGENT_TOKEN_ENV, raising=False)

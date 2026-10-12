@@ -19,12 +19,12 @@ import pytest
 import yaml
 from fastapi.testclient import TestClient
 
-from malkuth.agentd import __main__ as agentd
-from malkuth.agentd.executor import Executor, ModuleBinding
-from malkuth.core.errors import MalkuthError
-from malkuth.core.manifest import AgentManifest
-from malkuth.core.skill import SkillContext
-from malkuth.observability.metrics import Metrics
+from aaestro.agentd import __main__ as agentd
+from aaestro.agentd.executor import Executor, ModuleBinding
+from aaestro.core.errors import AaestroError
+from aaestro.core.manifest import AgentManifest
+from aaestro.core.skill import SkillContext
+from aaestro.observability.metrics import Metrics
 from tests.fixtures.builders import make_task
 from tests.fixtures.fake_model import FakeModel, FakeTools, calls, text
 from tests.fixtures.waiting import until
@@ -92,7 +92,7 @@ def root(tmp_path: Path, monkeypatch) -> Path:
     shutil.copytree(
         REPO_ROOT / "modules", copy / "modules", ignore=shutil.ignore_patterns("__pycache__")
     )
-    monkeypatch.setenv("MALKUTH_ROOT", str(copy))
+    monkeypatch.setenv("AAESTRO_ROOT", str(copy))
     monkeypatch.delenv(agentd.EXECUTOR_ENV, raising=False)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-used")
     return copy
@@ -134,7 +134,7 @@ async def test_reload_picks_up_a_changed_declaration(root):
     reload = agentd.build_reload(manifest, executor)
     declare_fresh_template(root)
 
-    with pytest.raises(MalkuthError):
+    with pytest.raises(AaestroError):
         executor.binding.render(make_task(**FRESH))  # 리로드 전: 기동 때의 선언에 없다
 
     card = await reload()
@@ -151,7 +151,7 @@ async def test_a_failed_reload_keeps_the_previous_binding(root):
     before = executor.binding
     (root / "modules" / "promptsets" / "planner" / "0.3.0" / "promptset.yaml").unlink()
 
-    with pytest.raises(MalkuthError):
+    with pytest.raises(AaestroError):
         await reload()
 
     assert executor.binding is before
@@ -219,7 +219,7 @@ async def test_reload_executes_changed_skill_code(root, monkeypatch):
     (skillset / "skillset.yaml").write_text(
         yaml.safe_dump(
             {
-                "apiVersion": "malkuth/v1",
+                "apiVersion": "aaestro/v1",
                 "kind": "Skillset",
                 "metadata": {"name": "probe", "version": "0.1.0"},
                 "spec": {"skills": [{"name": "answer", "entrypoint": "skills.answer:answer"}]},
@@ -230,7 +230,7 @@ async def test_reload_executes_changed_skill_code(root, monkeypatch):
 
     def code(value: str) -> str:
         return (
-            "from malkuth.core.skill import SkillContext, skill\n"
+            "from aaestro.core.skill import SkillContext, skill\n"
             "@skill\n"
             "async def answer(ctx: SkillContext) -> str:\n"
             '    """설명."""\n'

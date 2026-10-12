@@ -11,9 +11,9 @@ import json
 
 import pytest
 
-from malkuth.agentd.executor import Executor, ExecutorServices
-from malkuth.core.agent import TaskStatus
-from malkuth.core.errors import ErrorCode
+from aaestro.agentd.executor import Executor, ExecutorServices
+from aaestro.core.agent import TaskStatus
+from aaestro.core.errors import ErrorCode
 from tests.fixtures.builders import make_task
 from tests.fixtures.fake_model import FakeModel, FakeTools, text
 
@@ -121,7 +121,7 @@ def test_declared_keys_must_be_identifiers():
     """키는 state schema 필드명과 맞물린다."""
     from pydantic import ValidationError
 
-    from malkuth.modules.promptset import TemplateSpec
+    from aaestro.modules.promptset import TemplateSpec
 
     with pytest.raises(ValidationError):
         TemplateSpec(file="t.j2", output_keys=("not an identifier",))
@@ -130,14 +130,14 @@ def test_declared_keys_must_be_identifiers():
 def test_declared_keys_must_be_unique():
     from pydantic import ValidationError
 
-    from malkuth.modules.promptset import TemplateSpec
+    from aaestro.modules.promptset import TemplateSpec
 
     with pytest.raises(ValidationError):
         TemplateSpec(file="t.j2", output_keys=("plan", "plan"))
 
 
 def test_no_declaration_means_no_keys():
-    from malkuth.modules.promptset import TemplateSpec
+    from aaestro.modules.promptset import TemplateSpec
 
     assert TemplateSpec(file="t.j2").output_keys == ()
 
@@ -202,7 +202,7 @@ def manifest_declaring_output():
 
     import yaml
 
-    from malkuth.core.manifest import AgentManifest
+    from aaestro.core.manifest import AgentManifest
 
     declared = yaml.safe_load(Path("agents/echo/manifest.yaml").read_text(encoding="utf-8"))
     return AgentManifest.model_validate(declared)
@@ -212,10 +212,10 @@ async def test_the_assembled_executor_carries_the_declared_keys(
     monkeypatch, manifest_declaring_output
 ):
     """헬퍼만 검증하면 **조립부에서 안 넘겨도 통과한다** — 이 세션에서 반복된 함정."""
-    from malkuth.agentd.__main__ import build_executor
+    from aaestro.agentd.__main__ import build_executor
 
-    monkeypatch.setenv("MALKUTH_ROOT", ".")
-    monkeypatch.setenv("MALKUTH_EXECUTOR", "")
+    monkeypatch.setenv("AAESTRO_ROOT", ".")
+    monkeypatch.setenv("AAESTRO_EXECUTOR", "")
 
     built = await build_executor(manifest_declaring_output)
 
@@ -233,7 +233,7 @@ def planner_manifest():
 
     import yaml
 
-    from malkuth.core.manifest import AgentManifest
+    from aaestro.core.manifest import AgentManifest
 
     declared = Path("agents/planner/manifest.yaml").read_text(encoding="utf-8")
     return AgentManifest.model_validate(yaml.safe_load(declared))
@@ -256,10 +256,10 @@ async def test_keys_come_from_the_loaded_promptset(
     실제로 그랬다: `result.promptset.spec` 로 접근했는데 `LoadedPromptset` 에는
     그 속성이 없다. 이 경로를 태우는 테스트가 없어 컨테이너에서야 드러났다.
     """
-    from malkuth.agentd.__main__ import build_executor
+    from aaestro.agentd.__main__ import build_executor
 
-    monkeypatch.setenv("MALKUTH_ROOT", ".")
-    monkeypatch.setenv("MALKUTH_EXECUTOR", "")
+    monkeypatch.setenv("AAESTRO_ROOT", ".")
+    monkeypatch.setenv("AAESTRO_EXECUTOR", "")
 
     built = await build_executor(planner_manifest)
 

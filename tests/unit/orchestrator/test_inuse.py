@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from malkuth.catalog import Catalog
-from malkuth.orchestrator.inuse import run_backed
-from malkuth.orchestrator.runstore import InMemoryRunStore, RunRecord
+from aaestro.catalog import Catalog
+from aaestro.orchestrator.inuse import run_backed
+from aaestro.orchestrator.runstore import InMemoryRunStore, RunRecord
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 

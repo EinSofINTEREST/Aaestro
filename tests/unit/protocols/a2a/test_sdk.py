@@ -16,11 +16,11 @@ from a2a.types import a2a_pb2 as pb
 from a2a.utils.constants import TransportProtocol
 from fastapi import FastAPI
 
-from malkuth.core.agent import TaskResult, TaskStatus, TraceContext
-from malkuth.core.errors import ErrorCode, MalkuthError
-from malkuth.protocols.a2a.allowlist import Allowlist, Edge, issue_token
-from malkuth.protocols.a2a.client import A2AServer
-from malkuth.protocols.a2a.sdk import (
+from aaestro.core.agent import TaskResult, TaskStatus, TraceContext
+from aaestro.core.errors import AaestroError, ErrorCode
+from aaestro.protocols.a2a.allowlist import Allowlist, Edge, issue_token
+from aaestro.protocols.a2a.client import A2AServer
+from aaestro.protocols.a2a.sdk import (
     CALLER_HEADER,
     TOKEN_HEADER,
     SdkPeerTransport,
@@ -28,7 +28,7 @@ from malkuth.protocols.a2a.sdk import (
     read_output,
     state_name,
 )
-from malkuth.protocols.a2a.server import (
+from aaestro.protocols.a2a.server import (
     GuardedExecutor,
     GuardedRequestHandler,
     InboundGuard,
@@ -141,7 +141,7 @@ def test_unknown_states_are_not_folded_into_success():
 )
 def test_sdk_states_map_onto_the_established_vocabulary(state, expected):
     """map_status 가 아는 이름이어야 기존 계약이 유지된다."""
-    from malkuth.protocols.a2a.client import map_status
+    from aaestro.protocols.a2a.client import map_status
 
     name = state_name(state)
 
@@ -180,7 +180,7 @@ def test_an_undeclared_caller_is_rejected_with_a2a_004():
     """같은 그룹이어도 선언이 없으면 거부된다 (group neutrality)."""
     guard = guard_for((CALLEE, CALLER))  # 반대 방향만 선언
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         guard.check(valid_headers(), make_task())
 
     assert exc_info.value.code == ErrorCode.A2A_004
@@ -190,7 +190,7 @@ def test_a_forged_token_is_rejected():
     """이름만 주장하는 호출을 막는 것이 token 의 존재 이유다."""
     guard = guard_for((CALLER, CALLEE))
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         guard.check({CALLER_HEADER: CALLER, TOKEN_HEADER: "forged"}, make_task())
 
     assert exc_info.value.code == ErrorCode.A2A_004
@@ -202,7 +202,7 @@ def test_a_missing_header_is_rejected(missing):
     headers = valid_headers()
     del headers[missing]
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         guard.check(headers, make_task())
 
     assert exc_info.value.code == ErrorCode.A2A_004
@@ -213,7 +213,7 @@ def test_a_deep_chain_is_rejected_with_a2a_005():
     guard = guard_for((CALLER, CALLEE), max_depth=2)
     deep = make_task(trace=TraceContext(trace_id="t", depth=5))
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         guard.check(valid_headers(), deep)
 
     assert exc_info.value.code == ErrorCode.A2A_005
@@ -257,7 +257,7 @@ async def test_an_undeclared_caller_is_refused_on_the_real_sdk_path():
     app = serve(guard_for((CALLEE, CALLER)), handler)  # 반대 방향만 선언
     transport = transport_to(app)
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await transport.send(
             callee=CALLEE,
             task=make_task(),
@@ -307,7 +307,7 @@ async def test_a_deep_chain_is_refused_on_the_real_sdk_path():
     app = serve(guard_for((CALLER, CALLEE), max_depth=1), handler)
     transport = transport_to(app)
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await transport.send(
             callee=CALLEE,
             task=make_task(trace=TraceContext(trace_id="t", depth=9)),
@@ -320,12 +320,12 @@ async def test_a_deep_chain_is_refused_on_the_real_sdk_path():
 
 async def test_a_peer_failure_carries_its_structured_reason_to_the_caller():
     """상태만 보내면 호출자는 실패만 안다 — 권한 에이전트의 거절 코드 같은 **왜**가 필요하다."""
-    from malkuth.core.errors import ErrorCategory
+    from aaestro.core.errors import ErrorCategory
 
     async def handler(task):
         return TaskResult.failed(
             task,
-            MalkuthError(
+            AaestroError(
                 category=ErrorCategory.FORBIDDEN, code="ACC_003", message="beyond the ceiling"
             ),
         )
@@ -333,7 +333,7 @@ async def test_a_peer_failure_carries_its_structured_reason_to_the_caller():
     app = serve(guard_for((CALLER, CALLEE)), handler)
     transport = transport_to(app)
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await transport.send(
             callee=CALLEE,
             task=make_task(),

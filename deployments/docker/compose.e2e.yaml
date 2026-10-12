@@ -2,7 +2,7 @@
 #
 # 모델은 결정적 fake provider 를 쓴다 (06 Testing 3): 실 LLM 은 비결정적이고
 # 비용이 들며, CI 에서 API key 부재로 실패해야 정상이다.
-name: malkuth-e2e
+name: aaestro-e2e
 
 x-agent-defaults: &agent-defaults
   read_only: true
@@ -14,7 +14,7 @@ x-agent-defaults: &agent-defaults
   tmpfs:
     - /tmp:size=64m
     - /workspace:size=64m
-  networks: [malkuth-e2e-net]
+  networks: [aaestro-e2e-net]
   depends_on:
     fake-provider:
       condition: service_healthy
@@ -24,17 +24,17 @@ services:
   # 컨테이너 재시작 뒤 이어지는지 보려면 프로세스 밖에 state 가 있어야 한다 (#163)
   checkpoint-db:
     image: postgres:16-alpine
-    networks: [malkuth-e2e-net]
+    networks: [aaestro-e2e-net]
     environment:
-      POSTGRES_USER: malkuth
-      POSTGRES_PASSWORD: malkuth
-      POSTGRES_DB: malkuth
+      POSTGRES_USER: aaestro
+      POSTGRES_PASSWORD: aaestro
+      POSTGRES_DB: aaestro
     ports:
       - "15433:5432"
     volumes:
       - checkpoint-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U malkuth -d malkuth"]
+      test: ["CMD-SHELL", "pg_isready -U aaestro -d aaestro"]
       interval: 2s
       timeout: 3s
       retries: 15
@@ -42,13 +42,13 @@ services:
   # 09 Access Enforcement 1 — **저장소 자격증명은 이 컨테이너만 갖는다.**
   # 에이전트는 불투명 토큰으로 HTTP 를 통해서만 닿는다 (#181, #206)
   memory-service:
-    image: malkuth/memory-service:${IMAGE_TAG:-0.1.0}
+    image: aaestro/memory-service:${IMAGE_TAG:-0.1.0}
     build:
       context: ../..
       dockerfile: deployments/docker/memory-service.Dockerfile
       args:
         BASE_TAG: ${IMAGE_TAG:-0.1.0}
-    networks: [malkuth-e2e-net]
+    networks: [aaestro-e2e-net]
     read_only: true
     user: "1000:1000"
     cap_drop: [ALL]
@@ -57,10 +57,10 @@ services:
     pids_limit: 64
     environment:
       # 대역이 임베딩을 낸다 — 실 embedding API 는 부르지 않는다 (06)
-      MALKUTH_EMBEDDING_BASE_URL: http://fake-provider:8000
+      AAESTRO_EMBEDDING_BASE_URL: http://fake-provider:8000
       # 토큰은 기동하며 발급된다 — 공유 볼륨으로 에이전트에 전달한다.
       # 정적 env 로는 순서가 맞지 않는다 (서비스가 뜨기 전에 값이 없다)
-      MALKUTH_MEMORY_TOKENS_PATH: /tokens/memory.json
+      AAESTRO_MEMORY_TOKENS_PATH: /tokens/memory.json
     ports:
       - "18090:8090"
     volumes:
@@ -73,7 +73,7 @@ services:
         condition: service_healthy
 
   fake-provider:
-    image: malkuth/fake-provider:${IMAGE_TAG:-0.1.0}
+    image: aaestro/fake-provider:${IMAGE_TAG:-0.1.0}
     environment:
       # memoryset 선언과 맞춰야 한다 — 어긋나면 append 는 되고 검색이 MEM_003 로
       # 죽는다 (#159 가 그 불일치를 거부한다)
@@ -81,7 +81,7 @@ services:
     build:
       context: ../..
       dockerfile: deployments/docker/fake-provider.Dockerfile
-    networks: [malkuth-e2e-net]
+    networks: [aaestro-e2e-net]
     read_only: true
     user: "1000:1000"
     cap_drop: [ALL]
@@ -94,7 +94,7 @@ services:
 
   agent-echo:
     <<: *agent-defaults
-    image: malkuth/agent-echo:${IMAGE_TAG:-0.1.0}
+    image: aaestro/agent-echo:${IMAGE_TAG:-0.1.0}
     build:
       context: ../..
       dockerfile: deployments/docker/agent-echo.Dockerfile
@@ -104,16 +104,16 @@ services:
       - "18081:8080"
     environment:
       # E2E 는 모델 비결정성을 배제한다 — echo 대역으로 프로토콜 경로만 검증
-      MALKUTH_EXECUTOR: echo
+      AAESTRO_EXECUTOR: echo
       # 인증을 켠 채 검증한다 — 무인증 E2E 는 인증 회귀를 통과시킨다
-      MALKUTH_AGENT_TOKEN: ${MALKUTH_AGENT_TOKEN:-e2e-token}
+      AAESTRO_AGENT_TOKEN: ${AAESTRO_AGENT_TOKEN:-e2e-token}
 
   # 레퍼런스 그래프의 세 노드. **표준 실행기**로 돈다 — promptset 을 렌더하고
   # 모델을 호출하며 출력을 정형한다. echo 로 두면 그 경로가 전혀 검증되지
   # 않는다 (#153). 모델은 fake-provider 가 받아 실 LLM 을 부르지 않는다
   agent-planner:
     <<: *agent-defaults
-    image: malkuth/agent-planner:${IMAGE_TAG:-0.1.0}
+    image: aaestro/agent-planner:${IMAGE_TAG:-0.1.0}
     build:
       context: ../..
       dockerfile: deployments/docker/agent-reference.Dockerfile
@@ -138,23 +138,23 @@ services:
       # 09 — 에이전트는 HTTP 로만 메모리에 닿는다. DSN 은 여기 없다.
       # 토큰은 서비스가 기동하며 발급하므로 파일로 받는다 (정적 env 로는
       # 순서가 맞지 않는다)
-      MALKUTH_MEMORY_URL: http://memory-service:8090
-      MALKUTH_MEMORY_TOKEN_FILE: /tokens/memory.json
-      MALKUTH_A2A_PORT: "19102"
+      AAESTRO_MEMORY_URL: http://memory-service:8090
+      AAESTRO_MEMORY_TOKEN_FILE: /tokens/memory.json
+      AAESTRO_A2A_PORT: "19102"
       # peer 는 **컨테이너 네트워크에서** 이 이름으로 닿는다
-      MALKUTH_A2A_ADVERTISED_HOST: agent-planner
-      MALKUTH_AGENT_TOKEN: ${MALKUTH_AGENT_TOKEN:-e2e-token}
+      AAESTRO_A2A_ADVERTISED_HOST: agent-planner
+      AAESTRO_AGENT_TOKEN: ${AAESTRO_AGENT_TOKEN:-e2e-token}
       # SDK 가 이 값을 읽는다 — 코드 변경 없이 대역으로 향한다
       ANTHROPIC_BASE_URL: http://fake-provider:8000
       ANTHROPIC_API_KEY: e2e-fake-key
       # graphs/research-pipeline.yaml 의 connections 선언이 원본이다.
       # runtime 이 배포 시 주입하는 것을 여기서는 compose 가 대신한다
-      MALKUTH_A2A_EDGES: researcher>planner
-      MALKUTH_A2A_SECRET: ${MALKUTH_A2A_SECRET:-e2e-a2a-secret}
+      AAESTRO_A2A_EDGES: researcher>planner
+      AAESTRO_A2A_SECRET: ${AAESTRO_A2A_SECRET:-e2e-a2a-secret}
 
   agent-researcher:
     <<: *agent-defaults
-    image: malkuth/agent-researcher:${IMAGE_TAG:-0.1.0}
+    image: aaestro/agent-researcher:${IMAGE_TAG:-0.1.0}
     build:
       context: ../..
       dockerfile: deployments/docker/agent-reference.Dockerfile
@@ -176,13 +176,13 @@ services:
       - "19083:9090"
     environment:
       <<: *reference-env
-      MALKUTH_A2A_PORT: "19103"
+      AAESTRO_A2A_PORT: "19103"
       # peer 는 **컨테이너 네트워크에서** 이 이름으로 닿는다
-      MALKUTH_A2A_ADVERTISED_HOST: agent-researcher
+      AAESTRO_A2A_ADVERTISED_HOST: agent-researcher
 
   agent-writer:
     <<: *agent-defaults
-    image: malkuth/agent-writer:${IMAGE_TAG:-0.1.0}
+    image: aaestro/agent-writer:${IMAGE_TAG:-0.1.0}
     build:
       context: ../..
       dockerfile: deployments/docker/agent-reference.Dockerfile
@@ -204,9 +204,9 @@ services:
       - "19084:9090"
     environment:
       <<: *reference-env
-      MALKUTH_A2A_PORT: "19104"
+      AAESTRO_A2A_PORT: "19104"
       # peer 는 **컨테이너 네트워크에서** 이 이름으로 닿는다
-      MALKUTH_A2A_ADVERTISED_HOST: agent-writer
+      AAESTRO_A2A_ADVERTISED_HOST: agent-writer
 
 volumes:
   # Memory Service 가 발급한 토큰을 에이전트가 읽어 간다 — 값은 불투명 토큰이라
@@ -214,16 +214,16 @@ volumes:
   memory-tokens:
 
   # checkpoint 는 **재시작을 넘겨 살아남아야** 검증이 성립한다.
-  # 기본은 호스트의 /data 아래 — 경로가 없는 환경(CI)은 MALKUTH_E2E_DATA 로
+  # 기본은 호스트의 /data 아래 — 경로가 없는 환경(CI)은 AAESTRO_E2E_DATA 로
   # 옮긴다. bind 대상이 없으면 compose 가 기동 자체를 거부하기 때문이다
   checkpoint-data:
     driver: local
     driver_opts:
       type: none
       o: bind
-      device: ${MALKUTH_E2E_DATA:-/data/malkuth-e2e}/checkpoints
+      device: ${AAESTRO_E2E_DATA:-/data/aaestro-e2e}/checkpoints
 
 networks:
-  malkuth-e2e-net:
-    name: malkuth-e2e-net
+  aaestro-e2e-net:
+    name: aaestro-e2e-net
     driver: bridge

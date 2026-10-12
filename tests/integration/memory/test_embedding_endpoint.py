@@ -17,9 +17,9 @@ from pathlib import Path
 
 import pytest
 
-from malkuth.memory.entry import MemoryEntry, MemoryKind, MemorySource
-from malkuth.memory.providers import BASE_URL_ENV, build_index_registry
-from malkuth.modules.memoryset import ChunkSpec, EmbeddingSpec
+from aaestro.memory.entry import MemoryEntry, MemoryKind, MemorySource
+from aaestro.memory.providers import BASE_URL_ENV, build_index_registry
+from aaestro.modules.memoryset import ChunkSpec, EmbeddingSpec
 
 pytestmark = pytest.mark.integration
 
@@ -68,7 +68,7 @@ def remembered(content: str) -> MemoryEntry:
 
 def test_the_binding_is_used_not_the_offline_default(embedding_endpoint):
     """대역이 있는데도 HashEmbedder 로 떨어지면 이 경로가 검증되지 않는다."""
-    from malkuth.memory.providers import OpenAICompatibleEmbedder
+    from aaestro.memory.providers import OpenAICompatibleEmbedder
 
     registry = build_index_registry(spec())
 
@@ -118,12 +118,12 @@ def test_indexing_is_deterministic_across_registries(embedding_endpoint):
 
 def test_a_dimension_mismatch_is_refused(embedding_endpoint):
     """차원이 어긋난 벡터를 섞으면 같은 인덱스 안에 두 공간이 생긴다 (09)."""
-    from malkuth.core.errors import ErrorCode, MalkuthError
+    from aaestro.core.errors import AaestroError, ErrorCode
 
     wrong = EmbeddingSpec(provider="openai-compatible", model="m", dimensions=DIMENSIONS + 8)
     registry = build_index_registry(wrong)
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         registry.index_for(SPACE).add(remembered("x"), ChunkSpec(max_tokens=400, overlap_tokens=40))
 
     assert exc_info.value.code == ErrorCode.MEM_003

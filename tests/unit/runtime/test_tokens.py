@@ -10,8 +10,8 @@ import json
 
 import pytest
 
-from malkuth.observability.logging import mask_secrets
-from malkuth.runtime.tokens import (
+from aaestro.observability.logging import mask_secrets
+from aaestro.runtime.tokens import (
     AGENT_TOKEN_ENV,
     TokenIssuer,
     authenticated_env,
@@ -139,8 +139,8 @@ def test_container_env_and_caller_token_match():
     """발급처와 사용처가 어긋나면 컨테이너는 떴는데 호출이 전부 막힌다."""
     import yaml
 
-    from malkuth.core.manifest import AgentManifest
-    from malkuth.runtime.spec import build_container_spec
+    from aaestro.core.manifest import AgentManifest
+    from aaestro.runtime.spec import build_container_spec
     from tests.unit.cli.test_main import REPO_ROOT
 
     issuer = TokenIssuer()

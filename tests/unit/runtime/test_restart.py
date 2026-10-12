@@ -16,12 +16,12 @@ import pytest
 import yaml
 from prometheus_client import CollectorRegistry
 
-from malkuth.core.agent import HealthState, HealthStatus
-from malkuth.core.manifest import AgentManifest
-from malkuth.observability.metrics import Metrics
-from malkuth.runtime.docker.engine import DockerEngine
-from malkuth.runtime.launcher import AgentLauncher
-from malkuth.runtime.lifecycle import AgentState, RestartPolicy
+from aaestro.core.agent import HealthState, HealthStatus
+from aaestro.core.manifest import AgentManifest
+from aaestro.observability.metrics import Metrics
+from aaestro.runtime.docker.engine import DockerEngine
+from aaestro.runtime.launcher import AgentLauncher
+from aaestro.runtime.lifecycle import AgentState, RestartPolicy
 from tests.fixtures.fake_docker import FakeDockerClient
 from tests.fixtures.waiting import spin, until
 
@@ -36,7 +36,7 @@ def always_sick(monkeypatch: pytest.MonkeyPatch) -> None:
     인스턴스만 갈아끼우면 그 뒤가 실제 네트워크를 두드린다 — Control API
     재시도가 실제로 자면서(#217) 테스트가 실시간에 묶인다.
     """
-    from malkuth.runtime.control import ControlClient
+    from aaestro.runtime.control import ControlClient
 
     async def sick(self: ControlClient) -> HealthStatus:
         return HealthStatus(status=HealthState.UNHEALTHY)
@@ -111,12 +111,12 @@ async def test_a_restart_keeps_the_baked_image():
     """#266 — 재시작만 base 이미지로 돌면 커스텀 실행기가 조용히 사라진다."""
     client = FakeDockerClient()
     agents = launcher(client, Recorder())
-    launched = await agents.start(manifest(), image="malkuth/agent-echo-baked:0.1.0")
+    launched = await agents.start(manifest(), image="aaestro/agent-echo-baked:0.1.0")
 
     await restart_now(agents, launched)
 
     images = [created["image"] for created in client.created]
-    assert images == ["malkuth/agent-echo-baked:0.1.0"] * 2
+    assert images == ["aaestro/agent-echo-baked:0.1.0"] * 2
     await agents.stop_all()
 
 
@@ -167,7 +167,7 @@ async def test_the_restart_counter_is_filled():
 
     await restart_now(agents, launched)
 
-    counter = metrics.counter("malkuth_container_restarts_total").labels(
+    counter = metrics.counter("aaestro_container_restarts_total").labels(
         agent="echo", reason="unhealthy"
     )
     assert counter._value.get() == 1.0

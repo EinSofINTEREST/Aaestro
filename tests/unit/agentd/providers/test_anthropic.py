@@ -10,17 +10,17 @@ import anthropic
 import httpx
 import pytest
 
-from malkuth.agentd.executor import AssistantTurn, ToolCall, ToolOutcome, ToolTurn, UserTurn
-from malkuth.agentd.providers.anthropic import DEFAULT_MAX_TOKENS, AnthropicModel
-from malkuth.core.errors import (
+from aaestro.agentd.executor import AssistantTurn, ToolCall, ToolOutcome, ToolTurn, UserTurn
+from aaestro.agentd.providers.anthropic import DEFAULT_MAX_TOKENS, AnthropicModel
+from aaestro.core.errors import (
     NETWORK_RETRY,
     RATE_LIMIT_RETRY,
+    AaestroError,
     ErrorCategory,
     ErrorCode,
-    MalkuthError,
 )
-from malkuth.core.manifest import ModelConfig
-from malkuth.core.skill import SkillSpec
+from aaestro.core.manifest import ModelConfig
+from aaestro.core.skill import SkillSpec
 
 MODEL = "claude-sonnet-5"
 OPENING = [UserTurn(parts=("prompt",))]
@@ -210,7 +210,7 @@ async def test_unreadable_response_is_llm_004():
     """조용히 빈 응답으로 처리하면 태스크가 성공한 것처럼 끝난다."""
     provider = model(Message([Block(type="tool_use")]))  # id/name 없음
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await provider.run("", OPENING, [])
 
     assert exc_info.value.code == ErrorCode.LLM_004
@@ -224,7 +224,7 @@ async def test_unreadable_response_is_llm_004():
 async def test_rate_limit_is_retryable_llm_001():
     provider = model(api_error(anthropic.RateLimitError))
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await provider.run("", OPENING, [])
 
     assert exc_info.value.code == ErrorCode.LLM_001
@@ -239,7 +239,7 @@ async def test_rate_limit_carries_its_own_category():
     """
     provider = model(api_error(anthropic.RateLimitError))
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await provider.run("", OPENING, [])
 
     assert exc_info.value.category is ErrorCategory.RATE_LIMIT
@@ -251,7 +251,7 @@ async def test_other_model_failures_keep_the_model_category():
     """rate limit 분리가 나머지를 끌고 가면 안 된다."""
     provider = model(api_error(anthropic.InternalServerError))
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await provider.run("", OPENING, [])
 
     assert exc_info.value.category is ErrorCategory.MODEL
@@ -262,7 +262,7 @@ async def test_context_overflow_is_llm_002_and_not_retryable():
     """같은 프롬프트로 다시 보내도 길이는 같다 — 재시도는 낭비다."""
     provider = model(api_error(anthropic.BadRequestError, "prompt is too long: 300000 tokens"))
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await provider.run("", OPENING, [])
 
     assert exc_info.value.code == ErrorCode.LLM_002
@@ -280,7 +280,7 @@ async def test_other_bad_requests_are_not_disguised_as_context_overflow():
 async def test_server_error_is_retryable_llm_003():
     provider = model(api_error(anthropic.InternalServerError))
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await provider.run("", OPENING, [])
 
     assert exc_info.value.code == ErrorCode.LLM_003
@@ -295,7 +295,7 @@ async def test_server_error_is_not_claimed_by_the_network_policy():
     """5xx 는 provider 장애다 — 연결 실패의 짧은 backoff 로 두드리지 않는다."""
     provider = model(api_error(anthropic.InternalServerError))
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await provider.run("", OPENING, [])
 
     assert exc_info.value.category is ErrorCategory.MODEL
@@ -306,7 +306,7 @@ async def test_connection_error_is_retryable_network_net_001():
     """MODEL 로 뭉개면 NETWORK_RETRY 와 선언 retry.network 가 한 번도 동작하지 않는다."""
     provider = model(anthropic.APIConnectionError(request=sdk_request()))
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await provider.run("", OPENING, [])
 
     assert exc_info.value.category is ErrorCategory.NETWORK
@@ -319,7 +319,7 @@ async def test_timeout_is_retryable_timeout_net_002():
     """APITimeoutError 는 APIConnectionError 의 하위 클래스다 — 순서가 틀리면 NET_001 로 묻힌다."""
     provider = model(anthropic.APITimeoutError(request=sdk_request()))
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await provider.run("", OPENING, [])
 
     assert exc_info.value.category is ErrorCategory.TIMEOUT
@@ -344,7 +344,7 @@ async def test_malformed_tool_arguments_are_llm_004():
     """input 이 매핑이 아니면 ValueError 가 executor 로 그대로 샌다."""
     provider = model(Message([Block(type="tool_use", id="tu-1", name="search", input=["query"])]))
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await provider.run("", OPENING, [])
 
     assert exc_info.value.code == ErrorCode.LLM_004

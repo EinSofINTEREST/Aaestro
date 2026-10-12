@@ -8,12 +8,12 @@ from __future__ import annotations
 
 import pytest
 
-from malkuth.core.agent import TaskResult
-from malkuth.core.errors import ErrorCategory, ErrorCode, MalkuthError
-from malkuth.orchestrator.checkpoint import build_checkpointer
-from malkuth.orchestrator.run import RunStatus
-from malkuth.orchestrator.submit import RunSubmitter, seed_state
-from malkuth.orchestrator.topology import GraphMode
+from aaestro.core.agent import TaskResult
+from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.orchestrator.checkpoint import build_checkpointer
+from aaestro.orchestrator.run import RunStatus
+from aaestro.orchestrator.submit import RunSubmitter, seed_state
+from aaestro.orchestrator.topology import GraphMode
 from tests.fixtures.topologies import make_mission, make_service
 
 
@@ -39,7 +39,7 @@ class FailOnceRuntime(ScriptedRuntime):
     async def invoke(self, node, task):
         self.invoked.append(node.id)
         if node.id == self._failing and self.invoked.count(node.id) == 1:
-            raise MalkuthError(category=ErrorCategory.GRAPH, code="GRAPH_002", message="flaky")
+            raise AaestroError(category=ErrorCategory.GRAPH, code="GRAPH_002", message="flaky")
         return TaskResult.completed(task, output={})
 
 
@@ -61,7 +61,7 @@ class FailingRuntime:
         self._code = code
 
     async def invoke(self, node, task):
-        raise MalkuthError(category=ErrorCategory.GRAPH, code=self._code, message="node failed")
+        raise AaestroError(category=ErrorCategory.GRAPH, code=self._code, message="node failed")
 
 
 def submitter(runtime=None, **overrides) -> RunSubmitter:
@@ -189,7 +189,7 @@ async def test_released_status_is_not_left_as_running():
 
 async def test_service_graph_cannot_be_submitted_for_completion():
     """상주 그래프는 완주 개념이 없다."""
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await submitter().submit(make_service(), {})
 
     assert exc_info.value.code == "GRAPH_001"
@@ -202,7 +202,7 @@ async def test_resume_without_a_checkpointer_is_rejected():
     """조용히 처음부터 다시 돌면 부수효과가 두 번 일어난다."""
     submit = submitter(checkpointer=None)
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await submit.resume(make_mission(), "run-1")
 
     assert exc_info.value.code == "STOR_002"
@@ -212,7 +212,7 @@ async def test_resume_without_a_checkpoint_is_rejected():
     """이어갈 지점이 없으면 입력 없는 실행이 빈 결과로 "성공" 해 보인다."""
     submit = submitter()
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await submit.resume(make_mission(), "run-never-started")
 
     assert exc_info.value.code == "STOR_002"
@@ -240,7 +240,7 @@ async def test_resuming_a_running_run_is_a_conflict():
     submit = submitter()
     submit.manager.acquire(make_mission(), run_id="run-live")
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await submit.resume(make_mission(), "run-live")
 
     assert exc_info.value.code == "GRAPH_006"
@@ -251,7 +251,7 @@ async def test_a_new_submission_cannot_reuse_a_finished_run_id():
     submit = submitter()
     await submit.submit(make_mission(), {"query": "q"}, run_id="run-done")
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await submit.submit(make_mission(), {"query": "q"}, run_id="run-done")
 
     assert exc_info.value.code == "VAL_002"
@@ -311,7 +311,7 @@ async def test_missing_required_state_is_rejected_before_any_node():
     runtime = ScriptedRuntime()
     submit = submitter(runtime)
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await submit.submit(make_mission(), {})
 
     assert exc_info.value.code == "GRAPH_003"
@@ -321,7 +321,7 @@ async def test_missing_required_state_is_rejected_before_any_node():
 async def test_rejected_submission_does_not_consume_a_slot():
     submit = submitter()
 
-    with pytest.raises(MalkuthError):
+    with pytest.raises(AaestroError):
         await submit.submit(make_mission(), {})
 
     assert submit.manager.active(GraphMode.MISSION) == 0
@@ -329,7 +329,7 @@ async def test_rejected_submission_does_not_consume_a_slot():
 
 async def test_rejection_names_the_offending_field():
     """어느 필드가 왜 틀렸는지 알려주지 않으면 운영자가 고칠 수 없다."""
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await submitter().submit(make_mission(), {})
 
     fields = [e["field"] for e in exc_info.value.details["errors"]]
@@ -337,7 +337,7 @@ async def test_rejection_names_the_offending_field():
 
 
 async def test_wrong_type_is_also_rejected():
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await submitter().submit(make_mission(), {"query": "q", "needs_research": "yes-ish"})
 
     fields = [e["field"] for e in exc_info.value.details["errors"]]
@@ -368,14 +368,14 @@ async def test_mode_violation_wins_over_state_problems():
 
     운영자는 "state 를 채우면 되겠구나" 로 오해하고 시간을 버린다.
     """
-    from malkuth.orchestrator.topology import GraphTopology
+    from aaestro.orchestrator.topology import GraphTopology
     from tests.fixtures.topologies import service_dict
 
     topology = GraphTopology.model_validate(
-        service_dict(state={"schema": "malkuth.graphs.schemas:ResearchState"})
+        service_dict(state={"schema": "aaestro.graphs.schemas:ResearchState"})
     )
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await submitter().submit(topology, {})
 
     assert exc_info.value.code == "GRAPH_001"

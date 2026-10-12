@@ -38,12 +38,12 @@
    import structlog
    from pydantic import BaseModel
 
-   from malkuth.core.errors import ErrorCategory, MalkuthError
-   from malkuth.core.manifest import AgentManifest
+   from aaestro.core.errors import ErrorCategory, AaestroError
+   from aaestro.core.manifest import AgentManifest
    ```
 
    - `from module import *` 금지
-   - 상대 import 금지 — 항상 `malkuth.` 절대 경로
+   - 상대 import 금지 — 항상 `aaestro.` 절대 경로
 
 ### Naming Conventions
 
@@ -88,7 +88,7 @@
 1. **공개 API 는 type hint 필수** — 함수 시그니처, 클래스 속성 전부
 2. Python 3.12 문법 사용: `list[str]`, `dict[str, Any]`, `str | None` (Optional 금지)
 3. `Any` 는 경계(직렬화 입출력)에서만 — 내부 로직에 `Any` 전파 금지
-4. `src/malkuth/core/` 는 mypy strict 통과 필수
+4. `src/aaestro/core/` 는 mypy strict 통과 필수
 5. 복잡한 dict 대신 pydantic 모델 또는 `@dataclass` — shape 를 타입으로 표현
 
 ```python
@@ -106,18 +106,18 @@ async def invoke(self, task: dict) -> dict: ...
    # Good
    def validate(self, topology: GraphTopology) -> None:
        if not topology.nodes:
-           raise MalkuthError(..., code="GRAPH_001", message="graph has no nodes")
+           raise AaestroError(..., code="GRAPH_001", message="graph has no nodes")
        if topology.entry not in topology.node_ids:
-           raise MalkuthError(..., code="GRAPH_001", message="entry node not found")
+           raise AaestroError(..., code="GRAPH_001", message="entry node not found")
        ...
    ```
 
 2. **에러 메시지**: 소문자, 마침표 없음, 영어
    ```python
    # Good
-   raise MalkuthError(..., message="failed to resolve module ref")
+   raise AaestroError(..., message="failed to resolve module ref")
    # Bad
-   raise MalkuthError(..., message="Failed to resolve module ref.")
+   raise AaestroError(..., message="Failed to resolve module ref.")
    ```
 
 3. **금지 패턴**
@@ -175,7 +175,7 @@ async def invoke(self, task: dict) -> dict: ...
 class AgentManifest(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    api_version: Literal["malkuth/v1"]
+    api_version: Literal["aaestro/v1"]
     kind: Literal["Agent"]
     metadata: Metadata
     spec: AgentSpec
@@ -230,7 +230,7 @@ async def resolve(self, ref: str) -> ModulePath:
         Resolved module path with verified metadata.
 
     Raises:
-        MalkuthError: MOD_001 if the reference cannot be resolved.
+        AaestroError: MOD_001 if the reference cannot be resolved.
     """
 ```
 
@@ -243,9 +243,9 @@ async def resolve(self, ref: str) -> ModulePath:
    - `protocols` ↛ `orchestrator`
 4. `__init__.py` 는 공개 심볼 re-export 만 — 로직 금지.
    **하위 모듈과 이름이 겹치는 심볼은 re-export 하지 않는다** — 겹치면 그 모듈이
-   가려져 `malkuth.core.skill` 이 모듈이 아니라 함수로 잡히고, monkeypatch·mock
+   가려져 `aaestro.core.skill` 이 모듈이 아니라 함수로 잡히고, monkeypatch·mock
    대상 지정이 직관과 어긋난다. 겹치는 심볼은 모듈에서 직접 import 한다
-   (`from malkuth.core.skill import skill`)
+   (`from aaestro.core.skill import skill`)
 5. 모듈 레벨 부수효과 금지 (import 시 연결/기동 금지) — 명시적 팩토리/생성자로
 
 ```python
@@ -517,7 +517,7 @@ async def test_invoke_success():
 - Link to Korean version: `docs/ko/README.md`
 - Include language selector at the top:
   ```markdown
-  # Malkuth
+  # Aaestro
 
   **[한국어](docs/ko/README.md)** | English
   ```

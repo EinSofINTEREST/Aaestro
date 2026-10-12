@@ -15,13 +15,13 @@ from pathlib import Path
 import pytest
 import yaml
 
-from malkuth.core.errors import ErrorCategory, ErrorCode, MalkuthError
-from malkuth.orchestrator.checkpoint import build_checkpointer
-from malkuth.orchestrator.run import RunStatus
-from malkuth.orchestrator.submit import RunSubmitter
-from malkuth.orchestrator.topology import GraphTopology
-from malkuth.runtime.control import ControlClient
-from malkuth.runtime.nodes import ControlNodeRuntime
+from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.orchestrator.checkpoint import build_checkpointer
+from aaestro.orchestrator.run import RunStatus
+from aaestro.orchestrator.submit import RunSubmitter
+from aaestro.orchestrator.topology import GraphTopology
+from aaestro.runtime.control import ControlClient
+from aaestro.runtime.nodes import ControlNodeRuntime
 from tests.e2e.test_stack import (
     AGENT_TOKEN,
     COMPOSE_FILE,
@@ -151,7 +151,7 @@ async def test_failed_node_frees_the_run_slot(graph_stack):
 
     class Unreachable:
         async def invoke(self, node, task):
-            raise MalkuthError(
+            raise AaestroError(
                 category=ErrorCategory.GRAPH, code=ErrorCode.GRAPH_002, message="unreachable"
             )
 
@@ -165,7 +165,7 @@ async def test_failed_node_frees_the_run_slot(graph_stack):
 @requires_docker
 async def test_service_graph_is_rejected_for_completion(node_runtime):
     """상주 그래프는 완주 개념이 없다 — 제출 경로에서 막힌다."""
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await submitter(node_runtime).submit(topology("feed-monitor"), {})
 
     assert exc_info.value.code == "GRAPH_001"
@@ -184,7 +184,7 @@ async def test_resume_continues_from_the_failed_node(node_runtime):
         async def invoke(self, node, task):
             self.invoked.append(node.id)
             if node.id == "researcher" and self.invoked.count(node.id) == 1:
-                raise MalkuthError(
+                raise AaestroError(
                     category=ErrorCategory.GRAPH, code=ErrorCode.GRAPH_002, message="injected"
                 )
             return await node_runtime.invoke(node, task)

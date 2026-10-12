@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from malkuth.runtime.docker.client import SdkDockerClient, image_reference
-from malkuth.runtime.docker.errors import NetworkIsolationError
+from aaestro.runtime.docker.client import SdkDockerClient, image_reference
+from aaestro.runtime.docker.errors import NetworkIsolationError
 
 
 @pytest.mark.parametrize(
     ("image", "expected"),
     [
-        ("malkuth/agent-base:0.1.0", ("malkuth/agent-base", "0.1.0")),
+        ("aaestro/agent-base:0.1.0", ("aaestro/agent-base", "0.1.0")),
         # registry 포트의 콜론은 태그가 아니다
         ("registry.local:5000/team/agent:1.2.3", ("registry.local:5000/team/agent", "1.2.3")),
         ("registry.local:5000/team/agent", ("registry.local:5000/team/agent", "latest")),

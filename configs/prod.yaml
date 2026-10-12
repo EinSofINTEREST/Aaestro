@@ -1,8 +1,8 @@
 # 프로덕션 — 영속 checkpoint, 구조화 로그, 높은 동시성
 runtime:
   backend: docker
-  network: malkuth-net
-  agent_base_image: malkuth/agent-base:0.1.0
+  network: aaestro-net
+  agent_base_image: aaestro/agent-base:0.1.0
   default_resources:
     cpu: "1.0"
     memory: 1Gi
@@ -39,7 +39,7 @@ registry:
     groups: ./groups
 
 memory:
-  # DSN 은 자격증명을 담으므로 파일이 아니라 MALKUTH_MEMORY__DSN 으로 주입한다
+  # DSN 은 자격증명을 담으므로 파일이 아니라 AAESTRO_MEMORY__DSN 으로 주입한다
   backend: postgres
   index_lag_target_s: 5
   run_scope_retention_days: 30

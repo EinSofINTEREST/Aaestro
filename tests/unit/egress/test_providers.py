@@ -5,8 +5,8 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from malkuth.egress.connect import EgressMode
-from malkuth.egress.providers import ANTHROPIC_ENDPOINTS, Upstream, create_provider_app
+from aaestro.egress.connect import EgressMode
+from aaestro.egress.providers import ANTHROPIC_ENDPOINTS, Upstream, create_provider_app
 from tests.unit.egress.test_connect import Registry
 
 KEY = "sk-real-provider-key"

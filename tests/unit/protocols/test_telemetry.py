@@ -9,15 +9,15 @@ from __future__ import annotations
 import pytest
 from prometheus_client import CollectorRegistry
 
-from malkuth.core.agent import TaskResult
-from malkuth.core.errors import CircuitBreaker, CircuitState, ErrorCategory, ErrorCode, MalkuthError
-from malkuth.observability.circuit import CircuitTelemetry
-from malkuth.observability.metrics import Metrics
-from malkuth.protocols.a2a.allowlist import Allowlist, Edge
-from malkuth.protocols.a2a.client import A2AClient
-from malkuth.protocols.mcp.client import McpClient
-from malkuth.protocols.mcp.session import ToolResult
-from malkuth.protocols.telemetry import McpTelemetry
+from aaestro.core.agent import TaskResult
+from aaestro.core.errors import AaestroError, CircuitBreaker, CircuitState, ErrorCategory, ErrorCode
+from aaestro.observability.circuit import CircuitTelemetry
+from aaestro.observability.metrics import Metrics
+from aaestro.protocols.a2a.allowlist import Allowlist, Edge
+from aaestro.protocols.a2a.client import A2AClient
+from aaestro.protocols.mcp.client import McpClient
+from aaestro.protocols.mcp.session import ToolResult
+from aaestro.protocols.telemetry import McpTelemetry
 from tests.fixtures.builders import make_task
 
 SECRET = b"runtime-secret"
@@ -46,7 +46,7 @@ def test_mcp_tool_calls_are_counted_per_status(status):
     assert (
         value(
             metrics,
-            "malkuth_mcp_tool_calls_total",
+            "aaestro_mcp_tool_calls_total",
             agent="researcher",
             server="filesystem",
             tool="read_file",
@@ -97,7 +97,7 @@ async def test_successful_peer_call_is_counted():
     assert (
         value(
             metrics,
-            "malkuth_a2a_calls_total",
+            "aaestro_a2a_calls_total",
             caller="researcher",
             callee="planner",
             status="completed",
@@ -111,14 +111,14 @@ async def test_allowlist_rejection_is_counted_as_a_failed_call():
     metrics = make_metrics()
     client = make_a2a_client(metrics=metrics)
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await client.call("writer", make_task())
 
     assert exc_info.value.code == ErrorCode.A2A_004
     assert (
         value(
             metrics,
-            "malkuth_a2a_calls_total",
+            "aaestro_a2a_calls_total",
             caller="researcher",
             callee="writer",
             status="failed",
@@ -131,13 +131,13 @@ async def test_unreachable_peer_is_counted_as_failed():
     metrics = make_metrics()
     client = make_a2a_client(metrics=metrics, transport=FakePeer(error=ConnectionError("down")))
 
-    with pytest.raises(MalkuthError):
+    with pytest.raises(AaestroError):
         await client.call("planner", make_task())
 
     assert (
         value(
             metrics,
-            "malkuth_a2a_calls_total",
+            "aaestro_a2a_calls_total",
             caller="researcher",
             callee="planner",
             status="failed",
@@ -177,7 +177,7 @@ def test_opening_the_circuit_is_observed():
     breaker.record_failure()
     breaker.record_failure()
 
-    assert value(metrics, "malkuth_circuit_state", target="a2a:planner") == 1.0
+    assert value(metrics, "aaestro_circuit_state", target="a2a:planner") == 1.0
 
 
 def test_recovering_returns_the_gauge_to_closed():
@@ -188,7 +188,7 @@ def test_recovering_returns_the_gauge_to_closed():
 
     breaker.record_success()
 
-    assert value(metrics, "malkuth_circuit_state", target="a2a:planner") == 0.0
+    assert value(metrics, "aaestro_circuit_state", target="a2a:planner") == 0.0
 
 
 def test_reset_timeout_moves_the_gauge_to_half_open():
@@ -210,7 +210,7 @@ def test_reset_timeout_moves_the_gauge_to_half_open():
     now[0] = 61.0
     assert breaker.state is CircuitState.HALF_OPEN
 
-    assert value(metrics, "malkuth_circuit_state", target="mcp:filesystem") == 2.0
+    assert value(metrics, "aaestro_circuit_state", target="mcp:filesystem") == 2.0
 
 
 def test_repeated_failures_do_not_re_notify():
@@ -264,7 +264,7 @@ async def test_call_tool_counts_a_successful_call():
     assert (
         value(
             metrics,
-            "malkuth_mcp_tool_calls_total",
+            "aaestro_mcp_tool_calls_total",
             agent="researcher",
             server="filesystem",
             tool="read_file",
@@ -284,7 +284,7 @@ async def test_call_tool_counts_a_failed_call():
     assert (
         value(
             metrics,
-            "malkuth_mcp_tool_calls_total",
+            "aaestro_mcp_tool_calls_total",
             agent="researcher",
             server="filesystem",
             tool="read_file",

@@ -9,16 +9,16 @@ import httpx
 import pytest
 import yaml
 
-from malkuth.access.client import DecisionSource
-from malkuth.catalog import Catalog
-from malkuth.egress.connect import EgressMode
-from malkuth.egress.mcp import McpTermination, McpUpstreams
-from malkuth.egress.providers import create_provider_app
+from aaestro.access.client import DecisionSource
+from aaestro.catalog import Catalog
+from aaestro.egress.connect import EgressMode
+from aaestro.egress.mcp import McpTermination, McpUpstreams
+from aaestro.egress.providers import create_provider_app
 from tests.unit.egress.test_connect import Registry
 
 TOKEN = "corp-mcp-token"  # noqa: S105 — 테스트 값
 PUBLIC = "93.184.216.34"
-SIDECAR_HOST = "malkuth-researcher--mcp-browser"
+SIDECAR_HOST = "aaestro-researcher--mcp-browser"
 
 
 class Identities(Registry):
@@ -74,7 +74,7 @@ def workspace(tmp_path: Path, **corp) -> Catalog:
         {"name": "fs", "transport": "stdio", "command": ["mcp-server-fs"]},
     ]
     doc = {
-        "apiVersion": "malkuth/v1",
+        "apiVersion": "aaestro/v1",
         "kind": "Agent",
         "metadata": {"name": "researcher", "version": "0.1.0"},
         "spec": {
@@ -316,7 +316,7 @@ async def test_a_session_is_usable_only_by_the_agent_it_was_issued_to(tmp_path):
 
 
 def test_a_seal_binds_agent_and_server():
-    from malkuth.egress.mcp import SessionSeal
+    from aaestro.egress.mcp import SessionSeal
 
     seal = SessionSeal(key=b"k" * 32)
     sealed = seal.seal("researcher", "corp", "abc")

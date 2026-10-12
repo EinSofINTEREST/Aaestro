@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from malkuth.core.manifest import (
+from aaestro.core.manifest import (
     RESERVED_GLOBAL_GROUP,
     AgentManifest,
     GroupManifest,
@@ -169,7 +169,7 @@ def test_a_remote_mcp_credential_must_not_reach_a_stdio_server():
     """프록시가 켜지면 원격 자격은 env 에서 빠진다 — 같은 이름의 stdio 서버는 뜨지 못한다."""
     from pydantic import ValidationError
 
-    from malkuth.core.manifest import McpSpec
+    from aaestro.core.manifest import McpSpec
 
     remote = {
         "name": "corp",
@@ -291,7 +291,7 @@ def test_mcp_env_allowlist_must_be_subset_of_runtime_allowlist():
 
 def test_agent_image_must_be_pinned():
     with pytest.raises(ValidationError, match="pinned"):
-        make_manifest(spec=_spec_with(runtime={"image": "malkuth/agent-base:latest"}))
+        make_manifest(spec=_spec_with(runtime={"image": "aaestro/agent-base:latest"}))
 
 
 def test_duplicate_memory_alias_is_rejected():
@@ -342,12 +342,12 @@ def test_wrong_kind_is_rejected():
 
 def test_wrong_api_version_is_rejected():
     with pytest.raises(ValidationError):
-        AgentManifest.model_validate(manifest_dict(apiVersion="malkuth/v2"))
+        AgentManifest.model_validate(manifest_dict(apiVersion="aaestro/v2"))
 
 
 def _group_dict(**overrides):
     base = {
-        "apiVersion": "malkuth/v1",
+        "apiVersion": "aaestro/v1",
         "kind": "Group",
         "metadata": {"name": "research", "version": "0.1.0"},
         "spec": {
@@ -447,7 +447,7 @@ def test_sidecar_url_is_derived_from_the_agent_and_server():
         sidecar={"image": "mcp/playwright:1.2.0", "port": 3000, "path": "/rpc"},
     )
 
-    assert sidecar_url("researcher", server) == "http://malkuth-researcher--mcp-browser:3000/rpc"
+    assert sidecar_url("researcher", server) == "http://aaestro-researcher--mcp-browser:3000/rpc"
 
 
 def test_sidecar_url_defaults_to_port_8000_and_mcp_path():
@@ -455,12 +455,12 @@ def test_sidecar_url_defaults_to_port_8000_and_mcp_path():
         name="browser", transport="streamable-http", sidecar={"image": "mcp/playwright:1.2.0"}
     )
 
-    assert sidecar_url("researcher", server) == "http://malkuth-researcher--mcp-browser:8000/mcp"
+    assert sidecar_url("researcher", server) == "http://aaestro-researcher--mcp-browser:8000/mcp"
 
 
 def test_sidecar_names_never_collide_with_replicas_or_other_agents():
     # 에이전트 이름에 하이픈 연속이 없으므로 `--` 가 두 이름을 가른다
-    assert sidecar_host("foo", "bar-0") != "malkuth-foo-mcp-bar-0"
+    assert sidecar_host("foo", "bar-0") != "aaestro-foo-mcp-bar-0"
     assert sidecar_host("foo", "mcp-bar") != sidecar_host("foo-mcp", "bar")
 
 
@@ -487,11 +487,11 @@ def test_sidecar_port_must_be_a_real_port(port):
 
 def test_unpinned_agent_image_with_registry_port_is_rejected():
     with pytest.raises(ValidationError, match="pinned"):
-        make_manifest(spec=_spec_with(runtime={"image": "registry.local:5000/malkuth/agent"}))
+        make_manifest(spec=_spec_with(runtime={"image": "registry.local:5000/aaestro/agent"}))
 
 
 def test_digest_pinned_agent_image_is_accepted():
-    image = "malkuth/agent-base@sha256:" + "b" * 64
+    image = "aaestro/agent-base@sha256:" + "b" * 64
 
     manifest = make_manifest(spec=_spec_with(runtime={"image": image}))
 
@@ -564,7 +564,7 @@ def test_builder_replaces_non_mapping_values():
     "destination", ["api.example.com", "fake-provider:8000", "localhost", "a-b.c-d.example.com:443"]
 )
 def test_an_explicit_egress_destination_is_accepted(destination):
-    from malkuth.core.manifest import RuntimeSpec
+    from aaestro.core.manifest import RuntimeSpec
 
     assert RuntimeSpec(egress=(destination,)).egress == (destination,)
 
@@ -585,7 +585,7 @@ def test_a_vague_egress_destination_is_refused(destination):
     """와일드카드·스킴·경로를 받으면 선언이 "어디든" 이 된다."""
     from pydantic import ValidationError
 
-    from malkuth.core.manifest import RuntimeSpec
+    from aaestro.core.manifest import RuntimeSpec
 
     with pytest.raises(ValidationError):
         RuntimeSpec(egress=(destination,))
@@ -598,7 +598,7 @@ def test_an_egress_port_outside_the_valid_range_is_refused(destination):
     """범위 밖 포트는 어떤 CONNECT 와도 맞지 않는다 — 선언이 조용히 쓸모없어진다 (#294 리뷰)."""
     from pydantic import ValidationError
 
-    from malkuth.core.manifest import RuntimeSpec
+    from aaestro.core.manifest import RuntimeSpec
 
     with pytest.raises(ValidationError):
         RuntimeSpec(egress=(destination,))
@@ -619,7 +619,7 @@ def test_an_external_mcp_url_must_be_a_valid_http_url(url):
     """판정이 선언을 풀다 터지면 그 에이전트의 판정 전체가 멈춘다 (#294 리뷰)."""
     from pydantic import ValidationError
 
-    from malkuth.core.manifest import McpServerSpec
+    from aaestro.core.manifest import McpServerSpec
 
     with pytest.raises(ValidationError):
         McpServerSpec(name="corp", transport="streamable-http", url=url)
@@ -636,7 +636,7 @@ def test_an_external_mcp_url_must_be_a_valid_http_url(url):
 )
 def test_an_agent_ref_splits_into_name_and_version(ref, expected):
     """노드가 가리키는 에이전트를 찾는 규칙은 이 하나뿐이다 (#319)."""
-    from malkuth.core.manifest import agent_name, agent_ref_parts
+    from aaestro.core.manifest import agent_name, agent_ref_parts
 
     assert agent_ref_parts(ref) == expected
     assert agent_name(ref) == expected[0]

@@ -15,7 +15,7 @@
 
 ### Everything Is a Module — 솔루션 = 모듈 조립
 
-Malkuth 에서 하나의 "솔루션"(특정 목표를 위한 기능 전체 오케스트레이션, 또는 무한 반복
+Aaestro 에서 하나의 "솔루션"(특정 목표를 위한 기능 전체 오케스트레이션, 또는 무한 반복
 과업)은 새 코드가 아니라 **모듈 조립**으로 구성한다:
 
 ```
@@ -69,7 +69,7 @@ modules/skillsets/web-search/
 ### skillset.yaml
 
 ```yaml
-apiVersion: malkuth/v1
+apiVersion: aaestro/v1
 kind: Skillset
 metadata:
   name: web-search
@@ -96,7 +96,7 @@ spec:
 
 ```python
 # skills/search.py
-from malkuth.core.skill import skill, SkillContext
+from aaestro.core.skill import skill, SkillContext
 
 
 @skill  # 데코레이터가 pydantic 시그니처 → tool schema 자동 변환
@@ -116,7 +116,7 @@ async def search(ctx: SkillContext, query: str, max_results: int = 10) -> list[d
 3. **SkillContext**: 로거, secrets, artifact 저장소 접근은 ctx 를 통해서만 —
    전역 상태 / 모듈 레벨 클라이언트 초기화 금지
 4. **Timeout**: skillset.yaml 의 `timeout_s` 를 초과하면 agentd 가 강제 취소
-5. **Errors**: 실패는 예외로 — agentd boundary 에서 `MalkuthError` 로 변환됨.
+5. **Errors**: 실패는 예외로 — agentd boundary 에서 `AaestroError` 로 변환됨.
    skill 내부에서 에러를 삼키고 빈 결과 반환 금지
 6. **No Cross-Skillset Imports**: 스킬셋 간 import 금지 — 공통 로직이 필요하면
    프레임워크 `pkg` 성격의 유틸로 승격하거나 별도 스킬셋 의존성으로 선언
@@ -147,7 +147,7 @@ modules/promptsets/researcher/
 ### promptset.yaml
 
 ```yaml
-apiVersion: malkuth/v1
+apiVersion: aaestro/v1
 kind: Promptset
 metadata:
   name: researcher
@@ -216,7 +216,7 @@ modules/decisionsets/research-triage/
 ### decisionset.yaml
 
 ```yaml
-apiVersion: malkuth/v1
+apiVersion: aaestro/v1
 kind: Decisionset
 metadata:
   name: research-triage
@@ -305,7 +305,7 @@ spec:
 
 ```yaml
 # graphs/research-pipeline.yaml
-apiVersion: malkuth/v1
+apiVersion: aaestro/v1
 kind: Graph
 metadata:
   name: research-pipeline
@@ -317,7 +317,7 @@ spec:
   goal: 질의를 받아 계획 → 리서치 → 보고서 작성을 완료한다   # 문서화 필수
 
   state:
-    schema: malkuth.graphs.schemas:ResearchState   # pydantic 모델 ref
+    schema: aaestro.graphs.schemas:ResearchState   # pydantic 모델 ref
     checkpointer: default                          # 프레임워크 설정 상속
 
   nodes:
@@ -342,8 +342,8 @@ spec:
     - {from: START, to: planner}
     - from: planner
       to: researcher
-      condition: malkuth.graphs.conditions:needs_research   # 조건 함수 ref
-    - {from: planner, to: END, condition: malkuth.graphs.conditions:plan_only}
+      condition: aaestro.graphs.conditions:needs_research   # 조건 함수 ref
+    - {from: planner, to: END, condition: aaestro.graphs.conditions:plan_only}
     - {from: researcher, to: writer}
     - {from: writer, to: END}
 
@@ -355,7 +355,7 @@ spec:
 
 ```yaml
 # graphs/feed-monitor.yaml
-apiVersion: malkuth/v1
+apiVersion: aaestro/v1
 kind: Graph
 metadata:
   name: feed-monitor
@@ -373,7 +373,7 @@ spec:
     max_failure_streak: 5        # iteration 연속 실패 임계 — 초과 시 run 정지 + 알림
 
   state:
-    schema: malkuth.graphs.schemas:FeedMonitorState
+    schema: aaestro.graphs.schemas:FeedMonitorState
 
   nodes:
     - id: watcher
@@ -385,8 +385,8 @@ spec:
 
   edges:
     - {from: START, to: watcher}
-    - {from: watcher, to: classifier, condition: malkuth.graphs.conditions:has_new_items}
-    - {from: watcher, to: END, condition: malkuth.graphs.conditions:idle}  # 이번 iteration 종료
+    - {from: watcher, to: classifier, condition: aaestro.graphs.conditions:has_new_items}
+    - {from: watcher, to: END, condition: aaestro.graphs.conditions:idle}  # 이번 iteration 종료
     - {from: classifier, to: notifier}
     - {from: notifier, to: END}
 ```
@@ -532,7 +532,7 @@ graphs/{name}.yaml
    (`orchestrator.build_store`) 에 남고, 배포 게이트가 이것을 본다
    ([02-agent-implementation.md](02-agent-implementation.md) Lifecycle Rule 1)
 6. **Seeds**: 저장소에 함께 싣는 예시 재료는 `examples/materials/<agent>/` 에 둔다 —
-   프레임워크는 읽지 않으며, `malkuth agent-push` 로 스토어에 올린다
+   프레임워크는 읽지 않으며, `aaestro agent-push` 로 스토어에 올린다
 
 ### Compatibility Rules
 

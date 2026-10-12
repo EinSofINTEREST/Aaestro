@@ -1,7 +1,7 @@
 """Operating a run from outside the process that drives it.
 
 `create_app` 은 표면을 갖고 있었지만 **그 앱을 만드는 곳이 테스트뿐이었다** —
-`malkuth run-list` / `run-drain` / `run-resume` 가 붙을 서버가 없었다 (#221).
+`aaestro run-list` / `run-drain` / `run-resume` 가 붙을 서버가 없었다 (#221).
 
 여기서는 프로세스를 **실제로 셋** 띄운다: 상주 run 을 구동하는 프로세스, 그것을
 서빙하는 control plane, 그리고 조작하는 CLI. 같은 프로세스 안에서 객체만 새로
@@ -75,16 +75,16 @@ def write_config(directory: Path, store_path: Path) -> Path:
 def cli(*argv: str, config_dir: Path) -> subprocess.CompletedProcess[str]:
     """CLI 를 **별도 프로세스로** 실행한다."""
     return subprocess.run(  # noqa: S603
-        [sys.executable, "-m", "malkuth.cli", *argv],
+        [sys.executable, "-m", "aaestro.cli", *argv],
         capture_output=True,
         text=True,
         check=False,
         cwd=REPO_ROOT,
         env={
             **os.environ,
-            "MALKUTH_ENV": "e2e",
-            "MALKUTH_CONFIG_DIR": str(config_dir),
-            "MALKUTH_CONTROL_TOKEN": CONTROL_TOKEN,
+            "AAESTRO_ENV": "e2e",
+            "AAESTRO_CONFIG_DIR": str(config_dir),
+            "AAESTRO_CONTROL_TOKEN": CONTROL_TOKEN,
         },
     )
 
@@ -111,7 +111,7 @@ def deployment(service_stack: dict[str, int], tmp_path) -> Iterator[dict]:
         [
             sys.executable,
             "-m",
-            "malkuth.cli",
+            "aaestro.cli",
             "run",
             str(REPO_ROOT / "graphs" / "feed-monitor.yaml"),
             "--service",
@@ -127,19 +127,19 @@ def deployment(service_stack: dict[str, int], tmp_path) -> Iterator[dict]:
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
-        env={**os.environ, "MALKUTH_AGENT_TOKEN": AGENT_TOKEN},
+        env={**os.environ, "AAESTRO_AGENT_TOKEN": AGENT_TOKEN},
     )
     plane = subprocess.Popen(  # noqa: S603
-        [sys.executable, "-m", "malkuth.orchestrator"],
+        [sys.executable, "-m", "aaestro.orchestrator"],
         cwd=REPO_ROOT,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
         env={
             **os.environ,
-            "MALKUTH_ENV": "e2e",
-            "MALKUTH_CONFIG_DIR": str(config_dir),
-            "MALKUTH_METRICS_PORT": str(METRICS_PORT),
+            "AAESTRO_ENV": "e2e",
+            "AAESTRO_CONFIG_DIR": str(config_dir),
+            "AAESTRO_METRICS_PORT": str(METRICS_PORT),
         },
     )
     try:

@@ -18,8 +18,8 @@ import pytest
 import yaml
 from langgraph.checkpoint.memory import MemorySaver
 
-from malkuth.cli.main import checkpointer_for
-from malkuth.core.errors import ErrorCode, MalkuthError
+from aaestro.cli.main import checkpointer_for
+from aaestro.core.errors import AaestroError, ErrorCode
 
 
 def write_config(directory: Path, name: str, orchestrator: dict) -> None:
@@ -64,7 +64,7 @@ def test_a_missing_url_is_still_refused(tmp_path):
     """URL 없는 외부 backend 를 조용히 in-memory 로 떨어뜨리면 재개가 사라진다."""
     write_config(tmp_path, "local", {"checkpointer": "postgres"})
 
-    with pytest.raises(MalkuthError) as excinfo:
+    with pytest.raises(AaestroError) as excinfo:
         checkpointer_for(args_for(tmp_path, environment="local"))
 
     assert excinfo.value.code == ErrorCode.CFG_001
@@ -86,7 +86,7 @@ def test_the_flag_overrides_the_configured_backend(tmp_path):
 def test_the_url_can_come_from_the_environment(tmp_path, monkeypatch):
     """자격증명을 파일에 굽지 않는 경로 — 이것이 기본 사용법이다."""
     write_config(tmp_path, "local", {"checkpointer": "postgres"})
-    monkeypatch.setenv("MALKUTH_ORCHESTRATOR__CHECKPOINTER_URL", "postgresql://u:p@127.0.0.1:1/db")
+    monkeypatch.setenv("AAESTRO_ORCHESTRATOR__CHECKPOINTER_URL", "postgresql://u:p@127.0.0.1:1/db")
 
     built = checkpointer_for(args_for(tmp_path, environment="local"))
 
@@ -96,7 +96,7 @@ def test_the_url_can_come_from_the_environment(tmp_path, monkeypatch):
 def test_the_environment_falls_back_to_the_env_var(tmp_path, monkeypatch):
     """CLI 와 상주 프로세스가 같은 이름으로 같은 설정을 봐야 한다."""
     write_config(tmp_path, "chosen", {"checkpointer": "memory"})
-    monkeypatch.setenv("MALKUTH_ENV", "chosen")
+    monkeypatch.setenv("AAESTRO_ENV", "chosen")
 
     built = checkpointer_for(args_for(tmp_path, environment=None))
 
@@ -110,7 +110,7 @@ def test_the_shipped_prod_config_is_reachable():
         checkpointer=None, environment="prod", config_dir=str(root / "configs")
     )
 
-    with pytest.raises(MalkuthError) as excinfo:
+    with pytest.raises(AaestroError) as excinfo:
         checkpointer_for(args)
 
     # URL 이 없다는 이유로 거절되어야 한다 — backend 자체가 무시되면 memory 가 나온다

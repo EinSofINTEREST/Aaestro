@@ -1,6 +1,6 @@
 """테스트용 검색 스킬."""
 
-from malkuth.core.skill import SkillContext, skill
+from aaestro.core.skill import SkillContext, skill
 
 
 @skill

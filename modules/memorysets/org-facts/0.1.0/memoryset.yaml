@@ -1,4 +1,4 @@
-apiVersion: malkuth/v1
+apiVersion: aaestro/v1
 kind: Memoryset
 metadata:
   name: org-facts

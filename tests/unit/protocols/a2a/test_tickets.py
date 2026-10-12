@@ -5,8 +5,8 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from malkuth.core.errors import ErrorCode, MalkuthError
-from malkuth.protocols.a2a.tickets import RENEW_BEFORE_S, TicketSource
+from aaestro.core.errors import AaestroError, ErrorCode
+from aaestro.protocols.a2a.tickets import RENEW_BEFORE_S, TicketSource
 
 
 class Clock:
@@ -56,7 +56,7 @@ async def test_a_ticket_is_reused_until_it_is_about_to_expire():
     ],
 )
 async def test_failing_to_get_a_ticket_is_classified(respond, code, retryable):
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await source(respond).ticket_for("planner")
 
     assert (exc_info.value.code, exc_info.value.retryable) == (code, retryable)

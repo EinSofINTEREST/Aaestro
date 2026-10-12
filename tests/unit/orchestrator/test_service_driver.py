@@ -11,12 +11,12 @@ import asyncio
 import pytest
 from langgraph.checkpoint.memory import MemorySaver
 
-from malkuth.core.agent import TaskResult
-from malkuth.core.errors import ErrorCategory, ErrorCode, MalkuthError
-from malkuth.core.manifest import ModelConfig
-from malkuth.orchestrator.run import RunStatus
-from malkuth.orchestrator.submit import RunSubmitter
-from malkuth.orchestrator.topology import GraphMode
+from aaestro.core.agent import TaskResult
+from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.core.manifest import ModelConfig
+from aaestro.orchestrator.run import RunStatus
+from aaestro.orchestrator.submit import RunSubmitter
+from aaestro.orchestrator.topology import GraphMode
 from tests.fixtures.topologies import make_mission, make_service
 
 
@@ -40,7 +40,7 @@ class FailingRuntime:
     """항상 실패하는 runtime 대역."""
 
     async def invoke(self, node, task) -> TaskResult:
-        raise MalkuthError(
+        raise AaestroError(
             category=ErrorCategory.GRAPH,
             code=ErrorCode.GRAPH_002,
             message="node execution failed",
@@ -97,7 +97,7 @@ async def test_every_iteration_task_carries_the_resolved_model():
 async def test_mission_graph_is_rejected_by_the_service_path():
     sub = submitter()
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await sub.start_service(make_mission(), {"query": "q"})
 
     assert exc_info.value.code == ErrorCode.GRAPH_001
@@ -108,7 +108,7 @@ async def test_invalid_state_is_rejected_before_a_slot_is_taken():
     sub = submitter()
     topology = make_service()
 
-    with pytest.raises(MalkuthError):
+    with pytest.raises(AaestroError):
         await sub.start_service(topology, {"feeds": "not-a-list"})
 
     assert sub.manager.active(GraphMode.SERVICE) == 0
@@ -173,7 +173,7 @@ async def test_drain_stops_after_the_current_iteration():
 async def test_draining_an_unknown_run_is_rejected():
     sub = submitter()
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await sub.drain_service("absent")
 
     assert exc_info.value.code == ErrorCode.NF_001
@@ -237,7 +237,7 @@ async def test_resume_without_a_checkpointer_is_rejected():
     handle = await sub.start_service(topology, {"feeds": []}, max_iterations=1, sleep=no_sleep)
     await asyncio.wait_for(sub.services[handle.run_id], timeout=10)
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await sub.resume_service(topology, handle.run_id)
 
     assert exc_info.value.code == ErrorCode.STOR_002
@@ -251,7 +251,7 @@ async def test_resuming_a_cleanly_stopped_run_is_rejected():
     await asyncio.wait_for(sub.services[handle.run_id], timeout=10)
     assert handle.status is RunStatus.STOPPED
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await sub.resume_service(topology, handle.run_id)
 
     assert exc_info.value.code == ErrorCode.GRAPH_006
@@ -263,7 +263,7 @@ async def test_resuming_a_live_run_is_rejected():
     topology = make_service()
     handle = await sub.start_service(topology, {"feeds": []}, sleep=no_sleep)
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await sub.resume_service(topology, handle.run_id)
 
     assert exc_info.value.code == ErrorCode.GRAPH_006

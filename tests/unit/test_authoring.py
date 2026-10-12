@@ -7,12 +7,12 @@ from pathlib import Path
 import pytest
 import yaml
 
-from malkuth.authoring import Author
-from malkuth.catalog import Catalog
-from malkuth.core.errors import ErrorCode, MalkuthError
-from malkuth.core.manifest import AgentManifest
-from malkuth.materials import InMemoryMaterialStore
-from malkuth.orchestrator.topology import GraphTopology
+from aaestro.authoring import Author
+from aaestro.catalog import Catalog
+from aaestro.core.errors import AaestroError, ErrorCode
+from aaestro.core.manifest import AgentManifest
+from aaestro.materials import InMemoryMaterialStore
+from aaestro.orchestrator.topology import GraphTopology
 from tests.fixtures.topologies import mission_dict
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -25,7 +25,7 @@ def write(path: Path, document: dict) -> None:
 
 def promptset(name: str = "solo", version: str = "0.1.0") -> dict:
     return {
-        "apiVersion": "malkuth/v1",
+        "apiVersion": "aaestro/v1",
         "kind": "Promptset",
         "metadata": {"name": name, "version": version},
         "spec": {
@@ -40,7 +40,7 @@ def agent(
 ) -> AgentManifest:
     return AgentManifest.model_validate(
         {
-            "apiVersion": "malkuth/v1",
+            "apiVersion": "aaestro/v1",
             "kind": "Agent",
             "metadata": {"name": name, "version": version},
             "spec": {
@@ -56,13 +56,13 @@ def graph(
 ) -> GraphTopology:
     return GraphTopology.model_validate(
         {
-            "apiVersion": "malkuth/v1",
+            "apiVersion": "aaestro/v1",
             "kind": "Graph",
             "metadata": {"name": name, "version": version},
             "spec": {
                 "mode": "mission",
                 "goal": "test",
-                "state": {"schema": "malkuth.graphs.schemas:ResearchState"},
+                "state": {"schema": "aaestro.graphs.schemas:ResearchState"},
                 "nodes": [{"id": "step", "agent": f"agents/{agent_name}@{agent_version}"}],
                 "edges": [{"from": "START", "to": "step"}, {"from": "step", "to": "END"}],
             },
@@ -105,7 +105,7 @@ def test_a_valid_graph_is_written_as_readable_yaml(author, workspace):
 
 def test_a_graph_that_fails_validation_never_touches_disk(author, workspace):
     """검증 실패한 초안은 파일이 생기지 않는다 — 이것이 이 API 의 요점이다."""
-    with pytest.raises(MalkuthError) as excinfo:
+    with pytest.raises(AaestroError) as excinfo:
         author.save_graph("bad", graph("bad", agent_name="nobody"))
 
     assert excinfo.value.code == ErrorCode.VAL_001
@@ -159,7 +159,7 @@ def test_a_changed_graph_without_a_bump_is_rejected(author, workspace):
         update={"spec": graph("pipeline").spec.model_copy(update={"goal": "other"})}
     )
 
-    with pytest.raises(MalkuthError) as excinfo:
+    with pytest.raises(AaestroError) as excinfo:
         author.save_graph("pipeline", changed)
 
     assert excinfo.value.code == ErrorCode.MOD_002
@@ -180,14 +180,14 @@ def test_a_bumped_graph_is_written(author, workspace):
 def test_a_downgrade_is_rejected(author):
     author.save_graph("pipeline", graph("pipeline", "1.1.0"))
 
-    with pytest.raises(MalkuthError) as excinfo:
+    with pytest.raises(AaestroError) as excinfo:
         author.save_graph("pipeline", graph("pipeline", "1.0.0"))
 
     assert excinfo.value.code == ErrorCode.MOD_002
 
 
 def test_an_agent_bump_follows_the_same_rule(author, workspace):
-    with pytest.raises(MalkuthError) as excinfo:
+    with pytest.raises(AaestroError) as excinfo:
         author.save_agent(
             "alpha",
             agent("alpha", "0.1.0", promptset_ref="promptsets/solo@0.1.0").model_copy(
@@ -206,7 +206,7 @@ def test_an_agent_bump_follows_the_same_rule(author, workspace):
 
 
 def test_the_path_name_must_match_the_declaration(author, workspace):
-    with pytest.raises(MalkuthError) as excinfo:
+    with pytest.raises(AaestroError) as excinfo:
         author.save_graph("one", graph("two"))
 
     assert excinfo.value.code == ErrorCode.VAL_002
@@ -220,7 +220,7 @@ def test_the_path_name_must_match_the_declaration(author, workspace):
 def test_deleting_a_referenced_agent_is_refused(author, workspace):
     author.save_graph("pipeline", graph("pipeline"))
 
-    with pytest.raises(MalkuthError) as excinfo:
+    with pytest.raises(AaestroError) as excinfo:
         author.delete_agent("alpha")
 
     assert excinfo.value.code == ErrorCode.VAL_002
@@ -235,7 +235,7 @@ def test_an_unreferenced_agent_can_be_deleted(author, workspace):
 
 
 def test_deleting_a_missing_graph_is_not_found(author):
-    with pytest.raises(MalkuthError) as excinfo:
+    with pytest.raises(AaestroError) as excinfo:
         author.delete_graph("nope")
 
     assert excinfo.value.code == ErrorCode.NF_001
@@ -245,9 +245,9 @@ def test_a_deployed_declaration_cannot_be_deleted_or_overwritten(workspace):
     """배포 중인 것을 바꾸면 실행 중 run 의 계약이 발밑에서 바뀐다 (#243 이 채운다)."""
     author = Author(catalog=Catalog.under(workspace), in_use=lambda kind, name: name == "alpha")
 
-    with pytest.raises(MalkuthError) as refused_delete:
+    with pytest.raises(AaestroError) as refused_delete:
         author.delete_agent("alpha")
-    with pytest.raises(MalkuthError) as refused_save:
+    with pytest.raises(AaestroError) as refused_save:
         author.save_agent("alpha", agent("alpha", "0.2.0"))
 
     assert "deployed" in refused_delete.value.message
@@ -295,7 +295,7 @@ def test_unrelated_broken_declarations_block_saving(author, workspace):
     (workspace / "agents" / "ghost").mkdir()
     (workspace / "agents" / "ghost" / "manifest.yaml").write_text("kind: Agent\n", encoding="utf-8")
 
-    with pytest.raises(MalkuthError) as excinfo:
+    with pytest.raises(AaestroError) as excinfo:
         author.save_graph("pipeline", graph("pipeline"))
 
     assert any(f.get("check") == "catalog" for f in excinfo.value.details["findings"])
@@ -308,7 +308,7 @@ def test_writes_are_atomic_a_failure_leaves_the_old_file_intact(author, workspac
     """`write_text` 는 먼저 비운다 — 중간에 죽으면 마지막 정상 버전이 사라진다."""
     author.save_graph("pipeline", graph("pipeline"))
     before = (workspace / "graphs" / "pipeline.yaml").read_text(encoding="utf-8")
-    import malkuth.authoring as authoring
+    import aaestro.authoring as authoring
 
     def exploding(model):
         raise OSError("disk full")
@@ -328,9 +328,9 @@ def test_an_agent_bump_and_its_graph_can_only_be_saved_together(author, workspac
     bumped_agent = agent("alpha", "0.2.0")
     bumped_graph = graph("pipeline", "1.1.0", agent_version="0.2.0")
 
-    with pytest.raises(MalkuthError):
+    with pytest.raises(AaestroError):
         author.save_agent("alpha", bumped_agent)  # 저장된 그래프의 ref 가 깨진다
-    with pytest.raises(MalkuthError):
+    with pytest.raises(AaestroError):
         author.save_graph("pipeline", bumped_graph)  # 아직 없는 버전을 가리킨다
 
     written = author.save_all(graphs={"pipeline": bumped_graph}, agents={"alpha": bumped_agent})
@@ -390,7 +390,7 @@ def test_a_node_missing_its_template_is_refused_at_save(author, workspace):
         {**promptset(), "spec": {"engine": "jinja2", "templates": {"default": {"file": "t.j2"}}}},
     )
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         author.save_graph("pipeline", graph("pipeline"))
 
     assert exc_info.value.code == ErrorCode.VAL_001
@@ -439,7 +439,7 @@ def test_an_unloadable_promptset_is_a_finding_not_a_silent_skip(author, workspac
     write(
         workspace / "modules" / "promptsets" / "solo" / "0.1.0" / "promptset.yaml",
         {
-            "apiVersion": "malkuth/v1",
+            "apiVersion": "aaestro/v1",
             "kind": "Promptset",
             "metadata": {"name": "solo", "version": "0.1.0"},
             "spec": {"engine": "jinja2"},  # templates 누락 — 스키마 위반
@@ -481,7 +481,7 @@ def test_the_same_version_cannot_get_different_materials(author_with_materials):
     """그 버전으로 구운 이미지와 어긋나면 무엇이 도는지 알 수 없다 (04 Registry 2)."""
     author_with_materials.save_materials("alpha", {"src/agent.py": "MARK = 1"})
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         author_with_materials.save_materials("alpha", {"src/agent.py": "MARK = 2"})
 
     assert exc_info.value.code == ErrorCode.MOD_002
@@ -519,7 +519,7 @@ def test_materials_of_a_deployed_agent_cannot_change(workspace):
         in_use=lambda kind, name: kind == "agent" and name == "alpha",
     )
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         author.save_materials("alpha", {"src/agent.py": "MARK = 1"})
 
     assert exc_info.value.code == ErrorCode.VAL_002
@@ -542,7 +542,7 @@ def test_deleting_then_re_adding_cannot_swap_the_contents(author_with_materials)
     author_with_materials.save_materials("alpha", {"src/agent.py": "ORIGINAL"})
     author_with_materials.delete_materials("alpha")
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         author_with_materials.save_materials("alpha", {"src/agent.py": "SWAPPED"})
 
     assert exc_info.value.code == ErrorCode.MOD_002
@@ -579,7 +579,7 @@ def test_the_saved_record_carries_its_store_timestamp(author_with_materials):
 
 
 def test_a_path_outside_the_context_never_reaches_the_store(author_with_materials):
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         author_with_materials.save_materials("alpha", {"../escape.py": "x"})
 
     assert exc_info.value.code == ErrorCode.VAL_002
@@ -587,7 +587,7 @@ def test_a_path_outside_the_context_never_reaches_the_store(author_with_material
 
 
 def test_materials_for_an_unknown_agent_are_not_found(author_with_materials):
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         author_with_materials.save_materials("nobody", {})
 
     assert exc_info.value.code == ErrorCode.NF_001
@@ -595,7 +595,7 @@ def test_materials_for_an_unknown_agent_are_not_found(author_with_materials):
 
 def test_without_a_store_the_surface_is_refused(author):
     """재료 표면을 열지 않은 조립에서 조용히 성공하면 빌드가 빈 재료로 돈다."""
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         author.save_materials("alpha", {})
 
     assert exc_info.value.code == ErrorCode.CFG_001
@@ -637,12 +637,12 @@ def test_deleting_an_agent_removes_its_empty_directory(author, workspace):
     assert not directory.exists(), "빈 디렉토리가 남았다"
 
 
-def test_files_malkuth_did_not_write_are_kept_and_named(author, workspace):
+def test_files_aaestro_did_not_write_are_kept_and_named(author, workspace):
     """사람이 둔 코드는 지우지 않는다 — 대신 무엇이 남았는지 알린다 (#258)."""
     directory = workspace / "agents" / "alpha"
     (directory / "src").mkdir()
     (directory / "src" / "agent.py").write_text("MARK = 1\n", encoding="utf-8")
-    (directory / "Dockerfile").write_text("FROM malkuth/agent-base:0.1.0\n", encoding="utf-8")
+    (directory / "Dockerfile").write_text("FROM aaestro/agent-base:0.1.0\n", encoding="utf-8")
 
     retained = author.delete_agent("alpha")
 
@@ -686,7 +686,7 @@ def test_symlinks_are_reported_not_followed_or_removed(author, workspace, tmp_pa
 @pytest.fixture
 def openai_known(monkeypatch):
     """논리 호스트가 알려진 두 번째 provider — 지금 저장소에는 anthropic 뿐이다."""
-    from malkuth.access import baselines
+    from aaestro.access import baselines
 
     monkeypatch.setitem(baselines.PROVIDER_HOSTS, "openai-compat", "api.openai.com")
 
@@ -742,7 +742,7 @@ def test_a_node_override_that_clears_with_null_survives_saving(author, workspace
 
 
 def test_the_serialized_override_keeps_exactly_the_keys_it_set():
-    from malkuth.authoring import _serialize
+    from aaestro.authoring import _serialize
 
     document = mission_dict()
     document["spec"]["nodes"][0]["model"] = {"retry": None, "circuit": None, "max_tokens": None}
@@ -758,7 +758,7 @@ def test_a_serialization_that_drops_override_keys_is_caught_before_writing(
     author, workspace, monkeypatch
 ):
     """값만 비교하면 null 이 빠진 override 도 같아 보인다 — 키 집합까지 대조해야 잡힌다."""
-    import malkuth.authoring as authoring
+    import aaestro.authoring as authoring
 
     original = authoring._serialize
 
@@ -773,7 +773,7 @@ def test_a_serialization_that_drops_override_keys_is_caught_before_writing(
     document = graph("pipeline").model_dump(mode="json", by_alias=True)
     document["spec"]["nodes"][0]["model"] = {"max_tokens": 1, "circuit": None}
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         author.save_graph("pipeline", GraphTopology.model_validate(document))
 
     assert exc_info.value.code == ErrorCode.INTERNAL_001

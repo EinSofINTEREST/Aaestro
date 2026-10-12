@@ -9,17 +9,17 @@ import asyncio
 
 import pytest
 
-from malkuth.core.agent import ComponentHealth, HealthState, HealthStatus
-from malkuth.core.errors import (
+from aaestro.core.agent import ComponentHealth, HealthState, HealthStatus
+from aaestro.core.errors import (
+    AaestroError,
     CircuitBreaker,
     CircuitState,
     ErrorCategory,
     ErrorCode,
-    MalkuthError,
 )
-from malkuth.observability.metrics import Metrics
-from malkuth.runtime.health import HealthMonitor, HealthProbe, track_running
-from malkuth.runtime.lifecycle import AgentLifecycle, AgentState
+from aaestro.observability.metrics import Metrics
+from aaestro.runtime.health import HealthMonitor, HealthProbe, track_running
+from aaestro.runtime.lifecycle import AgentLifecycle, AgentState
 
 
 class FakeProbe:
@@ -150,7 +150,7 @@ async def test_an_unreachable_agent_reaches_unhealthy_in_the_declared_rounds():
     3초를 넘겨 monitor 의 timeout 에 잘렸다. 02 가 규정한 "3회 연속 실패"가
     실제로는 9회 시도 + 9초가 되고, 그 사이 아픈 에이전트는 방치된다.
     """
-    refused = MalkuthError(
+    refused = AaestroError(
         category=ErrorCategory.NETWORK, code=ErrorCode.NET_001, message="connection refused"
     )
     probe = FakeProbe([refused, refused, refused])
@@ -165,14 +165,14 @@ async def test_an_unreachable_agent_reaches_unhealthy_in_the_declared_rounds():
 async def test_the_failure_reason_is_the_error_code():
     """05 의 사고 대응은 **에러 코드 분포**로 원인을 가른다 (#217).
 
-    예외 클래스 이름만 남기면 `MalkuthError` 가 전부 같은 글자로 뭉개져,
+    예외 클래스 이름만 남기면 `AaestroError` 가 전부 같은 글자로 뭉개져,
     도달 불가와 5xx 를 로그에서 구분할 수 없다.
     """
     recorded: list[str | None] = []
     monitor = make_monitor(
         FakeProbe(
             [
-                MalkuthError(
+                AaestroError(
                     category=ErrorCategory.NETWORK,
                     code=ErrorCode.NET_001,
                     message="connection refused",
@@ -283,7 +283,7 @@ async def test_health_metric_tracks_the_result():
 
     await monitor.check_once()
 
-    gauge = metrics.gauge("malkuth_agent_health")
+    gauge = metrics.gauge("aaestro_agent_health")
     assert gauge.labels(agent="researcher")._value.get() == 1
 
 
@@ -293,7 +293,7 @@ async def test_health_metric_drops_on_failure():
 
     await monitor.check_once()
 
-    gauge = metrics.gauge("malkuth_agent_health")
+    gauge = metrics.gauge("aaestro_agent_health")
     assert gauge.labels(agent="researcher")._value.get() == 0
 
 
@@ -302,7 +302,7 @@ def test_running_gauge_tracks_containers():
 
     track_running(metrics, "researcher", running=True)
 
-    gauge = metrics.gauge("malkuth_containers_running")
+    gauge = metrics.gauge("aaestro_containers_running")
     assert gauge.labels(agent="researcher")._value.get() == 1
 
 
@@ -310,7 +310,7 @@ def test_gauge_lookup_rejects_a_non_gauge():
     metrics = Metrics()
 
     with pytest.raises(TypeError, match="not a gauge"):
-        metrics.gauge("malkuth_agent_tasks_total")
+        metrics.gauge("aaestro_agent_tasks_total")
 
 
 async def test_run_awaits_a_future_returning_sleep():

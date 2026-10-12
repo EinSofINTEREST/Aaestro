@@ -13,9 +13,9 @@ from pathlib import Path
 
 import pytest
 
-from malkuth.artifacts.scope import ArtifactScope, ScopedArtifacts
-from malkuth.artifacts.store import FilesystemArtifactStore
-from malkuth.core.errors import ErrorCode, MalkuthError
+from aaestro.artifacts.scope import ArtifactScope, ScopedArtifacts
+from aaestro.artifacts.store import FilesystemArtifactStore
+from aaestro.core.errors import AaestroError, ErrorCode
 
 PAYLOAD = b"# a report too large for state\n" + b"x" * 4096
 
@@ -28,7 +28,7 @@ def load_manifest(name: str):
     """
     import yaml
 
-    from malkuth.core.manifest import AgentManifest
+    from aaestro.core.manifest import AgentManifest
 
     declared = Path(f"agents/{name}/manifest.yaml").read_text(encoding="utf-8")
     return AgentManifest.model_validate(yaml.safe_load(declared))
@@ -82,7 +82,7 @@ async def test_a_consumer_outside_the_group_cannot_read_it(tmp_path):
     ref = await FilesystemArtifactStore(root=tmp_path, scope="research").put("shared", PAYLOAD)
     assert await producer.get(ref) == PAYLOAD
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await outsider.get(ref)
 
     assert exc_info.value.code == ErrorCode.ART_001
@@ -95,7 +95,7 @@ async def test_a_local_artifact_does_not_cross_to_another_agent(tmp_path):
 
     ref = await producer.put("scratch.md", PAYLOAD)
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await consumer.get(ref)
 
     assert exc_info.value.code == ErrorCode.ART_001
@@ -105,7 +105,7 @@ async def test_the_global_scope_is_read_only(tmp_path):
     """전역 산출물에 아무나 쓰면 전사 공용이 오염된다 (09 와 같은 규약)."""
     access = access_for(tmp_path, "researcher", group="research")
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await access.put("org.md", PAYLOAD, scope=ArtifactScope.GLOBAL)
 
     assert exc_info.value.code == ErrorCode.ART_001
@@ -128,7 +128,7 @@ async def test_a_consumer_cannot_read_another_agents_local_scope(tmp_path):
 
     ref = await producer.put("private.md", PAYLOAD)
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await other.get(ref)
 
     assert exc_info.value.code == ErrorCode.ART_001
@@ -140,7 +140,7 @@ async def test_a_consumer_cannot_read_another_agents_local_scope(tmp_path):
 def test_the_assembly_fills_scopes_from_membership(tmp_path, monkeypatch):
     """소속이 스코프를 정한다 — 조립부가 잘못 채우면 ACL 이 무의미해진다."""
 
-    from malkuth.agentd.__main__ import ARTIFACT_ROOT_ENV, _artifact_store
+    from aaestro.agentd.__main__ import ARTIFACT_ROOT_ENV, _artifact_store
 
     monkeypatch.setenv(ARTIFACT_ROOT_ENV, str(tmp_path))
     built = _artifact_store(load_manifest("researcher"))
@@ -154,7 +154,7 @@ def test_the_assembly_fills_scopes_from_membership(tmp_path, monkeypatch):
 def test_an_agent_without_a_group_gets_no_group_scope(tmp_path, monkeypatch):
     """소속이 없는데 그룹 스코프를 주면 남의 산출물이 보인다."""
 
-    from malkuth.agentd.__main__ import ARTIFACT_ROOT_ENV, _artifact_store
+    from aaestro.agentd.__main__ import ARTIFACT_ROOT_ENV, _artifact_store
 
     monkeypatch.setenv(ARTIFACT_ROOT_ENV, str(tmp_path))
     built = _artifact_store(load_manifest("echo"))
@@ -165,7 +165,7 @@ def test_an_agent_without_a_group_gets_no_group_scope(tmp_path, monkeypatch):
 def test_quotas_are_read_from_the_injected_declaration(tmp_path, monkeypatch):
     """컨테이너는 groups/*.yaml 을 볼 수 없다 — 값만 넘겨받는다."""
 
-    from malkuth.agentd.__main__ import (
+    from aaestro.agentd.__main__ import (
         ARTIFACT_QUOTA_ENV,
         ARTIFACT_ROOT_ENV,
         _artifact_store,
@@ -182,7 +182,7 @@ def test_quotas_are_read_from_the_injected_declaration(tmp_path, monkeypatch):
 async def test_an_injected_quota_is_enforced_on_the_real_path(tmp_path, monkeypatch):
     """선언만 읽고 강제하지 않으면 quota 는 장식이다."""
 
-    from malkuth.agentd.__main__ import (
+    from aaestro.agentd.__main__ import (
         ARTIFACT_QUOTA_ENV,
         ARTIFACT_ROOT_ENV,
         _artifact_store,
@@ -192,7 +192,7 @@ async def test_an_injected_quota_is_enforced_on_the_real_path(tmp_path, monkeypa
     monkeypatch.setenv(ARTIFACT_QUOTA_ENV, "local=100")
     built = _artifact_store(load_manifest("researcher"))
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await built.put("too-big", b"x" * 200)
 
     assert exc_info.value.code == ErrorCode.ART_002

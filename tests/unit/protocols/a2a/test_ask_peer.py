@@ -13,11 +13,11 @@ from typing import Any
 import pytest
 import yaml
 
-from malkuth.core.agent import TaskResult, TraceContext
-from malkuth.core.errors import ErrorCode, MalkuthError
-from malkuth.core.manifest import AgentManifest
-from malkuth.core.skill import SkillContext
-from malkuth.protocols.a2a.tool import ASK_PEER_TOOL, peer_spec, run_ask_peer
+from aaestro.core.agent import TaskResult, TraceContext
+from aaestro.core.errors import AaestroError, ErrorCode
+from aaestro.core.manifest import AgentManifest
+from aaestro.core.skill import SkillContext
+from aaestro.protocols.a2a.tool import ASK_PEER_TOOL, peer_spec, run_ask_peer
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 
@@ -97,7 +97,7 @@ async def test_the_delegated_task_keeps_the_run():
 )
 async def test_malformed_arguments_are_refused(arguments):
     """모델이 보내는 인자는 신뢰할 수 없다 — KeyError 로 터지면 원인이 안 보인다."""
-    with pytest.raises(MalkuthError) as excinfo:
+    with pytest.raises(AaestroError) as excinfo:
         await run_ask_peer(RecordingClient(), context(), arguments)  # type: ignore[arg-type]
 
     assert excinfo.value.code == ErrorCode.VAL_001
@@ -128,7 +128,7 @@ def manifest(name: str) -> AgentManifest:
 
 def test_an_a2a_agent_is_offered_the_tool():
     """A2A 를 켠 에이전트는 위임 창구를 봐야 한다."""
-    from malkuth.agentd.bootstrap import build_tool_registry
+    from aaestro.agentd.bootstrap import build_tool_registry
 
     registry = build_tool_registry((), {}, agent="researcher", with_peers=True)
 
@@ -137,7 +137,7 @@ def test_an_a2a_agent_is_offered_the_tool():
 
 def test_an_agent_without_a2a_is_not():
     """부를 수 없는 tool 을 광고하면 모델이 고를 때마다 거부되어 루프에 빠진다."""
-    from malkuth.agentd.bootstrap import build_tool_registry
+    from aaestro.agentd.bootstrap import build_tool_registry
 
     registry = build_tool_registry((), {}, agent="echo", with_peers=False)
 
@@ -152,7 +152,7 @@ def test_the_bootstrap_follows_the_manifest():
 
 async def test_the_registry_routes_the_tool_to_the_client():
     """registry 가 라우팅하지 않으면 등록만 되고 실행이 안 된다."""
-    from malkuth.agentd.tools import AgentToolRegistry
+    from aaestro.agentd.tools import AgentToolRegistry
 
     client = RecordingClient()
     registry = AgentToolRegistry(agent="researcher", peers=client)  # type: ignore[arg-type]
@@ -164,9 +164,9 @@ async def test_the_registry_routes_the_tool_to_the_client():
 
 async def test_without_a_client_the_tool_is_unknown():
     """조립되지 않은 창구를 부르면 원인이 드러나야 한다."""
-    from malkuth.agentd.tools import AgentToolRegistry
+    from aaestro.agentd.tools import AgentToolRegistry
 
-    with pytest.raises(MalkuthError) as excinfo:
+    with pytest.raises(AaestroError) as excinfo:
         await AgentToolRegistry(agent="researcher").call(ASK_PEER_TOOL, {}, context())
 
     assert excinfo.value.code == ErrorCode.MOD_001
@@ -178,11 +178,11 @@ async def test_the_production_assembly_wires_the_peer_client(monkeypatch):
     실행기를 **실제 조립 경로로** 만든다. `AgentToolRegistry` 를 직접 만들면
     이 배선 자체를 건너뛴다.
     """
-    from malkuth.agentd.__main__ import build_executor, load_manifest
-    from malkuth.agentd.a2a_server import EDGES_ENV, PEERS_ENV, SECRET_ENV
+    from aaestro.agentd.__main__ import build_executor, load_manifest
+    from aaestro.agentd.a2a_server import EDGES_ENV, PEERS_ENV, SECRET_ENV
 
-    monkeypatch.delenv("MALKUTH_EXECUTOR", raising=False)
-    monkeypatch.setenv("MALKUTH_ROOT", str(REPO_ROOT))
+    monkeypatch.delenv("AAESTRO_EXECUTOR", raising=False)
+    monkeypatch.setenv("AAESTRO_ROOT", str(REPO_ROOT))
     # runtime 이 주입하는 것과 같은 값들 (03 Discovery)
     monkeypatch.setenv(PEERS_ENV, "planner=agent-planner:19102")
     monkeypatch.setenv(EDGES_ENV, "researcher>planner")
@@ -195,11 +195,11 @@ async def test_the_production_assembly_wires_the_peer_client(monkeypatch):
 
 async def test_no_peer_addresses_means_no_client(monkeypatch):
     """주소가 없으면 부를 곳이 없다 — 조용히 빈 클라이언트를 만들면 안 된다."""
-    from malkuth.agentd.__main__ import build_executor, load_manifest
-    from malkuth.agentd.a2a_server import EDGES_ENV, PEERS_ENV, SECRET_ENV
+    from aaestro.agentd.__main__ import build_executor, load_manifest
+    from aaestro.agentd.a2a_server import EDGES_ENV, PEERS_ENV, SECRET_ENV
 
-    monkeypatch.delenv("MALKUTH_EXECUTOR", raising=False)
-    monkeypatch.setenv("MALKUTH_ROOT", str(REPO_ROOT))
+    monkeypatch.delenv("AAESTRO_EXECUTOR", raising=False)
+    monkeypatch.setenv("AAESTRO_ROOT", str(REPO_ROOT))
     for name in (PEERS_ENV, EDGES_ENV, SECRET_ENV):
         monkeypatch.delenv(name, raising=False)
 
@@ -213,11 +213,11 @@ async def test_a_signing_secret_alone_is_not_enough(monkeypatch):
 
     빈 클라이언트를 만들면 tool 이 광고되고, 모델이 고를 때마다 실패한다.
     """
-    from malkuth.agentd.__main__ import build_executor, load_manifest
-    from malkuth.agentd.a2a_server import EDGES_ENV, PEERS_ENV, SECRET_ENV
+    from aaestro.agentd.__main__ import build_executor, load_manifest
+    from aaestro.agentd.a2a_server import EDGES_ENV, PEERS_ENV, SECRET_ENV
 
-    monkeypatch.delenv("MALKUTH_EXECUTOR", raising=False)
-    monkeypatch.setenv("MALKUTH_ROOT", str(REPO_ROOT))
+    monkeypatch.delenv("AAESTRO_EXECUTOR", raising=False)
+    monkeypatch.setenv("AAESTRO_ROOT", str(REPO_ROOT))
     monkeypatch.delenv(PEERS_ENV, raising=False)
     monkeypatch.setenv(EDGES_ENV, "researcher>planner")
     monkeypatch.setenv(SECRET_ENV, "unit-secret")
@@ -229,7 +229,7 @@ async def test_a_signing_secret_alone_is_not_enough(monkeypatch):
 
 def test_peer_addresses_are_parsed_from_the_runtime_injection():
     """03 Discovery — 에이전트가 주소를 스스로 알아내지 않는다."""
-    from malkuth.agentd.a2a_server import parse_peers
+    from aaestro.agentd.a2a_server import parse_peers
 
     parsed = parse_peers("planner=agent-planner:19102, writer=http://agent-writer:19104, bad")
 
@@ -291,7 +291,7 @@ def test_an_agent_without_outbound_edges_gets_no_client(monkeypatch):
 
     그런 에이전트에게 창구를 열면 모델이 고를 때마다 `A2A_004` 로 거부된다.
     """
-    from malkuth.agentd.a2a_server import EDGES_ENV, PEERS_ENV, SECRET_ENV, build_peer_client
+    from aaestro.agentd.a2a_server import EDGES_ENV, PEERS_ENV, SECRET_ENV, build_peer_client
 
     # researcher>planner 만 선언 — planner 는 받기만 한다
     monkeypatch.setenv(EDGES_ENV, "researcher>planner")
@@ -303,7 +303,7 @@ def test_an_agent_without_outbound_edges_gets_no_client(monkeypatch):
 
 def test_only_declared_directions_are_reachable():
     """주입된 주소가 곧 권한은 아니다 — 선언된 방향만 부를 수 있다."""
-    from malkuth.agentd.a2a_server import parse_edges, reachable_peers
+    from aaestro.agentd.a2a_server import parse_edges, reachable_peers
 
     narrowed = reachable_peers(
         "researcher",

@@ -12,9 +12,9 @@ from __future__ import annotations
 import pytest
 from pydantic import BaseModel, ConfigDict, Field
 
-from malkuth.core.errors import ErrorCode, MalkuthError
-from malkuth.orchestrator.state import merge_output
-from malkuth.orchestrator.topology import NodeSpec
+from aaestro.core.errors import AaestroError, ErrorCode
+from aaestro.orchestrator.state import merge_output
+from aaestro.orchestrator.topology import NodeSpec
 
 
 class State(BaseModel):
@@ -45,7 +45,7 @@ def test_a_matching_projection_passes():
 
 def test_a_string_into_a_list_field_is_refused():
     """#202 — 이 검증이 없어 레퍼런스 그래프가 계약을 어긴 채 통과했다."""
-    with pytest.raises(MalkuthError) as excinfo:
+    with pytest.raises(AaestroError) as excinfo:
         merge_output(node(findings="output.findings"), {"findings": "not a list"}, schema=State)
 
     assert excinfo.value.code == ErrorCode.GRAPH_003
@@ -68,7 +68,7 @@ def test_a_bool_field_stores_a_bool():
 
 
 def test_an_uncoercible_bool_is_refused():
-    with pytest.raises(MalkuthError) as excinfo:
+    with pytest.raises(AaestroError) as excinfo:
         merge_output(
             node(needs_research="output.needs_research"),
             {"needs_research": ["nope"]},
@@ -79,7 +79,7 @@ def test_an_uncoercible_bool_is_refused():
 
 
 def test_a_string_into_an_int_field_is_refused():
-    with pytest.raises(MalkuthError) as excinfo:
+    with pytest.raises(AaestroError) as excinfo:
         merge_output(node(notified="output.notified"), {"notified": "many"}, schema=State)
 
     assert excinfo.value.code == ErrorCode.GRAPH_003
@@ -119,7 +119,7 @@ def test_without_a_schema_nothing_is_checked():
 
 def test_an_unknown_target_is_still_refused_first():
     """선언되지 않은 키는 타입 검사 이전에 걸러진다."""
-    with pytest.raises(MalkuthError) as excinfo:
+    with pytest.raises(AaestroError) as excinfo:
         merge_output(node(absent="output.absent"), {"absent": 1}, schema=State)
 
     assert excinfo.value.code == ErrorCode.GRAPH_003
@@ -128,7 +128,7 @@ def test_an_unknown_target_is_still_refused_first():
 
 def test_the_error_names_the_field_and_the_problem():
     """어느 필드가 왜 틀렸는지 없으면 운영자가 고칠 수 없다."""
-    with pytest.raises(MalkuthError) as excinfo:
+    with pytest.raises(AaestroError) as excinfo:
         merge_output(node(findings="output.findings"), {"findings": 42}, schema=State)
 
     assert excinfo.value.details["field"] == "findings"

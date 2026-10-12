@@ -9,18 +9,18 @@ from __future__ import annotations
 import pytest
 from prometheus_client import CollectorRegistry
 
-from malkuth.agentd.executor import Executor, ExecutorConfig, ExecutorServices
-from malkuth.agentd.telemetry import ExecutorTelemetry, tool_source
-from malkuth.core.agent import TaskStatus, TraceContext
-from malkuth.core.errors import ErrorCategory, ErrorCode, MalkuthError
-from malkuth.observability.metrics import Metrics
+from aaestro.agentd.executor import Executor, ExecutorConfig, ExecutorServices
+from aaestro.agentd.telemetry import ExecutorTelemetry, tool_source
+from aaestro.core.agent import TaskStatus, TraceContext
+from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.observability.metrics import Metrics
 from tests.fixtures.builders import make_task
 from tests.fixtures.fake_model import FakeModel, FakeTools, calls, text
 
 
-def rate_limited() -> MalkuthError:
+def rate_limited() -> AaestroError:
     """provider 가 429 를 낸 상황 — anthropic 어댑터가 내는 것과 같은 모양."""
-    return MalkuthError(
+    return AaestroError(
         category=ErrorCategory.RATE_LIMIT,
         code=ErrorCode.LLM_001,
         message="provider rate limited",
@@ -91,7 +91,7 @@ async def test_completed_task_is_counted_with_its_labels():
     assert (
         value(
             metrics,
-            "malkuth_agent_tasks_total",
+            "aaestro_agent_tasks_total",
             agent="researcher",
             group="research",
             graph="research-pipeline",
@@ -114,7 +114,7 @@ async def test_failed_task_is_counted_under_the_failed_status():
     assert (
         value(
             metrics,
-            "malkuth_agent_tasks_total",
+            "aaestro_agent_tasks_total",
             agent="researcher",
             group="research",
             graph="research-pipeline",
@@ -133,7 +133,7 @@ async def test_task_duration_is_observed_once_per_task():
     assert (
         value(
             metrics,
-            "malkuth_agent_task_duration_seconds_count",
+            "aaestro_agent_task_duration_seconds_count",
             agent="researcher",
             group="research",
             graph="research-pipeline",
@@ -154,7 +154,7 @@ async def test_model_tokens_are_split_by_direction():
     assert (
         value(
             metrics,
-            "malkuth_model_tokens_total",
+            "aaestro_model_tokens_total",
             agent="researcher",
             model="claude-sonnet-5",
             direction="input",
@@ -164,7 +164,7 @@ async def test_model_tokens_are_split_by_direction():
     assert (
         value(
             metrics,
-            "malkuth_model_tokens_total",
+            "aaestro_model_tokens_total",
             agent="researcher",
             model="claude-sonnet-5",
             direction="output",
@@ -183,7 +183,7 @@ async def test_each_model_turn_is_counted():
     assert (
         value(
             metrics,
-            "malkuth_model_requests_total",
+            "aaestro_model_requests_total",
             agent="researcher",
             provider="anthropic",
             model="claude-sonnet-5",
@@ -204,7 +204,7 @@ async def test_model_failure_is_counted_before_it_propagates():
     assert (
         value(
             metrics,
-            "malkuth_model_requests_total",
+            "aaestro_model_requests_total",
             agent="researcher",
             provider="anthropic",
             model="claude-sonnet-5",
@@ -229,7 +229,7 @@ async def test_rate_limit_is_counted_under_its_own_status():
     assert (
         value(
             metrics,
-            "malkuth_model_requests_total",
+            "aaestro_model_requests_total",
             agent="researcher",
             provider="anthropic",
             model="claude-sonnet-5",
@@ -250,7 +250,7 @@ async def test_rate_limit_does_not_also_count_as_failed():
     assert (
         value(
             metrics,
-            "malkuth_model_requests_total",
+            "aaestro_model_requests_total",
             agent="researcher",
             provider="anthropic",
             model="claude-sonnet-5",
@@ -281,7 +281,7 @@ async def test_skillset_and_mcp_tools_are_counted_separately():
     assert (
         value(
             metrics,
-            "malkuth_tool_calls_total",
+            "aaestro_tool_calls_total",
             agent="researcher",
             source="skillset",
             tool=SKILL_TOOL,
@@ -292,7 +292,7 @@ async def test_skillset_and_mcp_tools_are_counted_separately():
     assert (
         value(
             metrics,
-            "malkuth_tool_calls_total",
+            "aaestro_tool_calls_total",
             agent="researcher",
             source="mcp",
             tool=MCP_TOOL,
@@ -313,7 +313,7 @@ async def test_failed_tool_is_counted_as_failed():
     assert (
         value(
             metrics,
-            "malkuth_tool_calls_total",
+            "aaestro_tool_calls_total",
             agent="researcher",
             source="mcp",
             tool=MCP_TOOL,
@@ -337,7 +337,7 @@ async def test_timed_out_tool_is_counted_as_failed():
     assert (
         value(
             metrics,
-            "malkuth_tool_calls_total",
+            "aaestro_tool_calls_total",
             agent="researcher",
             source="skillset",
             tool=SKILL_TOOL,
@@ -381,7 +381,7 @@ async def test_sibling_tools_are_counted_when_one_fails():
 
     recorded = value(
         metrics,
-        "malkuth_tool_calls_total",
+        "aaestro_tool_calls_total",
         agent="researcher",
         source="mcp",
         tool=MCP_TOOL,
@@ -403,7 +403,7 @@ async def test_direct_requests_are_labelled_direct():
     assert (
         value(
             metrics,
-            "malkuth_agent_tasks_total",
+            "aaestro_agent_tasks_total",
             agent="researcher",
             group="research",
             graph="direct",
@@ -423,7 +423,7 @@ async def test_the_graph_label_is_never_empty():
     assert (
         value(
             metrics,
-            "malkuth_agent_tasks_total",
+            "aaestro_agent_tasks_total",
             agent="researcher",
             group="research",
             graph="",

@@ -22,8 +22,8 @@ pytestmark = pytest.mark.integration
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DOCKER_DIR = REPO_ROOT / "deployments" / "docker"
-ECHO_IMAGE = "malkuth/agent-echo:0.1.0"
-NETWORK = "malkuth-net-test"
+ECHO_IMAGE = "aaestro/agent-echo:0.1.0"
+NETWORK = "aaestro-net-test"
 READY_TIMEOUT_S = 90.0
 
 
@@ -63,7 +63,7 @@ def echo_image() -> str:
     docker(
         "build",
         "-t",
-        "malkuth/agent-base:0.1.0",
+        "aaestro/agent-base:0.1.0",
         "-f",
         str(DOCKER_DIR / "agent-base.Dockerfile"),
         str(REPO_ROOT),
@@ -92,7 +92,7 @@ def network() -> Iterator[str]:
 @pytest.fixture
 def echo_container(echo_image: str, network: str) -> Iterator[tuple[str, int]]:
     """echo 에이전트 컨테이너 — finalizer 가 반드시 제거한다."""
-    name = f"malkuth-echo-{uuid.uuid4().hex[:8]}"
+    name = f"aaestro-echo-{uuid.uuid4().hex[:8]}"
     container = docker(
         "run",
         "-d",

@@ -5,12 +5,12 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from malkuth.core.errors import ErrorCategory, ErrorCode, MalkuthError
-from malkuth.orchestrator.control import create_app
-from malkuth.orchestrator.run import RunStatus
-from malkuth.orchestrator.runstore import InMemoryRunStore, RunRecord
-from malkuth.orchestrator.submit import RunResult
-from malkuth.orchestrator.topology import GraphMode
+from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.orchestrator.control import create_app
+from aaestro.orchestrator.run import RunStatus
+from aaestro.orchestrator.runstore import InMemoryRunStore, RunRecord
+from aaestro.orchestrator.submit import RunResult
+from aaestro.orchestrator.topology import GraphMode
 
 
 class FakeRuns:
@@ -22,7 +22,7 @@ class FakeRuns:
 
     async def submit(self, deployment_id, initial_state, *, mode=None, run_id=None) -> RunRecord:
         if deployment_id == "dep-nope":
-            raise MalkuthError(
+            raise AaestroError(
                 category=ErrorCategory.NOT_FOUND,
                 code=ErrorCode.NF_001,
                 message="unknown deployment",
@@ -34,7 +34,7 @@ class FakeRuns:
 
     async def resume(self, run_id) -> RunRecord:
         if run_id == "stopped":
-            raise MalkuthError(
+            raise AaestroError(
                 category=ErrorCategory.GRAPH,
                 code=ErrorCode.GRAPH_006,
                 message="only a halted run can be resumed",

@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import pytest
 
-from malkuth.agentd.telemetry import SOURCE_MCP, SOURCE_SKILLSET, tool_source
-from malkuth.core.tools import MCP_TOOL_PREFIX, is_mcp_tool, namespaced, split_namespaced
+from aaestro.agentd.telemetry import SOURCE_MCP, SOURCE_SKILLSET, tool_source
+from aaestro.core.tools import MCP_TOOL_PREFIX, is_mcp_tool, namespaced, split_namespaced
 
 
 @pytest.mark.parametrize(
@@ -38,7 +38,7 @@ def test_every_consumer_follows_a_changed_prefix(monkeypatch):
 
     정의가 여러 곳에 있으면 이 테스트가 실패한다 — 한쪽만 바뀌기 때문이다.
     """
-    monkeypatch.setattr("malkuth.core.tools.MCP_TOOL_PREFIX", "xmcp__")
+    monkeypatch.setattr("aaestro.core.tools.MCP_TOOL_PREFIX", "xmcp__")
 
     # 판별 / 생성 / 분해 / 메트릭 라벨 — 네 사용처가 모두 새 접두사를 본다
     assert is_mcp_tool("xmcp__fs__read")
@@ -51,11 +51,11 @@ def test_every_consumer_follows_a_changed_prefix(monkeypatch):
 
 def test_tool_error_routing_follows_the_same_prefix(monkeypatch):
     """05 의 재시도·알림 전략이 이 구분에 걸려 있다."""
-    from malkuth.agentd.executor import _tool_error
-    from malkuth.core.errors import ErrorCode
+    from aaestro.agentd.executor import _tool_error
+    from aaestro.core.errors import ErrorCode
     from tests.fixtures.builders import make_task
 
-    monkeypatch.setattr("malkuth.core.tools.MCP_TOOL_PREFIX", "xmcp__")
+    monkeypatch.setattr("aaestro.core.tools.MCP_TOOL_PREFIX", "xmcp__")
     task = make_task()
 
     mcp = _tool_error("xmcp__fs__read", task, "researcher", RuntimeError("boom"))

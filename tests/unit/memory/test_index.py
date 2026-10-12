@@ -12,17 +12,17 @@ import contextlib
 import pytest
 from pydantic import ValidationError
 
-from malkuth.core.errors import MalkuthError
-from malkuth.memory.embedding import HashEmbedder, cosine, normalize, tokenize
-from malkuth.memory.entry import MemoryEntry, MemorySource
-from malkuth.memory.index import (
+from aaestro.core.errors import AaestroError
+from aaestro.memory.embedding import HashEmbedder, cosine, normalize, tokenize
+from aaestro.memory.entry import MemoryEntry, MemorySource
+from aaestro.memory.index import (
     IndexQueue,
     IndexRegistry,
     SpaceIndex,
     split_chunks,
 )
-from malkuth.memory.recall import Recall
-from malkuth.modules.memoryset import ChunkSpec, MemoryKind
+from aaestro.memory.recall import Recall
+from aaestro.modules.memoryset import ChunkSpec, MemoryKind
 
 SPACE = "local:researcher:longterm"
 
@@ -231,7 +231,7 @@ def test_index_rejects_entries_from_another_space():
     """인덱스가 space 경계를 넘으면 격리가 무너진다."""
     index = SpaceIndex(space=SPACE)
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         index.add(entry("남의 기억", space="local:writer:longterm"), spec())
 
     assert exc_info.value.code == "MEM_004"
@@ -317,7 +317,7 @@ def test_repeated_indexing_failure_is_mem_003():
     queue.drain(indexes)
 
     queue.submit(stray, spec())
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         queue.drain(indexes)
 
     assert exc_info.value.code == "MEM_003"
@@ -402,7 +402,7 @@ def test_indexed_entries_leave_the_queue_even_when_a_later_one_raises():
     queue.submit(bad, spec())
     indexes = {SPACE: SpaceIndex(space=SPACE)}
 
-    with pytest.raises(MalkuthError):
+    with pytest.raises(AaestroError):
         queue.drain(indexes)
 
     assert [item.entry_id for item, _ in queue.pending] == [bad.entry_id]
@@ -417,7 +417,7 @@ def test_repeated_drains_do_not_duplicate_chunks():
     index = SpaceIndex(space=SPACE)
 
     for _ in range(2):
-        with pytest.raises(MalkuthError):
+        with pytest.raises(AaestroError):
             queue.drain({SPACE: index})
 
     assert sum(1 for c in index.chunks if c.entry_id == good.entry_id) == 1
@@ -430,7 +430,7 @@ def test_failure_reason_reaches_the_log(monkeypatch):
     def capture(_event: str, **fields: object) -> None:
         recorded.append(dict(fields))
 
-    from malkuth.memory import index as index_module
+    from aaestro.memory import index as index_module
 
     monkeypatch.setattr(index_module.log, "warning", capture)
 
@@ -465,7 +465,7 @@ def make_metrics():
     """이 테스트만의 registry — 프로세스 전역을 오염시키지 않는다."""
     from prometheus_client import CollectorRegistry
 
-    from malkuth.observability.metrics import Metrics
+    from aaestro.observability.metrics import Metrics
 
     return Metrics(registry=CollectorRegistry())
 
@@ -483,7 +483,7 @@ def test_draining_reports_the_space_size():
 
     registry.drain()
 
-    assert gauge_value(metrics, "malkuth_memory_entries", space=SPACE) == 2.0
+    assert gauge_value(metrics, "aaestro_memory_entries", space=SPACE) == 2.0
 
 
 def test_pending_entry_publishes_a_positive_lag_before_draining():
@@ -495,7 +495,7 @@ def test_pending_entry_publishes_a_positive_lag_before_draining():
 
     registry.submit(entry("대기 중", created_at=datetime.now(UTC) - timedelta(seconds=45)), spec())
 
-    assert gauge_value(metrics, "malkuth_memory_index_lag_seconds", space=SPACE) >= 45.0
+    assert gauge_value(metrics, "aaestro_memory_index_lag_seconds", space=SPACE) >= 45.0
 
 
 def test_failed_drain_still_publishes_the_lag():
@@ -509,10 +509,10 @@ def test_failed_drain_still_publishes_the_lag():
     # 다른 space 의 인덱스만 남겨 drain 이 대상 인덱스를 찾지 못하게 한다
     registry.indexes.clear()
 
-    with contextlib.suppress(MalkuthError):
+    with contextlib.suppress(AaestroError):
         registry.drain()
 
-    assert gauge_value(metrics, "malkuth_memory_index_lag_seconds", space=SPACE) >= 45.0
+    assert gauge_value(metrics, "aaestro_memory_index_lag_seconds", space=SPACE) >= 45.0
 
 
 def test_naive_timestamps_are_rejected_at_the_entry_boundary():
@@ -545,7 +545,7 @@ def test_drained_space_reports_zero_lag():
 
     registry.drain()
 
-    assert gauge_value(metrics, "malkuth_memory_index_lag_seconds", space=SPACE) == 0.0
+    assert gauge_value(metrics, "aaestro_memory_index_lag_seconds", space=SPACE) == 0.0
 
 
 def test_search_duration_is_observed_per_space():
@@ -555,7 +555,7 @@ def test_search_duration_is_observed_per_space():
 
     recall.search("sidecar", spaces=[SPACE], k=3)
 
-    assert gauge_value(metrics, "malkuth_memory_search_duration_seconds_count", space=SPACE) == 1.0
+    assert gauge_value(metrics, "aaestro_memory_search_duration_seconds_count", space=SPACE) == 1.0
 
 
 def test_index_layer_works_without_metrics():
@@ -575,7 +575,7 @@ def test_search_is_counted_as_an_operation():
 
     assert (
         metrics.registry.get_sample_value(
-            "malkuth_memory_operations_total", {"space": SPACE, "op": "search", "status": "ok"}
+            "aaestro_memory_operations_total", {"space": SPACE, "op": "search", "status": "ok"}
         )
         == 1.0
     )
@@ -583,8 +583,8 @@ def test_search_is_counted_as_an_operation():
 
 def test_auto_recall_is_counted_as_an_operation():
     """recall 은 프롬프트 주입량과 직결된다 — 얼마나 자주 도는지 보여야 한다."""
-    from malkuth.memory.recall import AutoRecall
-    from malkuth.modules.memoryset import RecallSpec
+    from aaestro.memory.recall import AutoRecall
+    from aaestro.modules.memoryset import RecallSpec
 
     metrics = make_metrics()
     item = entry("mcp sidecar 는 태그 고정이 필요하다")
@@ -595,7 +595,7 @@ def test_auto_recall_is_counted_as_an_operation():
 
     assert (
         metrics.registry.get_sample_value(
-            "malkuth_memory_operations_total", {"space": SPACE, "op": "recall", "status": "ok"}
+            "aaestro_memory_operations_total", {"space": SPACE, "op": "recall", "status": "ok"}
         )
         == 1.0
     )
@@ -615,7 +615,7 @@ def test_warm_up_lag_counts_from_the_restart_not_from_when_it_was_stored():
     registry.warm([stored_long_ago], spec())
 
     assert registry.warming
-    assert 0.0 <= gauge_value(metrics, "malkuth_memory_index_lag_seconds", space=SPACE) < 60.0
+    assert 0.0 <= gauge_value(metrics, "aaestro_memory_index_lag_seconds", space=SPACE) < 60.0
 
 
 def test_warm_up_completes_when_the_queue_first_empties():
