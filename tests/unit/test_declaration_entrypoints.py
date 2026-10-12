@@ -13,6 +13,7 @@ import os
 import shutil
 import subprocess
 import sys
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +24,7 @@ from aaestro.authoring import Author
 from aaestro.catalog import Catalog, load_yaml
 from aaestro.config import load_config
 from aaestro.core.errors import AaestroError
-from aaestro.core.yamlio import NOT_UTF8
+from aaestro.core.yamlio import NOT_UTF8, UNCONSTRUCTIBLE
 from aaestro.modules.registry import ModuleRegistry
 from aaestro.modules.skillset import SkillsetLoader
 from tests.fixtures.declarations import MARKER, REPO_ROOT, _edit, _repo_copy, _secret_manifest
@@ -149,6 +150,146 @@ def test_entrypoint_reports_a_non_utf8_file_without_a_traceback(name: str, tmp_p
     assert "Traceback" not in result.stdout + result.stderr
     assert MARKER not in result.stdout + result.stderr
     assert _critical_line(result)["details"]["reason"] == NOT_UTF8
+
+
+# --- 구성 단계에서 실패하는 YAML: 값을 실은 비-YAML 예외가 새지 않는다 --------------------------
+
+UNCONSTRUCTIBLE_CONTENT = {
+    # PyYAML 의 constructor 가 int() · datetime.date() 를 그대로 불러 ValueError 를 올린다
+    "int-tag": (f"a: 1\nx: !!int {MARKER}\n".encode(), f"{UNCONSTRUCTIBLE} at line 2"),
+    "impossible-date": (b"released: 2024-02-30\n", f"{UNCONSTRUCTIBLE} at line 1"),
+    # 해시할 수 없는 키 — safe_load 는 ConstructorError 로 거절한다
+    "set-tag-key": (b"!!set x: 1\n", "ConstructorError at line 1, column 1"),
+}
+
+
+def _read_with(entry: str, tmp_path: Path, content: bytes) -> None:
+    if entry == "catalog.load_yaml":
+        path = tmp_path / "a.yaml"
+        path.write_bytes(content)
+        load_yaml(path)
+    elif entry == "agentd.load_manifest":
+        path = tmp_path / "manifest.yaml"
+        path.write_bytes(content)
+        load_manifest(path)
+    elif entry == "load_config":
+        load_config("dev", config_dir=_config_dir(tmp_path, content), environ={})
+    else:
+        root = _repo_copy(tmp_path)
+        (root / SKILLSET).write_bytes(content)
+        SkillsetLoader(ModuleRegistry.under(root)).load("skillsets/web-search@0.2.0")
+
+
+@pytest.mark.parametrize("case", sorted(UNCONSTRUCTIBLE_CONTENT))
+@pytest.mark.parametrize("entry", sorted(NON_UTF8_ENTRIES))
+def test_unconstructible_yaml_is_an_unreadable_file_at_every_entry(
+    entry: str, case: str, tmp_path: Path
+):
+    content, reason = UNCONSTRUCTIBLE_CONTENT[case]
+
+    with pytest.raises(AaestroError) as exc_info:
+        _read_with(entry, tmp_path, content)
+
+    err = exc_info.value
+    assert err.code == NON_UTF8_ENTRIES[entry][1]
+    assert err.details["reason"] == reason
+    assert MARKER not in json.dumps({"m": err.message, "d": err.details}, default=str)
+    assert err.__cause__ is None
+    assert err.__context__ is None
+
+
+@pytest.mark.parametrize("case", sorted(UNCONSTRUCTIBLE_CONTENT))
+def test_catalog_lists_an_unconstructible_file_as_a_problem_and_keeps_the_rest(
+    case: str, tmp_path: Path
+):
+    """깨진 파일 하나가 목록을 무너뜨리지 않는다 — 예외가 올라오면 목록 API 가 500 이다."""
+    content, reason = UNCONSTRUCTIBLE_CONTENT[case]
+    root = _repo_copy(tmp_path)
+    broken = root / "agents/echo/manifest.yaml"
+    broken.write_bytes(content)
+    (root / SKILLSET).write_bytes(content)
+    catalog = Catalog.under(root)
+
+    agents = catalog.agents()
+    skillsets = catalog.modules("skillsets")
+
+    assert [(p.path, p.reason) for p in agents.problems] == [(str(broken), reason)]
+    assert "echo" not in agents.items
+    assert len(agents.items) >= 1
+    assert [p.reason for p in skillsets.problems] == [reason]
+    assert MARKER not in json.dumps([asdict(p) for p in (*agents.problems, *skillsets.problems)])
+
+
+@pytest.mark.parametrize("case", sorted(UNCONSTRUCTIBLE_CONTENT))
+@pytest.mark.parametrize("name", sorted(ENTRYPOINTS))
+def test_entrypoint_reports_unconstructible_yaml_without_a_traceback(
+    name: str, case: str, tmp_path: Path
+):
+    content, reason = UNCONSTRUCTIBLE_CONTENT[case]
+
+    result = _startup_failure(name, tmp_path, content)
+
+    assert result.returncode == 1
+    assert "Traceback" not in result.stdout + result.stderr
+    assert MARKER not in result.stdout + result.stderr
+    assert _critical_line(result)["details"]["reason"] == reason
+
+
+def test_cli_reports_unconstructible_yaml_without_a_traceback(tmp_path: Path):
+    root = _repo_copy(tmp_path)
+    content, reason = UNCONSTRUCTIBLE_CONTENT["int-tag"]
+    (root / "agents/echo/manifest.yaml").write_bytes(content)
+
+    status = _cli(root, "--json", "status")
+    validate = _cli(root, "--json", "validate")
+
+    for result in (status, validate):
+        assert result.returncode == 1
+        assert reason in result.stdout
+        assert "Traceback" not in result.stdout + result.stderr
+        assert MARKER not in result.stdout + result.stderr
+
+
+# --- 가드는 기동 전체를 감싼다 -----------------------------------------------------------------
+
+
+def test_agentd_reports_a_broken_module_declaration_with_its_field(tmp_path: Path):
+    """모듈 선언 위반은 manifest 로드가 아니라 실행기 조립에서 올라온다 — 가드 밖이면 traceback
+    한 줄만 남고 어느 키인지 (``details.errors``) 가 컨테이너 로그에서 사라진다."""
+    root = _repo_copy(tmp_path)
+    _edit(
+        root / "modules/promptsets/echo/0.1.0/promptset.yaml",
+        lambda doc: doc["spec"].update({"zz_unknown": MARKER}),
+    )
+
+    result = _entrypoint(
+        "agentd",
+        **{MANIFEST_ENV: str(root / "agents/echo/manifest.yaml"), "AAESTRO_ROOT": str(root)},
+    )
+
+    line = _critical_line(result)
+    assert result.returncode == 1
+    assert line["event"] == "agent startup failed"
+    assert line["error_code"] == "MOD_003"
+    assert line["details"]["errors"] == [
+        {"field": "spec.zz_unknown", "problem": "Extra inputs are not permitted"}
+    ]
+    assert "Traceback" not in result.stdout + result.stderr
+    assert MARKER not in result.stdout + result.stderr
+
+
+def test_control_plane_reports_a_failure_after_the_config_load_in_the_same_shape(tmp_path: Path):
+    """설정은 읽혔지만 기동할 수 없다 (run_store 없음) — 이것도 traceback 이 아니라 같은 한 줄."""
+    result = _entrypoint(
+        "orchestrator", AAESTRO_ENV="dev", AAESTRO_CONFIG_DIR=str(_config_dir(tmp_path, b"{}\n"))
+    )
+
+    line = _critical_line(result)
+    assert result.returncode == 1
+    assert line["event"] == "control plane startup failed"
+    assert line["error_code"] == "CFG_001"
+    assert line["details"] == {"setting": "orchestrator.run_store"}
+    assert "Traceback" not in result.stdout + result.stderr
 
 
 # --- 기동 실패의 형식: 세 진입점이 같은 한 줄 --------------------------------------------------

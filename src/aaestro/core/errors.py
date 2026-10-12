@@ -6,9 +6,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Iterator, Mapping
+import unicodedata
+from bisect import bisect_left
+from collections.abc import Awaitable, Callable, Hashable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
+from itertools import accumulate
 from typing import TYPE_CHECKING, Any, NoReturn, Self, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -403,6 +406,8 @@ MAX_PROBLEM_LENGTH = 512
 """사유 한 건의 상한 — validator 가 키 이름 등을 보간해도 한 줄이 무한히 길어지지 않는다."""
 TRUNCATION_MARK = "…"
 _UNPRINTABLE = "?"
+MAX_SCANNED_LENGTH = 8 * MAX_PROBLEM_LENGTH
+"""가림이 훑는 메시지 길이의 상한 — 거의 전부가 가려져 결과가 짧은 메시지도 여기서 끝난다."""
 _LEAF_SEPARATOR = "\x00\x1f\x00"
 """잎들을 한 덩어리로 이어 찾을 때의 구분자 — 메시지에 나올 일이 없는 제어문자열."""
 
@@ -417,6 +422,24 @@ def printable_label(text: str, limit: int = MAX_LABEL_LENGTH) -> str:
     if len(cleaned) > limit:
         return cleaned[:limit] + TRUNCATION_MARK
     return cleaned
+
+
+def repeated_positions(values: Sequence[Hashable]) -> str | None:
+    """Where a sequence repeats a value — ``"1 and 3"``, ``"0, 2 and 5; 1 and 4"`` — or ``None``.
+
+    "중복" 을 거절하는 메시지가 **어느 것** 인지 말하게 한다. 값은 선언의 것이라 싣지 않지만
+    (#386) 위치는 입력이 아니다 — 노드 수십 개 그래프에서 "duplicate node id" 만으로는 운영자가
+    전부 눈으로 대조해야 한다.
+    """
+    positions: dict[Hashable, list[int]] = {}
+    for index, value in enumerate(values):
+        positions.setdefault(value, []).append(index)
+    groups = [found for found in positions.values() if len(found) > 1]
+    if not groups:
+        return None
+    return "; ".join(
+        ", ".join(map(str, found[:-1])) + f" and {found[-1]}" for found in sorted(groups)
+    )
 
 
 def _field_path(loc: Any) -> str:
@@ -448,10 +471,15 @@ def _leaves(value: Any) -> Iterator[str]:
     yield str(value)
 
 
-def _folded(text: str) -> str | None:
-    """대소문자를 접은 형태 — 길이가 달라지면 (위치를 되짚을 수 없으면) ``None``."""
-    lowered = text.lower()
-    return lowered if len(lowered) == len(text) else None
+def _fold(text: str) -> str:
+    """비교용 정규화 — 호환 분해 (NFKD) 와 대소문자 접기.
+
+    validator 는 값을 정규화해 되비춘다: 소문자로 바꾸거나, 파이썬 식별자처럼 NFKC 로 (전각
+    ``ｓｋ`` 가 ``sk`` 로 나온다). 정규화한 꼴끼리 비교해야 그 되비침이 입력과 겹친다. 합성형
+    (NFKC) 이 아니라 분해형을 쓰는 이유: 분해는 글자 단위로 해도 문자열 전체로 해도 결과가 같아
+    (결합 문자의 재배열만 예외) 메시지를 글자 단위로 접으면서 원문 위치를 유지할 수 있다.
+    """
+    return unicodedata.normalize("NFKD", unicodedata.normalize("NFKD", text).casefold())
 
 
 def _shared_prefix_length(left: str, left_at: int, right: str, right_at: int) -> int:
@@ -469,67 +497,71 @@ def _shared_prefix_length(left: str, left_at: int, right: str, right_at: int) ->
     return low
 
 
-def _shared_spans(message: str, haystack: str) -> Iterator[tuple[int, int]]:
-    """메시지에서 ``haystack`` 과 :data:`MIN_SHARED_LENGTH` 자 이상 겹치는 구간들.
+def _find_shared(haystack: str, piece: str) -> int:
+    """``haystack`` 에서 조각의 위치 — 가림 비용의 단위다 (호출 횟수 × 입력 크기)."""
+    return haystack.find(piece)
 
-    메시지의 각 위치에서 시작하는 고정 길이 조각만 찾는다 (메시지는 짧고 입력은 길 수 있다 —
-    찾기는 C 수준의 ``str.find`` 이고 횟수는 메시지 길이로 묶인다). 찾으면 그 자리에서 겹치는
-    만큼 늘린다. 남는 겹침은 언제나 :data:`MIN_SHARED_LENGTH` 자 미만이다: 그 이상인 조각은
-    그 안의 모든 고정 길이 조각이 입력에 있으므로 다음 위치에서 다시 잡힌다.
-    """
-    position = 0
-    last = len(message) - MIN_SHARED_LENGTH
-    while position <= last:
-        found = haystack.find(message[position : position + MIN_SHARED_LENGTH])
-        if found < 0:
-            position += 1
-            continue
-        end = position + _shared_prefix_length(message, position, haystack, found)
-        yield position, end
-        position = end
+
+def _short_leaf_length(message: str, at: int, short_leaves: frozenset[str]) -> int:
+    """``at`` 에서 시작하는 짧은 잎 값 전체의 길이 — 없으면 0. 긴 것부터 본다."""
+    for length in range(MIN_SHARED_LENGTH - 1, MIN_REDACT_LENGTH - 1, -1):
+        if message[at : at + length] in short_leaves:
+            return length
+    return 0
 
 
 def _redact(message: str, rejected: Any) -> str:
     """메시지에 되비친 거절된 입력을 ``<redacted>`` 로 — 값 전체와, 값의 긴 조각 모두.
 
-    두 겹이다. (1) 잎 값 전체 (:data:`MIN_REDACT_LENGTH` 자 이상) 가 나타난 자리. (2) 메시지와
-    잎이 :data:`MIN_SHARED_LENGTH` 자 이상 나눠 갖는 조각 — 대소문자를 접어서 본다 (validator 가
-    값을 소문자로 바꿔 되비춰도 같은 값이다). 가릴 구간을 먼저 모은 뒤 한 번에 그린다 — 치환을
-    거듭하면 앞서 넣은 ``<redacted>`` 표시가 다음 치환에 깨진다.
+    두 겹이다. (1) 짧은 잎 값 (:data:`MIN_REDACT_LENGTH` 자 이상) 이 통째로 나타난 자리.
+    (2) 메시지와 잎이 :data:`MIN_SHARED_LENGTH` 자 이상 나눠 갖는 조각 — 정규화한 꼴로 본다
+    (:func:`_fold`). 남는 겹침은 언제나 :data:`MIN_SHARED_LENGTH` 자 미만이다: 그 이상인 조각은
+    그 안의 모든 고정 길이 조각이 입력에 있으므로 다음 위치에서 다시 잡힌다.
+
+    **비용은 입력 크기에 선형으로 묶인다.** 메시지를 왼쪽부터 한 번 훑으며 결과를 만들고, 결과가
+    :data:`MAX_PROBLEM_LENGTH` 자를 넘으면 멈춘다 — 그 뒤는 어차피 잘린다. 겹치지 않는 자리는
+    결과에 한 글자씩 보태므로 입력을 찾는 횟수가 그 상한으로 묶인다 (긴 메시지 × 큰 입력의 2차
+    비용이 없다). 가린 뒤에 자르는 순서라서 절단 지점에서 값 조각이 짧게 남아 가림을 피하지도
+    않는다.
     """
     leaves = {leaf for leaf in _leaves(rejected) if len(leaf) >= MIN_REDACT_LENGTH}
     if not leaves or not message:
         return message
-    spans: list[tuple[int, int]] = []
+    short_leaves = frozenset(leaf for leaf in leaves if len(leaf) < MIN_SHARED_LENGTH)
+    long_leaves = (leaf for leaf in leaves if len(leaf) >= MIN_SHARED_LENGTH)
+    haystack = _fold(_LEAF_SEPARATOR.join(long_leaves))
 
-    for leaf in leaves:
-        if len(leaf) >= MIN_SHARED_LENGTH:
-            continue  # 긴 잎이 통째로 나타난 자리는 조각 찾기가 잡는다
-        at = message.find(leaf)
-        while at >= 0:
-            spans.append((at, at + len(leaf)))
-            at = message.find(leaf, at + len(leaf))
+    # 메시지는 글자 단위로 접는다 — 접힌 꼴의 위치와 원문 위치를 서로 되짚기 위해서다
+    window = message[:MAX_SCANNED_LENGTH]
+    folded_chars = [_fold(char) for char in window]
+    starts = list(accumulate((len(piece) for piece in folded_chars), initial=0))
+    folded = "".join(folded_chars)
 
-    haystack = _LEAF_SEPARATOR.join(leaf for leaf in leaves if len(leaf) >= MIN_SHARED_LENGTH)
-    if haystack:
-        folded_message = _folded(message)
-        if folded_message is None:
-            spans.extend(_shared_spans(message, haystack))
-        else:
-            spans.extend(_shared_spans(folded_message, haystack.lower()))
-
-    if not spans:
-        return message
     pieces: list[str] = []
-    cursor = 0
-    for start, end in sorted(spans):
-        if start > cursor:
-            pieces.append(message[cursor:start])
-            pieces.append(REDACTED)
-        elif not pieces:
-            pieces.append(REDACTED)
-        cursor = max(cursor, end)
-    pieces.append(message[cursor:])
+    emitted = at = 0
+    hidden = False
+    while at < len(window) and emitted <= MAX_PROBLEM_LENGTH:
+        end = at
+        probe = folded[starts[at] : starts[at] + MIN_SHARED_LENGTH]
+        if haystack and len(probe) == MIN_SHARED_LENGTH:
+            found = _find_shared(haystack, probe)
+            if found >= 0:
+                shared = _shared_prefix_length(folded, starts[at], haystack, found)
+                # 겹침이 원문 글자의 중간에서 끝나면 그 글자까지 가린다 (과잉은 허용, 미가림은 불가)
+                end = bisect_left(starts, starts[at] + shared)
+        if end == at:
+            end = at + _short_leaf_length(window, at, short_leaves)
+        if end > at:
+            if not hidden:  # 잇닿은 가림은 표시 하나로
+                pieces.append(REDACTED)
+                emitted += len(REDACTED)
+            hidden = True
+            at = end
+        else:
+            pieces.append(window[at])
+            emitted += 1
+            hidden = False
+            at += 1
     return "".join(pieces)
 
 

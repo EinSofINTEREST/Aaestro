@@ -19,7 +19,13 @@ from pydantic import (
     model_validator,
 )
 
-from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode, printable_label
+from aaestro.core.errors import (
+    AaestroError,
+    ErrorCategory,
+    ErrorCode,
+    printable_label,
+    repeated_positions,
+)
 from aaestro.core.manifest import SemVer
 from aaestro.modules.registry import ModulePath, ModuleRegistry, reject_module
 
@@ -87,11 +93,12 @@ class TemplateSpec(BaseModel):
     @classmethod
     def _named_keys(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         """키는 state schema 필드명과 맞물리므로 식별자 모양이어야 한다."""
-        for key in value:
+        for index, key in enumerate(value):
             if not key.isidentifier():
-                raise ValueError("output key must be an identifier")
-        if len(set(value)) != len(value):
-            raise ValueError("output keys must be unique")
+                raise ValueError(f"output key at index {index} must be an identifier")
+        repeated = repeated_positions(value)
+        if repeated:
+            raise ValueError(f"output keys must be unique (repeated at index {repeated})")
         return value
 
 

@@ -9,6 +9,7 @@ import random
 import shutil
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -18,6 +19,7 @@ from aaestro.core.errors import AaestroError
 from aaestro.core.yamlio import (
     NOT_UTF8,
     TOO_DEEP,
+    UNCONSTRUCTIBLE,
     DuplicateKeyError,
     YamlReadError,
     load_yaml_file,
@@ -183,6 +185,58 @@ def test_random_documents_with_a_planted_duplicate_are_always_rejected():
     assert inside_inline_merge > 0
 
 
+def _outcome(load: Any, text: str) -> tuple[str, str]:
+    """결과, 또는 실패의 **종류** — YAML 에러끼리는 한 종류로 본다 (호출자가 그 단위로 받는다)."""
+    try:
+        return "ok", repr(load(text))
+    except yaml.YAMLError:
+        return "yaml error", ""
+    except Exception as err:  # noqa: BLE001 — 어떤 종류로 실패하는지가 비교 대상이다
+        return "other error", type(err).__name__
+
+
+@pytest.mark.parametrize("merges", [False, True], ids=["no-merge", "merge"])
+def test_random_documents_fail_with_the_same_kind_of_error_as_safe_load(merges: bool):
+    """결과뿐 아니라 **에러 종류** 도 같다 — 검사가 다른 종류의 예외로 먼저 터지면 호출자의
+    ``except yaml.YAMLError`` 를 빠져나가 깨진 파일 하나가 목록 전체를 무너뜨린다."""
+    rng = random.Random(FUZZ_SEED + 2 + merges)  # noqa: S311 — 결정적 테스트 입력
+    seen: dict[str, int] = {}
+
+    for _ in range(FUZZ_DOCUMENTS):
+        text = DocumentGenerator(rng, merges=merges, broken=True).document()
+        expected = _outcome(yaml.safe_load, text)
+        seen[expected[0]] = seen.get(expected[0], 0) + 1
+
+        assert _outcome(safe_load_unique, text) == expected, text
+
+    # 세 부류가 다 나와야 이 테스트가 본 것이 있다
+    assert min(seen.get(kind, 0) for kind in ("ok", "yaml error", "other error")) > 0, seen
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "!!set x: 1\n",
+        "!!map x: 1\n",
+        "!!seq x: 1\n",
+        "!!int x: 1\n",
+        "? [a]\n: 1\n",
+        "a: !!int x\n",
+        "a: !!bool x\n",
+        "a: !!timestamp x\n",
+        "released: 2024-02-30\n",
+        "a: 0x_\n",
+        "{!!set x: 1, k: 1, k: 2}\n",
+    ],
+)
+def test_unconstructible_input_fails_exactly_like_safe_load(text: str):
+    """만들 수 없는 키 · 값 — 중복 검사는 건너뛰고 구성 단계가 ``safe_load`` 처럼 거절한다."""
+    expected = _outcome(yaml.safe_load, text)
+
+    assert expected[0] != "ok"
+    assert _outcome(safe_load_unique, text) == expected
+
+
 # --- 키 이름의 정제 ---------------------------------------------------------------------------
 
 
@@ -259,6 +313,41 @@ def test_load_yaml_file_reports_a_duplicate_key(tmp_path: Path):
     path.write_text("a: 1\na: 2\n", encoding="utf-8")
 
     assert _failure(path).reason == "duplicate key 'a' at line 2"
+
+
+@pytest.mark.parametrize(
+    ("content", "line"),
+    [
+        (f"a: 1\nx: !!int {MARKER}\n", 2),
+        (f"a: 1\nb: 2\nx: !!bool {MARKER}\n", 3),
+        ("released: 2024-02-30\n", 1),
+        ("a: 1\nb: 0x_\n", 2),
+        (f"!!int {MARKER}: 1\n", 1),
+    ],
+    ids=["int-tag", "bool-tag", "impossible-date", "empty-hex", "int-tag-key"],
+)
+def test_load_yaml_file_reports_a_construction_failure_by_line_only(
+    tmp_path: Path, content: str, line: int
+):
+    """PyYAML constructor 는 ``ValueError`` · ``KeyError`` 를 올리고 그 메시지는 값을 싣는다."""
+    path = tmp_path / "a.yaml"
+    path.write_text(content, encoding="utf-8")
+
+    err = _failure(path)
+
+    assert err.reason == f"{UNCONSTRUCTIBLE} at line {line}"
+    assert MARKER.lower() not in err.reason.lower()
+    assert err.__context__ is None
+    assert err.__cause__ is None
+
+
+@pytest.mark.parametrize("key", ["!!set x", "!!map x", "!!seq x"])
+def test_load_yaml_file_reports_an_unhashable_key_as_a_yaml_error(tmp_path: Path, key: str):
+    """``safe_load`` 처럼 ``ConstructorError`` 다 — 검사가 ``TypeError`` 로 먼저 터지지 않는다."""
+    path = tmp_path / "a.yaml"
+    path.write_text(f"{key}: 1\n", encoding="utf-8")
+
+    assert _failure(path).reason.startswith("ConstructorError at line 1")
 
 
 def test_load_yaml_file_reports_runaway_nesting_instead_of_a_traceback(tmp_path: Path):

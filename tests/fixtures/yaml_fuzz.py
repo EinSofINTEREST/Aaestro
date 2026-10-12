@@ -19,6 +19,16 @@ KEY_POOL = (
 """키 후보 — ``safe_load`` 가 한 키로 합치는 것 (``1`` · ``1.0`` · ``0x1`` · ``true``) 과
 합치지 않는 것 (``'1'``) 을 함께 둔다."""
 SCALARS = ("1", "x", "'s'", "null", "true", "1.5", "2001-01-01", '"q\\n"', "~", "[]", "{}")
+UNCONSTRUCTIBLE_SCALARS = (
+    "!!int x", "!!float x", "!!bool x", "!!timestamp x", "!!binary x=", "2024-02-30", "0x_",
+    "!unknown x",
+)  # fmt: skip
+"""구성 단계가 거절하는 스칼라 — 태그가 값과 맞지 않거나 (``!!int x``), 모양은 날짜 · 숫자인데 값이
+아니다 (``2024-02-30``, ``0x_``). PyYAML 은 여기서 YAML 에러가 아닌 예외 (``ValueError`` ·
+``KeyError``) 도 낸다 — 두 로더가 **같은 종류** 로 실패하는지 본다."""
+UNCONSTRUCTIBLE_KEYS = ("!!set x", "!!map x", "!!seq x", "!!int x", "[x]", "{x: 1}")
+"""만들 수 없거나 해시할 수 없는 키 — 컬렉션 태그가 붙은 스칼라, 숫자가 아닌 ``!!int``, 컬렉션."""
+BROKEN_RATE = 0.02
 MAX_DEPTH = 4
 MAX_KEYS = 5
 MAX_TOP_LEVEL = 6
@@ -46,9 +56,11 @@ def _distinct_keys(rng: random.Random) -> list[str]:
 class DocumentGenerator:
     """Flow-style documents with anchors, aliases and (optionally) merge keys."""
 
-    def __init__(self, rng: random.Random, *, merges: bool) -> None:
+    def __init__(self, rng: random.Random, *, merges: bool, broken: bool = False) -> None:
         self._rng = rng
         self._merges = merges
+        self._broken = broken
+        """구성 단계가 거절하는 스칼라 · 키를 드물게 섞는다."""
         self._anchors: list[str] = []
         self._pending: list[str] = []
         self._count = 0
@@ -65,6 +77,8 @@ class DocumentGenerator:
     def _node(self, depth: int) -> str:
         roll = self._rng.random()
         if depth > MAX_DEPTH or roll < 0.35:
+            if self._broken and self._rng.random() < BROKEN_RATE:
+                return self._rng.choice(UNCONSTRUCTIBLE_SCALARS)
             return self._rng.choice(SCALARS)
         if roll < 0.5:
             return (
@@ -76,6 +90,8 @@ class DocumentGenerator:
 
     def _mapping(self, depth: int) -> str:
         items = [f"{key}: {self._node(depth + 1)}" for key in _distinct_keys(self._rng)]
+        if self._broken and self._rng.random() < BROKEN_RATE:
+            items.append(f"{self._rng.choice(UNCONSTRUCTIBLE_KEYS)}: 1")
         if self._merges and self._rng.random() < 0.5:
             items.append(self._merge(depth))
         self._rng.shuffle(items)

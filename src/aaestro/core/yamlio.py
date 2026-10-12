@@ -24,6 +24,7 @@ VALUE_TAG = "tag:yaml.org,2002:value"
 
 NOT_UTF8 = "not valid UTF-8"
 TOO_DEEP = "nesting too deep"
+UNCONSTRUCTIBLE = "YAML value could not be constructed"
 
 
 class DuplicateKeyError(ConstructorError):
@@ -93,25 +94,62 @@ def _reject_duplicate_keys(loader: yaml.SafeLoader, root: yaml.Node) -> None:
                 # 스칼라가 아닌 키 (리스트 · 매핑) 는 해시할 수 없어 구성 단계가 거절한다
                 pending.append(key_node)
                 continue
-            key = key_node.value if key_node.tag == VALUE_TAG else loader.construct_object(key_node)
+            key = _comparable_key(loader, key_node)
+            if key is _UNCOMPARABLE:
+                continue
             if key in keys:
                 raise DuplicateKeyError(key, key_node.start_mark.line + 1)
             keys.add(key)
-    # 검사용으로 만든 키 객체를 구성 단계로 넘기지 않는다 — 구성은 깨끗한 상태에서 시작한다
+    # 검사용으로 만든 키 객체 (와 컬렉션 태그가 남긴 미완성 생성기) 를 구성 단계로 넘기지 않는다
     loader.constructed_objects = {}
     loader.recursive_objects = {}
+    loader.state_generators = []
 
 
-def safe_load_unique(text: str) -> Any:
-    """Parse YAML like ``yaml.safe_load`` but reject duplicate mapping keys.
+_UNCOMPARABLE: Any = object()
+"""만들 수 없거나 해시할 수 없는 키 — 중복 검사에서 빼고 구성 단계에 맡긴다."""
 
-    한 번만 파싱한다: compose 한 노드 트리를 검사한 뒤 **그 트리를 그대로** 표준
-    ``SafeLoader`` 로 구성한다. 두 번 파싱하면 검사한 것과 읽은 것이 어긋날 여지가 생긴다.
 
-    Raises:
-        yaml.YAMLError: Unparseable input; :class:`DuplicateKeyError` for repeated keys.
+def _comparable_key(loader: yaml.SafeLoader, key_node: yaml.ScalarNode) -> Any:
+    """스칼라 키가 구성되는 값 — 비교할 수 없으면 :data:`_UNCOMPARABLE`.
+
+    키를 만들다 실패하거나 (``!!int x`` 는 ``ValueError``) 만든 값이 해시 불가면 (``!!set x`` 는
+    ``set()``) 여기서는 **아무 말도 하지 않는다**. 같은 노드를 구성 단계가 다시 만들면서
+    ``yaml.safe_load`` 와 똑같은 에러를 낸다 — 검사가 먼저 다른 종류의 예외 (``TypeError``) 로
+    터지면 호출자의 ``except yaml.YAMLError`` 를 빠져나가 깨진 파일 하나가 목록 전체를 무너뜨린다.
+    삼키는 것이 아니다: 건너뛴 키는 구성 단계에서 반드시 거절된다 (같은 입력, 같은 constructor).
     """
-    loader = yaml.SafeLoader(text)
+    if key_node.tag == VALUE_TAG:
+        return key_node.value
+    try:
+        key = loader.construct_object(key_node)
+        hash(key)
+    except Exception:  # noqa: BLE001 — 제3자 constructor 가 내는 예외 종류는 닫혀 있지 않다
+        return _UNCOMPARABLE
+    return key
+
+
+class _PositionLoader(yaml.SafeLoader):
+    """``SafeLoader`` that remembers the line of the node whose construction failed.
+
+    스칼라 constructor 는 ``int()`` · ``float()`` · ``datetime.date()`` 를 그대로 불러 YAML 에러가
+    아닌 예외 (``ValueError`` · ``KeyError``) 를 올린다. 그 예외에는 위치가 없으므로 실패한 가장
+    안쪽 노드의 줄을 적어 둔다 — 값은 적지 않는다.
+    """
+
+    failed_line: int | None = None
+
+    def construct_object(self, node: yaml.Node, deep: bool = False) -> Any:
+        try:
+            return super().construct_object(node, deep=deep)
+        except Exception:
+            if self.failed_line is None:
+                self.failed_line = node.start_mark.line + 1
+            raise
+
+
+def _load(loader: yaml.SafeLoader) -> Any:
+    """compose → 중복 키 검사 → **같은 트리** 를 구성. 한 번만 파싱한다."""
     try:
         node = loader.get_single_node()
         if node is None:
@@ -120,6 +158,23 @@ def safe_load_unique(text: str) -> Any:
         return loader.construct_document(node)
     finally:
         loader.dispose()
+
+
+def safe_load_unique(text: str) -> Any:
+    """Parse YAML like ``yaml.safe_load`` but reject duplicate mapping keys.
+
+    한 번만 파싱한다: compose 한 노드 트리를 검사한 뒤 **그 트리를 그대로** 표준
+    ``SafeLoader`` 로 구성한다. 두 번 파싱하면 검사한 것과 읽은 것이 어긋날 여지가 생긴다.
+
+    거절하는 것은 중복 키뿐이다. 그 밖에는 ``yaml.safe_load`` 와 **같은 결과, 같은 종류의 에러** 를
+    낸다 — 구성 단계의 비-YAML 예외 (``!!int x`` 의 ``ValueError``) 도 그대로다. 파일을 읽는 쪽은
+    :func:`load_yaml_file` 을 쓴다: 그 예외들을 값 없는 사유로 바꿔 준다.
+
+    Raises:
+        yaml.YAMLError: Unparseable input; :class:`DuplicateKeyError` for repeated keys.
+        Exception: Whatever a scalar constructor raises, exactly as ``yaml.safe_load`` does.
+    """
+    return _load(yaml.SafeLoader(text))
 
 
 def yaml_problem(err: BaseException) -> dict[str, str]:
@@ -148,8 +203,10 @@ def _document_or_failure(path: Path) -> YamlReadError | Any:
     던지는 것은 호출자가 ``except`` 블록 밖에서 한다 — 블록 안에서 던지면 입력 조각을 실은
     원인 예외 (``UnicodeDecodeError.object`` 는 파일 바이트 전체다) 가 ``__context__`` 에 남는다.
     """
+    loader: _PositionLoader | None = None
     try:
-        return safe_load_unique(path.read_bytes().decode("utf-8"))
+        loader = _PositionLoader(path.read_bytes().decode("utf-8"))
+        return _load(loader)
     except FileNotFoundError:
         return YamlReadError("file not found", missing=True)
     except OSError as err:
@@ -162,6 +219,14 @@ def _document_or_failure(path: Path) -> YamlReadError | Any:
         return YamlReadError(TOO_DEEP)
     except yaml.YAMLError as err:
         return YamlReadError(yaml_problem(err)["reason"])
+    except Exception:  # noqa: BLE001
+        # 07 의 "Exception 광역 캐치 금지" 의 의도된 예외다. PyYAML 의 constructor 가 올리는 예외는
+        # 닫힌 집합이 아니고 (``ValueError`` · ``KeyError`` · ``AttributeError`` · ``TypeError`` …)
+        # 그 메시지는 값을 싣는다 (``invalid literal for int(): '<값>'``). 종류를 하나씩 막으면 다음
+        # constructor 에서 새므로 "구성 단계의 실패" 라는 부류로 받아 고정 문구와 줄 번호만 남긴다.
+        # ``KeyboardInterrupt`` 등 ``BaseException`` 은 받지 않는다
+        line = loader.failed_line if loader is not None else None
+        return YamlReadError(UNCONSTRUCTIBLE + (f" at line {line}" if line else ""))
 
 
 def load_yaml_file(path: Path) -> Any:

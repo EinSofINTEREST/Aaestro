@@ -23,6 +23,8 @@ from pydantic import (
     model_validator,
 )
 
+from aaestro.core.errors import repeated_positions
+
 RESERVED_GLOBAL_GROUP = "global"
 DEFAULT_SIDECAR_PORT = 8000
 DEFAULT_SIDECAR_PATH = "/mcp"
@@ -287,13 +289,13 @@ class ModelConfig(BaseModel):
     @model_validator(mode="after")
     def _distinct_models(self) -> ModelConfig:
         """주 모델과 같은 fallback, 같은 fallback 두 번은 같은 실패를 되풀이할 뿐이다."""
-        seen = {(self.provider, self.name)}
-        for fallback in self.fallbacks:
+        # 어느 모델인지는 값이 아니라 **위치** 로 말한다 — 이름은 선언의 값이다 (#386)
+        seen: dict[tuple[str, str], str] = {(self.provider, self.name): "the primary model"}
+        for index, fallback in enumerate(self.fallbacks):
             key = (fallback.provider, fallback.name)
             if key in seen:
-                # 어느 모델인지는 싣지 않는다 — 선언의 값이다 (#386). 위치는 필드 경로가 말한다
-                raise ValueError("fallback repeats the primary or another fallback")
-            seen.add(key)
+                raise ValueError(f"fallbacks[{index}] repeats {seen[key]}")
+            seen[key] = f"fallbacks[{index}]"
         return self
 
     def providers(self) -> frozenset[str]:
@@ -414,10 +416,9 @@ class MemorySpec(BaseModel):
     @classmethod
     def _unique_aliases(cls, value: tuple[MemorySpaceRef, ...]) -> tuple[MemorySpaceRef, ...]:
         """같은 선언 위치 안에서 별칭 중복 금지."""
-        aliases = [s.alias for s in value]
-        duplicates = {a for a in aliases if aliases.count(a) > 1}
-        if duplicates:
-            raise ValueError("duplicate memory space alias")
+        repeated = repeated_positions([s.alias for s in value])
+        if repeated:
+            raise ValueError(f"duplicate memory space alias at index {repeated}")
         return value
 
 
@@ -562,10 +563,9 @@ class McpSpec(BaseModel):
     @classmethod
     def _unique_names(cls, value: tuple[McpServerSpec, ...]) -> tuple[McpServerSpec, ...]:
         """동일 서버 이름 중복 선언 차단 — tool 네임스페이스 충돌 방지."""
-        names = [s.name for s in value]
-        duplicates = {n for n in names if names.count(n) > 1}
-        if duplicates:
-            raise ValueError("duplicate mcp server name")
+        repeated = repeated_positions([s.name for s in value])
+        if repeated:
+            raise ValueError(f"duplicate mcp server name at index {repeated}")
         return value
 
     @field_validator("servers")
@@ -580,8 +580,12 @@ class McpSpec(BaseModel):
         컨테이너 안 프로세스에 다시 주는 셈이다.
         """
         remote = {s.auth.token_env for s in value if s.url is not None and s.auth is not None}
-        if {key for s in value if s.command for key in s.env_allowlist} & remote:
-            raise ValueError("remote mcp credentials must not reach stdio servers")
+        for index, server in enumerate(value):
+            if server.command and remote.intersection(server.env_allowlist):
+                raise ValueError(
+                    f"servers[{index}].env_allowlist names a remote server's credential — "
+                    "remote mcp credentials must not reach stdio servers"
+                )
         return value
 
 
@@ -790,10 +794,11 @@ class AgentManifest(BaseModel):
         # 자체를 적는 실수 (``token_env: sk-…``) 가 드물지 않고, 그 값이 에러 · 로그로 나간다
         allowed = set(self.spec.runtime.env_allowlist)
         for index, server in enumerate(self.spec.mcp.servers):
-            if set(server.env_allowlist) - allowed:
+            absent = [at for at, key in enumerate(server.env_allowlist) if key not in allowed]
+            if absent:
                 raise ValueError(
                     f"spec.mcp.servers[{index}].env_allowlist names keys absent from "
-                    "runtime.env_allowlist"
+                    f"runtime.env_allowlist (at index {', '.join(map(str, absent))})"
                 )
             if server.auth is not None and server.auth.token_env not in allowed:
                 raise ValueError(

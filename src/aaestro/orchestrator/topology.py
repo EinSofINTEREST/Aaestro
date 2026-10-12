@@ -17,7 +17,13 @@ import structlog
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from aaestro.core.conditions import Predicate, is_import_ref, parse_condition
-from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.core.errors import (
+    AaestroError,
+    ErrorCategory,
+    ErrorCode,
+    printable_label,
+    repeated_positions,
+)
 from aaestro.core.manifest import AgentName, MemorySpec, ModelOverride, SemVer
 
 if TYPE_CHECKING:
@@ -279,7 +285,11 @@ class StateSpec(BaseModel):
         for name in self.declared_fields or {}:
             # _run_id / _iterations 같은 예약 채널과 겹치면 프레임워크 값이 덮인다
             if not name.isidentifier() or name.startswith("_"):
-                raise ValueError("state field name must be an identifier not starting with '_'")
+                # 필드 이름은 매핑의 키다 — 키는 구조라 내보낸다 (길이 · 문자는 정제한다)
+                raise ValueError(
+                    f"state field name '{printable_label(name)}' must be an identifier "
+                    "not starting with '_'"
+                )
         return self
 
 
@@ -319,14 +329,9 @@ class GraphSpec(BaseModel):
         """노드 id 중복 금지 — 라우팅이 모호해진다."""
         if not value:
             raise ValueError("graph must declare at least one node")
-        seen: set[str] = set()
-        duplicates: set[str] = set()
-        for node in value:
-            if node.id in seen:
-                duplicates.add(node.id)
-            seen.add(node.id)
-        if duplicates:
-            raise ValueError("duplicate node id")
+        repeated = repeated_positions([node.id for node in value])
+        if repeated:
+            raise ValueError(f"duplicate node id at index {repeated}")
         return value
 
     @model_validator(mode="after")

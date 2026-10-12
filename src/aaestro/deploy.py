@@ -378,15 +378,20 @@ class DeployValidator:
             group = self.groups.get(declared_group) if declared_group else None
             group_keys = frozenset(group.spec.secrets) if group else frozenset()
 
-            for key in manifest.spec.runtime.env_allowlist:
+            for index, key in enumerate(manifest.spec.runtime.env_allowlist):
                 if key in local or key in group_keys or key in self.global_secrets:
                     continue
+                # 키 이름이 아니라 위치로 가리킨다 (#386) — env 키 자리에 비밀 값 자체를 적는 실수가
+                # 드물지 않고, 스키마는 그 문자열을 통과시킨다. manifest 의 같은 검사와 맞춘다
                 findings.append(
                     Finding(
                         check="env_allowlist",
                         code=ErrorCode.CFG_002,
-                        message=f"env key cannot be resolved in any scope: {key}",
-                        details={"agent": name, "env_key": key, "group": declared_group},
+                        message=(
+                            "env key cannot be resolved in any scope: "
+                            f"spec.runtime.env_allowlist[{index}]"
+                        ),
+                        details={"agent": name, "index": index, "group": declared_group},
                     )
                 )
         return findings

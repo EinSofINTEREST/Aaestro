@@ -688,7 +688,10 @@ def main() -> None:
     metrics = _setup_observability()
     with startup_guard(log, "agent manifest rejected"):
         manifest = load_manifest(Path(os.environ.get(MANIFEST_ENV, DEFAULT_MANIFEST_PATH)))
-    asyncio.run(_run(manifest, metrics))
+    # 가드는 manifest 로드에서 끝나지 않는다 — 모듈 선언 위반 (MOD_003) 은 실행기 조립에서
+    # 올라온다. 가드 밖이면 traceback 만 남고 ``details.errors`` (어느 키인지) 가 사라진다
+    with startup_guard(log, "agent startup failed"):
+        asyncio.run(_run(manifest, metrics))
 
 
 async def _run(manifest: AgentManifest, metrics: Metrics) -> None:

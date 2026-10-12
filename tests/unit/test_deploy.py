@@ -266,6 +266,11 @@ def test_unresolvable_env_key_is_reported():
     report = run([make_topology(["planner"])], manifests=manifests)
 
     assert "env_allowlist" in report.checks()
+    (finding,) = [f for f in report.findings if f.check == "env_allowlist"]
+    # 키 이름이 아니라 위치 — env 키 자리에 값을 적는 실수가 finding 으로 나가지 않는다 (#386)
+    assert finding.message.endswith("spec.runtime.env_allowlist[0]")
+    assert finding.details == {"agent": "planner", "index": 0, "group": None}
+    assert "MYSTERY_KEY" not in finding.message + str(finding.details)
 
 
 def test_local_secret_resolves_the_key():

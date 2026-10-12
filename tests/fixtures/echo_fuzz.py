@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import copy
+import unicodedata
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
@@ -262,23 +263,35 @@ class Mark:
     고정 문구 (``http://host:port``) 와 우연히 겹칠 수 있고, 비밀이 아니다."""
 
     def fragments(self) -> frozenset[str]:
-        """표식의 모든 :data:`MIN_FRAGMENT` 자 조각 (대소문자를 접어서)."""
+        """표식의 모든 :data:`MIN_FRAGMENT` 자 조각 — 정규화한 꼴 (호환 분해 · 대소문자 접기) 로."""
         return frozenset(
-            core.lower()[start : start + MIN_FRAGMENT]
-            for core in self.cores
-            for start in range(len(core) - MIN_FRAGMENT + 1)
+            folded[start : start + MIN_FRAGMENT]
+            for folded in map(normalized, self.cores)
+            for start in range(len(folded) - MIN_FRAGMENT + 1)
         )
 
     def leaked_in(self, text: str) -> str | None:
-        """``text`` 에 나타난 표식 조각 하나 — 없으면 ``None``."""
-        folded = text.lower()
+        """``text`` 에 나타난 표식 조각 하나 — 없으면 ``None``.
+
+        정규화한 꼴끼리 본다: validator 가 값을 소문자로, 또는 NFKC 로 (전각 → ASCII) 바꿔
+        되비춰도 같은 값이 나간 것이다.
+        """
+        folded = normalized(text)
         return next((piece for piece in self.fragments() if piece in folded), None)
+
+
+def normalized(text: str) -> str:
+    """호환 분해 + 대소문자 접기 — 표기만 다른 같은 값을 한 꼴로."""
+    return unicodedata.normalize("NFKD", unicodedata.normalize("NFKD", text).casefold())
 
 
 def _mark(name: str, value: Any, *cores: str) -> Mark:
     return Mark(name=name, value=value, cores=cores or (MARKER,))
 
 
+IDENTIFIER = MARKER.replace("-", "_")
+FULLWIDTH = {code: code + 0xFEE0 for code in range(0x21, 0x7F)}
+"""ASCII → 전각 (U+FF01…) — NFKC 로 되돌아온다."""
 LONG_REPEATS = 500
 BIG_NUMBER = 918273645
 
@@ -304,6 +317,12 @@ MARKS: tuple[Mark, ...] = (
     _mark("list", [MARKER]),
     _mark("dict", {"k": MARKER}),
     _mark("number", BIG_NUMBER, str(BIG_NUMBER)),
+    # 파이썬 식별자 모양 — 조건식에 넣으면 이름으로 파싱된다 (하이픈이 든 표식은 뺄셈이 된다)
+    _mark("identifier", IDENTIFIER, IDENTIFIER),
+    # 전각 — 파이썬은 식별자를 NFKC 로 정규화한다: 메시지에는 ASCII 로 나와 입력과 글자가 다르다
+    _mark("fullwidth", IDENTIFIER.translate(FULLWIDTH), IDENTIFIER),
+    # 접으면 길이가 바뀌는 글자 (İ → i̇, ß → ss) — 위치 대응이 어긋나 접기가 꺼지지 않는지
+    _mark("folding", f"İ{MARKER}ß{MARKER}", MARKER),
 )
 
 

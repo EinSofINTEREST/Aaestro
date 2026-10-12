@@ -24,14 +24,17 @@ def check_skillset_env(manifest: AgentManifest, skillset: LoadedSkillset) -> Non
         AaestroError: MODULE/``MOD_002`` if any required key is not allowlisted.
     """
     allowed = set(manifest.spec.runtime.env_allowlist)
-    missing = sorted(set(skillset.required_env) - allowed)
+    missing = [index for index, key in enumerate(skillset.required_env) if key not in allowed]
     if missing:
+        # 키 이름이 아니라 스킬셋 선언 안의 위치로 가리킨다 (#386) — manifest · 배포 검증의 env 키
+        # 검사와 같다: 그 자리에 비밀 값을 적는 실수가 에러로 나가지 않게
+        positions = ", ".join(f"requires.env[{index}]" for index in missing)
         raise AaestroError(
             category=ErrorCategory.MODULE,
             code=ErrorCode.MOD_002,
-            message=f"skillset requires env keys absent from env_allowlist: {missing}",
+            message=f"skillset requires env keys absent from env_allowlist: {positions}",
             agent=manifest.name,
-            details={"skillset": skillset.ref, "missing_env": missing},
+            details={"skillset": skillset.ref, "missing_env_index": missing},
         )
 
 

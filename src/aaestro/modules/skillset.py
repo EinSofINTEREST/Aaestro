@@ -19,7 +19,7 @@ from typing import Any, Literal
 import structlog
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode, repeated_positions
 from aaestro.core.manifest import SemVer
 from aaestro.core.skill import SkillSpec, build_spec, get_spec
 from aaestro.modules.registry import ModulePath, ModuleRegistry, reject_module
@@ -90,10 +90,9 @@ class SkillsetSpec(BaseModel):
         """스킬셋 내 tool 이름 중복 금지."""
         if not value:
             raise ValueError("skillset must declare at least one skill")
-        names = [s.name for s in value]
-        duplicates = {n for n in names if names.count(n) > 1}
-        if duplicates:
-            raise ValueError("duplicate skill name")
+        repeated = repeated_positions([s.name for s in value])
+        if repeated:
+            raise ValueError(f"duplicate skill name at index {repeated}")
         return value
 
 

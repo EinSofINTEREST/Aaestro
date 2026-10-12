@@ -13,8 +13,10 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import shutil
+import unicodedata
 from collections.abc import Callable, Iterator
 from dataclasses import asdict
 from pathlib import Path
@@ -28,6 +30,7 @@ from pydantic import BaseModel, ValidationError, field_validator
 from aaestro.agentd.__main__ import load_manifest
 from aaestro.catalog import Catalog, parse_declaration
 from aaestro.config import AaestroConfig, load_config
+from aaestro.core import errors
 from aaestro.core.errors import (
     MAX_FIELD_LENGTH,
     MAX_LABEL_LENGTH,
@@ -36,6 +39,7 @@ from aaestro.core.errors import (
     REDACTED,
     AaestroError,
     field_problems,
+    repeated_positions,
 )
 from aaestro.core.manifest import AgentManifest, GroupManifest
 from aaestro.modules.memoryset import MemorysetLoader, MemorysetManifest
@@ -45,9 +49,13 @@ from aaestro.modules.skillset import SkillsetLoader, SkillsetManifest
 from aaestro.orchestrator.topology import GraphTopology
 from tests.fixtures.declarations import MARKER, REPO_ROOT, _declaration_documents
 from tests.fixtures.echo_fuzz import (
+    FULLWIDTH,
+    IDENTIFIER,
     MARKS,
     MIN_FRAGMENT,
+    RICH_AGENT,
     RICH_DOCUMENTS,
+    RICH_GRAPH,
     Mark,
     fuzz_documents,
     leaf_positions,
@@ -163,6 +171,8 @@ class _EchoingProbe(BaseModel):
     netloc: str = ""
     shouted: str = ""
     seven: str = ""
+    composed: str = ""
+    lowered: str = ""
 
     @field_validator("tail")
     @classmethod
@@ -184,6 +194,17 @@ class _EchoingProbe(BaseModel):
     def _echo_seven(cls, value: str) -> str:
         raise ValueError(f"starts with {value[:7]}")
 
+    @field_validator("composed")
+    @classmethod
+    def _echo_nfkc(cls, value: str) -> str:
+        # 파이썬 식별자 · IDNA · 파일 이름 처리가 하는 일 — 전각이 ASCII 로 나온다
+        raise ValueError(f"unknown name '{unicodedata.normalize('NFKC', value)}'")
+
+    @field_validator("lowered")
+    @classmethod
+    def _echo_casefold(cls, value: str) -> str:
+        raise ValueError(f"no such entry: {value.casefold()}")
+
 
 def _probe_problem(**fields: str) -> str:
     with pytest.raises(ValidationError) as exc_info:
@@ -198,6 +219,13 @@ def _probe_problem(**fields: str) -> str:
         ("tail", MARKER),
         ("netloc", f"https://user:{MARKER}@host.example/mcp"),
         ("shouted", MARKER),
+        # 정규화된 되비침 — 메시지의 글자가 입력의 글자와 다르다
+        ("composed", IDENTIFIER.translate(FULLWIDTH)),
+        ("lowered", MARKER.upper()),
+        # 접으면 길이가 바뀌는 글자가 하나 있어도 접기가 통째로 꺼지지 않는다
+        ("lowered", f"İ{MARKER.upper()}"),
+        ("lowered", f"STRAßE {MARKER.upper()}"),
+        ("composed", f"İ{IDENTIFIER.translate(FULLWIDTH)}ß"),
     ],
 )
 def test_field_problems_hide_a_piece_of_the_value_not_only_the_whole(field: str, value: str):
@@ -205,6 +233,7 @@ def test_field_problems_hide_a_piece_of_the_value_not_only_the_whole(field: str,
 
     assert REDACTED in problem
     assert MARKS[0].leaked_in(problem) is None
+    assert Mark("identifier", IDENTIFIER, (IDENTIFIER,)).leaked_in(problem) is None
 
 
 def test_field_problems_leave_an_overlap_shorter_than_the_threshold_alone():
@@ -228,6 +257,204 @@ def test_field_problems_hide_a_value_spread_over_a_large_input():
 
     (problem,) = field_problems(exc_info.value)
     assert MARKS[0].leaked_in(problem["problem"]) is None
+
+
+# --- 가림의 비용: 입력 크기에 선형 -------------------------------------------------------------
+
+
+class _Verbose(BaseModel):
+    text: str
+
+    @field_validator("text")
+    @classmethod
+    def _echo_something_else(cls, value: str) -> str:
+        # 입력만큼 길지만 입력과 겹치지 않는 메시지 — 정규화해 되비추는 validator 가 이렇게 된다
+        raise ValueError("#" * len(value))
+
+
+def test_redaction_looks_up_the_input_a_bounded_number_of_times(monkeypatch: pytest.MonkeyPatch):
+    """메시지의 모든 위치에서 입력을 찾으면 (메시지 × 입력) 의 2차 비용이다 — 16만 자 조건식 하나로
+    control plane 의 이벤트 루프가 8.8초 멈췄다. 시간이 아니라 찾는 **횟수** 를 본다 (결정적)."""
+    lookups: list[int] = []
+    find = errors._find_shared
+
+    def counted(haystack: str, piece: str) -> int:
+        lookups.append(len(haystack))
+        return find(haystack, piece)
+
+    monkeypatch.setattr(errors, "_find_shared", counted)
+    size = 200_000
+
+    with pytest.raises(ValidationError) as exc_info:
+        _Verbose.model_validate({"text": "x" * size})
+    (problem,) = field_problems(exc_info.value)
+
+    assert max(lookups) >= size  # 큰 입력을 실제로 찾았다 — 찾기를 건너뛴 것이 아니다
+    assert len(lookups) <= MAX_PROBLEM_LENGTH + MIN_SHARED_LENGTH
+    assert len(problem["problem"]) <= MAX_PROBLEM_LENGTH + 1
+
+
+def test_redaction_then_truncation_leaves_no_piece_at_the_cut():
+    """가린 뒤에 자른다 — 자르고 가리면 절단 지점에 걸친 값 조각이 짧게 남아 가림을 피한다."""
+
+    class _Padded(BaseModel):
+        text: str
+
+        @field_validator("text")
+        @classmethod
+        def _echo(cls, value: str) -> str:
+            raise ValueError("." * (MAX_PROBLEM_LENGTH - len("Value error, ") - 4) + value)
+
+    with pytest.raises(ValidationError) as exc_info:
+        _Padded.model_validate({"text": MARKER})
+    (problem,) = field_problems(exc_info.value)
+
+    assert MARKER[:4] not in problem["problem"]
+    # 512자에서 잘리므로 가림 표시도 중간에 끊길 수 있다 — 값 대신 표시가 그 자리에 있으면 된다
+    assert problem["problem"].rstrip("…").endswith(REDACTED[:4])
+
+
+# --- 값 대신 위치: 어느 것인지는 말한다 ---------------------------------------------------------
+
+
+def _problems(model: type[BaseModel], document: dict[str, Any]) -> list[dict[str, str]]:
+    with pytest.raises(ValidationError) as exc_info:
+        model.model_validate(document)
+    return field_problems(exc_info.value)
+
+
+def _repeat_item(document: dict[str, Any], path: tuple[str | int, ...]) -> dict[str, Any]:
+    """``path`` 의 리스트에 항목 둘을 더해 0번과 마지막이 같게 — 가운데에 다른 항목이 낀다."""
+    mutated = copy.deepcopy(document)
+    items: Any = mutated
+    for step in path:
+        items = items[step]
+    other = copy.deepcopy(items[0])
+    for key in ("id", "name", "as"):
+        if key in other:
+            other[key] = "other"
+    items.extend([other, copy.deepcopy(items[0])])
+    return mutated
+
+
+@pytest.mark.parametrize(
+    ("model", "document", "path", "field", "problem"),
+    [
+        (
+            GraphTopology,
+            RICH_GRAPH,
+            ("spec", "nodes"),
+            "spec.nodes",
+            "duplicate node id at index 0 and 3",
+        ),
+        (
+            AgentManifest,
+            RICH_AGENT,
+            ("spec", "memory", "spaces"),
+            "spec.memory.spaces",
+            "duplicate memory space alias at index 0 and 2",
+        ),
+        (
+            SkillsetManifest,
+            None,
+            ("spec", "skills"),
+            "spec.skills",
+            "duplicate skill name at index 0 and",
+        ),
+    ],
+    ids=["node-id", "memory-alias", "skill-name"],
+)
+def test_a_duplicate_is_reported_by_position(
+    model: type[BaseModel],
+    document: dict[str, Any] | None,
+    path: tuple[str | int, ...],
+    field: str,
+    problem: str,
+):
+    """값은 싣지 않지만 **어느 것** 인지는 말한다 — 노드 수십 개를 눈으로 대조하게 두지 않는다."""
+    source = document or next(
+        doc for doc in _declaration_documents().values() if doc["kind"] == "Skillset"
+    )
+
+    (found,) = _problems(model, _repeat_item(source, path))
+
+    assert found["field"] == field
+    assert problem in found["problem"]
+
+
+def test_a_repeated_mcp_server_name_is_reported_by_position():
+    servers = [
+        {"name": "a", "transport": "stdio", "command": ["x"]},
+        {"name": "b", "transport": "stdio", "command": ["y"]},
+        {"name": "a", "transport": "stdio", "command": ["z"]},
+    ]
+    document = with_value(RICH_AGENT, ("spec", "mcp"), {"servers": servers})
+
+    (found,) = _problems(AgentManifest, document)
+
+    assert found == {
+        "field": "spec.mcp.servers",
+        "problem": "Value error, duplicate mcp server name at index 0 and 2",
+    }
+
+
+def test_a_repeated_fallback_says_which_one_and_what_it_repeats():
+    fallbacks = [
+        {"provider": "anthropic", "name": "claude-haiku-4-5", "on": ["rate_limit"]},
+        {"provider": "anthropic", "name": "claude-opus-4-5", "on": ["rate_limit"]},
+        {"provider": "anthropic", "name": "claude-haiku-4-5", "on": ["rate_limit"]},
+    ]
+    repeats_fallback = with_value(RICH_AGENT, ("spec", "model", "fallbacks"), fallbacks)
+    repeats_primary = with_value(
+        RICH_AGENT,
+        ("spec", "model", "fallbacks"),
+        [fallbacks[1], {**fallbacks[0], "name": RICH_AGENT["spec"]["model"]["name"]}],
+    )
+
+    (first,) = _problems(AgentManifest, repeats_fallback)
+    (second,) = _problems(AgentManifest, repeats_primary)
+
+    assert first == {
+        "field": "spec.model",
+        "problem": "Value error, fallbacks[2] repeats fallbacks[0]",
+    }
+    assert second["problem"] == "Value error, fallbacks[1] repeats the primary model"
+
+
+def test_missing_mcp_env_keys_are_reported_by_position():
+    document = with_value(
+        RICH_AGENT,
+        ("spec", "mcp", "servers", 0, "env_allowlist"),
+        ["FILES_ROOT_HINT", "NOPE", "ANTHROPIC_API_KEY", "ALSO_NOPE"],
+    )
+
+    (found,) = _problems(AgentManifest, document)
+
+    assert found["problem"] == (
+        "Value error, spec.mcp.servers[0].env_allowlist names keys absent from "
+        "runtime.env_allowlist (at index 1, 3)"
+    )
+
+
+def test_a_bad_state_field_name_is_named_because_it_is_a_key():
+    """state 필드 이름은 매핑의 키다 — 키는 구조라 내보낸다 (정제해서)."""
+    fields = {"ok": {"type": "string"}, "_bad\x1b[31m": {"type": "string"}}
+    document = with_value(RICH_GRAPH, ("spec", "state", "fields"), fields)
+
+    (found,) = _problems(GraphTopology, document)
+
+    assert found == {
+        "field": "spec.state",
+        "problem": (
+            "Value error, state field name '_bad?[31m' must be an identifier not starting with '_'"
+        ),
+    }
+
+
+def test_repeated_positions_groups_every_repeat():
+    assert repeated_positions(["a", "b", "c"]) is None
+    assert repeated_positions(["a", "b", "a"]) == "0 and 2"
+    assert repeated_positions(["x", "y", "x", "y", "z", "x"]) == "0, 2 and 5; 1 and 3"
 
 
 # --- 키 자리: 나가되 묶인다 -------------------------------------------------------------------

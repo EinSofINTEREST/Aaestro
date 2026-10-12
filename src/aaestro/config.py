@@ -19,6 +19,7 @@ from aaestro.core.errors import (
     ErrorCode,
     field_problems,
     raise_detached,
+    repeated_positions,
 )
 from aaestro.core.manifest import split_url
 from aaestro.core.yamlio import YamlReadError, load_yaml_file
@@ -118,8 +119,9 @@ class EgressProxyConfig(BaseModel):
         # 빈 목록이면 어떤 모델도 부를 수 없다 — 프록시를 켠 의미가 없는 오설정이다
         if not value:
             raise ValueError("runtime.egress_proxy.providers must not be empty")
-        if len(set(value)) != len(value):
-            raise ValueError("runtime.egress_proxy.providers has duplicates")
+        repeated = repeated_positions(value)
+        if repeated:
+            raise ValueError(f"runtime.egress_proxy.providers has duplicates at index {repeated}")
         return value
 
     @model_validator(mode="after")
