@@ -14,7 +14,6 @@ Control Plane 을 프로세스로 실행한다 — ``python -m aaestro.orchestra
 
 from __future__ import annotations
 
-import ipaddress
 import json
 import os
 from pathlib import Path
@@ -30,6 +29,7 @@ from aaestro.config import (
     load_config,
     resolve_environment,
 )
+from aaestro.http_auth import is_loopback
 from aaestro.observability.metrics import DEFAULT_METRICS_PORT, Metrics, start_metrics_server
 from aaestro.orchestrator.control import create_app
 from aaestro.orchestrator.inuse import any_of, run_backed
@@ -408,16 +408,6 @@ def warn_if_agents_reach_the_host(runtime: Any, control_host: str) -> bool:
         "deployments/docker/isolate-agent-network.sh",
     )
     return True
-
-
-def is_loopback(host: str) -> bool:
-    """bind 주소가 loopback 인가 — 이것만이 무인증을 허용하는 유일한 근거다."""
-    if host in ("localhost", "::1"):
-        return True
-    try:
-        return ipaddress.ip_address(host).is_loopback
-    except ValueError:
-        return False
 
 
 def config_missing_token(host: str) -> Exception:

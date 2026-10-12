@@ -365,7 +365,9 @@ POST /v1/drain           # graceful drain 개시
 1. 모든 응답은 pydantic 모델의 JSON 직렬화 — ad-hoc dict 금지
 2. `/invoke` 는 202 + polling 이 아닌 동기 응답 (LangGraph node 실행 모델과 일치).
    장시간 태스크는 `/stream` 사용
-3. 인증: runtime 이 발급한 per-agent token 을 `Authorization` 헤더로 요구
+3. 인증: runtime 이 발급한 per-agent token 을 `Authorization` 헤더로 요구.
+   토큰 없이는 기동하지 않는다 (`CFG_001`) — 무인증은 `AAESTRO_ALLOW_UNAUTHENTICATED=1` opt-in
+   이면서 loopback 바인드일 때만 (`http_auth.resolve_required_token`)
 4. `/health` 는 무인증 — Docker healthcheck 가 직접 호출
 
 ## Execution Loop (agentd internals)

@@ -3,10 +3,17 @@
 from __future__ import annotations
 
 import pytest
+import structlog.testing
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
-from aaestro.http_auth import presented_token, require_token
+from aaestro.core.errors import AaestroError, ErrorCode
+from aaestro.http_auth import (
+    ALLOW_UNAUTHENTICATED_ENV,
+    presented_token,
+    require_token,
+    resolve_required_token,
+)
 
 
 def app_with(expected: str | None) -> TestClient:
@@ -106,3 +113,101 @@ def test_a_missing_token_still_goes_through_the_constant_time_path(monkeypatch):
     app_with("s3cret").get("/guarded")
 
     assert calls == [1]
+
+
+# --- 기동 시 토큰 판단 (#394) ----------------------------------------------------------
+
+TOKEN_KEY = "AAESTRO_TEST_TOKEN"  # noqa: S105
+
+
+def resolve(environ: dict[str, str], host: str = "0.0.0.0") -> str | None:  # noqa: S104
+    return resolve_required_token(environ, token_env=TOKEN_KEY, bind_host=host, component="test")
+
+
+def test_resolve_missing_token_is_refused_naming_the_env():
+    with pytest.raises(AaestroError) as exc:
+        resolve({})
+
+    assert exc.value.code == ErrorCode.CFG_001
+    assert TOKEN_KEY in exc.value.message
+
+
+@pytest.mark.parametrize("value", ["", "   ", "\t\n"])
+def test_resolve_blank_token_is_refused(value):
+    with pytest.raises(AaestroError) as exc:
+        resolve({TOKEN_KEY: value})
+
+    assert exc.value.code == ErrorCode.CFG_001
+
+
+def test_resolve_token_present_is_returned_and_never_echoed():
+    assert resolve({TOKEN_KEY: "s3cret-value"}) == "s3cret-value"
+
+
+def test_resolve_refusal_never_contains_a_token_value():
+    # 토큰은 있지만 opt-in 값이 잘못된 경우에도 값이 메시지에 실리지 않는다
+    with pytest.raises(AaestroError) as exc:
+        resolve({TOKEN_KEY: "s3cret-value", ALLOW_UNAUTHENTICATED_ENV: "maybe"})
+
+    assert "s3cret-value" not in str(exc.value)
+    assert "s3cret-value" not in repr(exc.value.details)
+
+
+def test_resolve_opt_in_on_loopback_allows_and_warns():
+    with structlog.testing.capture_logs() as logs:
+        token = resolve({ALLOW_UNAUTHENTICATED_ENV: "1"}, host="127.0.0.1")
+
+    assert token is None
+    warnings = [entry for entry in logs if entry["log_level"] == "warning"]
+    assert len(warnings) == 1
+    assert warnings[0]["host"] == "127.0.0.1"
+
+
+@pytest.mark.parametrize("host", ["0.0.0.0", "10.0.0.5", "::"])  # noqa: S104
+def test_resolve_opt_in_outside_loopback_is_refused(host):
+    with pytest.raises(AaestroError) as exc:
+        resolve({ALLOW_UNAUTHENTICATED_ENV: "true"}, host=host)
+
+    assert exc.value.code == ErrorCode.CFG_001
+    assert "loopback" in exc.value.message
+
+
+def test_resolve_unknown_opt_in_value_is_refused():
+    with pytest.raises(AaestroError):
+        resolve({ALLOW_UNAUTHENTICATED_ENV: "yes please"}, host="127.0.0.1")
+
+
+def test_resolve_opt_in_off_does_not_allow_missing_token():
+    with pytest.raises(AaestroError):
+        resolve({ALLOW_UNAUTHENTICATED_ENV: "0"}, host="127.0.0.1")
+
+
+@pytest.mark.parametrize("value", ["abc\n", " abc", "abc ", "\tabc"])
+def test_resolve_token_with_surrounding_whitespace_is_refused_without_the_value(value):
+    with pytest.raises(AaestroError) as exc:
+        resolve({TOKEN_KEY: value})
+
+    assert exc.value.code == ErrorCode.CFG_001
+    assert "whitespace" in exc.value.message
+    assert "abc" not in str(exc.value)
+    assert "abc" not in repr(exc.value.details)
+
+
+def test_resolve_refusal_never_contains_the_bind_value():
+    marker = "marker-host.invalid"
+
+    with pytest.raises(AaestroError) as exc:
+        resolve({ALLOW_UNAUTHENTICATED_ENV: "1"}, host=marker)
+
+    assert marker not in str(exc.value)
+    assert marker not in repr(exc.value.details)
+
+
+def test_resolve_opt_in_ignored_because_of_a_token_is_warned():
+    with structlog.testing.capture_logs() as logs:
+        token = resolve({TOKEN_KEY: "s3cret", ALLOW_UNAUTHENTICATED_ENV: "1"}, host="127.0.0.1")
+
+    assert token == "s3cret"  # noqa: S105
+    warnings = [entry for entry in logs if entry["log_level"] == "warning"]
+    assert len(warnings) == 1
+    assert "s3cret" not in repr(warnings)
