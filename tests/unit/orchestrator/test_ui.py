@@ -83,3 +83,13 @@ def test_the_client_covers_every_ui_facing_route():
         "/image",
     ):
         assert path in source, path
+
+
+def test_the_unbuilt_warning_compares_the_recorded_tag_with_the_expected_one():
+    """서버 게이트(#383)와 같은 판정이 화면에도 있어야 한다 — node 없이 소스에서 배선만 본다."""
+    source = (UI_ROOT / "client.js").read_text(encoding="utf-8")
+    start = source.index("export function unbuiltAgents")
+    body = source[start : source.index("export function moduleRef")]
+
+    assert "expected_image" in body
+    assert "image.image" in body

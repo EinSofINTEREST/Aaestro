@@ -324,7 +324,7 @@ Runtime layer →  env_allowlist 각 키를 local > group > global 순으로 해
 
 1. **Build**: 이미지 빌드는 **명시적 빌드 단계**에서 — 런타임 중 빌드 금지.
    빌드 재료가 있는 에이전트는 그 버전이 `built` 여야 배포된다 — 굽지 않았거나 실패했거나
-   굽는 중이면 배포가 기동 전에 거절한다 (`RT_012`, HTTP 409). 배포가 대신 굽지 않는다.
+   굽는 중이거나 기록의 태그가 띄울 태그와 다르면 배포가 기동 전에 거절한다 (`RT_012`, HTTP 409). 배포가 대신 굽지 않는다.
    재료가 없는 declarative agent 는 빌드 단계가 없다 (base 이미지 + 선언 마운트)
 2. **Start**: 기동 → `initialize()` → health OK 가 되어야 그래프에 attach
 3. **Ready**: health check 주기 실행 (기본 10s 간격, 3회 연속 실패 시 Unhealthy)

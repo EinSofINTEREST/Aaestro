@@ -229,8 +229,8 @@ finding 은 에러 상태가 아니라 `200` 이다 — "아직 유효한가?" �
 declarative 에이전트는 재료가 없고 굽지도 않는다 — base 이미지에 선언을 마운트해 돈다.
 
 굽기는 명시적 단계다. 재료를 저장해도 굽지 않고, 배포도 굽지 않는다 — 그 버전의 이미지가
-`built` 가 아닌 커스텀 에이전트는 배포가 **거절한다** (`409`, `RT_012`) —
-[`POST /v1/deployments`](#post-v1deployments) 참조.
+`built` 가 아니거나 `built` 기록의 태그가 배포가 띄울 태그와 다른 커스텀 에이전트는 배포가
+**거절한다** (`409`, `RT_012`) — [`POST /v1/deployments`](#post-v1deployments) 참조.
 
 ### `GET /v1/agents/{name}/materials`
 
@@ -318,8 +318,8 @@ The command '/bin/sh -c exit 3' returned a non-zero code: 3
 
 ```json
 {"agent": "docs-custom", "version": "0.1.2", "status": "failed",
- "image": "aaestro/agent-docs-custom:0.1.2", "needs_build": true,
- "error": "image build failed: aaestro/agent-docs-custom:0.1.2",
+ "image": "aaestro/agent-docs-custom:0.1.2", "expected_image": "aaestro/agent-docs-custom:0.1.2",
+ "needs_build": true, "error": "image build failed: aaestro/agent-docs-custom:0.1.2",
  "log": "Step 1/2 : FROM aaestro/agent-base:0.1.0\n ... returned a non-zero code: 3",
  "updated_at": "..."}
 ```
@@ -331,7 +331,8 @@ The command '/bin/sh -c exit 3' returned a non-zero code: 3
 | `built` | 이미지가 있다 — 배포가 쓸 수 있다 |
 | `failed` | 마지막 빌드가 실패했다 — `error` 와 `log` 를 읽는다 |
 
-재료가 없는 에이전트는 `needs_build` 가 `false` 다. `log` 는 마지막 8000자를 보관한다. 기록은
+`image` 는 기록이 구워진 태그, `expected_image` 는 배포가 띄울 태그다. 둘이 다른 `built`
+기록은 배포가 거절한다. 재료가 없는 에이전트는 `needs_build` 가 `false` 다. `log` 는 마지막 8000자를 보관한다. 기록은
 control plane 재시작을 넘는다.
 
 ## 배포
@@ -402,8 +403,10 @@ primary 와 같은 fallback 은 거절됩니다.
 - `400` (`VAL_002`) — `model_overrides` 가 그래프에 없는 노드를 가리키거나 override 본문이 잘못됐다
   (provider 만 적음, 모르는 키). 아무것도 기동하지 않았다.
 - `409` (`RT_012`) — 빌드 재료가 있는 에이전트에 그 버전의 `built` 이미지가 없다: 굽힌 적이
-  없거나, 마지막 빌드가 실패했거나, 아직 굽는 중이다. `details` 에 `image`, `build_status`,
-  `build_error` 가 실린다. 구운 뒤 다시 배포한다 — 배포는 대신 굽지 않는다. 아무것도 기동하지
+  없거나, 마지막 빌드가 실패했거나, 아직 굽는 중이거나, 기록의 태그가 배포가 띄울 태그와 다르다.
+  `details` 에 `image` (기대 태그), `build_status`, `build_error` 가 실리고, 태그가 다르면
+  `recorded_image` 도 실린다. 구운 뒤 다시 배포한다 — 배포는 대신 굽지 않는다. 이미지 태그
+  규칙이 바뀐 뒤에는 이전에 구운 커스텀 에이전트를 다시 구워야 한다. 아무것도 기동하지
   않았고 배포 기록도 남지 않는다. 재료가 없는 에이전트는 base 이미지로 돌며 게이트를 거치지
   않는다.
 - `409` (`RT_010`) — 이 그래프의 에이전트가 다른 배포로 이미 돌고 있다. 그쪽을 먼저

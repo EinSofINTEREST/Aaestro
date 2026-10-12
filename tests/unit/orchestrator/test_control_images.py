@@ -8,7 +8,7 @@ import pytest
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 from aaestro.orchestrator.control import create_app
 from aaestro.orchestrator.runstore import InMemoryRunStore
-from aaestro.runtime.images import BuildRecord, BuildStatus
+from aaestro.runtime.images import BuildRecord, BuildStatus, image_tag
 
 
 class FakeBuilder:
@@ -111,6 +111,7 @@ async def test_an_agent_that_was_never_built_says_so(api):
     assert body["status"] is None
     assert body["needs_build"] is True
     assert body["image"] == "aaestro/agent-custom:0.1.0"
+    assert body["expected_image"] == "aaestro/agent-custom:0.1.0"
 
 
 async def test_the_status_follows_the_build(api, builder):
@@ -122,6 +123,8 @@ async def test_the_status_follows_the_build(api, builder):
 
     assert body["status"] == BuildStatus.BUILT
     assert body["log"] == "Step 1/3"
+    # UI 가 기록의 태그와 대조할 기준 — 게이트와 같은 image_tag() 에서 온다
+    assert body["expected_image"] == image_tag("custom", "0.1.0")
 
 
 async def test_a_declarative_agent_does_not_need_a_build(api):
