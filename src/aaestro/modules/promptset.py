@@ -19,9 +19,9 @@ from pydantic import (
     model_validator,
 )
 
-from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode, printable_label
 from aaestro.core.manifest import SemVer
-from aaestro.modules.registry import ModulePath, ModuleRegistry, validation_error
+from aaestro.modules.registry import ModulePath, ModuleRegistry, reject_module
 
 DEFAULT_TEMPLATE = "default"
 
@@ -41,7 +41,7 @@ class VariableSpec(BaseModel):
     선언된 템플릿 변수 — 렌더 시 이 스키마로 검증된다.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     type: Literal["string", "integer", "number", "boolean", "array", "object"]
     required: bool = False
@@ -55,9 +55,7 @@ class VariableSpec(BaseModel):
         렌더된다 — 모듈 로드에서 즉시 잡는다.
         """
         if self.default is not None and not self.check(self.default):
-            raise ValueError(
-                f"default value does not match declared type '{self.type}': {self.default!r}"
-            )
+            raise ValueError(f"default value does not match declared type '{self.type}'")
         return self
 
     def check(self, value: Any) -> bool:
@@ -73,7 +71,7 @@ class VariableSpec(BaseModel):
 class TemplateSpec(BaseModel):
     """A template declaration."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     file: str
     variables: dict[str, VariableSpec] = Field(default_factory=dict)
@@ -91,7 +89,7 @@ class TemplateSpec(BaseModel):
         """키는 state schema 필드명과 맞물리므로 식별자 모양이어야 한다."""
         for key in value:
             if not key.isidentifier():
-                raise ValueError(f"output key must be an identifier: {key!r}")
+                raise ValueError("output key must be an identifier")
         if len(set(value)) != len(value):
             raise ValueError("output keys must be unique")
         return value
@@ -100,7 +98,7 @@ class TemplateSpec(BaseModel):
 class PromptsetSpec(BaseModel):
     """Promptset body."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     engine: Literal["jinja2"] = "jinja2"
     default_locale: str = "en"
@@ -118,7 +116,7 @@ class PromptsetSpec(BaseModel):
 class PromptsetMetadata(BaseModel):
     """Promptset metadata."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     name: str
     version: SemVer
@@ -128,7 +126,7 @@ class PromptsetMetadata(BaseModel):
 class PromptsetManifest(BaseModel):
     """``promptset.yaml`` document."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     api_version: Literal["aaestro/v1"] = Field(alias="apiVersion")
     kind: Literal["Promptset"]
@@ -251,21 +249,21 @@ class LoadedPromptset(BaseModel):
         candidates.append(self.root / spec.file)
 
         for candidate in candidates:
-            if candidate.is_file():
+            if _is_file(candidate):
                 try:
                     return str(candidate.read_text(encoding="utf-8"))
                 except OSError as err:
                     raise AaestroError(
                         category=ErrorCategory.MODULE,
                         code=ErrorCode.MOD_004,
-                        message=f"failed to read template file: {spec.file}",
+                        message="failed to read template file",
                         details={"promptset": self.ref, "template": template},
                     ) from err
 
         raise AaestroError(
             category=ErrorCategory.MODULE,
             code=ErrorCode.MOD_004,
-            message=f"template file not found: {spec.file}",
+            message="template file not found",
             details={"promptset": self.ref, "template": template},
         )
 
@@ -295,7 +293,7 @@ class PromptsetLoader:
         try:
             manifest = PromptsetManifest.model_validate(document)
         except ValidationError as err:
-            raise validation_error(ref, err) from err
+            reject_module(ref, err)
 
         _check_template_files(manifest, path, ref)
         return LoadedPromptset(ref=ref, manifest=manifest, root=path.root)
@@ -304,10 +302,24 @@ class PromptsetLoader:
 def _check_template_files(manifest: PromptsetManifest, path: ModulePath, ref: str) -> None:
     """선언된 템플릿 파일이 실재하는지 로드 시점에 확인한다."""
     for name, spec in manifest.spec.templates.items():
-        if not (path.root / spec.file).is_file():
+        if not _is_file(path.root / spec.file):
+            # 어느 템플릿인지는 details 의 이름 (선언의 키) 이 말한다 — ``file`` 은 선언의 값이라
+            # 메시지에 싣지 않는다 (#386)
             raise AaestroError(
                 category=ErrorCategory.MODULE,
                 code=ErrorCode.MOD_003,
-                message=f"declared template file is missing: {spec.file}",
-                details={"promptset": ref, "template": name},
+                message="declared template file is missing",
+                details={"promptset": ref, "template": printable_label(name)},
             )
+
+
+def _is_file(candidate: Path) -> bool:
+    """``Path.is_file`` — 경로로 쓸 수 없는 값 (너무 긴 이름, NUL) 도 "없음" 이다.
+
+    ``is_file`` 은 ``ENAMETOOLONG`` 과 NUL 이 든 경로에서 예외를 올린다. 선언의 ``file`` 은 어떤
+    문자열이든 올 수 있으므로 그대로 두면 로더가 traceback 으로 터진다.
+    """
+    try:
+        return candidate.is_file()
+    except (OSError, ValueError):
+        return False

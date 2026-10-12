@@ -11,7 +11,7 @@ import re
 from enum import StrEnum
 from pathlib import PurePosixPath
 from typing import Annotated, Any, Literal
-from urllib.parse import urlsplit
+from urllib.parse import SplitResult, urlsplit
 
 from pydantic import (
     BaseModel,
@@ -26,20 +26,47 @@ from pydantic import (
 RESERVED_GLOBAL_GROUP = "global"
 DEFAULT_SIDECAR_PORT = 8000
 DEFAULT_SIDECAR_PATH = "/mcp"
+INVALID_PORT = -1
+"""URL 의 포트를 읽을 수 없다는 표시 — 유효한 포트는 음수가 아니다."""
+
+
+def split_url(value: str) -> SplitResult | None:
+    """``urlsplit`` — 풀 수 없는 값은 ``None``.
+
+    ``urlsplit`` 이 던지는 ``ValueError`` 의 메시지는 값의 조각 (netloc, 대괄호 안) 을 싣는다.
+    validator 밖으로 그대로 올리면 선언 · 설정의 값이 에러로 나간다. ``None`` 을 돌려주어 호출부가
+    ``except`` 블록 **밖에서** 고정 문구로 거절하게 한다 — 블록 안에서 던지면 원인이
+    ``__context__`` 에 남고, pydantic 이 그 예외를 에러 ``ctx`` 에 담는다.
+    """
+    try:
+        return urlsplit(value)
+    except ValueError:
+        return None
+
+
+def _url_port(parts: SplitResult) -> int | None:
+    """포트 — 없으면 ``None``, 숫자가 아니거나 범위 밖이면 :data:`INVALID_PORT` (원인은 버린다)."""
+    try:
+        return parts.port
+    except ValueError:
+        return INVALID_PORT
 
 
 def _require_http_url(value: str, what: str) -> None:
     """스킴·호스트·유효한 포트가 있는 http(s) URL 인가 — 판정이 이 값을 풀다 터지지 않게."""
-    parts = urlsplit(value)
-    try:
-        port = parts.port
-    except ValueError as err:
-        raise ValueError(f"{what} has an invalid port: {value!r}") from err
-    if parts.scheme not in ("http", "https") or not parts.hostname or port == 0:
-        raise ValueError(f"{what} must be an http(s) URL with a host: {value!r}")
+    parts = split_url(value)
+    if parts is None:
+        raise ValueError(f"{what} must be a valid http(s) URL")
+    # 자격증명 검사가 맨 앞이다 — 스킴·포트가 틀린 URL 에서도 "자격증명을 싣지 말라" 가 먼저 나온다.
+    # 메시지에는 값을 싣지 않는다 (field_problems 가 가리지만 원인 쪽에서도 막는다)
     if parts.username is not None or parts.password is not None:
         # 자격증명은 auth.token_env 로만 — URL 에 실리면 로그·카드·에러 곳곳에 샌다
         raise ValueError(f"{what} must not carry credentials; use auth.token_env")
+    port = _url_port(parts)
+    if port == INVALID_PORT:
+        raise ValueError(f"{what} has an invalid port")
+    if parts.scheme not in ("http", "https") or not parts.hostname or port == 0:
+        raise ValueError(f"{what} must be an http(s) URL with a host")
 
 
 _HOST_LABEL = r"[a-z0-9]([a-z0-9-]*[a-z0-9])?"
@@ -135,7 +162,7 @@ class Metadata(BaseModel):
     직접 선언하는 것은 금지된다 (모든 에이전트는 암묵적 global 멤버).
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     name: AgentName
     version: SemVer
@@ -264,9 +291,8 @@ class ModelConfig(BaseModel):
         for fallback in self.fallbacks:
             key = (fallback.provider, fallback.name)
             if key in seen:
-                raise ValueError(
-                    f"fallback repeats the primary or another fallback: {key[0]}/{key[1]}"
-                )
+                # 어느 모델인지는 싣지 않는다 — 선언의 값이다 (#386). 위치는 필드 경로가 말한다
+                raise ValueError("fallback repeats the primary or another fallback")
             seen.add(key)
         return self
 
@@ -354,7 +380,7 @@ class ModuleRef(BaseModel):
     버전 고정된 모듈 참조.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     ref: ModuleRefStr
 
@@ -366,7 +392,7 @@ class MemorySpaceRef(BaseModel):
     충돌 시 해석 순서는 local > group > global 이다.
     """
 
-    model_config = ConfigDict(frozen=True, populate_by_name=True)
+    model_config = ConfigDict(frozen=True, extra="forbid", populate_by_name=True)
 
     ref: ModuleRefStr
     alias: str = Field(alias="as")
@@ -380,7 +406,7 @@ class MemorySpec(BaseModel):
     선언된 memory space 목록 — 미선언 space 접근은 ``MEM_001`` 로 거부된다.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     spaces: tuple[MemorySpaceRef, ...] = ()
 
@@ -391,7 +417,7 @@ class MemorySpec(BaseModel):
         aliases = [s.alias for s in value]
         duplicates = {a for a in aliases if aliases.count(a) > 1}
         if duplicates:
-            raise ValueError(f"duplicate memory space alias: {sorted(duplicates)}")
+            raise ValueError("duplicate memory space alias")
         return value
 
 
@@ -401,7 +427,7 @@ class McpAuth(BaseModel):
     외부 MCP 서버 인증 — 토큰 값이 아니라 env 키만 선언한다.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     type: Literal["bearer"]
     token_env: str
@@ -413,7 +439,7 @@ class McpSidecar(BaseModel):
     에이전트 전용 MCP 사이드카. 소유 에이전트와 1:1 이며 lifecycle 을 함께한다.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     image: str
     resources: ResourceSpec | None = None
@@ -466,7 +492,7 @@ class McpServerSpec(BaseModel):
     프로토콜 자원은 정확히 하나의 에이전트에 속한다.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     name: str
     transport: McpTransport
@@ -528,7 +554,7 @@ class McpSpec(BaseModel):
     이 에이전트 전용 MCP 서버 목록 — 서버 이름 중복은 금지된다.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     servers: tuple[McpServerSpec, ...] = ()
 
@@ -539,7 +565,7 @@ class McpSpec(BaseModel):
         names = [s.name for s in value]
         duplicates = {n for n in names if names.count(n) > 1}
         if duplicates:
-            raise ValueError(f"duplicate mcp server name: {sorted(duplicates)}")
+            raise ValueError("duplicate mcp server name")
         return value
 
     @field_validator("servers")
@@ -554,16 +580,15 @@ class McpSpec(BaseModel):
         컨테이너 안 프로세스에 다시 주는 셈이다.
         """
         remote = {s.auth.token_env for s in value if s.url is not None and s.auth is not None}
-        shared = sorted({key for s in value if s.command for key in s.env_allowlist} & remote)
-        if shared:
-            raise ValueError(f"remote mcp credentials must not reach stdio servers: {shared}")
+        if {key for s in value if s.command for key in s.env_allowlist} & remote:
+            raise ValueError("remote mcp credentials must not reach stdio servers")
         return value
 
 
 class A2ACapabilities(BaseModel):
     """A2A capability flags advertised on the AgentCard."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     streaming: bool = False
     push_notifications: bool = False
@@ -576,7 +601,7 @@ class A2ASpec(BaseModel):
     포트는 runtime 이 할당하므로 선언하지 않는다.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     enabled: bool = False
     capabilities: A2ACapabilities = Field(default_factory=A2ACapabilities)
@@ -588,7 +613,7 @@ class ResourceSpec(BaseModel):
     리소스 상한 — 그룹 quota 합계 검증의 단위가 된다.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     cpu: str = "1.0"
     memory: str = "1Gi"
@@ -627,7 +652,7 @@ class ArtifactSpec(BaseModel):
     조용히 통과하고 quota 가 강제되지 않는다.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     quota: str | None = None
     """저장 상한 (예: ``"50Gi"``). 미선언 시 상한 없음."""
@@ -652,7 +677,7 @@ class VolumeSpec(BaseModel):
     명시 선언된 볼륨 — 에이전트 간 공유는 금지된다 (사이드채널 차단).
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     name: str
     mount_path: str
@@ -664,7 +689,7 @@ class VolumeSpec(BaseModel):
         """호스트 민감 경로 마운트 절대 금지."""
         forbidden = ("/var/run/docker.sock", "/etc", "/root", "/proc", "/sys")
         if any(value == p or value.startswith(f"{p}/") for p in forbidden):
-            raise ValueError(f"mounting sensitive host path is forbidden: {value}")
+            raise ValueError("mounting sensitive host path is forbidden")
         return value
 
 
@@ -675,7 +700,7 @@ class RuntimeSpec(BaseModel):
     local > group > global 스코프 체인으로 해석 가능해야 한다.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     image: str | None = None
     resources: ResourceSpec = Field(default_factory=ResourceSpec)
@@ -697,9 +722,7 @@ class RuntimeSpec(BaseModel):
             port = value.rpartition(":")[2] if ":" in value else ""
             # 범위 밖 포트는 어떤 CONNECT 와도 맞지 않는다 — 선언이 조용히 쓸모없어진다
             if matched is None or (port and not 0 < int(port) < 65536):
-                raise ValueError(
-                    f"egress destination must be host or host:port without wildcards: {value!r}"
-                )
+                raise ValueError("egress destination must be host or host:port without wildcards")
         return values
 
     @field_validator("image")
@@ -717,7 +740,7 @@ class AgentSpec(BaseModel):
     에이전트 계약 본문 — 선언되지 않은 모듈/서버/자원의 사용은 금지된다.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     model: ModelConfig
     promptset: ModuleRef
@@ -753,7 +776,7 @@ class AgentManifest(BaseModel):
     미검증 manifest 로는 컨테이너를 기동하지 않는다.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     api_version: Literal["aaestro/v1"] = Field(alias="apiVersion")
     kind: Literal["Agent"]
@@ -763,18 +786,18 @@ class AgentManifest(BaseModel):
     @model_validator(mode="after")
     def _check_mcp_env_declared(self) -> AgentManifest:
         """MCP 서버가 요구하는 env 키가 에이전트 allowlist 에 있는지 확인한다."""
+        # 메시지는 서버를 **위치** 로 가리키고 키 이름은 싣지 않는다 (#386). env 키 자리에 비밀 값
+        # 자체를 적는 실수 (``token_env: sk-…``) 가 드물지 않고, 그 값이 에러 · 로그로 나간다
         allowed = set(self.spec.runtime.env_allowlist)
-        for server in self.spec.mcp.servers:
-            missing = set(server.env_allowlist) - allowed
-            if missing:
+        for index, server in enumerate(self.spec.mcp.servers):
+            if set(server.env_allowlist) - allowed:
                 raise ValueError(
-                    f"mcp server '{server.name}' requires env keys absent from "
-                    f"runtime.env_allowlist: {sorted(missing)}"
+                    f"spec.mcp.servers[{index}].env_allowlist names keys absent from "
+                    "runtime.env_allowlist"
                 )
             if server.auth is not None and server.auth.token_env not in allowed:
                 raise ValueError(
-                    f"mcp server '{server.name}' auth token_env "
-                    f"'{server.auth.token_env}' must be in runtime.env_allowlist"
+                    f"spec.mcp.servers[{index}].auth.token_env must be in runtime.env_allowlist"
                 )
         return self
 
@@ -795,7 +818,7 @@ class GroupQuotas(BaseModel):
     소속 에이전트 리소스 합계 상한 — 초과 시 기동 거부(``RT_006``).
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     cpu: str | None = None
     memory: str | None = None
@@ -887,7 +910,7 @@ class GroupSpec(BaseModel):
     그룹 스코프 리소스 — 그룹은 리소스 경계일 뿐 우열이나 연결 권한이 아니다.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     quotas: GroupQuotas = Field(default_factory=GroupQuotas)
     secrets: tuple[str, ...] = ()
@@ -902,7 +925,7 @@ class GroupManifest(BaseModel):
     그룹 정의. 예약 그룹 ``global`` 은 전역 스코프 리소스 선언 전용이다.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     api_version: Literal["aaestro/v1"] = Field(alias="apiVersion")
     kind: Literal["Group"]
@@ -974,7 +997,7 @@ class ParsedModuleRef(BaseModel):
         """
         match = _MODULE_REF_PATTERN.match(ref)
         if match is None:
-            raise ValueError(f"invalid module ref: {ref}")
+            raise ValueError("invalid module ref")
         return cls(
             type=match.group("type"),
             name=match.group("name"),

@@ -595,7 +595,7 @@ def node_report(templates: dict, *, input_map: dict | None = None):
     )
     return validate_deployment(
         [topology],
-        manifests={"solo": make_manifest(name="solo")},
+        manifests={"solo": make_manifest(metadata={"name": "solo", "version": "0.1.0"})},
         resolvable_refs=REFS,
         promptsets={"promptsets/test@0.1.0": make_promptset(templates)},
     )
@@ -657,7 +657,9 @@ def test_the_check_is_silent_without_promptsets():
     )
 
     report = validate_deployment(
-        [topology], manifests={"solo": make_manifest(name="solo")}, resolvable_refs=REFS
+        [topology],
+        manifests={"solo": make_manifest(metadata={"name": "solo", "version": "0.1.0"})},
+        resolvable_refs=REFS,
     )
 
     assert report.ok

@@ -30,6 +30,7 @@ from aaestro.config import (
     load_config,
     resolve_environment,
 )
+from aaestro.core.startup import startup_guard
 from aaestro.observability.metrics import DEFAULT_METRICS_PORT, Metrics, start_metrics_server
 from aaestro.orchestrator.control import create_app
 from aaestro.orchestrator.inuse import any_of, run_backed
@@ -79,10 +80,11 @@ def main() -> None:
     """Serve the Control Plane over the configured run store."""
     # 계측기는 **노출되는 것 하나**를 모두가 쓴다 — 저마다 새로 만들면 기록은 되는데 아무도 못 본다
     metrics = _setup_observability()
-    config = load_config(
-        resolve_environment(),
-        config_dir=os.environ.get(CONFIG_DIR_ENV, DEFAULT_CONFIG_DIR),
-    )
+    with startup_guard(log, "configuration rejected"):
+        config = load_config(
+            resolve_environment(),
+            config_dir=os.environ.get(CONFIG_DIR_ENV, DEFAULT_CONFIG_DIR),
+        )
     orchestrator = config.orchestrator
 
     if orchestrator.run_store is None:

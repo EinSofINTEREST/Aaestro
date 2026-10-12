@@ -22,7 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 from aaestro.core.manifest import SemVer
 from aaestro.core.skill import SkillSpec, build_spec, get_spec
-from aaestro.modules.registry import ModulePath, ModuleRegistry, validation_error
+from aaestro.modules.registry import ModulePath, ModuleRegistry, reject_module
 
 log = structlog.get_logger(__name__)
 
@@ -35,7 +35,7 @@ class SkillDeclaration(BaseModel):
     스킬셋의 개별 skill 선언.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     name: str
     entrypoint: str
@@ -70,7 +70,7 @@ class SkillsetRequires(BaseModel):
     스킬셋 요구사항 — 배포 검증에서 에이전트 manifest 와 대조된다.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     env: tuple[str, ...] = ()
     python: str | None = None
@@ -79,7 +79,7 @@ class SkillsetRequires(BaseModel):
 class SkillsetSpec(BaseModel):
     """Skillset body."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     skills: tuple[SkillDeclaration, ...]
     requires: SkillsetRequires = Field(default_factory=SkillsetRequires)
@@ -93,14 +93,14 @@ class SkillsetSpec(BaseModel):
         names = [s.name for s in value]
         duplicates = {n for n in names if names.count(n) > 1}
         if duplicates:
-            raise ValueError(f"duplicate skill name: {sorted(duplicates)}")
+            raise ValueError("duplicate skill name")
         return value
 
 
 class SkillsetMetadata(BaseModel):
     """Skillset metadata."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     name: str
     version: SemVer
@@ -110,7 +110,7 @@ class SkillsetMetadata(BaseModel):
 class SkillsetManifest(BaseModel):
     """``skillset.yaml`` document."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     api_version: Literal["aaestro/v1"] = Field(alias="apiVersion")
     kind: Literal["Skillset"]
@@ -244,7 +244,7 @@ class SkillsetLoader:
         try:
             manifest = SkillsetManifest.model_validate(document)
         except ValidationError as err:
-            raise validation_error(ref, err) from err
+            reject_module(ref, err)
 
         skills = tuple(self._bind(declaration, path, ref) for declaration in manifest.spec.skills)
         loaded = LoadedSkillset(ref=ref, manifest=manifest, skills=skills)

@@ -13,7 +13,13 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, create_model
 
-from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.core.errors import (
+    AaestroError,
+    ErrorCategory,
+    ErrorCode,
+    field_problems,
+    raise_detached,
+)
 from aaestro.orchestrator.topology import NodeSpec, StateField, StateSpec, resolve_import_ref
 
 _STATE_PREFIX = "state."
@@ -265,12 +271,14 @@ def _coerced(schema: type[BaseModel], field: str, value: Any, *, node_id: str) -
     try:
         return TypeAdapter(declared.annotation).validate_python(value)
     except ValidationError as err:
-        raise _state_error(
-            f"output does not satisfy the state field: {field}",
-            node_id=node_id,
-            field=field,
-            problem=err.errors()[0]["msg"] if err.errors() else "type mismatch",
-        ) from err
+        raise_detached(
+            _state_error(
+                f"output does not satisfy the state field: {field}",
+                node_id=node_id,
+                field=field,
+                problem=(field_problems(err) or [{"problem": "type mismatch"}])[0]["problem"],
+            )
+        )
 
 
 def validate_state(schema: type[BaseModel], state: dict[str, Any]) -> dict[str, Any]:
@@ -293,11 +301,10 @@ def validate_state(schema: type[BaseModel], state: dict[str, Any]) -> dict[str, 
     except ValidationError as err:
         # 어느 필드가 왜 틀렸는지 알려주지 않으면 운영자가 고칠 수 없다
         # (config.py 의 CFG_001 과 같은 수준으로 맞춘다)
-        raise _state_error(
-            "state does not satisfy the graph schema",
-            schema=schema.__name__,
-            errors=[
-                {"field": ".".join(str(p) for p in e["loc"]), "problem": e["msg"]}
-                for e in err.errors()
-            ],
-        ) from err
+        raise_detached(
+            _state_error(
+                "state does not satisfy the graph schema",
+                schema=schema.__name__,
+                errors=field_problems(err),
+            )
+        )

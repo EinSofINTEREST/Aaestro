@@ -99,6 +99,14 @@ what parsed, and `problems` for what did not. **A broken file never hides the re
 unparseable manifest would otherwise turn the whole catalog into a `500` with no clue which
 file to fix.
 
+Each problem is `{path, code, message, errors, reason}`: `path` is the file (or module version
+directory), `errors` lists the offending keys as `{field, problem}` for a schema violation, and
+`reason` says where a file could not be read — a repeated key (`duplicate key 'k' at line N`),
+a parse failure (`ScannerError at line N, column M`), or a file that is not text
+(`not valid UTF-8`). Neither carries the rejected value or a piece of the input; key names are
+reported (cut to 64 characters, non-printable characters replaced). A name mismatch carries the
+expected name (`located`), not the declared one.
+
 ### `GET /v1/agents`, `GET /v1/graphs`, `GET /v1/groups`
 
 ```json

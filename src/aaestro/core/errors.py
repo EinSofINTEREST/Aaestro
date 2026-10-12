@@ -6,12 +6,15 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any, Self, TypeVar
+from typing import TYPE_CHECKING, Any, NoReturn, Self, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+if TYPE_CHECKING:
+    from fastapi.exceptions import RequestValidationError
 
 T = TypeVar("T")
 
@@ -381,3 +384,198 @@ def _monotonic() -> float:
     import time
 
     return time.monotonic()
+
+
+REDACTED = "<redacted>"
+MIN_REDACT_LENGTH = 3
+"""이보다 짧은 잎 값 (``0``, ``a``) 과 bool · None 은 가리지 않는다 — 고정 문구가 누더기가 된다."""
+MIN_SHARED_LENGTH = 8
+"""메시지와 입력이 이 길이 이상 겹치면 값의 **조각** 이 되비친 것으로 보고 가린다.
+
+잎 값 전체만 치환하면 조각은 남는다: ``urlsplit`` 은 URL 의 netloc 만, ``ipaddress`` 는 대괄호
+안만 메시지에 싣는다. 8자 미만의 겹침은 건드리지 않는다 — 영어 고정 문구와 값이 우연히 나눠
+갖는 짧은 조각 (``must``, ``http``) 까지 가리면 메시지를 읽을 수 없다."""
+MAX_LABEL_LENGTH = 64
+"""필드 경로의 구성 요소 · 키 이름 하나의 상한."""
+MAX_FIELD_LENGTH = 512
+"""필드 경로 전체의 상한."""
+MAX_PROBLEM_LENGTH = 512
+"""사유 한 건의 상한 — validator 가 키 이름 등을 보간해도 한 줄이 무한히 길어지지 않는다."""
+TRUNCATION_MARK = "…"
+_UNPRINTABLE = "?"
+_LEAF_SEPARATOR = "\x00\x1f\x00"
+"""잎들을 한 덩어리로 이어 찾을 때의 구분자 — 메시지에 나올 일이 없는 제어문자열."""
+
+
+def printable_label(text: str, limit: int = MAX_LABEL_LENGTH) -> str:
+    """Make a key name safe to print: printable characters only, bounded length.
+
+    키 이름 (모르는 키 · 매핑 키 · 중복 키) 은 선언의 구조라 **의도적으로** 내보낸다. 다만 그대로
+    내보내면 1만 자 키가 로그 한 줄을 채우고, 제어문자 · ANSI 이스케이프가 터미널을 조작한다.
+    """
+    cleaned = "".join(char if char.isprintable() else _UNPRINTABLE for char in text[: limit + 1])
+    if len(cleaned) > limit:
+        return cleaned[:limit] + TRUNCATION_MARK
+    return cleaned
+
+
+def _field_path(loc: Any) -> str:
+    """에러 위치를 점 경로로 — 구성 요소마다, 그리고 전체에 길이 상한을 둔다."""
+    return printable_label(
+        ".".join(printable_label(str(part)) for part in loc or ()), MAX_FIELD_LENGTH
+    )
+
+
+def _leaves(value: Any) -> Iterator[str]:
+    """입력에서 메시지에 되비칠 수 있는 문자열들 — 스칼라와 컨테이너의 잎 값 (매핑 키 제외)."""
+    if value is None or isinstance(value, bool):
+        return
+    if isinstance(value, str):
+        yield value
+        escaped = repr(value)[1:-1]  # 이스케이프된 형태로 보간되는 경우
+        if escaped != value:
+            yield escaped
+        return
+    if isinstance(value, Mapping):
+        # 키는 선언의 구조 (필드 이름) 라 가리지 않는다 — 가리면 "orchestrator.<redacted>" 가 된다
+        for item in value.values():
+            yield from _leaves(item)
+        return
+    if isinstance(value, (list, tuple, set, frozenset)):
+        for item in value:
+            yield from _leaves(item)
+        return
+    yield str(value)
+
+
+def _folded(text: str) -> str | None:
+    """대소문자를 접은 형태 — 길이가 달라지면 (위치를 되짚을 수 없으면) ``None``."""
+    lowered = text.lower()
+    return lowered if len(lowered) == len(text) else None
+
+
+def _shared_prefix_length(left: str, left_at: int, right: str, right_at: int) -> int:
+    """``left[left_at:]`` 와 ``right[right_at:]`` 의 공통 접두 길이 — 조각 비교로 이분 탐색한다.
+
+    글자 단위 파이썬 루프는 값 전체가 되비친 긴 메시지 (1만 자 값) 에서 느리다.
+    """
+    low, high = 0, min(len(left) - left_at, len(right) - right_at)
+    while low < high:
+        middle = (low + high + 1) // 2
+        if left[left_at : left_at + middle] == right[right_at : right_at + middle]:
+            low = middle
+        else:
+            high = middle - 1
+    return low
+
+
+def _shared_spans(message: str, haystack: str) -> Iterator[tuple[int, int]]:
+    """메시지에서 ``haystack`` 과 :data:`MIN_SHARED_LENGTH` 자 이상 겹치는 구간들.
+
+    메시지의 각 위치에서 시작하는 고정 길이 조각만 찾는다 (메시지는 짧고 입력은 길 수 있다 —
+    찾기는 C 수준의 ``str.find`` 이고 횟수는 메시지 길이로 묶인다). 찾으면 그 자리에서 겹치는
+    만큼 늘린다. 남는 겹침은 언제나 :data:`MIN_SHARED_LENGTH` 자 미만이다: 그 이상인 조각은
+    그 안의 모든 고정 길이 조각이 입력에 있으므로 다음 위치에서 다시 잡힌다.
+    """
+    position = 0
+    last = len(message) - MIN_SHARED_LENGTH
+    while position <= last:
+        found = haystack.find(message[position : position + MIN_SHARED_LENGTH])
+        if found < 0:
+            position += 1
+            continue
+        end = position + _shared_prefix_length(message, position, haystack, found)
+        yield position, end
+        position = end
+
+
+def _redact(message: str, rejected: Any) -> str:
+    """메시지에 되비친 거절된 입력을 ``<redacted>`` 로 — 값 전체와, 값의 긴 조각 모두.
+
+    두 겹이다. (1) 잎 값 전체 (:data:`MIN_REDACT_LENGTH` 자 이상) 가 나타난 자리. (2) 메시지와
+    잎이 :data:`MIN_SHARED_LENGTH` 자 이상 나눠 갖는 조각 — 대소문자를 접어서 본다 (validator 가
+    값을 소문자로 바꿔 되비춰도 같은 값이다). 가릴 구간을 먼저 모은 뒤 한 번에 그린다 — 치환을
+    거듭하면 앞서 넣은 ``<redacted>`` 표시가 다음 치환에 깨진다.
+    """
+    leaves = {leaf for leaf in _leaves(rejected) if len(leaf) >= MIN_REDACT_LENGTH}
+    if not leaves or not message:
+        return message
+    spans: list[tuple[int, int]] = []
+
+    for leaf in leaves:
+        if len(leaf) >= MIN_SHARED_LENGTH:
+            continue  # 긴 잎이 통째로 나타난 자리는 조각 찾기가 잡는다
+        at = message.find(leaf)
+        while at >= 0:
+            spans.append((at, at + len(leaf)))
+            at = message.find(leaf, at + len(leaf))
+
+    haystack = _LEAF_SEPARATOR.join(leaf for leaf in leaves if len(leaf) >= MIN_SHARED_LENGTH)
+    if haystack:
+        folded_message = _folded(message)
+        if folded_message is None:
+            spans.extend(_shared_spans(message, haystack))
+        else:
+            spans.extend(_shared_spans(folded_message, haystack.lower()))
+
+    if not spans:
+        return message
+    pieces: list[str] = []
+    cursor = 0
+    for start, end in sorted(spans):
+        if start > cursor:
+            pieces.append(message[cursor:start])
+            pieces.append(REDACTED)
+        elif not pieces:
+            pieces.append(REDACTED)
+        cursor = max(cursor, end)
+    pieces.append(message[cursor:])
+    return "".join(pieces)
+
+
+def field_problems(err: ValidationError | RequestValidationError) -> list[dict[str, str]]:
+    """Reduce a validation error to ``{field, problem}`` entries.
+
+    검증 에러를 필드 경로와 사유만으로 줄인다. ``errors()`` 의 ``input`` / ``ctx`` 는 **입력 값
+    자체**를 싣는데, 모르는 키의 값이 비밀(``env: {KEY: 값}``)인 경우가 흔해서 내보내면 안 된다.
+    메시지도 믿지 않는다: 커스텀 validator 가 ``f"bad: {value!r}"`` 처럼 값을 보간하면 ``msg`` 로
+    나간다. validator 하나씩 고치면 다음에 추가되는 validator 에서 되돌아오므로, 에러가 가진
+    **입력 값이 (전체든 조각이든) 메시지에 나타나면 가리는** 성질로 막는다 (입력은 가리는 데만
+    쓰고 싣지 않는다). 키 이름은 ``field`` 로 나간다 — 구조이므로 의도된 노출이고, 길이와 문자만
+    정제한다 (:func:`printable_label`).
+    """
+    entries = (
+        err.errors(include_url=False)
+        if isinstance(err, ValidationError)
+        else err.errors()  # FastAPI 의 RequestValidationError — pydantic 에러 dict 목록
+    )
+    return [
+        {
+            "field": _field_path(e.get("loc")),
+            "problem": printable_label(
+                _redact(str(e.get("msg", "")), e.get("input")), MAX_PROBLEM_LENGTH
+            ),
+        }
+        for e in entries
+    ]
+
+
+def raise_detached(error: AaestroError) -> NoReturn:
+    """Raise a structured error converted from a cause that echoes its input.
+
+    입력을 되비추는 원인 예외 (pydantic ``ValidationError``, YAML 의 ``ScannerError`` 등) 를
+    구조화 에러로 바꿔 던진다. 07 의 "원인 체인 보존" 의 **의도된 예외**다:
+    ``ValidationError`` 의 ``str()`` / repr 은 ``input_value=…`` 로 거절된 **입력 값** 을 싣는데,
+    그것이 비밀(``env: {KEY: 값}``)일 수 있고, 체인이 이어져 있으면 ``exc_info`` 로깅이나 처리되지
+    않은 traceback 이 값을 그대로 출력한다. 원인 정보는 ``details.errors`` 의 ``{field, problem}``
+    으로 이미 옮겨졌다. 호출부가 ``from err`` 를 쓰지 못하도록 ``from None`` 을 이 한 곳에 둔다.
+
+    ``from None`` 은 출력만 억제하고 ``__context__`` 에는 원인이 남는다 — 예외 수집기가
+    ``__context__`` 를 직접 따라가면 값이 나간다. 그래서 던진 직후 잡아 ``__context__`` 를 지우고
+    다시 던진다 (bare ``raise`` 는 문맥을 다시 잇지 않는다).
+    """
+    try:
+        raise error from None
+    except AaestroError as detached:
+        detached.__context__ = None
+        raise

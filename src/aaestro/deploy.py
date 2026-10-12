@@ -16,7 +16,7 @@ import structlog
 from pydantic import ValidationError
 
 from aaestro.access.baselines import PROVIDER_HOSTS, EgressBaseline
-from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode, field_problems
 from aaestro.core.manifest import RESERVED_GLOBAL_GROUP, agent_name, agent_ref_parts
 from aaestro.modules.compatibility import check_promptset_templates
 from aaestro.modules.promptset import LoadedPromptset
@@ -165,7 +165,9 @@ class DeployValidator:
 
         report = ValidationReport(findings=tuple(findings))
         if report.ok:
-            log.info("deployment validation passed", graphs=len(topologies))
+            # 이 단계 (그래프 · 에이전트 대조) 의 범위만 말한다 — 호출자가 카탈로그 문제를 더해
+            # 최종 판정을 내리므로, 여기서 "validation passed" 라고 찍으면 실패한 실행에도 남는다
+            log.info("graph and agent checks passed", graphs=len(topologies))
         else:
             log.error(
                 "deployment validation failed",
@@ -569,7 +571,7 @@ class DeployValidator:
             try:
                 resolved = manifest.spec.model.overridden(node.model)
             except ValidationError as err:
-                reasons = "; ".join(str(e["msg"]) for e in err.errors())
+                reasons = "; ".join(p["problem"] for p in field_problems(err))
                 findings.append(
                     Finding(
                         check="model_providers",
