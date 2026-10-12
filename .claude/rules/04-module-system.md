@@ -639,7 +639,7 @@ graphs/{name}.yaml
 4. **Rules**: 경로는 `Dockerfile` 또는 `src/` 아래만 (정규화된 상대 경로), 파일 수·크기 상한,
    텍스트만 — 저장 시 검사 (`VAL_002`)
 5. **Build Record**: 굽기 결과(`built`/`failed`/`building`, 태그, 로그 꼬리)는 빌드 스토어
-   (`orchestrator.build_store`) 에 남고, 배포 게이트가 이것을 본다
+   (`orchestrator.build_store`) 에 남고, 배포 게이트가 이것을 본다 (상태와 기록의 태그 모두)
    ([02-agent-implementation.md](02-agent-implementation.md) Lifecycle Rule 1)
 6. **Seeds**: 저장소에 함께 싣는 예시 재료는 `examples/materials/<agent>/` 에 둔다 —
    프레임워크는 읽지 않으며, `aaestro agent-push` 로 스토어에 올린다

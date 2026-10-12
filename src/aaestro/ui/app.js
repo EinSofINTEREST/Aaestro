@@ -1,7 +1,7 @@
 // 페이지 글루 — DOM 만 다룬다. REST 는 client.js 가, 선언 문서의 모양도 client.js 가 안다.
-import { agentsOfGraph, ApiError, bumpPatch, createClient, emptyAgent, emptyGraph, formatPairs,
-  materialPathProblem, moduleRef, parsePairs, pruneEmpty, revocationsFor, ruleState, suggestInputMap,
-  unbuiltAgents } from "./client.js";
+import { agentsOfGraph, ApiError, bumpPatch, createClient, emptyGraph, formatPairs,
+  materialPathProblem, moduleRef, parsePairs, patchAgent, pruneEmpty, revocationsFor, ruleState, suggestInputMap,
+  unbuiltAgents, UNLISTED_SUFFIX, withSelected } from "./client.js";
 
 const $ = (selector) => document.querySelector(selector);
 const el = (tag, props = {}, children = []) => {
@@ -76,10 +76,10 @@ async function loadCatalog() {
   fillSelect("#access-agent", agents.items.map((a) => [a.name, a.name]));
   fillSelect("#deploy-graph", graphs.items.map((g) => [g.name, `${g.name}@${g.version}`]));
   checkDeployable();
-  fillSelect("select[name=group]", [["", "(없음)"], ...groups.items.map((g) => [g.name, g.name])]);
-  fillSelect("select[name=promptset]", versionsOf("promptsets"));
-  fillSelect("select[name=skillsets]", versionsOf("skillsets"));
-  fillSelect("select[name=memorysets]", versionsOf("memorysets"));
+  fillSelect("select[name=group]", [["", "(없음)"], ...groups.items.map((g) => [g.name, g.name])], true, true);
+  fillSelect("select[name=promptset]", versionsOf("promptsets"), true, true);
+  fillSelect("select[name=skillsets]", versionsOf("skillsets"), true, true);
+  fillSelect("select[name=memorysets]", versionsOf("memorysets"), true, true);
 }
 
 function versionsOf(type) {
@@ -95,11 +95,18 @@ function fill(selector, items, label, detail) {
   );
 }
 
-function fillSelect(selector, pairs, keep = true) {
+// keepUnlisted: 카탈로그에 없는 선택(불러온 선언의 값)도 옵션으로 남긴다 — 에이전트 폼용 (#377)
+function fillSelect(selector, pairs, keep = true, keepUnlisted = false) {
   const select = $(selector);
-  const current = keep ? select.value : null;
-  select.replaceChildren(...pairs.map(([value, text]) => el("option", { value, textContent: text })));
-  if (current && [...select.options].some((o) => o.value === current)) select.value = current;
+  // 다중 select 는 선택된 값 전부를 복원해야 한다 — select.value 는 첫 하나뿐이다
+  const current = keep ? [...select.selectedOptions].map((o) => o.value) : [];
+  // 사용자(또는 불러온 문서)가 아무것도 고르지 않은 단일 select 는 비워 둔 채 유지한다
+  const keepNone = keep && !select.multiple && select.options.length > 0 && select.selectedIndex === -1;
+  const options = keepUnlisted ? withSelected(pairs, current) : pairs;
+  select.replaceChildren(...options.map(([value, text]) => el("option", { value, textContent: text })));
+  const wanted = new Set(current);
+  if (wanted.size) [...select.options].forEach((o) => { o.selected = wanted.has(o.value); });
+  else if (keepNone) select.selectedIndex = -1;
 }
 
 // --- 그래프 편집기 (#242) --------------------------------------------------------
@@ -287,44 +294,79 @@ $("#graph-delete").addEventListener("click", async () => {
 const agentForm = $("#agent-form");
 const selected = (select) => [...select.selectedOptions].map((o) => o.value);
 
-function agentDocument() {
+// 불러온 선언 — 폼이 모르는 블록을 저장 때 보존하는 기준이다 (#377). 새 에이전트면 null
+let loadedAgent = null;
+
+function agentDocument(base) {
   const f = agentForm;
-  const doc = emptyAgent(f.name.value.trim());
-  doc.metadata.version = f.version.value.trim();
-  doc.metadata.description = f.description.value.trim();
-  doc.metadata.group = f.group.value;
-  doc.spec.model = { provider: f.provider.value.trim(), name: f.model.value.trim() };
-  doc.spec.promptset = { ref: f.promptset.value };
-  doc.spec.skillsets = selected(f.skillsets).map((ref) => ({ ref }));
-  const memory = selected(f.memorysets).map((ref) => ({ ref, as: ref.split("/")[1].split("@")[0] }));
-  if (memory.length) doc.spec.memory = { spaces: memory };
-  doc.spec.runtime = { image: f.image.value.trim(), env_allowlist: f.env_allowlist.value.split(",").map((s) => s.trim()).filter(Boolean) };
-  doc.spec.entrypoint = f.entrypoint.value.trim();
-  if (f.a2a.checked) doc.spec.a2a = { enabled: true };
-  return pruneEmpty(doc);
+  return patchAgent(base, {
+    name: f.name.value.trim(),
+    version: f.version.value.trim(),
+    description: f.description.value.trim(),
+    group: f.group.value,
+    provider: f.provider.value.trim(),
+    model: f.model.value.trim(),
+    promptset: f.promptset.value,
+    skillsets: selected(f.skillsets),
+    memorysets: selected(f.memorysets),
+    image: f.image.value.trim(),
+    envAllowlist: f.env_allowlist.value.split(",").map((s) => s.trim()).filter(Boolean),
+    entrypoint: f.entrypoint.value.trim(),
+    a2a: f.a2a.checked,
+  });
+}
+
+// 저장 대상 이름의 서버 선언이 원본이다. 다른 이름의 선언은 원본이 되지 않는다 — 폼에 보이지
+// 않는 권한 선언이 다른 에이전트로 복제되거나, 이미 있는 에이전트의 숨은 블록이 덮이지 않게.
+// 없는 이름(404)이면 새 에이전트이고, 그 밖의 조회 실패는 저장을 멈춘다.
+async function agentBase(name) {
+  if (!name) return null;
+  if (loadedAgent?.metadata?.name === name) return loadedAgent;
+  try { return await api.agent(name); }
+  catch (err) {
+    if (err instanceof ApiError && err.status === 404) return null;
+    throw err;
+  }
+}
+
+async function currentAgentDocument() {
+  return agentDocument(await agentBase(agentForm.name.value.trim()));
+}
+
+// 카탈로그에 없는 값도 옵션으로 올려 선택 상태로 보여 준다 — 안 그러면 폼 값이 비어 읽혀 저장이 지운다 (#377)
+// 앞서 불러온 선언이 남긴 "카탈로그에 없음" 옵션은 먼저 걷어 낸다. 문서에 없는 값이면 단일
+// select 도 아무것도 고르지 않는다 — 첫 옵션이 저장 본문에 조용히 실리지 않게.
+function selectValues(select, values) {
+  const catalogPairs = [...select.options]
+    .filter((o) => !o.textContent.endsWith(UNLISTED_SUFFIX))
+    .map((o) => [o.value, o.textContent]);
+  const pairs = withSelected(catalogPairs, values);
+  const wanted = new Set(values);
+  select.replaceChildren(...pairs.map(([value, text]) => el("option", { value, textContent: text })));
+  [...select.options].forEach((o) => { o.selected = wanted.has(o.value); });
+  if (!select.multiple && ![...select.options].some((o) => wanted.has(o.value))) select.selectedIndex = -1;
 }
 
 function showAgent(doc) {
   const f = agentForm;
+  loadedAgent = structuredClone(doc);
   f.name.value = doc.metadata.name; f.version.value = doc.metadata.version; f.description.value = doc.metadata.description || "";
-  f.group.value = doc.metadata.group || "";
+  selectValues(f.group, [doc.metadata.group || ""]);
   f.provider.value = doc.spec.model.provider; f.model.value = doc.spec.model.name;
-  f.promptset.value = doc.spec.promptset?.ref || "";
-  const skill = new Set((doc.spec.skillsets || []).map((s) => s.ref));
-  [...f.skillsets.options].forEach((o) => { o.selected = skill.has(o.value); });
-  const mem = new Set((doc.spec.memory?.spaces || []).map((s) => s.ref));
-  [...f.memorysets.options].forEach((o) => { o.selected = mem.has(o.value); });
+  selectValues(f.promptset, [doc.spec.promptset?.ref || ""]);
+  selectValues(f.skillsets, (doc.spec.skillsets || []).map((s) => s.ref));
+  selectValues(f.memorysets, (doc.spec.memory?.spaces || []).map((s) => s.ref));
   f.image.value = doc.spec.runtime?.image || "";
   f.entrypoint.value = doc.spec.entrypoint || "";
   f.env_allowlist.value = (doc.spec.runtime?.env_allowlist || []).join(", ");
   f.a2a.checked = Boolean(doc.spec.a2a?.enabled);
 }
 
-async function validateAgent() {
-  try { return showFindings("#agent-findings", await api.validate({ agents: [agentDocument()] })); }
+async function validateAgent(doc) {
+  try { return showFindings("#agent-findings", await api.validate({ agents: [doc || await currentAgentDocument()] })); }
   catch (err) { showApiFindings("#agent-findings", err); return false; }
 }
-$("#agent-validate").addEventListener("click", validateAgent);
+$("#agent-validate").addEventListener("click", () => validateAgent());
 $("#agent-load").addEventListener("click", async () => {
   const name = prompt("불러올 에이전트 이름", catalog.agents[0]?.name || "");
   if (!name) return;
@@ -333,10 +375,14 @@ $("#agent-load").addEventListener("click", async () => {
 });
 agentForm.addEventListener("submit", async (event) => {
   event.preventDefault();
-  if (!(await validateAgent())) return;
+  let doc;
+  try { doc = await currentAgentDocument(); }
+  catch (err) { showApiFindings("#agent-findings", err); report(err); return; }
+  if (!(await validateAgent(doc))) return;
   try {
-    const doc = agentDocument();
     const saved = await api.saveAgent(doc.metadata.name, doc);
+    // 저장한 선언이 다음 저장의 원본이다 — 연속 저장이 같은 숨은 블록 위에서 이어진다
+    loadedAgent = structuredClone(doc);
     status(`저장됨: ${saved.path}`);
     await loadCatalog();
   } catch (err) { showApiFindings("#agent-findings", err); report(err); }
@@ -349,6 +395,8 @@ $("#agent-delete").addEventListener("click", async () => {
     const answer = await api.deleteAgent(name);
     const kept = answer && answer.retained ? ` — 남은 파일: ${answer.retained.join(", ")}` : "";
     status(`삭제됨: ${name}${kept}`);
+    // 지운 에이전트의 선언만 버린다 — 다른 이름을 지웠다면 쥐고 있는 원본은 그대로다
+    if (loadedAgent?.metadata?.name === name) loadedAgent = null;
     await loadCatalog();
   } catch (err) { report(err); }
 });

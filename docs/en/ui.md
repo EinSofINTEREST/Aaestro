@@ -110,7 +110,7 @@ the deployment status (`starting` → `ready`, or `failed` with the reason). **�
 and stops the containers; the record stays visible as `stopped`.
 
 Picking a graph also checks its agents' builds. If one of them has materials but no `built`
-image for its version, the tab lists it under the form and disables **배포** until it is
+image for its version (or a `built` record under a different tag than a deploy would run), the tab lists it under the form and disables **배포** until it is
 built. The control plane enforces the same rule on its own (`409`, `RT_012`); the tab just
 shows it before you press the button.
 
