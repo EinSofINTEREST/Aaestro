@@ -103,6 +103,7 @@ uv run aaestro <command>          # venv 를 활성화했다면 그냥 `aaestro`
 | `aaestro run <graph.yaml>` | 주소를 직접 적어 mission/service run 제출 |
 | `aaestro run --deployment <id>` | 배포에 run 제출 — 주소는 control plane 이 해석 |
 | `aaestro run-list` / `run-drain <id>` / `run-resume <id>` | control plane 을 통한 run 조작 |
+| `aaestro run-steer <id> "<text>"` | run 이 실행 중인 태스크에 지시 추가 — 다음 턴 경계에서 반영되고, 태스크가 먼저 끝나면 반영되지 않는다 |
 
 `--json` (서브커맨드 앞에) 은 기계 판독 출력으로, `--root` 는 작업 디렉토리가 아닌 다른
 저장소를 가리킬 때 씁니다.
@@ -143,7 +144,7 @@ AAESTRO_ORCHESTRATOR__CHECKPOINTER_URL=postgresql://user:pass@host:5432/aaestro 
 영속 백엔드에서는 같은 `--run-id` 로 다시 실행하면 마지막 checkpoint 에서 이어집니다 —
 다른 프로세스에서도 됩니다. 기본값 `memory` 는 프로세스와 함께 사라지므로 재개할 수 없습니다.
 
-`run-list` / `run-drain` / `run-resume` 는 `--control-url` 로 control plane 에 붙고,
+`run-list` / `run-drain` / `run-resume` / `run-steer` 는 `--control-url` 로 control plane 에 붙고,
 **기록된 run 만** 봅니다 — `orchestrator.run_store` 를 설정해 run 과 control plane 이 같은
 저장소를 보게 하세요. `run-drain` 은 요청만 남기고 즉시 반환하며, 실제 정지는 run 을 구동하는
 프로세스가 다음 iteration 경계에서 수행합니다.

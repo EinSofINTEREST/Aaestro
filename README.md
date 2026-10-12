@@ -114,6 +114,7 @@ uv run aaestro <command>          # or `aaestro` inside an activated venv
 | `aaestro run <graph.yaml>` | submit a mission or service run against agents you address yourself |
 | `aaestro run --deployment <id>` | submit a run to a deployment — the control plane resolves the addresses |
 | `aaestro run-list` / `run-drain <id>` / `run-resume <id>` | operate runs through a control plane |
+| `aaestro run-steer <id> "<text>"` | add an instruction to the task a run is executing — applied at its next turn boundary, or not at all if the task ends first |
 
 `--json` (before the subcommand) switches to machine-readable output; `--root` points at a
 repository other than the working directory.
@@ -155,7 +156,7 @@ With a durable backend, re-running the same `--run-id` resumes that run from its
 checkpoint — including from a different process. The default `memory` backend disappears
 with the process, so runs on it cannot be resumed.
 
-`run-list` / `run-drain` / `run-resume` talk to a control plane over `--control-url`, and
+`run-list` / `run-drain` / `run-resume` / `run-steer` talk to a control plane over `--control-url`, and
 they only see runs that were recorded — set `orchestrator.run_store` so the run and the
 control plane share one store. `run-drain` leaves a request and returns immediately; the
 process driving the run stops at its next iteration boundary.

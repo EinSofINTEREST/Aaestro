@@ -12,6 +12,7 @@ import asyncio
 import json
 import time
 from collections import OrderedDict
+from contextlib import aclosing
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Final, Protocol, TypedDict
@@ -30,6 +31,7 @@ from aaestro.core.agent import (
     DEFAULT_MAX_TURNS,
     DEFAULT_TOOL_TIMEOUT_S,
     ModelUsage,
+    SteerProblem,
     TaskRequest,
     TaskResult,
 )
@@ -42,6 +44,7 @@ from aaestro.core.errors import (
 from aaestro.core.events import (
     DoneEvent,
     ErrorEvent,
+    SteerEvent,
     TaskEvent,
     TokenEvent,
     ToolCallEvent,
@@ -51,7 +54,14 @@ from aaestro.core.skill import SkillContext
 from aaestro.core.tools import is_mcp_tool
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+    from collections.abc import (
+        AsyncGenerator,
+        AsyncIterator,
+        Awaitable,
+        Callable,
+        Mapping,
+        Sequence,
+    )
 
     from aaestro.agentd.telemetry import ExecutorTelemetry
     from aaestro.core.errors import RetryPolicy
@@ -70,6 +80,25 @@ REMEMBERED_RESULTS: Final = 1024
 상주 컨테이너는 수명이 길어 상한이 없으면 모든 태스크 결과(output 포함)를 끝까지 쥔다 (#315).
 재시도 창(05 NETWORK_RETRY: 최대 30s × 3)에 드는 태스크 수보다 넉넉하면 된다.
 """
+
+
+MAX_PENDING_STEERS: Final = 8
+"""한 태스크에 반영을 기다리는 steer 수의 상한 — 넘으면 ``VAL_002`` 로 거절한다.
+
+턴 경계마다 비워지므로 정상 사용에서는 한두 건이다. 상한이 없으면 모델 호출 한 번이 길게
+매달린 동안 대기열이 끝없이 자란다 (#315 와 같은 부류)."""
+
+MAX_STEER_CHARS: Final = 4000
+"""steer 한 건의 길이 상한 — 방향을 바꾸는 한마디이지 새 태스크 입력이 아니다."""
+
+MAX_STEER_BY_CHARS: Final = 200
+"""``by`` (감사용 신원) 의 길이 상한 — 로그와 이벤트에 그대로 실린다."""
+
+STEER_HEADER: Final = "[operator steer]"
+"""steer 가 대화에 들어갈 때 붙는 머리말 — 모델이 태스크 입력·도구 결과와 구분하게 한다.
+
+회상 기억의 출처 표시(``[memory:…]``)와 같은 결이다. untrusted 표시는 붙이지 않는다:
+steer 는 운영자 입력이다."""
 
 
 def _model_status(err: BaseException) -> str:
@@ -150,7 +179,28 @@ class ToolTurn:
 
 
 Message = UserTurn | AssistantTurn | ToolTurn
-"""대화 한 칸. 역할이 번갈아 쌓인다: user → assistant → tool → assistant → …"""
+"""대화 한 칸. 역할이 번갈아 쌓인다: user → assistant → tool → assistant → …
+
+운영자 steer 가 있으면 tool 뒤에 user 가 한 번 더 온다: … → tool → user(steer) → assistant → …"""
+
+
+@dataclass(frozen=True)
+class Steer:
+    """An operator instruction waiting for the next turn boundary.
+
+    턴 경계를 기다리는 운영자 지시 한 건. ``by`` 는 감사용이다 — 모델에는 가지 않는다.
+    """
+
+    text: str
+    by: str
+
+
+@dataclass
+class _SteerQueue:
+    """실행 하나의 steer 대기열 — 어느 run 의 태스크인지와 함께 쥔다 (로그의 ``run_id``)."""
+
+    run_id: str
+    pending: list[Steer] = field(default_factory=list)
 
 
 class Model(Protocol):
@@ -325,6 +375,10 @@ class Executor:
         )
         # 멱등성: 완료된 태스크는 같은 결과를 돌려준다 (재시도/재개 시나리오)
         self._completed: OrderedDict[str, TaskResult] = OrderedDict()
+        # 진행 중 태스크의 steer 대기열. 키는 루프 진입 때 생기고 종료(완료·실패·취소·timeout) 때
+        # 지워진다 — invoke 를 넘어 남는 상태가 아니다 (02 Statelessness). 락은 없다: 넣기와
+        # 꺼내기 모두 await 없이 끝나므로 이벤트 루프 안에서 원자적이다
+        self._steers: dict[str, _SteerQueue] = {}
 
     @property
     def binding(self) -> ModuleBinding:
@@ -343,6 +397,60 @@ class Executor:
         이벤트 루프 안에서 원자적이다.
         """
         self._binding = binding
+
+    async def steer(self, task_id: str, text: str, *, by: str) -> None:
+        """Queue an operator instruction for a running task's next turn boundary.
+
+        진행 중인 태스크의 다음 턴 경계에 넣을 운영자 지시를 대기열에 올립니다.
+
+        **접수이지 반영이 아닙니다.** 지시는 tool 결과가 붙은 직후에만 대화에 들어갑니다 —
+        모델 호출 도중에는 끼어들지 않고, 태스크가 그 전에 끝나면 반영되지 않은 채 WARN 으로
+        남습니다. 반영 시점은 ``SteerEvent`` 가 알립니다.
+
+        Args:
+            task_id: The running task to steer.
+            text: The instruction. 본문은 로그에 남기지 않습니다 (길이만).
+            by: Who issued it — 감사용으로 로그와 이벤트에 남습니다.
+
+        Raises:
+            AaestroError: NOT_FOUND/``NF_001`` if the task is not running here (끝났거나
+                모르는 태스크), VALIDATION/``VAL_002`` if the text or ``by`` is empty or too
+                long, or too many instructions are already waiting.
+        """
+        queue = self._steers.get(task_id)
+        if queue is None:
+            raise AaestroError(
+                category=ErrorCategory.NOT_FOUND,
+                code=ErrorCode.NF_001,
+                message=f"no in-flight task: {task_id}",
+                agent=self._agent,
+                task_id=task_id,
+            )
+        pending = queue.pending
+        problem = _steer_problem(text, by, waiting=len(pending))
+        if problem is not None:
+            raise AaestroError(
+                category=ErrorCategory.VALIDATION,
+                code=ErrorCode.VAL_002,
+                message=str(problem),
+                agent=self._agent,
+                task_id=task_id,
+                details={
+                    "max_chars": MAX_STEER_CHARS,
+                    "max_by_chars": MAX_STEER_BY_CHARS,
+                    "max_pending": MAX_PENDING_STEERS,
+                },
+            )
+        pending.append(Steer(text=text, by=by))
+        log.info(
+            "steer queued",
+            agent=self._agent,
+            task_id=task_id,
+            run_id=queue.run_id,
+            steered_by=by,
+            text_chars=len(text),
+            pending=len(pending),
+        )
 
     async def execute(self, task: TaskRequest) -> TaskResult:
         """Run a task to completion.
@@ -684,19 +792,25 @@ class Executor:
                 )
             return event
 
-        while True:
-            remaining = deadline - asyncio.get_running_loop().time()
-            if remaining <= 0:
-                yield finished(self._timeout_event(task))
-                return
-            try:
-                event = await asyncio.wait_for(anext(events), timeout=remaining)
-            except StopAsyncIteration:
-                return
-            except TimeoutError:
-                yield finished(self._timeout_event(task))
-                return
-            yield finished(event)
+        try:
+            while True:
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    # 종료 이벤트보다 먼저 닫는다 — 끝났다고 알린 태스크가 steer 를 받지 않게
+                    await events.aclose()
+                    yield finished(self._timeout_event(task))
+                    return
+                try:
+                    event = await asyncio.wait_for(anext(events), timeout=remaining)
+                except StopAsyncIteration:
+                    return
+                except TimeoutError:
+                    yield finished(self._timeout_event(task))
+                    return
+                yield finished(event)
+        finally:
+            # 마감으로 끊거나 소비자가 떠나도 루프를 바로 닫는다 — steer 대기열이 남지 않게
+            await events.aclose()
 
     def _recall_failure(self, err: BaseException) -> AaestroError:
         """회상 실패를 구조화 에러로 만든다 — 기억이 없다고 태스크가 죽지는 않는다."""
@@ -724,7 +838,7 @@ class Executor:
             ).payload(),
         )
 
-    async def _stream(self, task: TaskRequest) -> AsyncIterator[TaskEvent]:
+    async def _stream(self, task: TaskRequest) -> AsyncGenerator[TaskEvent]:
         """공용 루프의 이벤트를 그대로 흘리고, 실패만 이벤트로 접는다.
 
         루프는 실패를 **예외로** 올린다 — 그것이 `execute` 와 공유하는 계약이다.
@@ -733,8 +847,10 @@ class Executor:
         소비자가 두 경로를 다르게 다뤄야 한다.
         """
         try:
-            async for event in self._events(task):
-                yield event
+            # 소비자가 도중에 떠나도(연결 끊김) 루프와 steer 대기열이 바로 정리되게 닫는다
+            async with aclosing(self._events(task)) as events:
+                async for event in events:
+                    yield event
         except asyncio.CancelledError:
             raise
         except AaestroError as err:
@@ -742,7 +858,59 @@ class Executor:
         except Exception as err:
             yield ErrorEvent(task_id=task.task_id, error=self._recall_failure(err).payload())
 
-    async def _events(self, task: TaskRequest) -> AsyncIterator[TaskEvent]:
+    async def _events(self, task: TaskRequest) -> AsyncGenerator[TaskEvent]:
+        """The tool loop with the task's steer queue open around it.
+
+        steer 대기열의 수명을 루프에 묶는다: 루프가 도는 동안만 ``steer`` 가 접수되고,
+        어떤 식으로 끝나든(완료·실패·취소·timeout·소비자 이탈) ``finally`` 가 지운다.
+
+        종료 이벤트는 대기열을 **닫은 뒤에** 낸다 — 소비자가 ``done`` 을 본 뒤에 보낸 steer 가
+        접수됐다가 조용히 사라지지 않고 404 를 받게.
+        """
+        queue = self._open_steers(task)
+        try:
+            async with aclosing(self._turns(task, queue.pending)) as events:
+                async for event in events:
+                    if isinstance(event, DoneEvent):
+                        self._close_steers(task, queue)
+                    yield event
+        finally:
+            self._close_steers(task, queue)
+
+    def _open_steers(self, task: TaskRequest) -> _SteerQueue:
+        """이 실행의 steer 대기열을 연다 — **먼저 시작한 실행이 접수 창구를 유지한다**.
+
+        같은 ``task_id`` 로 겹쳐 시작한 나중 실행은 창구를 얻지 못한다 (자기만의 빈 대기열로
+        돌고, steer 를 받지 않는다). 나중 것이 덮어쓰면 A2A 로 태스크를 보내는 peer 가 진행 중인
+        ``task_id`` 를 골라 운영자 지시를 자기 태스크의 대화로 가로챌 수 있고, 악의 없는
+        재시도도 먼저 끝나면서 아직 도는 실행의 창구를 지운다.
+        """
+        queue = _SteerQueue(run_id=task.run_id)
+        self._steers.setdefault(task.task_id, queue)
+        return queue
+
+    def _close_steers(self, task: TaskRequest, queue: _SteerQueue) -> None:
+        """대기열을 닫는다 — 반영되지 못한 지시는 버리되 **조용히 버리지 않는다**.
+
+        "queued" 로 답한 지시가 흔적 없이 사라지면 운영자는 반영됐다고 믿는다. 두 번 불려도
+        안전하다 (종료 이벤트 직전과 ``finally``). 창구가 자기 것일 때만 지운다 — 겹쳐 돈
+        다른 실행의 창구를 건드리지 않는다.
+        """
+        if self._steers.get(task.task_id) is queue:
+            del self._steers[task.task_id]
+        if not queue.pending:
+            return
+        log.warning(
+            "steer dropped, task ended before the next turn boundary",
+            agent=self._agent,
+            task_id=task.task_id,
+            run_id=task.run_id,
+            dropped=len(queue.pending),
+            issuers=sorted({steer.by for steer in queue.pending}),
+        )
+        queue.pending.clear()
+
+    async def _turns(self, task: TaskRequest, pending: list[Steer]) -> AsyncGenerator[TaskEvent]:
         """The one tool loop — model turns, tool calls, and the terminal event.
 
         **이 루프는 한 곳에만 존재한다** (#233). 이전에는 `_run` 과 `_stream` 이
@@ -810,6 +978,29 @@ class Executor:
                     AssistantTurn(response.content, response.tool_calls, raw=response.raw)
                 )
                 messages.append(ToolTurn(outcomes=tuple(outcomes)))
+
+                # 턴 경계 — tool 결과가 붙은 직후에만 steer 를 넣는다 (assistant → tool → user).
+                # 모델 호출 도중에는 끼어들지 않고, 이미 보낸 메시지는 고치지 않는다.
+                # 다음 모델 호출이 없는 마지막 회차에서는 꺼내지 않는다 — 반영된 척하지 않게
+                if pending and turn + 1 < max_turns:
+                    steers = tuple(pending)
+                    pending.clear()
+                    # 여러 건은 user 턴 **하나**로. tool 결과 뒤에 user 턴이 오는 것은 프레임워크
+                    # 대화 타입에서의 순서다 — provider 의 wire 역할 교대는 어댑터가 맞춘다
+                    messages.append(UserTurn(parts=tuple(_steer_part(s) for s in steers)))
+                    log.info(
+                        "steer applied",
+                        agent=self._agent,
+                        task_id=task.task_id,
+                        run_id=task.run_id,
+                        turn=turn,
+                        applied=len(steers),
+                        issuers=sorted({steer.by for steer in steers}),
+                    )
+                    for steer in steers:
+                        yield SteerEvent(
+                            task_id=task.task_id, text=steer.text, by=steer.by, turn=turn
+                        )
         except asyncio.CancelledError:
             self._cleanup()
             raise
@@ -908,6 +1099,33 @@ class Executor:
         return paired
 
 
+def _steer_problem(text: str, by: str, *, waiting: int) -> SteerProblem | None:
+    """steer 를 받을 수 없는 이유 — 받을 수 있으면 None.
+
+    사유는 닫힌 집합(``SteerProblem``)에서만 고른다: runtime 이 그 집합에 있는 문구만 운영자에게
+    옮기므로, 여기서 자유 문구를 지어내면 운영자는 뭉뚱그린 사유를 본다.
+    """
+    if not text.strip():
+        return SteerProblem.TEXT_EMPTY
+    if len(text) > MAX_STEER_CHARS:
+        return SteerProblem.TEXT_TOO_LONG
+    if not by.strip():
+        return SteerProblem.ISSUER_MISSING
+    if len(by) > MAX_STEER_BY_CHARS:
+        return SteerProblem.ISSUER_TOO_LONG
+    if not by.isprintable():
+        # 로그와 이벤트에 그대로 실린다 — 개행·제어문자로 줄을 위조하지 못하게
+        return SteerProblem.ISSUER_NOT_PRINTABLE
+    if waiting >= MAX_PENDING_STEERS:
+        return SteerProblem.TOO_MANY_PENDING
+    return None
+
+
+def _steer_part(steer: Steer) -> str:
+    """steer 한 건이 user 턴에 실리는 모양 — 머리말로 태스크 입력과 구분한다."""
+    return f"{STEER_HEADER}\n{steer.text}"
+
+
 class _ModelLabels(TypedDict):
     provider: str | None
     model: str | None
@@ -953,7 +1171,11 @@ def tool_outcome(call: ToolCall, result: Any) -> ToolOutcome:
 
 
 __all__ = [
+    "MAX_PENDING_STEERS",
+    "MAX_STEER_BY_CHARS",
+    "MAX_STEER_CHARS",
     "MODEL_RETRY_POLICIES",
+    "STEER_HEADER",
     "AssistantTurn",
     "Executor",
     "ExecutorConfig",
@@ -961,6 +1183,8 @@ __all__ = [
     "Model",
     "Message",
     "ModelResponse",
+    "Steer",
+    "SteerProblem",
     "ToolCall",
     "ToolOutcome",
     "ToolRegistry",

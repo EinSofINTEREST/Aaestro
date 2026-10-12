@@ -15,6 +15,7 @@ from contextlib import asynccontextmanager
 from dataclasses import asdict
 from typing import TYPE_CHECKING, Annotated, Any
 
+import structlog
 from fastapi import APIRouter, Body, Depends, FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, RedirectResponse, Response
@@ -43,6 +44,12 @@ if TYPE_CHECKING:
     from aaestro.runtime.deployments import DeploymentManager, DeploymentRecord
     from aaestro.runtime.images import ImageBuilder
 
+DEFAULT_STEERED_BY = "operator"
+"""steer 본문이 ``by`` 를 생략했을 때의 감사 이름 — control plane 토큰은 사람을 가르지 않는다."""
+
+
+log = structlog.get_logger(__name__)
+
 
 def unknown_run(run_id: str) -> AaestroError:
     """미지의 run — 조용히 200 을 돌려주면 호출자가 조작이 먹혔다고 오해한다."""
@@ -52,6 +59,30 @@ def unknown_run(run_id: str) -> AaestroError:
         message=f"unknown run: {run_id}",
         details={"run_id": run_id},
     )
+
+
+def not_driven_here(run_id: str, message: str) -> JSONResponse:
+    """이 표면이 해 줄 수 없는 run 조작 — 200 으로 삼키지 않고 501 로 답한다.
+
+    조용히 성공하면 운영자가 조작이 먹혔다고 믿고 손을 뗀다.
+    """
+    return JSONResponse(
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        content={"error": {"code": str(ErrorCode.GRAPH_001), "message": message, "run_id": run_id}},
+    )
+
+
+class SteerRequest(BaseModel):
+    """`/v1/runs/{run_id}/steer` 본문."""
+
+    # 오타 난 키(``nodes``)를 무시하면 지시가 엉뚱한 노드로 간다
+    model_config = ConfigDict(extra="forbid")
+
+    text: str
+    by: str = DEFAULT_STEERED_BY
+    """감사용 이름 — **호출자의 주장**이다. 인증된 신원이 아니다."""
+    node: str | None = None
+    """생략하면 지금 실행 중인 노드."""
 
 
 class RunView(BaseModel):
@@ -227,19 +258,67 @@ def create_app(
             return {**view_of(resumed).model_dump(), "status": "resumed"}
         if resume is None:
             # 조용히 성공하면 운영자가 재개됐다고 믿고 손을 뗀다
-            return JSONResponse(  # type: ignore[return-value]
-                status_code=status.HTTP_501_NOT_IMPLEMENTED,
-                content={
-                    "error": {
-                        "code": str(ErrorCode.GRAPH_001),
-                        "message": "this control plane does not drive the run",
-                        "run_id": run_id,
-                    }
-                },
+            return not_driven_here(  # type: ignore[return-value]
+                run_id, "this control plane does not drive the run"
             )
 
         handle = await resume(run_id)
         return {"run_id": getattr(handle, "run_id", run_id), "status": "resumed"}
+
+    @api.post("/v1/runs/{run_id}/steer", status_code=status.HTTP_202_ACCEPTED)
+    async def steer_run(run_id: str, body: Annotated[Any, Body()]) -> dict[str, Any]:
+        """Queue an operator instruction for the task a run is executing right now.
+
+        **접수만 하고 돌아옵니다** — 지시는 그 에이전트의 다음 턴 경계에서 대화에 들어가고,
+        태스크가 먼저 끝나면 반영되지 않습니다 (agentd 가 WARN 으로 남깁니다).
+
+        진행 중 태스크는 **구동 프로세스만** 압니다. 이 표면이 run 을 구동하지 않거나 대상
+        에이전트의 실행기가 steer 를 지원하지 않으면 501 입니다.
+        """
+        record = store.get(run_id)
+        if record is None:
+            raise unknown_run(run_id)
+        request = _parsed(body, SteerRequest)
+        # 거절도 남긴다 — 누가 어느 run 에 넣으려다 왜 막혔는지가 감사의 절반이다. 본문은 길이만
+        audit: dict[str, Any] = {
+            "graph": record.graph,
+            "run_id": run_id,
+            "steered_by": request.by,
+            "text_chars": len(request.text),
+            **({"node_id": request.node} if request.node else {}),
+        }
+        if runs is None:
+            log.warning("run steer refused", reason="control plane does not drive runs", **audit)
+            return not_driven_here(  # type: ignore[return-value]
+                run_id, "this control plane does not drive the run"
+            )
+        try:
+            receipt = await runs.steer(run_id, request.text, by=request.by, node=request.node)
+        except AaestroError as err:
+            log.warning("run steer refused", error_code=str(err.code), **audit)
+            raise
+        if receipt is None:
+            log.warning("run steer refused", reason="node runtime cannot forward a steer", **audit)
+            return not_driven_here(  # type: ignore[return-value]
+                run_id, "this control plane cannot forward a steer to the run"
+            )
+        if not receipt.supported:
+            log.warning(
+                "run steer refused",
+                reason="executor does not support steer",
+                agent=receipt.agent,
+                **audit,
+            )
+            return not_driven_here(  # type: ignore[return-value]
+                run_id, f"agent executor does not support steer: {receipt.agent}"
+            )
+        return {
+            "run_id": run_id,
+            "node": receipt.node_id,
+            "task_id": receipt.task_id,
+            "agent": receipt.agent,
+            "status": "queued",
+        }
 
     if catalog is not None:
         _mount_catalog(api, catalog)
@@ -610,4 +689,4 @@ def _mount_images(api: APIRouter, builder: ImageBuilder) -> None:
         return {**_build_view(record), "needs_build": builder.needs_build(name, version)}
 
 
-__all__ = ["RunView", "create_app", "unknown_run", "view_of"]
+__all__ = ["RunView", "SteerRequest", "create_app", "unknown_run", "view_of"]

@@ -22,6 +22,7 @@ class EventType(StrEnum):
     TOKEN = "token"  # noqa: S105 - 모델 출력 토큰, 자격증명 아님
     TOOL_CALL = "tool_call"
     TOOL_RESULT = "tool_result"
+    STEER = "steer"
     DONE = "done"
     ERROR = "error"
 
@@ -62,6 +63,23 @@ class ToolResultEvent(_BaseEvent):
     error: AaestroErrorPayload | None = None
 
 
+class SteerEvent(_BaseEvent):
+    """운영자 steer 가 대화에 **들어간** 시점 — 접수가 아니라 반영을 알린다.
+
+    접수(`POST /steer`)와 반영 사이에는 턴 경계까지의 간격이 있고, 태스크가 먼저 끝나면
+    반영되지 않는다. 이 이벤트는 지시가 대화에 붙었다는 것까지만 말한다 — 모델이 실제로
+    읽는 것은 다음 모델 호출이고, 그 호출은 실패할 수 있다.
+    ``turn`` 은 이 지시가 뒤따른 tool 턴의 회차다.
+
+    ``by`` 는 **호출자의 주장**이다 — 인증된 신원이 아니다 (감사 단서로만 쓴다).
+    """
+
+    type: Literal[EventType.STEER] = EventType.STEER
+    text: str
+    by: str
+    turn: int = 0
+
+
 class DoneEvent(_BaseEvent):
     """태스크 정상 종료."""
 
@@ -79,7 +97,7 @@ class ErrorEvent(_BaseEvent):
 
 
 TaskEvent = Annotated[
-    TokenEvent | ToolCallEvent | ToolResultEvent | DoneEvent | ErrorEvent,
+    TokenEvent | ToolCallEvent | ToolResultEvent | SteerEvent | DoneEvent | ErrorEvent,
     Field(discriminator="type"),
 ]
 """스트리밍 이벤트 유니온 — ``type`` 필드로 판별한다."""

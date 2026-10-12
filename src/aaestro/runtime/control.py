@@ -14,8 +14,19 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
-from aaestro.core.agent import CONTROL_OVERHEAD_S, HealthStatus, TaskRequest, TaskResult
-from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode, RetryPolicy
+from aaestro.core.agent import (
+    CONTROL_OVERHEAD_S,
+    HealthStatus,
+    SteerProblem,
+    TaskRequest,
+    TaskResult,
+)
+from aaestro.core.errors import (
+    AaestroError,
+    ErrorCategory,
+    ErrorCode,
+    RetryPolicy,
+)
 from aaestro.core.events import TaskEvent
 from aaestro.resilience import retrying
 
@@ -27,6 +38,22 @@ if TYPE_CHECKING:
 DEFAULT_CONTROL_PORT = 8080
 DEFAULT_TIMEOUT_S = 300.0
 DEFAULT_HEALTH_TIMEOUT_S = 3.0
+DEFAULT_STEER_TIMEOUT_S = 10.0
+"""steer 접수는 대기열에 올리는 것뿐이다 — 태스크 timeout(300s)만큼 기다릴 일이 아니다."""
+
+STEER_REFUSALS: dict[str, tuple[int, ErrorCategory, str]] = {
+    ErrorCode.NF_001: (404, ErrorCategory.NOT_FOUND, "task is not running on the agent"),
+    ErrorCode.VAL_002: (400, ErrorCategory.VALIDATION, "agent refused the steer: over a limit"),
+}
+"""에이전트의 steer 거절 중 운영자에게 구분해 올리는 코드 — 코드별 (HTTP 상태, 카테고리, 문구).
+
+응답 본문은 **신뢰하지 않는 에이전트 컨테이너**가 쓴다. 본문이 정하게 두는 것은 "이 둘 중
+어느 것인가" 와 닫힌 사유 집합(``SteerProblem``)의 어느 원소인가뿐이다. 카테고리·retryable·
+agent·task_id 와 **운영자에게 보이는 문구**는 runtime 이 정한다 — 에이전트가 쓴 문자열은
+길이를 줄여도 올리지 않는다 (코드만 맞추면 피싱 문구가 운영자 화면에 그대로 나온다)."""
+
+STEER_REFUSAL_DETAILS = ("max_chars", "max_by_chars", "max_pending")
+"""거절 details 에서 남기는 키 — 상한 숫자뿐이다. 그 밖의 키는 버린다."""
 
 _SSE_DATA_PREFIX = "data:"
 
@@ -210,6 +237,44 @@ class ControlClient:
         """
         await self._request_json("POST", f"/v1/cancel/{task_id}", task_id=task_id)
 
+    async def steer(self, task_id: str, text: str, *, by: str) -> bool:
+        """Queue an operator instruction for a running task.
+
+        진행 중 태스크의 다음 턴 경계에 넣을 운영자 지시를 대기시킵니다. 접수이지 반영이
+        아닙니다 — 태스크가 먼저 끝나면 반영되지 않습니다.
+
+        **재시도하지 않습니다**: 접수는 멱등이 아니라, 다시 보내면 같은 지시가 두 번 쌓입니다.
+
+        Args:
+            task_id: The running task to steer.
+            text: The instruction.
+            by: Who issued it — 감사용.
+
+        Returns:
+            ``False`` when the agent's executor does not support steering (``501``) —
+            예외가 아니라 값으로 돌려줍니다: 장애가 아니라 그 에이전트의 성질입니다.
+
+        Raises:
+            AaestroError: agentd 의 거절 중 끝난 태스크(``NF_001``)와 상한 초과(``VAL_002``)만
+                구분해 올립니다 — 둘은 운영자의 다음 행동이 다릅니다. 본문은 신뢰하지 않는
+                컨테이너가 쓰므로 코드 외에는 정제합니다 (``STEER_REFUSALS``). 그 밖의 실패는
+                다른 호출과 같이 상태 코드 기준(``RT_002``), 전송 실패는 ``NET_*``.
+        """
+        response = await self._send(
+            "POST",
+            f"/v1/steer/{task_id}",
+            body={"text": text, "by": by},
+            timeout_s=DEFAULT_STEER_TIMEOUT_S,
+            task_id=task_id,
+        )
+        if response.status_code == httpx.codes.NOT_IMPLEMENTED:
+            return False
+        refusal = _steer_refusal(response, agent=self._agent, task_id=task_id)
+        if refusal is not None:
+            raise refusal
+        self._raise_for_status(response, task_id=task_id)
+        return True
+
     async def reload(self) -> None:
         """Hot-reload promptset and skillset modules.
 
@@ -267,11 +332,38 @@ class ControlClient:
         authenticated: bool = True,
     ) -> Any:
         """Control API 를 호출하고 실패를 구조화 에러로 변환한다."""
-        url = f"{self._base_url}{path}"
+        response = await self._send(
+            method,
+            path,
+            body=body,
+            timeout_s=timeout_s,
+            task_id=task_id,
+            authenticated=authenticated,
+        )
+        self._raise_for_status(response, task_id=task_id)
+
+        if not response.content:
+            return {}
+        return response.json()
+
+    async def _send(
+        self,
+        method: str,
+        path: str,
+        *,
+        body: dict[str, Any] | None = None,
+        timeout_s: float | None = None,
+        task_id: str | None = None,
+        authenticated: bool = True,
+    ) -> httpx.Response:
+        """요청을 보내고 응답을 그대로 돌려준다 — 전송 실패만 구조화 에러로 바꾼다.
+
+        상태 코드 해석은 호출자 몫이다: steer 는 501 을 실패가 아니라 "지원하지 않음" 으로 읽는다.
+        """
         try:
-            response = await self._client.request(
+            return await self._client.request(
                 method,
-                url,
+                f"{self._base_url}{path}",
                 json=body,
                 headers=self._headers(authenticated=authenticated),
                 timeout=timeout_s or self._timeout_s,
@@ -280,12 +372,6 @@ class ControlClient:
             raise self._timeout_error(err, task_id=task_id) from err
         except httpx.TransportError as err:
             raise self._transport_error(err, task_id=task_id) from err
-
-        self._raise_for_status(response, task_id=task_id)
-
-        if not response.content:
-            return {}
-        return response.json()
 
     def _raise_for_status(self, response: httpx.Response, *, task_id: str | None) -> None:
         """비 2xx 응답을 구조화 에러로 변환한다."""
@@ -342,6 +428,53 @@ class ControlClient:
             task_id=task_id,
             retryable=True,
         )
+
+
+def _steer_refusal(response: httpx.Response, *, agent: str, task_id: str) -> AaestroError | None:
+    """에이전트의 steer 거절 중 알려진 둘(``STEER_REFUSALS``)만 정제해 돌려준다 — 아니면 None.
+
+    본문을 그대로 복원하지 않는다: 에이전트가 임의의 코드·카테고리·``retryable``·details 를
+    실어 control plane 응답을 꾸미거나(다른 run 의 id, 권한 거부 코드), 멱등이 아닌 steer 의
+    재전송을 유도할 수 있다. 코드가 상태와 맞는 알려진 거절일 때만 코드를 믿고, 나머지 필드는
+    runtime 이 아는 값으로 채운다. 문구도 마찬가지다: 에이전트의 문구가 ``SteerProblem`` 의
+    원소와 정확히 같을 때만 그 원소를 쓰고, 아니면 코드별 고정 문구다.
+    None 이면 호출자가 상태 코드 기준의 일반 변환을 탄다.
+    """
+    try:
+        body = response.json()
+    except ValueError:
+        return None
+    code = body.get("code") if isinstance(body, dict) else None
+    if not isinstance(code, str):
+        return None
+    expected = STEER_REFUSALS.get(code)
+    if expected is None or expected[0] != response.status_code:
+        return None
+
+    message, details = body.get("message"), body.get("details")
+    known = details if isinstance(details, dict) else {}
+    return AaestroError(
+        category=expected[1],
+        code=code,
+        message=_refusal_message(code, message, fallback=expected[2]),
+        agent=agent,
+        task_id=task_id,
+        # bool 은 int 의 하위 타입이다 — 숫자만 남긴다
+        details={k: known[k] for k in STEER_REFUSAL_DETAILS if type(known.get(k)) is int},
+    )
+
+
+def _refusal_message(code: str, claimed: object, *, fallback: str) -> str:
+    """운영자에게 보일 거절 문구 — 에이전트가 쓴 문자열은 쓰지 않는다.
+
+    ``VAL_002`` 의 구체 사유는 닫힌 집합에서 **값으로 다시 꺼낸다**: 에이전트의 문자열을
+    통과시키는 것이 아니라, 그것이 가리키는 runtime 쪽 상수를 쓴다.
+    """
+    if code == ErrorCode.VAL_002 and isinstance(claimed, str):
+        for problem in SteerProblem:
+            if claimed == problem.value:
+                return problem.value
+    return fallback
 
 
 def control_url(host: str, port: int = DEFAULT_CONTROL_PORT) -> str:

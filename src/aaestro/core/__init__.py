@@ -30,6 +30,7 @@ from aaestro.core.errors import (
 from aaestro.core.events import (
     DoneEvent,
     ErrorEvent,
+    SteerEvent,
     TaskEvent,
     TokenEvent,
     ToolCallEvent,
@@ -90,6 +91,7 @@ __all__ = [
     "RetryPolicy",
     "SkillContext",
     "SkillSpec",
+    "SteerEvent",
     "TaskConfig",
     "TaskEvent",
     "TaskRequest",

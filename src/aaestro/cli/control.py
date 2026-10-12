@@ -32,7 +32,9 @@ def unreachable(url: str, err: Exception) -> AaestroError:
     )
 
 
-def _failed(url: str, response: httpx.Response, *, run_scoped: bool) -> AaestroError:
+def _failed(
+    url: str, response: httpx.Response, *, run_scoped: bool, server_details: bool = False
+) -> AaestroError:
     """서비스가 돌려준 실패를 구조화 에러로.
 
     404 를 무조건 "unknown run" 으로 읽지 않는다: 목록 조회에는 run id 가
@@ -50,7 +52,21 @@ def _failed(url: str, response: httpx.Response, *, run_scoped: bool) -> AaestroE
             details=details,
         )
     category, code = _server_code(response)
+    if server_details:
+        # 서버 세부를 먼저 — 같은 키(`url`)를 서버가 덮지 못하게
+        details = {**_server_details(response), **details}
     return AaestroError(category=category, code=code, message=_detail(response), details=details)
+
+
+def _server_details(response: httpx.Response) -> dict[str, Any]:
+    """서버가 에러 봉투에 실은 details — 봉투가 아니면 빈 dict."""
+    try:
+        body = response.json()
+    except ValueError:
+        return {}
+    error = body.get("error") if isinstance(body, dict) else None
+    found = error.get("details") if isinstance(error, dict) else None
+    return dict(found) if isinstance(found, dict) else {}
 
 
 def _server_code(response: httpx.Response) -> tuple[ErrorCategory, str]:
@@ -114,6 +130,7 @@ class ControlClient:
         *,
         run_scoped: bool = True,
         body: dict[str, Any] | None = None,
+        server_details: bool = False,
     ) -> Any:
         """요청 한 건 — 연결 실패와 서비스 실패를 나눠 옮긴다.
 
@@ -122,6 +139,8 @@ class ControlClient:
             path: Request path.
             run_scoped: Whether a 404 means "that run does not exist" — 목록
                 조회는 False 다 (그 404 는 엔드포인트 부재를 뜻한다).
+            server_details: 서버가 실은 details 를 에러에 옮길지 — 사유가 details 에 있는
+                조작(steer 의 실행 중 노드 목록)만 켠다.
         """
         url = f"{self._base}{path}"
         try:
@@ -138,7 +157,7 @@ class ControlClient:
             raise unreachable(self._base, err) from err
 
         if response.status_code >= httpx.codes.BAD_REQUEST:
-            raise _failed(url, response, run_scoped=run_scoped)
+            raise _failed(url, response, run_scoped=run_scoped, server_details=server_details)
         return response.json()
 
     def list_runs(self, *, mode: str | None = None) -> Sequence[dict[str, Any]]:
@@ -201,6 +220,27 @@ class ControlClient:
     def resume(self, run_id: str) -> dict[str, Any]:
         """halted run 을 재개한다 — 구동 프로세스만 응답할 수 있다."""
         result: dict[str, Any] = self._request("POST", f"/v1/runs/{run_id}/resume")
+        return result
+
+    def steer(
+        self, run_id: str, text: str, *, node: str | None = None, by: str | None = None
+    ) -> dict[str, Any]:
+        """진행 중 run 에 운영자 지시를 대기시킨다 — 접수이지 반영이 아니다 (#364)."""
+        body: dict[str, Any] = {"text": text}
+        # 생략한 값은 싣지 않는다 — null 을 보내면 서버 기본값(`by`)을 덮는다
+        if node is not None:
+            body["node"] = node
+        if by is not None:
+            body["by"] = by
+        # steer 의 404 는 셋이다 (모르는 run / 진행 중 태스크 없음 / 그 노드가 실행 중 아님) —
+        # "unknown run" 으로 뭉개면 있는 run 을 없다고 답한다. 서버의 사유를 그대로 옮긴다
+        result: dict[str, Any] = self._request(
+            "POST",
+            f"/v1/runs/{run_id}/steer",
+            run_scoped=False,
+            body=body,
+            server_details=True,
+        )
         return result
 
 
