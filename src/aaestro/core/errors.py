@@ -118,8 +118,9 @@ class ErrorCode(StrEnum):
     # Module
     MOD_001 = "MOD_001"  # 모듈 ref 해석 실패
     MOD_002 = "MOD_002"  # 모듈 버전/의존성 충돌
-    MOD_003 = "MOD_003"  # 모듈 스키마(yaml) 검증 실패
-    MOD_004 = "MOD_004"  # Promptset 변수 검증 실패 / decisionset 질문의 state 조각 불일치
+    MOD_003 = "MOD_003"  # 모듈 스키마(yaml) 검증 실패 / 게시된 모듈의 파일 문제 (로드 시점)
+    # Promptset 변수 검증 실패 / 렌더 시점의 템플릿 문제 / decisionset 질문의 state 조각 불일치
+    MOD_004 = "MOD_004"
 
     # Memory
     MEM_001 = "MEM_001"  # Memory space 미선언 / access 거부
@@ -132,7 +133,7 @@ class ErrorCode(StrEnum):
 
     # Validation
     VAL_001 = "VAL_001"  # 필수 필드 누락
-    VAL_002 = "VAL_002"  # 필드 형식 오류
+    VAL_002 = "VAL_002"  # 필드 형식 오류 / 렌더할 수 없는 태스크 입력
 
     # Storage
     ART_001 = "ART_001"  # Artifact 스코프 미선언 / 접근 거부

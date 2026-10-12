@@ -56,7 +56,9 @@ def prompt_of(payload: dict[str, Any]) -> str:
 
 
 _ASKS_FOR = re.compile(r"exactly these keys: (.+)")
-_USE_TOOL = re.compile(r"use tool (\S+)")
+# 공백과 ``<`` 앞까지 잡는다 — 태스크 입력은 경계 표기 안에 놓이므로 (04 Promptset Rules 2)
+# 이름 바로 뒤에 닫는 표기 (``<<end-…``) 가 붙을 수 있다. ``.`` · ``/`` 가 든 이름도 잡혀야 한다
+_USE_TOOL = re.compile(r"use tool ([^\s<]+)")
 _WITH = re.compile(r"\s+with\s+")
 
 
