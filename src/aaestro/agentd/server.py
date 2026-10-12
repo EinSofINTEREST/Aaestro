@@ -17,7 +17,7 @@ from fastapi import APIRouter, Depends, FastAPI, Request, status
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict
 
-from aaestro.core.agent import HealthState, HealthStatus, TaskRequest, TaskResult
+from aaestro.core.agent import HealthState, HealthStatus, TaskKey, TaskRequest, TaskResult
 from aaestro.core.errors import AaestroError, AaestroErrorPayload, ErrorCategory, ErrorCode
 from aaestro.http_auth import require_token
 from aaestro.http_errors import status_for
@@ -65,7 +65,7 @@ class AgentRuntime:
         # direct 요청과 그래프 태스크가 같은 큐를 공유한다 (02 Direct Request Rules 5)
         self.semaphore = asyncio.Semaphore(max_concurrent_tasks)
         self.draining = False
-        self._inflight: dict[str, asyncio.Task[Any]] = {}
+        self._inflight: dict[TaskKey, asyncio.Task[Any]] = {}
 
     def card(self) -> dict[str, Any]:
         """A2A AgentCard."""
@@ -95,14 +95,22 @@ class AgentRuntime:
             self._card = dict(card)
         return True
 
-    def track(self, task_id: str, task: asyncio.Task[Any]) -> None:
-        """진행 중 태스크를 등록한다 — 취소 대상 추적용."""
-        self._inflight[task_id] = task
-        task.add_done_callback(lambda _t: self._inflight.pop(task_id, None))
+    def track(self, key: TaskKey, task: asyncio.Task[Any]) -> None:
+        """진행 중 태스크를 등록한다 — 취소 대상 추적용.
+
+        키는 멱등 캐시와 같은 ``TaskRequest.key`` 다: id 만으로 잡으면 peer 가 같은 id 의
+        A2A 태스크로 진행 중 노드 태스크의 자리를 덮을 수 있다 (#400).
+        """
+        self._inflight[key] = task
+        task.add_done_callback(lambda _t: self._inflight.pop(key, None))
 
     def cancel(self, task_id: str) -> bool:
-        """진행 중 태스크를 취소한다. 없으면 False."""
-        task = self._inflight.get(task_id)
+        """Control API 로 들어온 진행 중 태스크를 취소한다. 없으면 False.
+
+        취소를 부를 수 있는 것은 Control API 뿐이므로 대상도 그쪽 태스크뿐이다 — peer 가 만든
+        동명 태스크는 이 id 로 가리켜지지 않는다.
+        """
+        task = self._inflight.get(TaskKey.from_control(task_id))
         if task is None:
             return False
         task.cancel()
@@ -164,7 +172,7 @@ def create_app(runtime: AgentRuntime, *, token: str | None = None) -> FastAPI:
         task = _unverified(task)
         async with runtime.semaphore:
             running = asyncio.create_task(runtime.executor.execute(task))
-            runtime.track(task.task_id, running)
+            runtime.track(task.key, running)
             try:
                 result: TaskResult = await running
             except asyncio.CancelledError:

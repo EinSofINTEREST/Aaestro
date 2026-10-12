@@ -81,6 +81,22 @@ spec:
 7. **Group Neutrality**: 그룹 소속 ([01-architecture.md](01-architecture.md)) 은 연결에
    어떤 자동 권한도 부여하지 않는다 — 같은 그룹이라도 allowlist 선언 없는 호출은
    `A2A_004`. 그룹은 리소스 스코프, 연결은 그래프 배선 — 두 축은 직교한다
+8. **Task Id Is Caller-Chosen**: A2A 태스크의 `task_id` 는 보낸 쪽이 고른다. 프레임워크는 그 값이
+   다른 호출자에게 추측 불가능하다고 가정하지 않는다. 그래서 피호출자는
+   - **본문을 형식으로 거른다**: peer 본문의 식별자 (`task_id`, `run_id`, `node_id`, `trace` 의
+     `trace_id` · `span_id` · `graph`) 는 문자열 · 비어 있지 않음 · 128자 이하 · 출력 가능한 문자만 ·
+     앞뒤 공백 없음. 본문이 JSON 객체가 아니거나 필드 형태가 틀리면 `VAL_002`, 필수 필드가 없으면
+     `VAL_001`. 거절 사유와 로그에는 필드 이름과 사유 종류만 싣고 **받은 값은 싣지 않는다**
+   - **태스크별 상태의 키를 (호출자, `task_id`) 로 잡는다** (`TaskRequest.key`): 멱등 캐시와 진행 중
+     태스크 표. Control API 로 온 그래프 · direct 태스크는 호출자가 없는 별도 공간이다. 같은 호출자의
+     같은 id 재호출만 멱등이다. `task_id` 로 상태를 쥐는 새 자리는 반드시 이 키를 쓴다
+   - **보장은 호출자 확인만큼이다**: 두 모드 공통으로 peer 는 Control 공간(`caller=None`)의 결과 ·
+     상태에 닿지 못한다. peer 와 peer 사이의 분리는 레지스트리 모드에서만 성립한다 — 토큰 모드의
+     호출자는 배포가 공유하는 서명 키로 확인한 헤더 주장이라 다른 peer 가 그 이름을 댈 수 있다
+     (#415). SDK 의 task 조회 · 취소 메서드(`GetTask` / `ListTasks` / `CancelTask`)는 이 분리의
+     밖이다 (#414)
+   - 로그 · 메트릭 · 응답의 `task_id` / `a2a_task_id` 는 보낸 쪽이 준 그대로다 — 갈리는 것은 내부
+     키뿐이다
 
 ### When to Use A2A vs Graph Edge
 
@@ -232,6 +248,8 @@ v0.1 은 **전달 전용 공유 프록시** 하나로 시작한다. 격리 요�
 | A2A task 거부/실패 | `a2a` | `A2A_003` | 아니오 |
 | A2A allowlist 위반 | `a2a` | `A2A_004` | 아니오 |
 | A2A 호출 깊이 초과 | `a2a` | `A2A_005` | 아니오 |
+| A2A 본문 필수 필드 누락 (callee 측 거절) | `validation` | `VAL_001` | 아니오 |
+| A2A 본문 · 식별자 형식 오류 (callee 측 거절) | `validation` | `VAL_002` | 아니오 |
 | 이그레스 목적지·원격 MCP 도구 판정 거부 | `forbidden` | `ACC_001` | 아니오 |
 | 판정 불가 (레지스트리 도달 불가, 캐시 없음) | `network` | `ACC_002` | 예 |
 

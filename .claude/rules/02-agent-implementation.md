@@ -82,7 +82,9 @@ class TaskResult(BaseModel):
    - 캐시는 허용하되 correctness 에 영향을 주지 않아야 함 (컨테이너 재시작 시 소실 전제)
 
 3. **Idempotency**
-   - 동일 `task_id` 재호출은 안전해야 함 (재시도/재개 시나리오)
+   - **같은 호출자의** 동일 `task_id` 재호출은 안전해야 함 (재시도/재개 시나리오). `task_id` 는
+     보낸 쪽이 고르므로 멱등 키는 (호출자, `task_id`) 다 — 다른 호출자의 같은 id 는 다른 태스크다
+     ([03-protocol-integration.md](03-protocol-integration.md) A2A Client Rules 8)
    - 외부 부수효과가 있는 tool 은 task_id 기반 중복 방지 적용
 
 4. **Error Handling**
