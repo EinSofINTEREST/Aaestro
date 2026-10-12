@@ -11,6 +11,7 @@ from typing import Any
 
 import anthropic
 import httpx
+import pytest
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
@@ -61,7 +62,11 @@ LOOKUP = SkillSpec(
 class CompatProvider:
     """Chat Completions 호환 대역 — 도구 결과가 없으면 도구를 부르고, 있으면 그 결과로 답한다."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, arguments: Any = None) -> None:
+        self.arguments = json.dumps({"term": "aaestro"}) if arguments is None else arguments
+        """도구 호출에 싣는 ``arguments`` — 기본은 JSON 문자열, 느슨한 서버 흉내는 여기서."""
+        self.strict = True
+        """되돌아온 assistant 의 ``arguments`` 가 JSON 객체 문자열이 아니면 400 — 엄격한 서버."""
         self.requests: list[dict[str, Any]] = []
         """답한 요청 — rate limit 으로 돌려보낸 것은 세지 않는다."""
         self.attempts = 0
@@ -77,6 +82,11 @@ class CompatProvider:
             return JSONResponse({"error": {"message": "rate limited"}}, status_code=429)
         self.authorizations.append(request.headers.getlist("authorization"))
         payload = await request.json()
+        if self.strict and not _arguments_are_object_strings(payload):
+            return JSONResponse(
+                {"error": {"message": "tool_calls.function.arguments must be a JSON object"}},
+                status_code=400,
+            )
         self.requests.append(payload)
         results = [m for m in payload["messages"] if m["role"] == "tool"]
         if results:
@@ -94,10 +104,7 @@ class CompatProvider:
                     {
                         "id": "call_1",
                         "type": "function",
-                        "function": {
-                            "name": advertised[0],
-                            "arguments": json.dumps({"term": "aaestro"}),
-                        },
+                        "function": {"name": advertised[0], "arguments": self.arguments},
                     }
                 ],
             }
@@ -109,11 +116,32 @@ class CompatProvider:
         }
 
 
+def _arguments_are_object_strings(payload: dict[str, Any]) -> bool:
+    for message in payload["messages"]:
+        for call in message.get("tool_calls") or []:
+            arguments = call["function"]["arguments"]
+            if not isinstance(arguments, str):
+                return False
+            try:
+                parsed = json.loads(arguments)
+            except ValueError:
+                return False
+            if not isinstance(parsed, dict):
+                return False
+    return True
+
+
 class Stack:
     """에이전트 실행기 → 프록시 → provider 대역."""
 
-    def __init__(self, config: ModelConfig, *, bound: dict[str, Any] | None = None) -> None:
-        self.provider = CompatProvider()
+    def __init__(
+        self,
+        config: ModelConfig,
+        *,
+        bound: dict[str, Any] | None = None,
+        provider: CompatProvider | None = None,
+    ) -> None:
+        self.provider = provider or CompatProvider()
         self.registry = Registry()
         self.registry.allowed.add(LOGICAL_HOST)
         self.bound = bound or {}
@@ -182,6 +210,21 @@ async def test_execute_openai_compat_agent_completes_a_tool_round_trip_through_t
     assert assistant["tool_calls"][0]["id"] == "call_1"
     assert answer == {"role": "tool", "tool_call_id": "call_1", "content": "42"}
     assert (result.usage.input_tokens, result.usage.output_tokens) == (20, 10)
+
+
+@pytest.mark.parametrize("loose", ["", {}], ids=["empty-string", "object"])
+async def test_execute_loosely_shaped_tool_arguments_do_not_break_the_next_turn(loose):
+    """느슨한 인자를 그대로 되돌려 보내면, 도구가 실행된 **다음에** 태스크가 400 으로 죽는다."""
+    stack = Stack(COMPAT, provider=CompatProvider(arguments=loose))
+
+    result = await stack.executor.execute(make_task())
+
+    assert result.status == TaskStatus.COMPLETED, result.error
+    assert stack.tools.calls == [TOOL]
+    _, second = stack.provider.requests
+    [call] = second["messages"][-2]["tool_calls"]
+    assert call["function"]["arguments"] == "{}"
+    assert second["messages"][-1] == {"role": "tool", "tool_call_id": "call_1", "content": "42"}
 
 
 async def test_execute_provider_sees_only_the_proxy_key_never_the_agent_identity():

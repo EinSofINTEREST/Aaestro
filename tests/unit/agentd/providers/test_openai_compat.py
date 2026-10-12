@@ -295,6 +295,109 @@ async def test_run_its_own_assistant_message_goes_back_unchanged():
     }
 
 
+async def returned_assistant(first_response: dict[str, Any]) -> dict[str, Any]:
+    """첫 응답을 받은 뒤, 그 턴을 되돌려 보낸 다음 요청의 assistant 메시지."""
+    adapter, upstream = model(first_response)
+    first = await adapter.run("", OPENING, [])
+    turn = AssistantTurn(first.content, first.tool_calls, raw=first.raw)
+    results = ToolTurn(
+        outcomes=tuple(ToolOutcome(call_id=call.id, content="ok") for call in first.tool_calls)
+    )
+
+    await adapter.run("", [*OPENING, turn, results], [])
+
+    return json.loads(upstream.seen[1].content)["messages"][1]
+
+
+@pytest.mark.parametrize(
+    ("received", "sent_back"),
+    [
+        pytest.param("", "{}", id="empty"),
+        pytest.param("   ", "{}", id="blank"),
+        pytest.param("\n", "{}", id="newline"),
+        pytest.param({}, "{}", id="empty-object"),
+        pytest.param({"q": "x", "n": 2}, '{"q": "x", "n": 2}', id="object"),
+    ],
+)
+async def test_run_returned_tool_arguments_are_always_a_json_object_string(received, sent_back):
+    """받을 때 관대하게 읽은 것을 그대로 내보내면 엄격한 서버가 다음 턴을 400 으로 거절한다.
+
+    그 400 은 설정 오류로 전파된다 — 도구가 이미 실행된 뒤에 태스크가 실패한다.
+    """
+    response = completion(None, tool_calls=[function_call("c1", "ping", received)])
+
+    assistant = await returned_assistant(response)
+
+    [call] = assistant["tool_calls"]
+    assert call["function"]["arguments"] == sent_back
+    assert isinstance(json.loads(call["function"]["arguments"]), dict)
+    assert (call["id"], call["type"], call["function"]["name"]) == ("c1", "function", "ping")
+
+
+async def test_run_returned_tool_arguments_match_what_the_tool_was_called_with():
+    adapter, _ = model(completion(None, tool_calls=[function_call("c1", "ping", {"q": "x"})]))
+
+    first = await adapter.run("", OPENING, [])
+
+    [sent] = first.raw.message["tool_calls"]
+    assert json.loads(sent["function"]["arguments"]) == first.tool_calls[0].arguments
+
+
+async def test_run_well_formed_tool_calls_and_provider_fields_go_back_byte_for_byte():
+    """과잉 변경 방지 — 이미 맞는 인자 문자열은 공백 하나도 다시 쓰지 않는다."""
+    untouched = '{ "q":"x",  "nested": {"a": [1,2]} }'
+    calls = [
+        {**function_call("c1", "search", untouched), "index": 0, "vendor_field": {"k": 1}},
+        function_call("c2", "ping", ""),
+    ]
+    calls[0]["function"]["vendor_note"] = "keep"
+    response = completion(None, tool_calls=calls, reasoning_content="thinking", refusal=None)
+
+    assistant = await returned_assistant(response)
+
+    kept, fixed = assistant["tool_calls"]
+    assert kept == calls[0] and kept["function"]["arguments"] == untouched
+    assert fixed == function_call("c2", "ping", "{}")
+    assert (assistant["reasoning_content"], assistant["refusal"]) == ("thinking", None)
+    assert assistant["role"] == "assistant" and assistant["content"] is None
+
+
+async def test_run_the_response_message_is_not_modified_in_place():
+    """응답 객체는 공유된다 — 보관용으로 고칠 때 받은 dict 를 건드리지 않는다."""
+    received = {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [function_call("c1", "ping", "")],
+    }
+    snapshot = json.dumps(received)
+
+    from aaestro.agentd.providers.openai_compat import _returnable
+
+    kept = _returnable(received)
+
+    assert json.dumps(received) == snapshot
+    assert kept is not received and kept["tool_calls"][0]["function"]["arguments"] == "{}"
+
+
+def test_a_message_that_needs_no_change_is_kept_as_the_same_object():
+    from aaestro.agentd.providers.openai_compat import _returnable
+
+    text_only = {"role": "assistant", "content": "done"}
+    well_formed = {"role": "assistant", "tool_calls": [function_call("c1", "ping", "{}")]}
+
+    assert _returnable(text_only) is text_only
+    assert _returnable(well_formed) is well_formed
+
+
+async def test_run_blank_arguments_string_is_a_call_without_arguments():
+    """보낼 때 "{}" 로 맞추는 것과 같은 기준으로 읽는다 — 공백뿐인 문자열도 인자 없는 호출이다."""
+    adapter, _ = model(completion(None, tool_calls=[function_call("c1", "ping", "  \n")]))
+
+    response = await adapter.run("", OPENING, [])
+
+    assert response.tool_calls == (ToolCall(id="c1", name="ping", arguments={}),)
+
+
 async def test_run_another_providers_assistant_turn_is_rebuilt():
     """fallback 으로 넘어온 턴 — 남의 원본(Anthropic 블록 리스트)을 그대로 보내지 않는다."""
     adapter, upstream = model(completion())

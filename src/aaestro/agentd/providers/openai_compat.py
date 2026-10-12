@@ -343,7 +343,7 @@ class OpenAICompatModel:
             content=content or "",
             tool_calls=tool_calls,
             usage=usage,
-            raw=_ProviderMessage(message),
+            raw=_ProviderMessage(_returnable(message)),
         )
 
 
@@ -360,13 +360,42 @@ def _tool_call(call: Any) -> ToolCall:
     arguments = function["arguments"]
     if isinstance(arguments, str):
         # 인자 없는 호출을 빈 문자열로 내는 호환 서버가 흔하다. JSONDecodeError 는 ValueError 다
-        arguments = json.loads(arguments) if arguments else {}
+        arguments = json.loads(arguments) if arguments.strip() else {}
     if not isinstance(arguments, dict):
         raise TypeError("tool arguments are not an object")
     identifier, name = call["id"], function["name"]
     if not isinstance(identifier, str) or not isinstance(name, str) or not name:
         raise TypeError("tool call has no id or name")
     return ToolCall(id=identifier, name=name, arguments=arguments)
+
+
+def _returnable(message: Mapping[str, Any]) -> Mapping[str, Any]:
+    """다음 턴에 되돌려 보낼 수 있는 모양의 assistant 메시지.
+
+    되돌려 보내는 ``tool_calls`` 의 ``arguments`` 는 항상 JSON 객체 문자열이어야 한다. 받을 때는
+    빈 문자열과 객체로 온 인자를 관대하게 읽는데(:func:`_tool_call`), 그것을 그대로 내보내면
+    엄격한 서버가 다음 턴을 400 으로 거절한다 — 도구가 이미 실행된 뒤에 태스크가 실패한다.
+
+    그 모양이 아닌 ``arguments`` 만 :func:`_tool_call` 이 읽은 값의 JSON 으로 바꾼다. 나머지는
+    그대로다 — 원본을 들고 가는 이유(provider 고유 필드 보존)를 깨지 않는다. 응답 객체를
+    제자리에서 고치지 않고, 바꾼 호출만 새로 만든다.
+    """
+    calls = message.get("tool_calls")
+    if not calls:
+        return message
+    returnable = [_returnable_call(call) for call in calls]
+    if all(new is old for new, old in zip(returnable, calls, strict=True)):
+        return message
+    return {**message, "tool_calls": returnable}
+
+
+def _returnable_call(call: Any) -> Any:
+    """호출 하나 — ``arguments`` 가 비어 있지 않은 문자열이면 받은 객체 그대로 돌려준다."""
+    arguments = call["function"]["arguments"]
+    if isinstance(arguments, str) and arguments.strip():
+        return call
+    normalized = json.dumps(arguments if isinstance(arguments, dict) else {})
+    return {**call, "function": {**call["function"], "arguments": normalized}}
 
 
 def to_messages(message: Message) -> list[dict[str, Any]]:
