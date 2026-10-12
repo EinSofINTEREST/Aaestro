@@ -1029,6 +1029,28 @@ async def test_an_unbuilt_custom_agent_is_refused_before_anything_starts(
     assert manager.deployments() == [], "거절은 실패한 배포가 아니라 시작되지 않은 배포다"
 
 
+async def test_a_built_record_under_another_tag_is_refused_before_anything_starts(manager, docker):
+    """상태가 `built` 여도 기록의 태그가 띄울 태그와 다르면 기동 전에 거절한다 (#383)."""
+    stale = BuildRecord(
+        agent="alpha",
+        version="0.1.0",
+        status=BuildStatus.BUILT,
+        image="old-prefix/agent-alpha:0.1.0",
+    )
+    manager.images = FakeImages({"alpha"}, {"alpha": stale})
+
+    with pytest.raises(AaestroError) as excinfo:
+        await manager.deploy("two")
+
+    assert excinfo.value.code == ErrorCode.RT_012
+    assert excinfo.value.agent == "alpha"
+    assert excinfo.value.details["image"] == "aaestro/agent-alpha:0.1.0"
+    assert excinfo.value.details["recorded_image"] == "old-prefix/agent-alpha:0.1.0"
+    assert excinfo.value.details["build_status"] == BuildStatus.BUILT
+    assert docker.created == [], "거절된 배포가 컨테이너를 띄웠다"
+    assert manager.deployments() == [], "거절은 실패한 배포가 아니라 시작되지 않은 배포다"
+
+
 async def test_a_built_custom_agent_runs_its_baked_image(manager, docker):
     """빌드 후에는 배포되고, 매니페스트가 아니라 **구운 태그**로 돈다."""
     manager.images = FakeImages({"alpha"}, {"alpha": built("alpha")})

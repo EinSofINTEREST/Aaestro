@@ -83,3 +83,26 @@ def test_the_client_covers_every_ui_facing_route():
         "/image",
     ):
         assert path in source, path
+
+
+def test_the_agent_editor_saves_over_the_declaration_of_its_own_name():
+    """저장 문서는 저장 대상 이름의 선언 위에서 만든다 (#377).
+
+    동작은 페이지 전체를 띄우는 브라우저 E2E(`tests/e2e/test_ui_agent_page.py`)가 실행해 확인하고,
+    여기서는 저장 경로가 그 원본 해석(`agentBase`)을 거치는지만 본다.
+    """
+    source = (UI_ROOT / "app.js").read_text(encoding="utf-8")
+    submit = source.split('agentForm.addEventListener("submit"')[1].split("\n});")[0]
+
+    assert "currentAgentDocument()" in submit
+    assert "agentDocument(" not in submit.replace("currentAgentDocument(", "")
+
+
+def test_the_unbuilt_warning_compares_the_recorded_tag_with_the_expected_one():
+    """서버 게이트(#383)와 같은 판정이 화면에도 있어야 한다 — node 없이 소스에서 배선만 본다."""
+    source = (UI_ROOT / "client.js").read_text(encoding="utf-8")
+    start = source.index("export function unbuiltAgents")
+    body = source[start : source.index("export function moduleRef")]
+
+    assert "expected_image" in body
+    assert "image.image" in body

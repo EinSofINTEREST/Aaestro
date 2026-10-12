@@ -246,7 +246,8 @@ run on the base image with their declarations mounted.
 
 Building is an explicit step. Saving materials does not build, and deploying does not build
 either — a deploy **refuses** a custom agent whose image for that version is not `built`
-(`409`, `RT_012`; see [`POST /v1/deployments`](#post-v1deployments)).
+(`409`, `RT_012`; see [`POST /v1/deployments`](#post-v1deployments)) — or whose `built` record
+names a different tag than the one a deploy would run.
 
 ### `GET /v1/agents/{name}/materials`
 
@@ -339,8 +340,8 @@ The build record for the agent's current version, plus whether it needs one:
 
 ```json
 {"agent": "docs-custom", "version": "0.1.2", "status": "failed",
- "image": "aaestro/agent-docs-custom:0.1.2", "needs_build": true,
- "error": "image build failed: aaestro/agent-docs-custom:0.1.2",
+ "image": "aaestro/agent-docs-custom:0.1.2", "expected_image": "aaestro/agent-docs-custom:0.1.2",
+ "needs_build": true, "error": "image build failed: aaestro/agent-docs-custom:0.1.2",
  "log": "Step 1/2 : FROM aaestro/agent-base:0.1.0\n ... returned a non-zero code: 3",
  "updated_at": "..."}
 ```
@@ -352,7 +353,9 @@ The build record for the agent's current version, plus whether it needs one:
 | `built` | the image exists; a deploy may use it |
 | `failed` | the last build failed — read `error` and `log` |
 
-`needs_build` is `false` for an agent without materials. `log` keeps the last 8000 characters.
+`image` is the tag the record was built under; `expected_image` is the tag a deploy would run. A
+`built` record whose two differ is refused by a deploy. `needs_build` is `false` for an agent
+without materials. `log` keeps the last 8000 characters.
 Records survive a control plane restart.
 
 ## Deployments
@@ -425,9 +428,11 @@ Failures leave no ghost containers. What you get back tells you which kind it wa
 - `400` (`VAL_002`) — `model_overrides` names a node that is not in the graph, or an override
   body is malformed (provider without name, unknown key). Nothing was started.
 - `409` (`RT_012`) — an agent with build materials has no `built` image for its version: never
-  built, the last build failed, or a build is still running. `details` carries `image`,
-  `build_status` and `build_error`. Build it, then deploy again — a deploy never builds for
-  you. Nothing was started and no deployment was recorded. Agents without materials run on
+  built, the last build failed, a build is still running, or the record's tag differs from the
+  tag a deploy would run. `details` carries `image` (the expected tag), `build_status` and
+  `build_error`, plus `recorded_image` when the tag differs. Build it, then deploy again — a
+  deploy never builds for you. After the image tag rule changes, rebuild custom agents built
+  earlier. Nothing was started and no deployment was recorded. Agents without materials run on
   the base image and are never gated.
 - `409` (`RT_010`) — an agent of this graph is already running under another deployment. Tear
   that one down first; a graph and its agents deploy as a unit, so two live deployments
