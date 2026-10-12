@@ -3,7 +3,7 @@
 **[한국어](../ko/getting-started.md)** | English
 
 > **Status**: The framework layers are implemented and the reference solution validates
-> end to end. `malkuth run` needs deployed agent containers; commands marked
+> end to end. `aaestro run` needs deployed agent containers; commands marked
 > *(not implemented yet)* are on the roadmap.
 
 ## Prerequisites
@@ -25,7 +25,7 @@ Quality gates used locally and in CI:
 
 ```bash
 make lint               # ruff check + ruff format --check
-make typecheck          # mypy (strict on src/malkuth/core)
+make typecheck          # mypy (strict on src/aaestro/core)
 make test               # pytest unit tests + coverage gate (≥ 70%)
 make test-integration   # Docker-based integration tests
 ```
@@ -39,7 +39,7 @@ graph instead of writing framework code.
 
 ```yaml
 # agents/researcher/manifest.yaml
-apiVersion: malkuth/v1
+apiVersion: aaestro/v1
 kind: Agent
 metadata:
   name: researcher
@@ -63,7 +63,7 @@ spec:
 
 ```yaml
 # graphs/research-pipeline.yaml
-apiVersion: malkuth/v1
+apiVersion: aaestro/v1
 kind: Graph
 metadata: {name: research-pipeline, version: 1.0.0}
 spec:
@@ -86,7 +86,7 @@ spec:
 
 ```yaml
 # groups/research.yaml
-apiVersion: malkuth/v1
+apiVersion: aaestro/v1
 kind: Group
 metadata: {name: research}
 spec:
@@ -103,10 +103,10 @@ Contract validation runs before anything starts — **if any deploy-time contrac
 fails, no container is started**:
 
 ```bash
-malkuth validate                                # every graph in the repository
-malkuth deploy graphs/research-pipeline.yaml    # one graph
-malkuth status                                  # what is declared here
-malkuth config dev                              # resolved settings for an environment
+aaestro validate                                # every graph in the repository
+aaestro deploy graphs/research-pipeline.yaml    # one graph
+aaestro status                                  # what is declared here
+aaestro config dev                              # resolved settings for an environment
 ```
 
 Both `validate` and `deploy` exit non-zero when a check fails, so they compose with
@@ -116,7 +116,7 @@ Integrity checks compare records against reality — orphaned checkpoints, dangl
 module refs, ghost containers:
 
 ```bash
-malkuth check observed-state.yaml
+aaestro check observed-state.yaml
 ```
 
 ### 5. Run a graph
@@ -126,9 +126,9 @@ before anything is submitted, and agent addresses are given explicitly — the C
 not guess container ports:
 
 ```bash
-malkuth run graphs/research-pipeline.yaml \
+aaestro run graphs/research-pipeline.yaml \
   --input '{"query": "..."}' \
-  --agent-token "${MALKUTH_AGENT_TOKEN:-e2e-token}" \
+  --agent-token "${AAESTRO_AGENT_TOKEN:-e2e-token}" \
   --agent planner=http://127.0.0.1:18082 \
   --agent researcher=http://127.0.0.1:18083 \
   --agent writer=http://127.0.0.1:18084
@@ -139,8 +139,8 @@ Bring the agents up first with `make e2e-up` (fake model provider, no real LLM c
 Service graphs have no completion, so they are driven with `--service` instead:
 
 ```bash
-malkuth run graphs/feed-monitor.yaml --service \
-  --agent-token "${MALKUTH_AGENT_TOKEN:-e2e-token}" \
+aaestro run graphs/feed-monitor.yaml --service \
+  --agent-token "${AAESTRO_AGENT_TOKEN:-e2e-token}" \
   --agent watcher=http://127.0.0.1:18082
 ```
 
@@ -153,7 +153,7 @@ Direct requests reach any agent's Control API without a graph run:
 
 ```bash
 curl -X POST http://127.0.0.1:18081/v1/invoke \
-  -H "authorization: Bearer ${MALKUTH_AGENT_TOKEN:-e2e-token}" \
+  -H "authorization: Bearer ${AAESTRO_AGENT_TOKEN:-e2e-token}" \
   -H 'content-type: application/json' \
   -d '{"task_id":"t1","run_id":"direct-1","node_id":null,
        "input":{"msg":"hello"},"trace":{"trace_id":"tr-1"}}'
@@ -166,11 +166,11 @@ same code path stays exercised.
 
 The placeholder differs per stack: `make e2e-up` (`compose.e2e.yaml`) defaults to
 `e2e-token`, while the plain dev stack (`compose.yaml`) defaults to `dev-local-token`.
-Pass the one matching the stack you started, or export `MALKUTH_AGENT_TOKEN` before
+Pass the one matching the stack you started, or export `AAESTRO_AGENT_TOKEN` before
 bringing it up so both sides read the same value. A mismatched token surfaces as `401`
 on every node call.
 
-Still on the roadmap *(not implemented yet)*: `malkuth run trace`, `agent invoke`,
+Still on the roadmap *(not implemented yet)*: `aaestro run trace`, `agent invoke`,
 `agent logs`, `replay`, `memory reindex`.
 
 ## Where to Go Next

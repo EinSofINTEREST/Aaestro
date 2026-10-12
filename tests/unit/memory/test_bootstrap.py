@@ -15,10 +15,10 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from malkuth.config import load_config
-from malkuth.memory.bootstrap import build_deployment
-from malkuth.memory.entry import MemoryEntry, MemorySource
-from malkuth.modules.memoryset import MemoryKind
+from aaestro.config import load_config
+from aaestro.memory.bootstrap import build_deployment
+from aaestro.memory.entry import MemoryEntry, MemorySource
+from aaestro.modules.memoryset import MemoryKind
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -111,9 +111,9 @@ def test_a_forged_token_is_refused(deployment):
 
 def test_bootstrap_refuses_unreadable_declarations(tmp_path, monkeypatch):
     """깨진 에이전트는 토큰을 못 받고, 깨진 그룹은 멀쩡한 에이전트의 group space 를 지운다."""
-    from malkuth.config import load_config
-    from malkuth.core.errors import ErrorCode, MalkuthError
-    from malkuth.memory.bootstrap import build_deployment
+    from aaestro.config import load_config
+    from aaestro.core.errors import AaestroError, ErrorCode
+    from aaestro.memory.bootstrap import build_deployment
 
     root = tmp_path
     (root / "agents" / "bad").mkdir(parents=True)
@@ -121,7 +121,7 @@ def test_bootstrap_refuses_unreadable_declarations(tmp_path, monkeypatch):
     for d in ("groups", "graphs", "modules"):
         (root / d).mkdir(exist_ok=True)
 
-    with pytest.raises(MalkuthError) as excinfo:
+    with pytest.raises(AaestroError) as excinfo:
         build_deployment(load_config("dev", config_dir="configs"), root=root)
 
     assert excinfo.value.code == ErrorCode.CFG_001
@@ -137,7 +137,7 @@ def _memory_on_disk(tmp_path: Path):
     return load_config(
         "dev",
         config_dir=REPO_ROOT / "configs",
-        environ={"MALKUTH_MEMORY__PATH": str(tmp_path / "memory.db")},
+        environ={"AAESTRO_MEMORY__PATH": str(tmp_path / "memory.db")},
     )
 
 

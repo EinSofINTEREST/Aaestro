@@ -1,8 +1,8 @@
 # 개발 환경 — 로컬 Docker, in-memory checkpoint, 사람이 읽는 로그
 runtime:
   backend: docker
-  network: malkuth-net
-  agent_base_image: malkuth/agent-base:0.1.0
+  network: aaestro-net
+  agent_base_image: aaestro/agent-base:0.1.0
   default_resources:
     cpu: "1.0"
     memory: 1Gi

@@ -16,15 +16,15 @@ from typing import TYPE_CHECKING, Any
 import pytest
 from structlog.testing import capture_logs
 
-from malkuth.core.errors import (
+from aaestro.core.errors import (
     NETWORK_RETRY,
+    AaestroError,
     ErrorCategory,
     ErrorCode,
-    MalkuthError,
     RetryPolicy,
 )
-from malkuth.observability.logging import LogField
-from malkuth.resilience import retrying
+from aaestro.observability.logging import LogField
+from aaestro.resilience import retrying
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -49,8 +49,8 @@ def fixed_rng() -> random.Random:
     return random.Random(0)  # noqa: S311 — 암호용이 아니라 테스트 결정성용
 
 
-def network_error(*, retryable: bool = True) -> MalkuthError:
-    return MalkuthError(
+def network_error(*, retryable: bool = True) -> AaestroError:
+    return AaestroError(
         category=ErrorCategory.NETWORK,
         code=ErrorCode.NET_001,
         message="connection refused",
@@ -84,7 +84,7 @@ async def test_exhausted_attempts_raise_the_last_error(slept: list[float]):
     """감싸서 올리면 호출자의 카테고리 기반 처리가 깨진다."""
     op = failing(99)
 
-    with pytest.raises(MalkuthError) as excinfo:
+    with pytest.raises(AaestroError) as excinfo:
         await retrying(NETWORK_RETRY, op, rng=fixed_rng())
 
     assert excinfo.value.code == ErrorCode.NET_001
@@ -95,7 +95,7 @@ async def test_non_retryable_error_stops_immediately(slept: list[float]):
     """05 Rules 2 — 카테고리가 목록에 있어도 retryable=False 면 즉시 중단."""
     op = failing(99, error=lambda: network_error(retryable=False))
 
-    with pytest.raises(MalkuthError):
+    with pytest.raises(AaestroError):
         await retrying(NETWORK_RETRY, op, rng=fixed_rng())
 
     assert op.calls["calls"] == 1
@@ -105,8 +105,8 @@ async def test_non_retryable_error_stops_immediately(slept: list[float]):
 async def test_unrelated_category_is_not_retried(slept: list[float]):
     """정책의 retryable_categories 밖이면 재시도하지 않는다."""
 
-    def validation() -> MalkuthError:
-        return MalkuthError(
+    def validation() -> AaestroError:
+        return AaestroError(
             category=ErrorCategory.VALIDATION,
             code=ErrorCode.VAL_001,
             message="missing field",
@@ -115,14 +115,14 @@ async def test_unrelated_category_is_not_retried(slept: list[float]):
 
     op = failing(99, error=validation)
 
-    with pytest.raises(MalkuthError):
+    with pytest.raises(AaestroError):
         await retrying(NETWORK_RETRY, op, rng=fixed_rng())
 
     assert op.calls["calls"] == 1
 
 
 async def test_plain_exception_is_not_retried(slept: list[float]):
-    """MalkuthError 가 아니면 재시도 대상이 아니다 — 프로그래밍 오류일 수 있다."""
+    """AaestroError 가 아니면 재시도 대상이 아니다 — 프로그래밍 오류일 수 있다."""
     op = failing(99, error=lambda: ValueError("plain"))
 
     with pytest.raises(ValueError):
@@ -140,7 +140,7 @@ async def test_backoff_grows_within_the_policy_bounds(slept: list[float]):
     )
     op = failing(99)
 
-    with pytest.raises(MalkuthError):
+    with pytest.raises(AaestroError):
         await retrying(policy, op, rng=fixed_rng())
 
     assert len(slept) == 3
@@ -158,7 +158,7 @@ async def test_delay_is_capped_at_max(slept: list[float]):
         retryable_categories=(ErrorCategory.NETWORK,),
     )
 
-    with pytest.raises(MalkuthError):
+    with pytest.raises(AaestroError):
         await retrying(policy, failing(99), rng=fixed_rng())
 
     assert max(slept) <= 15

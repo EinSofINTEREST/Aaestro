@@ -5,9 +5,9 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from malkuth.orchestrator.control import create_app
-from malkuth.orchestrator.runstore import InMemoryRunStore
-from malkuth.ui import UI_ROOT
+from aaestro.orchestrator.control import create_app
+from aaestro.orchestrator.runstore import InMemoryRunStore
+from aaestro.ui import UI_ROOT
 
 
 @pytest.fixture
@@ -33,7 +33,7 @@ async def test_the_page_and_its_scripts_are_served_without_a_token(api):
     client_js = await api.get("/ui/client.js")
     css = await api.get("/ui/app.css")
 
-    assert index.status_code == 200 and "<title>Malkuth</title>" in index.text
+    assert index.status_code == 200 and "<title>Aaestro</title>" in index.text
     assert app_js.status_code == 200 and 'from "./client.js"' in app_js.text
     assert client_js.status_code == 200 and "createClient" in client_js.text
     assert css.status_code == 200

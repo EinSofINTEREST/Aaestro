@@ -19,21 +19,21 @@ from typing import Any
 import pytest
 import yaml
 
-from malkuth.core.agent import HealthState, HealthStatus
-from malkuth.core.errors import MalkuthError
-from malkuth.core.manifest import AgentManifest
-from malkuth.runtime.docker.engine import ContainerHandle, DockerEngine
-from malkuth.runtime.docker.errors import NetworkIsolationError
-from malkuth.runtime.health import HealthMonitor
-from malkuth.runtime.lifecycle import AgentLifecycle, AgentState
-from malkuth.runtime.spec import build_container_spec
+from aaestro.core.agent import HealthState, HealthStatus
+from aaestro.core.errors import AaestroError
+from aaestro.core.manifest import AgentManifest
+from aaestro.runtime.docker.engine import ContainerHandle, DockerEngine
+from aaestro.runtime.docker.errors import NetworkIsolationError
+from aaestro.runtime.health import HealthMonitor
+from aaestro.runtime.lifecycle import AgentLifecycle, AgentState
+from aaestro.runtime.spec import build_container_spec
 
 pytestmark = pytest.mark.integration
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DOCKER_DIR = REPO_ROOT / "deployments" / "docker"
 ECHO_MANIFEST = REPO_ROOT / "agents" / "echo" / "manifest.yaml"
-TEST_NETWORK = "malkuth-net-lifecycle"
+TEST_NETWORK = "aaestro-net-lifecycle"
 DOCKER_BIN = shutil.which("docker")
 
 
@@ -218,7 +218,7 @@ def echo_image() -> str:
     docker(
         "build",
         "-t",
-        "malkuth/agent-base:0.1.0",
+        "aaestro/agent-base:0.1.0",
         "-f",
         str(DOCKER_DIR / "agent-base.Dockerfile"),
         str(REPO_ROOT),
@@ -226,14 +226,14 @@ def echo_image() -> str:
     docker(
         "build",
         "-t",
-        "malkuth/agent-echo:0.1.0",
+        "aaestro/agent-echo:0.1.0",
         "--build-arg",
         "BASE_TAG=0.1.0",
         "-f",
         str(DOCKER_DIR / "agent-echo.Dockerfile"),
         str(REPO_ROOT),
     )
-    return "malkuth/agent-echo:0.1.0"
+    return "aaestro/agent-echo:0.1.0"
 
 
 @pytest.fixture
@@ -262,7 +262,7 @@ def echo_spec(*, image: str | None = None, **overrides: Any):
 
     manifest = AgentManifest.model_validate(document)
     kwargs: dict[str, Any] = {
-        "env": {"MALKUTH_EXECUTOR": "echo"},
+        "env": {"AAESTRO_EXECUTOR": "echo"},
         "network": TEST_NETWORK,
     }
     kwargs.update(overrides)
@@ -330,8 +330,8 @@ async def test_missing_image_is_rt_004(engine):
     """존재하지 않는 이미지는 기동 전에 걸러진다."""
     docker_engine, _ = engine
 
-    with pytest.raises(MalkuthError) as exc_info:
-        await docker_engine.start(echo_spec(image="malkuth/absent:9.9.9"))
+    with pytest.raises(AaestroError) as exc_info:
+        await docker_engine.start(echo_spec(image="aaestro/absent:9.9.9"))
 
     assert exc_info.value.code == "RT_004"
 

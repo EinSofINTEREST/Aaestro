@@ -8,12 +8,12 @@ import httpx
 import pytest
 import yaml
 
-from malkuth.authoring import Author
-from malkuth.catalog import Catalog
-from malkuth.core.errors import ErrorCode
-from malkuth.materials import InMemoryMaterialStore
-from malkuth.orchestrator.control import create_app
-from malkuth.orchestrator.runstore import InMemoryRunStore
+from aaestro.authoring import Author
+from aaestro.catalog import Catalog
+from aaestro.core.errors import ErrorCode
+from aaestro.materials import InMemoryMaterialStore
+from aaestro.orchestrator.control import create_app
+from aaestro.orchestrator.runstore import InMemoryRunStore
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -26,7 +26,7 @@ def workspace(tmp_path: Path) -> Path:
     (tmp_path / "modules" / "promptsets" / "solo" / "0.1.0" / "promptset.yaml").write_text(
         yaml.safe_dump(
             {
-                "apiVersion": "malkuth/v1",
+                "apiVersion": "aaestro/v1",
                 "kind": "Promptset",
                 "metadata": {"name": "solo", "version": "0.1.0"},
                 "spec": {"engine": "jinja2", "templates": {"default": {"file": "t.j2"}}},
@@ -38,7 +38,7 @@ def workspace(tmp_path: Path) -> Path:
     (tmp_path / "agents" / "custom" / "manifest.yaml").write_text(
         yaml.safe_dump(
             {
-                "apiVersion": "malkuth/v1",
+                "apiVersion": "aaestro/v1",
                 "kind": "Agent",
                 "metadata": {"name": "custom", "version": "0.1.0"},
                 "spec": {
@@ -65,7 +65,7 @@ async def api(workspace):
 
 
 async def test_materials_round_trip_through_the_api(api):
-    files = {"Dockerfile": "FROM malkuth/agent-base:0.1.0", "src/agent.py": "MARK = 1"}
+    files = {"Dockerfile": "FROM aaestro/agent-base:0.1.0", "src/agent.py": "MARK = 1"}
 
     put = await api.put("/v1/agents/custom/materials", json={"files": files})
     got = await api.get("/v1/agents/custom/materials")

@@ -2,24 +2,24 @@
 #
 # 운영 배포용이 아니다. 실제 에이전트 기동은 runtime layer 가 Docker API 로
 # 수행하며, 여기서는 base image 와 네트워크가 계약대로 동작하는지 확인한다.
-name: malkuth
+name: aaestro
 
 services:
   agent-echo:
-    image: malkuth/agent-echo:${IMAGE_TAG:-0.1.0}
+    image: aaestro/agent-echo:${IMAGE_TAG:-0.1.0}
     build:
       context: ../..
       dockerfile: deployments/docker/agent-echo.Dockerfile
       args:
         BASE_TAG: ${IMAGE_TAG:-0.1.0}
-    networks: [malkuth-net]
+    networks: [aaestro-net]
     ports:
       # 개발 편의를 위한 control port 노출 — 운영에서는 runtime 만 접근한다
       - "18080:8080"
     environment:
       # 개발 스택도 인증을 켠다 — 무인증으로 돌리면 인증 회귀를 못 잡는다.
       # 운영에서는 runtime 이 에이전트마다 난수 토큰을 발급해 주입한다
-      MALKUTH_AGENT_TOKEN: ${MALKUTH_AGENT_TOKEN:-dev-local-token}
+      AAESTRO_AGENT_TOKEN: ${AAESTRO_AGENT_TOKEN:-dev-local-token}
     read_only: true
     user: "1000:1000"
     cap_drop: [ALL]
@@ -40,6 +40,6 @@ services:
 
 networks:
   # 전용 bridge — 에이전트는 이 네트워크에만 붙는다. host 네트워크 모드 금지
-  malkuth-net:
-    name: malkuth-net
+  aaestro-net:
+    name: aaestro-net
     driver: bridge

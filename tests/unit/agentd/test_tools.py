@@ -8,10 +8,10 @@ from __future__ import annotations
 
 import pytest
 
-from malkuth.agentd.tools import AgentToolRegistry
-from malkuth.core.errors import ErrorCategory, ErrorCode, MalkuthError
-from malkuth.core.skill import SkillContext, SkillSpec
-from malkuth.memory.tool import MEMORY_SEARCH_TOOL
+from aaestro.agentd.tools import AgentToolRegistry
+from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.core.skill import SkillContext, SkillSpec
+from aaestro.memory.tool import MEMORY_SEARCH_TOOL
 
 SPEC = SkillSpec(
     name="search",
@@ -43,7 +43,7 @@ class FakeMcp:
 
     async def call_tool(self, name: str, arguments):
         if name not in self._known:
-            raise MalkuthError(
+            raise AaestroError(
                 category=ErrorCategory.MCP,
                 code=ErrorCode.MCP_002,
                 message=f"unknown tool: {name}",
@@ -104,7 +104,7 @@ async def test_memory_search_is_routed_to_the_framework_tool():
 
 async def test_unknown_skillset_tool_is_mod_001():
     """모델이 본 적 없는 이름을 지어내면 그대로 드러나야 한다."""
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await registry().call("absent", {}, ctx())
 
     assert exc_info.value.code == ErrorCode.MOD_001
@@ -112,14 +112,14 @@ async def test_unknown_skillset_tool_is_mod_001():
 
 async def test_unknown_mcp_tool_reaches_the_session_which_rejects_it():
     """등록 여부 판단은 세션 소관이다 — registry 가 먼저 가로채면 이중 판정이 된다."""
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await registry(mcp=FakeMcp()).call("mcp__absent__read", {}, ctx())
 
     assert exc_info.value.code == ErrorCode.MCP_002
 
 
 async def test_mcp_tool_without_a_session_is_mcp_002():
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await registry().call("mcp__filesystem__read_file", {}, ctx())
 
     assert exc_info.value.code == ErrorCode.MCP_002
@@ -127,7 +127,7 @@ async def test_mcp_tool_without_a_session_is_mcp_002():
 
 async def test_memory_search_without_memory_is_rejected():
     """memory 가 없는데 등록만 되어 있으면 조용히 빈 결과를 주면 안 된다."""
-    with pytest.raises(MalkuthError):
+    with pytest.raises(AaestroError):
         await registry().call(MEMORY_SEARCH_TOOL, {"query": "q"}, ctx())
 
 

@@ -8,10 +8,10 @@ from __future__ import annotations
 
 import pytest
 
-from malkuth.core.agent import HealthState
-from malkuth.core.errors import ErrorCategory, MalkuthError
-from malkuth.core.manifest import McpServerSpec
-from malkuth.protocols.mcp.session import McpSession, ToolResult
+from aaestro.core.agent import HealthState
+from aaestro.core.errors import AaestroError, ErrorCategory
+from aaestro.core.manifest import McpServerSpec
+from aaestro.protocols.mcp.session import McpSession, ToolResult
 from tests.fixtures.fake_mcp import FakeTransport
 
 
@@ -72,7 +72,7 @@ async def test_connect_failure_is_mcp_001():
     """기동 실패는 설정 문제 — 재시도해도 소용없다."""
     session = make_session(FakeTransport(connect_errors=[RuntimeError("boom")]))
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await session.initialize()
 
     assert exc_info.value.code == "MCP_001"
@@ -86,7 +86,7 @@ async def test_unsupported_protocol_version_is_rejected():
     transport = FakeTransport(protocol_version="1999-01-01")
     session = make_session(transport)
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await session.initialize()
 
     assert exc_info.value.code == "MCP_001"
@@ -113,7 +113,7 @@ async def test_unbound_tool_is_mcp_002():
     session = make_session(FakeTransport(["read_file"]))
     await session.initialize()
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await session.call_tool("write_file", {})
 
     assert exc_info.value.code == "MCP_002"
@@ -123,7 +123,7 @@ async def test_tool_execution_failure_is_mcp_003():
     session = make_session(FakeTransport(["read_file"], call_error=ValueError("bad args")))
     await session.initialize()
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await session.call_tool("read_file", {})
 
     assert exc_info.value.code == "MCP_003"
@@ -138,7 +138,7 @@ async def test_transport_loss_is_retryable_mcp_004():
     session = make_session(transport, max_reconnects=1)
     await session.initialize()
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await session.call_tool("read_file", {})
 
     assert exc_info.value.code == "MCP_004"
@@ -162,7 +162,7 @@ async def test_call_without_a_session_reports_transport_lost_when_dead():
         FakeTransport(["read_file"], connect_errors=[RuntimeError("down")]), max_reconnects=1
     )
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await session.call_tool("read_file", {})
 
     assert exc_info.value.code == "MCP_004"
@@ -176,11 +176,11 @@ async def test_disconnected_session_does_not_report_unknown_tool():
     await session.initialize()
     transport.fail_calls_with(ConnectionError("gone"))
 
-    with pytest.raises(MalkuthError):
+    with pytest.raises(AaestroError):
         await session.call_tool("read_file", {})
     assert session.connected is False
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await session.call_tool("read_file", {})
 
     assert exc_info.value.code == "MCP_004"
@@ -198,7 +198,7 @@ async def test_reconnect_failure_counts_toward_the_circuit():
 
     assert session.breaker is not None
     for _ in range(5):
-        with pytest.raises(MalkuthError):
+        with pytest.raises(AaestroError):
             await session.call_tool("read_file", {})
 
     assert session.breaker.can_attempt() is False
@@ -238,7 +238,7 @@ async def test_reconnect_backoff_grows_and_is_capped():
     session = make_session(transport, max_reconnects=3)
     await session.initialize()
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await session.reconnect()
 
     assert exc_info.value.code == "MCP_004"
@@ -251,7 +251,7 @@ async def test_exhausted_reconnect_reports_unhealthy():
     session = make_session(transport, max_reconnects=1)
     await session.initialize()
 
-    with pytest.raises(MalkuthError):
+    with pytest.raises(AaestroError):
         await session.reconnect()
 
     assert session.health().state is HealthState.UNHEALTHY
@@ -307,10 +307,10 @@ async def test_circuit_opens_after_repeated_failures():
     await session.initialize()
 
     for _ in range(5):
-        with pytest.raises(MalkuthError):
+        with pytest.raises(AaestroError):
             await session.call_tool("read_file", {})
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await session.call_tool("read_file", {})
 
     assert exc_info.value.code == "MCP_004"

@@ -1,4 +1,4 @@
-apiVersion: malkuth/v1
+apiVersion: aaestro/v1
 kind: Graph
 metadata:
   name: permissions
@@ -10,7 +10,7 @@ spec:
   goal: 권한 에이전트를 배포해 작업 에이전트의 확장 요청을 받을 수 있게 한다
 
   state:
-    schema: malkuth.graphs.schemas:PermissionsState
+    schema: aaestro.graphs.schemas:PermissionsState
 
   # 권한 에이전트는 그래프 배선이 아니라 A2A 로 요청을 받는다. orchestrator.access_stewards 로
   # 지정되고 떠 있으면, runtime 이 다른 배포의 에이전트에게 이 에이전트를 peer 로 넣어 준다

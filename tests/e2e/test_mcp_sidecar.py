@@ -75,7 +75,7 @@ def plane(stack, tmp_path) -> Iterator[dict[str, Any]]:
     tokens_path = tmp_path / "memory.json"
     tokens_path.write_text(json.dumps(memory_tokens()), encoding="utf-8")
     process = start_plane(
-        config_dir, tokens_path, env={"MALKUTH_REPO_ROOT": str(workspace(tmp_path))}
+        config_dir, tokens_path, env={"AAESTRO_REPO_ROOT": str(workspace(tmp_path))}
     )
     try:
         until(plane_healthy, what="control plane health")
@@ -119,7 +119,7 @@ body = {"task_id": sys.argv[1], "run_id": "direct-" + sys.argv[1], "node_id": No
         "input": {"query": sys.argv[2]}, "config": {}, "trace": {"trace_id": sys.argv[1]}}
 request = urllib.request.Request(
     "http://127.0.0.1:8080/v1/invoke", data=json.dumps(body).encode(),
-    headers={"Authorization": "Bearer " + os.environ["MALKUTH_AGENT_TOKEN"],
+    headers={"Authorization": "Bearer " + os.environ["AAESTRO_AGENT_TOKEN"],
              "content-type": "application/json"})
 result = json.loads(urllib.request.urlopen(request, timeout=90).read())
 health = json.loads(urllib.request.urlopen("http://127.0.0.1:8080/v1/health", timeout=5).read())

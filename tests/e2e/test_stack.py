@@ -30,7 +30,7 @@ READY_TIMEOUT_S = 120.0
 # compose 가 주입하는 값과 같아야 한다 — 어긋나면 전부 401 이다
 # compose 의 ${VAR:-default} 는 **빈 값도** default 로 떨어진다 —
 # 여기서 빈 문자열을 그대로 쓰면 테스트와 스택이 다른 토큰을 봐 전부 401 이다
-AGENT_TOKEN = os.environ.get("MALKUTH_AGENT_TOKEN") or "e2e-token"
+AGENT_TOKEN = os.environ.get("AAESTRO_AGENT_TOKEN") or "e2e-token"
 DOCKER_BIN = shutil.which("docker")
 
 
@@ -111,7 +111,7 @@ def compose_up() -> None:
     docker(
         "build",
         "-t",
-        "malkuth/agent-base:0.1.0",
+        "aaestro/agent-base:0.1.0",
         "-f",
         str(COMPOSE_FILE.parent / "agent-base.Dockerfile"),
         str(REPO_ROOT),

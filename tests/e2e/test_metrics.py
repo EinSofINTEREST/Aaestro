@@ -14,7 +14,7 @@ import urllib.request
 
 import pytest
 
-from malkuth.orchestrator.run import RunStatus
+from aaestro.orchestrator.run import RunStatus
 from tests.e2e.test_graph_run import (  # noqa: F401 — fixture 재사용
     graph_stack,
     node_runtime,
@@ -61,11 +61,11 @@ async def test_agent_task_counter_is_not_zero(after_a_mission):
     """run 이 돌았는데 카운터가 0 이면 알림이 영원히 침묵한다."""
     completed = [
         value
-        for labels, value in samples(scraped(METRIC_PORTS["planner"]), "malkuth_agent_tasks_total")
+        for labels, value in samples(scraped(METRIC_PORTS["planner"]), "aaestro_agent_tasks_total")
         if 'status="completed"' in labels
     ]
 
-    assert completed, "malkuth_agent_tasks_total 에 completed 표본이 없다"
+    assert completed, "aaestro_agent_tasks_total 에 completed 표본이 없다"
     assert sum(completed) > 0
 
 
@@ -75,7 +75,7 @@ async def test_the_model_was_actually_called(after_a_mission):
     calls = [
         value
         for _labels, value in samples(
-            scraped(METRIC_PORTS["planner"]), "malkuth_model_requests_total"
+            scraped(METRIC_PORTS["planner"]), "aaestro_model_requests_total"
         )
     ]
 
@@ -87,7 +87,7 @@ async def test_the_graph_label_carries_the_real_name(after_a_mission):
     """빈 문자열이나 "direct" 면 대시보드의 그래프별 분해가 무의미해진다 (#113)."""
     labelled = [
         labels
-        for labels, _value in samples(scraped(METRIC_PORTS["planner"]), "malkuth_agent_tasks_total")
+        for labels, _value in samples(scraped(METRIC_PORTS["planner"]), "aaestro_agent_tasks_total")
     ]
 
     assert labelled
@@ -101,7 +101,7 @@ async def test_every_graph_node_reports_its_own_tasks(after_a_mission):
     for agent, port in METRIC_PORTS.items():
         completed = [
             value
-            for labels, value in samples(scraped(port), "malkuth_agent_tasks_total")
+            for labels, value in samples(scraped(port), "aaestro_agent_tasks_total")
             if 'status="completed"' in labels
         ]
         assert sum(completed) > 0, f"{agent} 가 태스크를 계측하지 않았다"

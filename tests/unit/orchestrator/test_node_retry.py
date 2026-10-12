@@ -14,10 +14,10 @@ from typing import Any
 
 import pytest
 
-from malkuth.core.agent import TaskResult
-from malkuth.core.errors import ErrorCategory, ErrorCode, MalkuthError
-from malkuth.orchestrator.builder import build_graph
-from malkuth.orchestrator.topology import GraphTopology
+from aaestro.core.agent import TaskResult
+from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.orchestrator.builder import build_graph
+from aaestro.orchestrator.topology import GraphTopology
 from tests.fixtures.topologies import mission_dict
 
 
@@ -31,9 +31,9 @@ def topology_with(retry: int) -> GraphTopology:
 class FlakyRuntime:
     """정해진 횟수만큼 실패한 뒤 성공하는 runtime 대역."""
 
-    def __init__(self, failures: int, *, error: MalkuthError | None = None) -> None:
+    def __init__(self, failures: int, *, error: AaestroError | None = None) -> None:
         self._left = failures
-        self._error = error or MalkuthError(
+        self._error = error or AaestroError(
             category=ErrorCategory.NETWORK,
             code=ErrorCode.NET_001,
             message="runtime unreachable",
@@ -75,7 +75,7 @@ async def test_the_default_does_not_retry(waits):
     """기본을 켜면 모든 그래프가 agentd 재시도와의 곱을 떠안는다."""
     runtime = FlakyRuntime(failures=1)
 
-    with pytest.raises(MalkuthError):
+    with pytest.raises(AaestroError):
         await graph_for(topology_with(0), runtime, waits).ainvoke({"query": "q"})
 
     assert len(runtime.attempts) == 1
@@ -94,7 +94,7 @@ async def test_retry_keeps_the_same_task_id(waits):
 
 async def test_a_permanent_failure_is_not_retried(waits):
     """계약 위반을 다시 돌리는 것은 낭비다 — 같은 입력이면 같은 결과다."""
-    permanent = MalkuthError(
+    permanent = AaestroError(
         category=ErrorCategory.GRAPH,
         code=ErrorCode.GRAPH_003,
         message="state schema mismatch",
@@ -102,7 +102,7 @@ async def test_a_permanent_failure_is_not_retried(waits):
     )
     runtime = FlakyRuntime(failures=9, error=permanent)
 
-    with pytest.raises(MalkuthError):
+    with pytest.raises(AaestroError):
         await graph_for(topology_with(3), runtime, waits).ainvoke({"query": "q"})
 
     assert len(runtime.attempts) == 1
@@ -112,7 +112,7 @@ async def test_exhausted_retries_fail_the_run(waits):
     """무한히 재시도하면 run 이 끝나지 않는다."""
     runtime = FlakyRuntime(failures=99)
 
-    with pytest.raises(MalkuthError) as excinfo:
+    with pytest.raises(AaestroError) as excinfo:
         await graph_for(topology_with(2), runtime, waits).ainvoke({"query": "q"})
 
     assert excinfo.value.code == ErrorCode.NET_001
@@ -131,7 +131,7 @@ async def test_only_the_declaring_node_retries(waits):
         async def invoke(self, node: Any, task: Any) -> TaskResult:
             self.attempts.append(node.id)
             if node.id == "researcher":
-                raise MalkuthError(
+                raise AaestroError(
                     category=ErrorCategory.NETWORK,
                     code=ErrorCode.NET_001,
                     message="unreachable",
@@ -141,7 +141,7 @@ async def test_only_the_declaring_node_retries(waits):
 
     runtime = ResearcherFails()
 
-    with pytest.raises(MalkuthError):
+    with pytest.raises(AaestroError):
         await graph_for(topology_with(3), runtime, waits).ainvoke({"query": "q"})
 
     assert runtime.attempts.count("researcher") == 1

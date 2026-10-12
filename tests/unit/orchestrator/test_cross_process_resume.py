@@ -13,12 +13,12 @@ from typing import Any
 
 import pytest
 
-from malkuth.core.agent import TaskResult
-from malkuth.core.errors import ErrorCode, MalkuthError
-from malkuth.orchestrator.checkpoint import build_checkpointer
-from malkuth.orchestrator.run import GraphMode, RunManager, RunStatus
-from malkuth.orchestrator.runstore import RunRecord, SqliteRunStore
-from malkuth.orchestrator.submit import RunSubmitter
+from aaestro.core.agent import TaskResult
+from aaestro.core.errors import AaestroError, ErrorCode
+from aaestro.orchestrator.checkpoint import build_checkpointer
+from aaestro.orchestrator.run import GraphMode, RunManager, RunStatus
+from aaestro.orchestrator.runstore import RunRecord, SqliteRunStore
+from aaestro.orchestrator.submit import RunSubmitter
 from tests.fixtures.topologies import make_service
 
 
@@ -75,7 +75,7 @@ def test_a_run_from_another_process_is_found(store_path):
 
 def test_an_unknown_run_still_fails(store_path):
     """저장소를 봐도 없으면 없는 것이다 — 조용히 빈 핸들을 만들면 안 된다."""
-    with pytest.raises(MalkuthError) as excinfo:
+    with pytest.raises(AaestroError) as excinfo:
         restarted(store_path).manager.get("absent")
 
     assert excinfo.value.code == ErrorCode.NF_001
@@ -108,7 +108,7 @@ def test_a_drain_request_survives_the_restart(store_path):
 
 def test_manager_without_a_store_is_unchanged(tmp_path):
     """저장소를 안 물린 배선은 그대로 동작해야 한다."""
-    with pytest.raises(MalkuthError) as excinfo:
+    with pytest.raises(AaestroError) as excinfo:
         RunManager().get("svc")
 
     assert excinfo.value.code == ErrorCode.NF_001
@@ -124,12 +124,12 @@ class PlansThenFails:
     async def invoke(self, node: Any, task: Any) -> TaskResult:
         self.calls += 1
         if self.calls > self.succeed:
-            raise MalkuthError(category="graph", code="GRAPH_002", message="watcher down")
+            raise AaestroError(category="graph", code="GRAPH_002", message="watcher down")
         return TaskResult.completed(task, output={"plan": f"plan-{self.calls}"})
 
 
 # 필수 필드(query)가 있는 state — 빈 state 로 재개하면 GRAPH_003 으로 거부된다
-REQUIRED_STATE = {"schema": "malkuth.graphs.schemas:ResearchState"}
+REQUIRED_STATE = {"schema": "aaestro.graphs.schemas:ResearchState"}
 NODES = [
     {"id": "watcher", "agent": "agents/feed-watcher@0.1.0", "output_map": {"plan": "output.plan"}},
     {"id": "notifier", "agent": "agents/notifier@0.1.0"},
@@ -196,7 +196,7 @@ async def test_a_run_that_left_no_checkpoint_cannot_resume(store_path):
     """이어갈 state 가 없는데 빈 state 로 시작하면 누적이 조용히 사라진다."""
     SqliteRunStore(path=store_path).upsert(halted_record(iteration=5))
 
-    with pytest.raises(MalkuthError) as excinfo:
+    with pytest.raises(AaestroError) as excinfo:
         await restarted(store_path).resume_service(make_service(), "svc", max_iterations=6)
 
     assert excinfo.value.code == ErrorCode.STOR_002
@@ -210,7 +210,7 @@ async def test_resume_still_refuses_a_run_that_is_not_halted(store_path):
         )
     )
 
-    with pytest.raises(MalkuthError) as excinfo:
+    with pytest.raises(AaestroError) as excinfo:
         await restarted(store_path).resume_service(make_service(), "live", max_iterations=1)
 
     assert excinfo.value.code == ErrorCode.GRAPH_006

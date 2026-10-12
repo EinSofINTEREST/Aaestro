@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 import structlog
 
-from malkuth.observability.logging import (
+from aaestro.observability.logging import (
     REDACTED,
     STANDARD_FIELDS,
     TRUNCATED,

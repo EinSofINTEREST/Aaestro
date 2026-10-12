@@ -11,12 +11,12 @@ from pathlib import Path
 import httpx
 import pytest
 
-from malkuth.access.registry import AccessRegistry
-from malkuth.access.store import InMemoryAccessStore
-from malkuth.catalog import Catalog
-from malkuth.core.errors import ErrorCode
-from malkuth.orchestrator.control import create_app
-from malkuth.orchestrator.runstore import InMemoryRunStore
+from aaestro.access.registry import AccessRegistry
+from aaestro.access.store import InMemoryAccessStore
+from aaestro.catalog import Catalog
+from aaestro.core.errors import ErrorCode
+from aaestro.orchestrator.control import create_app
+from aaestro.orchestrator.runstore import InMemoryRunStore
 from tests.fixtures.access import KNOWLEDGE, STEWARD, access_workspace
 
 CONTROL = "control-token"
@@ -317,8 +317,8 @@ async def test_the_change_feed_takes_an_enforcer_token_or_a_live_agent_identity(
 
 async def test_the_operator_view_shows_declarations_ceilings_and_recent_denials(registry, api):
     """권한 화면이 한 번에 보는 것 — 기본 권한, 확장 상한, 최근 거부 (#283)."""
-    from malkuth.access.baselines import EgressBaseline
-    from malkuth.access.model import ResourceKind
+    from aaestro.access.baselines import EgressBaseline
+    from aaestro.access.model import ResourceKind
 
     registry.baselines = {ResourceKind.EGRESS: EgressBaseline(registry.catalog)}
     registry.decide("worker", ResourceKind.EGRESS, "evil.example.com")

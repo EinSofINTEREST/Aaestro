@@ -9,9 +9,9 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from malkuth.agentd.executor import Message, ModelResponse, ToolCall, UserTurn
-from malkuth.core.agent import ModelUsage
-from malkuth.core.skill import SkillContext
+from aaestro.agentd.executor import Message, ModelResponse, ToolCall, UserTurn
+from aaestro.core.agent import ModelUsage
+from aaestro.core.skill import SkillContext
 
 
 class FakeModel:

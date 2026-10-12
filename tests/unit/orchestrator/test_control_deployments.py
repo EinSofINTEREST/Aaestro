@@ -5,11 +5,11 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from malkuth.core.errors import ErrorCategory, ErrorCode, MalkuthError
-from malkuth.core.manifest import ModelOverride
-from malkuth.orchestrator.control import create_app
-from malkuth.orchestrator.runstore import InMemoryRunStore
-from malkuth.runtime.deployments import DeployedAgent, DeploymentRecord, DeploymentStatus
+from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.core.manifest import ModelOverride
+from aaestro.orchestrator.control import create_app
+from aaestro.orchestrator.runstore import InMemoryRunStore
+from aaestro.runtime.deployments import DeployedAgent, DeploymentRecord, DeploymentStatus
 
 
 class FakeManager:
@@ -27,31 +27,31 @@ class FakeManager:
         self.overrides.append(model_overrides)
         if model_overrides and "ghost" in model_overrides:
             # 실제 manager 는 GraphTopology.with_model_overrides 가 이렇게 거절한다
-            raise MalkuthError(
+            raise AaestroError(
                 category=ErrorCategory.VALIDATION,
                 code=ErrorCode.VAL_002,
                 message="model override names a node this graph does not have",
             )
         if graph == "broken":
-            raise MalkuthError(
+            raise AaestroError(
                 category=ErrorCategory.VALIDATION, code=ErrorCode.VAL_001, message="invalid"
             )
         if graph == "overlapping":
-            raise MalkuthError(
+            raise AaestroError(
                 category=ErrorCategory.RUNTIME,
                 code=ErrorCode.RT_010,
                 message="agent replica is already launched",
             )
         if graph == "unbaked":
-            raise MalkuthError(
+            raise AaestroError(
                 category=ErrorCategory.RUNTIME,
                 code=ErrorCode.RT_012,
                 message="agent image is not built — build it before deploying",
                 agent="custom",
-                details={"image": "malkuth/agent-custom:0.1.0", "build_status": None},
+                details={"image": "aaestro/agent-custom:0.1.0", "build_status": None},
             )
         if graph == "nope":
-            raise MalkuthError(
+            raise AaestroError(
                 category=ErrorCategory.NOT_FOUND, code=ErrorCode.NF_001, message="unknown graph"
             )
         record = DeploymentRecord(
@@ -84,7 +84,7 @@ class FakeManager:
         try:
             return self.records[deployment_id]
         except KeyError:
-            raise MalkuthError(
+            raise AaestroError(
                 category=ErrorCategory.NOT_FOUND,
                 code=ErrorCode.NF_001,
                 message="unknown deployment",
@@ -149,7 +149,7 @@ async def test_deploying_an_unbuilt_custom_agent_is_409(api):
     error = response.json()["error"]
     assert error["code"] == ErrorCode.RT_012
     assert error["agent"] == "custom"
-    assert error["details"]["image"] == "malkuth/agent-custom:0.1.0"
+    assert error["details"]["image"] == "aaestro/agent-custom:0.1.0"
 
 
 async def test_an_unknown_graph_is_404(api):

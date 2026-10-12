@@ -17,16 +17,16 @@ from typing import Any
 import pytest
 import yaml
 
-from malkuth.cli.main import checkpointer_for
-from malkuth.core.agent import TaskResult
-from malkuth.orchestrator.checkpoint import close_checkpointer
-from malkuth.orchestrator.submit import RunSubmitter
+from aaestro.cli.main import checkpointer_for
+from aaestro.core.agent import TaskResult
+from aaestro.orchestrator.checkpoint import close_checkpointer
+from aaestro.orchestrator.submit import RunSubmitter
 from tests.fixtures.topologies import make_mission
 
-URL = os.environ.get("MALKUTH_TEST_POSTGRES_URL", "")
+URL = os.environ.get("AAESTRO_TEST_POSTGRES_URL", "")
 pytestmark = [
     pytest.mark.integration,
-    pytest.mark.skipif(not URL, reason="MALKUTH_TEST_POSTGRES_URL not set"),
+    pytest.mark.skipif(not URL, reason="AAESTRO_TEST_POSTGRES_URL not set"),
 ]
 
 

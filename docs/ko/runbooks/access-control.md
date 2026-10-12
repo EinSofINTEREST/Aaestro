@@ -14,7 +14,7 @@
    **회수**(메모리는 **쓰기 회수** / **전체 회수**). API 로:
 
    ```bash
-   curl -X POST -H "Authorization: Bearer $MALKUTH_CONTROL_TOKEN" -H 'content-type: application/json' \
+   curl -X POST -H "Authorization: Bearer $AAESTRO_CONTROL_TOKEN" -H 'content-type: application/json' \
      -d '{"agent": "researcher", "kind": "egress", "target": "api.search.example.com",
           "reason": "incident 311"}' \
      http://127.0.0.1:8700/v1/access/revocations
@@ -34,7 +34,7 @@
 
 2. **적용을 확인한다.** 에이전트의 다음 시도가 **최근 거부** 에 `decided_by: operator` 로 뜨거나
    `GET /v1/access/agents/{name}` 의 `denials` 에 보인다. 강제 지점은 거부를 로그로 남기고
-   (`decision: deny`), `malkuth_access_grants_total{op="revoke"}` 가 회수를 센다.
+   (`decision: deny`), `aaestro_access_grants_total{op="revoke"}` 가 회수를 센다.
 
 3. **그 에이전트가 하는 모든 것을 멈춰야 하면** 배포를 해체한다 (`DELETE /v1/deployments/{id}` 또는
    **해체**). 에이전트가 drain 후 정지하고 나면 그 배포의 신원이 폐기된다 — 정지에 실패한 컨테이너도
@@ -74,7 +74,7 @@
    다시 붙는다. 끊긴 동안 레지스트리 버전이 움직였다면(장애 중에 한 회수) 캐시를 버리고, 그 회수가
    다음 요청부터 적용된다.
 2. 회수를 기다릴 수 없으면 control plane 없이 해당 에이전트를 멈춘다:
-   `docker stop malkuth-<agent>-<replica>`. control plane 이 돌아오면 배포를 해체해 기록을 맞춘다.
+   `docker stop aaestro-<agent>-<replica>`. control plane 이 돌아오면 배포를 해체해 기록을 맞춘다.
 3. 레지스트리가 답하면서 강제 지점을 **거절**하는 경우(강제 지점 토큰이 틀림)는 장애가 아니다: 그
    강제 지점은 캐시를 버리고 모두 거부한다. 토큰을 고친다.
 
@@ -85,8 +85,8 @@
 수 있다. 에이전트 네트워크마다 한 번, 호스트에서 닫는다:
 
 ```bash
-sudo deployments/docker/isolate-agent-network.sh apply malkuth-net     # runtime.network
-sudo deployments/docker/isolate-agent-network.sh status malkuth-net
+sudo deployments/docker/isolate-agent-network.sh apply aaestro-net     # runtime.network
+sudo deployments/docker/isolate-agent-network.sh status aaestro-net
 ```
 
 - 그 네트워크 브리지에 대해 `INPUT` 에 체인을 하나 더한다: 에이전트가 호스트로 **여는** 연결은 버리고,

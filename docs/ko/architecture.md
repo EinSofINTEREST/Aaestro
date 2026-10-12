@@ -2,7 +2,7 @@
 
 한국어 | **[English](../en/architecture.md)**
 
-Malkuth 는 LangGraph state graph 로 여러 AI 에이전트를 오케스트레이션하며, 각 에이전트를
+Aaestro 는 LangGraph state graph 로 여러 AI 에이전트를 오케스트레이션하며, 각 에이전트를
 독립 Docker 컨테이너로 격리합니다. 본 문서는 요약본이며, 규범 규칙은
 [01-architecture.md](../../.claude/rules/01-architecture.md) 에 있습니다.
 

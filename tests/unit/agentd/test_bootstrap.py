@@ -8,15 +8,15 @@ from __future__ import annotations
 
 import pytest
 
-from malkuth.agentd.bootstrap import (
+from aaestro.agentd.bootstrap import (
     Bootstrap,
     BootstrapResult,
     build_tool_registry,
 )
-from malkuth.core.agent import HealthState
-from malkuth.core.errors import ErrorCategory, MalkuthError
-from malkuth.core.skill import SkillSpec
-from malkuth.core.tools import namespaced
+from aaestro.core.agent import HealthState
+from aaestro.core.errors import AaestroError, ErrorCategory
+from aaestro.core.skill import SkillSpec
+from aaestro.core.tools import namespaced
 from tests.fixtures.builders import make_manifest
 
 
@@ -79,7 +79,7 @@ class FakeMcp:
 
     def schemas(self) -> dict[str, dict]:
         """네임스페이스가 붙은 tool 이름 → input schema (``McpLauncher`` 계약)."""
-        from malkuth.core.tools import namespaced
+        from aaestro.core.tools import namespaced
 
         return {
             namespaced(server, tool): {"type": "object", "properties": {"path": {}}}
@@ -144,7 +144,7 @@ def test_registry_merges_skillset_and_mcp_tools():
 
 def test_duplicate_skillset_tool_names_are_rejected():
     """두 스킬셋이 같은 tool 이름을 주장하면 모델이 어느 쪽을 부를지 모호해진다."""
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         build_tool_registry(
             [
                 FakeSkillset("skillsets/a@0.1.0", ["search"]),
@@ -159,7 +159,7 @@ def test_duplicate_skillset_tool_names_are_rejected():
 
 
 def test_duplicate_mcp_tool_names_are_rejected():
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         build_tool_registry([], {"fs": ("read", "read")}, agent="a")
 
     assert exc_info.value.code == "MOD_002"
@@ -193,7 +193,7 @@ async def test_required_mcp_failure_aborts_startup():
     """부분 기동 금지 — 필수 서버가 실패하면 Ready 로 가지 않는다."""
     manifest = manifest_with(mcp={"servers": [stdio("filesystem")]})
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await bootstrap(manifest, mcp=FakeMcp().fail("filesystem")).run()
 
     assert exc_info.value.code == "MCP_001"
@@ -270,9 +270,9 @@ async def test_startup_without_mcp_launcher_is_allowed():
 
 async def test_module_load_failure_propagates():
     """로더가 보고한 MOD_* 를 그대로 전파한다 — 재변환하지 않는다."""
-    error = MalkuthError(category=ErrorCategory.MODULE, code="MOD_001", message="cannot resolve")
+    error = AaestroError(category=ErrorCategory.MODULE, code="MOD_001", message="cannot resolve")
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await bootstrap(
             manifest_with(), promptsets=FakeLoader({"promptsets/test@0.1.0": error})
         ).run()
@@ -304,7 +304,7 @@ def test_empty_result_reports_healthy():
 
 async def test_startup_registers_memory_search_for_agents_with_memory():
     """파라미터만 만들고 기동 경로에 넘기지 않으면 실제로는 등록되지 않는다."""
-    from malkuth.memory.tool import MEMORY_SEARCH_TOOL
+    from aaestro.memory.tool import MEMORY_SEARCH_TOOL
 
     manifest = manifest_with(
         memory={"spaces": [{"ref": "memorysets/agent-longterm@0.1.0", "as": "longterm"}]}
@@ -316,7 +316,7 @@ async def test_startup_registers_memory_search_for_agents_with_memory():
 
 
 async def test_startup_omits_memory_search_without_declared_spaces():
-    from malkuth.memory.tool import MEMORY_SEARCH_TOOL
+    from aaestro.memory.tool import MEMORY_SEARCH_TOOL
 
     result = await bootstrap(manifest_with()).run()
 

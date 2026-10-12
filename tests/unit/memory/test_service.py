@@ -8,12 +8,12 @@ from __future__ import annotations
 
 import pytest
 
-from malkuth.core.errors import ErrorCategory, MalkuthError
-from malkuth.core.manifest import MemoryMode
-from malkuth.memory.entry import MemoryEntry, MemorySource
-from malkuth.memory.service import AccessToken, MemoryService, MemorySpace, build_token
-from malkuth.memory.store import SqliteMemoryStore
-from malkuth.modules.memoryset import MemoryKind, MemoryScope
+from aaestro.core.errors import AaestroError, ErrorCategory
+from aaestro.core.manifest import MemoryMode
+from aaestro.memory.entry import MemoryEntry, MemorySource
+from aaestro.memory.service import AccessToken, MemoryService, MemorySpace, build_token
+from aaestro.memory.store import SqliteMemoryStore
+from aaestro.modules.memoryset import MemoryKind, MemoryScope
 
 
 @pytest.fixture
@@ -51,7 +51,7 @@ def token(**overrides) -> AccessToken:
 
 def test_undeclared_space_is_denied(service):
     """선언되지 않은 space 는 존재조차 알려주지 않는다."""
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         service.append(token(), "secret", entry())
 
     assert exc_info.value.code == "MEM_001"
@@ -59,7 +59,7 @@ def test_undeclared_space_is_denied(service):
 
 
 def test_undeclared_space_read_is_denied(service):
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         service.read(token(), "secret")
 
     assert exc_info.value.code == "MEM_001"
@@ -80,7 +80,7 @@ def test_non_member_cannot_see_a_group_space(service):
     """그룹 소속이 곧 접근 경계다 — 비멤버는 읽기도 불가하다."""
     outsider = build_token(agent="writer", group=None, local=[("longterm", "writer")])
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         service.read(outsider, "knowledge")
 
     assert exc_info.value.code == "MEM_001"
@@ -89,7 +89,7 @@ def test_non_member_cannot_see_a_group_space(service):
 def test_read_only_group_space_rejects_append(service):
     member = token(group_spaces=[("knowledge", MemoryMode.RO)])
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         service.append(member, "knowledge", entry())
 
     assert exc_info.value.code == "MEM_001"
@@ -108,7 +108,7 @@ def test_global_space_is_read_only_by_default(service):
     """전역은 기본 read-only — 아무나 쓰면 전사 지식이 오염된다."""
     reader = token(global_spaces=[("org", ())])
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         service.append(reader, "org", entry())
 
     assert exc_info.value.code == "MEM_001"
@@ -125,7 +125,7 @@ def test_declared_writer_can_write_global(service):
 def test_agent_outside_writers_cannot_write_global(service):
     other = token(global_spaces=[("org", ("librarian",))])
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         service.append(other, "org", entry())
 
     assert exc_info.value.code == "MEM_001"
@@ -197,7 +197,7 @@ def test_direct_task_has_no_run_space(service):
     """direct 태스크는 어떤 graph run 의 state 도 기억도 건드리지 않는다."""
     direct = token()  # run_spaces 미부여
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         service.append(direct, "scratch", entry())
 
     assert exc_info.value.code == "MEM_001"
@@ -212,7 +212,7 @@ def test_group_move_revokes_the_previous_group_space(service):
         group_spaces=[("ops-notes", MemoryMode.RW)],
     )
 
-    with pytest.raises(MalkuthError):
+    with pytest.raises(AaestroError):
         service.read(moved, "knowledge")
 
 
@@ -238,7 +238,7 @@ def test_successful_access_is_audited(service):
 
 def test_denied_access_is_audited(service):
     """거부도 기록되어야 침해 시도를 추적할 수 있다."""
-    with pytest.raises(MalkuthError):
+    with pytest.raises(AaestroError):
         service.append(token(), "secret", entry())
 
     record = service.audit_log[-1]
@@ -279,7 +279,7 @@ def test_space_id_encodes_scope_and_owner():
 
 def test_every_scope_has_a_precedence():
     """우선순위에 빠진 스코프의 별칭은 해석 단계에서 터진다."""
-    from malkuth.memory.service import SCOPE_PRECEDENCE
+    from aaestro.memory.service import SCOPE_PRECEDENCE
 
     assert set(MemoryScope) == set(SCOPE_PRECEDENCE)
 
@@ -358,7 +358,7 @@ def test_latest_within_the_space_is_audited_as_ok(service):
 
 
 def test_latest_on_an_undeclared_space_is_denied(service):
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         service.latest(token(), "secret", "any")
 
     assert exc_info.value.code == "MEM_001"
@@ -372,14 +372,14 @@ def metered_service(store):
     """계측을 물린 서비스와 그 registry."""
     from prometheus_client import CollectorRegistry
 
-    from malkuth.observability.metrics import Metrics
+    from aaestro.observability.metrics import Metrics
 
     metrics = Metrics(registry=CollectorRegistry())
     return MemoryService(store=store, metrics=metrics), metrics
 
 
 def metric_value(metrics, **labels) -> float:
-    return metrics.registry.get_sample_value("malkuth_memory_operations_total", labels) or 0.0
+    return metrics.registry.get_sample_value("aaestro_memory_operations_total", labels) or 0.0
 
 
 def test_successful_append_is_counted():
@@ -400,7 +400,7 @@ def test_denied_access_is_counted_too():
     try:
         service, metrics = metered_service(store)
 
-        with pytest.raises(MalkuthError):
+        with pytest.raises(AaestroError):
             service.append(token(), "secret", entry())
 
         assert metric_value(metrics, space="secret", op="append", status="denied") == 1.0

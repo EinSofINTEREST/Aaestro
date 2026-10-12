@@ -140,7 +140,7 @@ def test_no_store_credentials_reach_the_agent(stack):
     """자격증명이 에이전트에 들어가면 서비스를 우회할 수 있어 이 배치가 무의미해진다."""
     env = docker("compose", "-f", str(COMPOSE_FILE), "exec", "-T", "agent-researcher", "env")
 
-    assert "MALKUTH_MEMORY__DSN" not in env
+    assert "AAESTRO_MEMORY__DSN" not in env
     assert "POSTGRES_PASSWORD" not in env
 
 

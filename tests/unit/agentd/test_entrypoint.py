@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import pytest
 
-from malkuth.agentd.__main__ import build_executor, load_entrypoint
-from malkuth.core.errors import ErrorCode, MalkuthError
+from aaestro.agentd.__main__ import build_executor, load_entrypoint
+from aaestro.core.errors import AaestroError, ErrorCode
 from tests.fixtures.builders import make_manifest
 
 FIXTURES = "tests.fixtures.custom_agents.valid"
@@ -66,7 +66,7 @@ async def test_an_executor_without_constructor_arguments_is_allowed():
 )
 async def test_an_unresolvable_entrypoint_refuses_to_start(reference, expected_reason):
     """조용히 기본으로 떨어지면 운영자가 가짜 실행기를 진짜로 믿는다."""
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await build_executor(manifest_with(reference))
 
     assert exc_info.value.code == ErrorCode.CFG_001
@@ -75,7 +75,7 @@ async def test_an_unresolvable_entrypoint_refuses_to_start(reference, expected_r
 
 @pytest.mark.parametrize("reference", ["bogus", ":Thing", "module:", ""])
 def test_a_malformed_reference_is_rejected(reference):
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         load_entrypoint(manifest_with(reference))
 
     assert exc_info.value.code == ErrorCode.CFG_001
@@ -88,9 +88,9 @@ async def test_a_malformed_reference_is_rejected_on_the_startup_path(reference, 
     truthiness 로 보면 `entrypoint: ""` 가 미선언과 같아져 조용히 표준
     실행기로 떨어진다 — 그것을 잡으려면 기동 경로로 들어가야 한다.
     """
-    monkeypatch.setenv("MALKUTH_EXECUTOR", "echo")
+    monkeypatch.setenv("AAESTRO_EXECUTOR", "echo")
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await build_executor(manifest_with(reference))
 
     assert exc_info.value.code == ErrorCode.CFG_001
@@ -103,7 +103,7 @@ async def test_a_malformed_reference_is_rejected_on_the_startup_path(reference, 
 async def test_a_failing_constructor_is_reported_as_a_config_failure(reference):
     """생성자가 터지면 데몬이 구조화되지 않은 예외로 죽는다 — 설정 문제인지
     코드 버그인지 구분할 단서를 잃는다."""
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await build_executor(manifest_with(reference))
 
     assert exc_info.value.code == ErrorCode.CFG_001
@@ -116,7 +116,7 @@ async def test_a_failing_constructor_is_reported_as_a_config_failure(reference):
 )
 async def test_an_executor_that_breaks_the_contract_is_rejected(reference):
     """계약을 확인하지 않으면 **첫 태스크에서야** AttributeError 로 터진다."""
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await build_executor(manifest_with(reference))
 
     assert exc_info.value.code == ErrorCode.CFG_001
@@ -128,7 +128,7 @@ async def test_an_executor_that_breaks_the_contract_is_rejected(reference):
 
 async def test_without_an_entrypoint_the_echo_selection_still_works(monkeypatch):
     """미선언 시 기존 경로가 그대로여야 한다."""
-    monkeypatch.setenv("MALKUTH_EXECUTOR", "echo")
+    monkeypatch.setenv("AAESTRO_EXECUTOR", "echo")
 
     executor = await build_executor(manifest_with(None))
 
@@ -137,7 +137,7 @@ async def test_without_an_entrypoint_the_echo_selection_still_works(monkeypatch)
 
 async def test_a_declared_entrypoint_wins_over_the_echo_env(monkeypatch):
     """manifest 선언이 env 대역보다 우선이다 — 이미지가 대역으로 새지 않도록."""
-    monkeypatch.setenv("MALKUTH_EXECUTOR", "echo")
+    monkeypatch.setenv("AAESTRO_EXECUTOR", "echo")
 
     executor = await build_executor(manifest_with(f"{FIXTURES}:WithoutManifest"))
 

@@ -38,10 +38,10 @@ def test_deploy_reattach_and_teardown(plane):
     assert status == 201, record
     assert record["status"] == "ready"
     assert sorted(a["name"] for a in record["agents"]) == sorted(AGENTS)
-    assert all(a["image"] == "malkuth/agent-base:0.1.0" for a in record["agents"])
+    assert all(a["image"] == "aaestro/agent-base:0.1.0" for a in record["agents"])
 
     containers = deployed_containers()
-    assert sorted(containers) == [f"malkuth-{a}-0" for a in sorted(AGENTS)]
+    assert sorted(containers) == [f"aaestro-{a}-0" for a in sorted(AGENTS)]
     # Ready 는 runtime 의 health 판정을 지난 뒤여야 한다 — 지금 바로 healthy 여야 맞다
     for agent in record["agents"]:
         health = fetch(f"http://127.0.0.1:{agent['control_port']}/v1/health")
@@ -52,20 +52,20 @@ def test_deploy_reattach_and_teardown(plane):
         line.split("=", 1)
         for line in docker(
             "inspect",
-            "malkuth-researcher-0",
+            "aaestro-researcher-0",
             "--format",
             "{{range .Config.Env}}{{println .}}{{end}}",
         ).splitlines()
         if "=" in line
     )
-    assert env["MALKUTH_A2A_EDGES"] == "researcher>planner"
+    assert env["AAESTRO_A2A_EDGES"] == "researcher>planner"
     planner_port = next(a["a2a_port"] for a in record["agents"] if a["name"] == "planner")
-    assert env["MALKUTH_A2A_PEERS"] == f"planner=malkuth-planner-0:{planner_port}"
+    assert env["AAESTRO_A2A_PEERS"] == f"planner=aaestro-planner-0:{planner_port}"
     assert env["ANTHROPIC_BASE_URL"] == "http://fake-provider:8000"
     assert "SEARCH_API_KEY" in env and "ANTHROPIC_API_KEY" in env
     mounts = docker(
         "inspect",
-        "malkuth-researcher-0",
+        "aaestro-researcher-0",
         "--format",
         "{{range .Mounts}}{{.Destination}}:{{.RW}} {{end}}",
     )
@@ -73,15 +73,15 @@ def test_deploy_reattach_and_teardown(plane):
 
     # --- UI (#245): 같은 프로세스가 화면을 서빙하고, 화면이 만드는 모양의 문서로 저작이 된다
     page = urllib.request.urlopen(f"{plane_url()}/ui/", timeout=10).read().decode()  # noqa: S310
-    assert "<title>Malkuth</title>" in page
+    assert "<title>Aaestro</title>" in page
     draft = {
-        "apiVersion": "malkuth/v1",
+        "apiVersion": "aaestro/v1",
         "kind": "Graph",
         "metadata": {"name": "ui-e2e", "version": "0.1.0", "description": "made in the ui"},
         "spec": {
             "mode": "mission",
             "goal": "ui e2e",
-            "state": {"schema": "malkuth.graphs.schemas:ResearchState"},
+            "state": {"schema": "aaestro.graphs.schemas:ResearchState"},
             "nodes": [
                 {
                     "id": "planner",
@@ -142,7 +142,7 @@ def test_deploy_reattach_and_teardown(plane):
     # --- 감시/재시작: 죽은 컨테이너를 launcher 가 다시 세우고 기록이 그것을 따라간다
     #     (02 Lifecycle 6 — #213/#215 가 launcher 에 넣은 경로가 이 배포에서 실제로 돈다)
     old_writer = next(a for a in again["agents"] if a["name"] == "writer")
-    docker("kill", "malkuth-writer-0")
+    docker("kill", "aaestro-writer-0")
 
     def replaced() -> dict | None:
         status, current = api("GET", f"/v1/deployments/{record['deployment_id']}")
@@ -157,7 +157,7 @@ def test_deploy_reattach_and_teardown(plane):
 
     new_writer = until(replaced, what="writer restarted after being killed")
     assert new_writer["container_id"] != old_writer["container_id"]
-    assert deployed_containers()["malkuth-writer-0"].startswith("Up")
+    assert deployed_containers()["aaestro-writer-0"].startswith("Up")
 
     # --- 해체: 컨테이너가 남지 않고 기록은 남는다
     status, stopped = api("DELETE", f"/v1/deployments/{record['deployment_id']}")
@@ -176,13 +176,13 @@ def test_a_graph_made_in_the_ui_can_be_deployed_run_and_destroyed(plane):
     죽었다 (#260).
     """
     made = {
-        "apiVersion": "malkuth/v1",
+        "apiVersion": "aaestro/v1",
         "kind": "Graph",
         "metadata": {"name": "ui-made", "version": "0.1.0", "description": "made in the ui"},
         "spec": {
             "mode": "mission",
             "goal": "made in the ui",
-            "state": {"schema": "malkuth.graphs.schemas:ResearchState"},
+            "state": {"schema": "aaestro.graphs.schemas:ResearchState"},
             "nodes": [
                 {
                     "id": "planner",
@@ -217,7 +217,7 @@ def test_a_graph_made_in_the_ui_can_be_deployed_run_and_destroyed(plane):
         deployment_id = deployment["deployment_id"]
         assert deployment["status"] == "ready", deployment
         assert [a["name"] for a in deployment["agents"]] == ["planner"]
-        assert sorted(deployed_containers()) == ["malkuth-planner-0"]
+        assert sorted(deployed_containers()) == ["aaestro-planner-0"]
 
         # --- 그 배포에 run 을 낸다
         status, submitted = api(

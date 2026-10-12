@@ -13,10 +13,10 @@ from pathlib import Path
 
 import pytest
 
-from malkuth.core.manifest import McpServerSpec
-from malkuth.protocols.mcp.sdk import SdkStdioClient
-from malkuth.protocols.mcp.session import SUPPORTED_PROTOCOL_VERSIONS, McpSession
-from malkuth.protocols.mcp.transport import StdioTransport
+from aaestro.core.manifest import McpServerSpec
+from aaestro.protocols.mcp.sdk import SdkStdioClient
+from aaestro.protocols.mcp.session import SUPPORTED_PROTOCOL_VERSIONS, McpSession
+from aaestro.protocols.mcp.transport import StdioTransport
 
 pytestmark = pytest.mark.integration
 

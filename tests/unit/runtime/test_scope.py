@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from malkuth.core.errors import ErrorCategory, MalkuthError
-from malkuth.core.manifest import GroupManifest
-from malkuth.runtime.scope import ScopedSecrets, SecretScope
+from aaestro.core.errors import AaestroError, ErrorCategory
+from aaestro.core.manifest import GroupManifest
+from aaestro.runtime.scope import ScopedSecrets, SecretScope
 from tests.fixtures.builders import make_manifest
 
 
@@ -14,7 +14,7 @@ def make_group(name: str = "research", secrets: tuple[str, ...] = ("SEARCH_API_K
     """그룹 정의 — secrets 목록이 멤버에게 제공할 키를 결정한다."""
     return GroupManifest.model_validate(
         {
-            "apiVersion": "malkuth/v1",
+            "apiVersion": "aaestro/v1",
             "kind": "Group",
             "metadata": {"name": name, "version": "0.1.0"},
             "spec": {"secrets": list(secrets)},
@@ -91,7 +91,7 @@ def test_non_member_does_not_see_group_values():
         group_declared=frozenset({"SEARCH_API_KEY"}),
     )
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         secrets.resolve("SEARCH_API_KEY")
 
     assert exc_info.value.code == "CFG_002"
@@ -105,7 +105,7 @@ def test_member_does_not_see_undeclared_group_keys():
         group_declared=frozenset({"SEARCH_API_KEY"}),  # HIDDEN 미선언
     )
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         secrets.resolve("HIDDEN")
 
     assert exc_info.value.code == "CFG_002"
@@ -138,7 +138,7 @@ def test_unknown_group_definition_yields_no_group_keys():
         group_values={"SEARCH_API_KEY": "group-secret"},
     )
 
-    with pytest.raises(MalkuthError):
+    with pytest.raises(AaestroError):
         secrets.resolve("SEARCH_API_KEY")
 
 
@@ -146,7 +146,7 @@ def test_unknown_group_definition_yields_no_group_keys():
 
 
 def test_unresolvable_key_raises_cfg_002():
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         ScopedSecrets().resolve("MISSING")
 
     assert exc_info.value.category is ErrorCategory.CONFIG
@@ -158,7 +158,7 @@ def test_error_never_carries_the_secret_value():
     """에러 메시지·details 에 값이 실리면 로그로 유출된다."""
     secrets = ScopedSecrets(local={"OTHER": "super-secret-value"})
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         secrets.resolve("MISSING")
 
     rendered = f"{exc_info.value.message} {exc_info.value.details}"
@@ -210,7 +210,7 @@ def test_resolve_all_covers_every_declared_key():
 def test_resolve_all_fails_on_the_first_unresolvable_key():
     secrets = ScopedSecrets(local={"A": "1"})
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         secrets.resolve_all(("A", "MISSING"))
 
     assert exc_info.value.details["key"] == "MISSING"
@@ -253,7 +253,7 @@ def test_undeclared_key_is_rejected_even_when_present():
     )
 
     assert secrets.resolve("DECLARED").value == "1"
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         secrets.resolve("UNDECLARED")
 
     assert exc_info.value.code == "CFG_002"

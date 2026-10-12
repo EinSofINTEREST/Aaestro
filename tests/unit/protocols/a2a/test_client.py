@@ -7,12 +7,12 @@ from __future__ import annotations
 
 import pytest
 
-from malkuth.core.agent import TaskResult, TaskStatus
-from malkuth.core.errors import MalkuthError, MalkuthErrorPayload
-from malkuth.core.skill import SkillSpec
-from malkuth.protocols.a2a.allowlist import Allowlist, Edge
-from malkuth.protocols.a2a.card import build_card
-from malkuth.protocols.a2a.client import (
+from aaestro.core.agent import TaskResult, TaskStatus
+from aaestro.core.errors import AaestroError, AaestroErrorPayload
+from aaestro.core.skill import SkillSpec
+from aaestro.protocols.a2a.allowlist import Allowlist, Edge
+from aaestro.protocols.a2a.card import build_card
+from aaestro.protocols.a2a.client import (
     A2A_INFLIGHT_STATES,
     A2AClient,
     A2AServer,
@@ -94,7 +94,7 @@ async def test_undeclared_call_is_rejected_before_transport():
     peer = FakePeer()
     client = make_client(peer)
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await client.call("writer", make_task())
 
     assert exc_info.value.code == "A2A_004"
@@ -128,7 +128,7 @@ async def test_depth_limit_blocks_the_call():
     deep = make_task()
     deep = deep.model_copy(update={"trace": deep.trace.model_copy(update={"depth": 2})})
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await client.call("planner", deep)
 
     assert exc_info.value.code == "A2A_005"
@@ -137,7 +137,7 @@ async def test_depth_limit_blocks_the_call():
 async def test_unreachable_peer_is_retryable_a2a_002():
     client = make_client(FakePeer(error=ConnectionError("refused")))
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await client.call("planner", make_task())
 
     assert exc_info.value.code == "A2A_002"
@@ -147,7 +147,7 @@ async def test_unreachable_peer_is_retryable_a2a_002():
 async def test_submission_failure_is_a2a_001():
     client = make_client(FakePeer(error=ValueError("bad payload")))
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await client.call("planner", make_task())
 
     assert exc_info.value.code == "A2A_001"
@@ -159,13 +159,13 @@ async def test_peer_failure_is_a2a_003():
     task = make_task()
     failed = TaskResult.failed(
         task,
-        MalkuthErrorPayload(
+        AaestroErrorPayload(
             category="internal", code="INTERNAL_001", message="peer exploded", retryable=False
         ),
     )
     client = make_client(FakePeer(result=failed))
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await client.call("planner", task)
 
     assert exc_info.value.code == "A2A_003"
@@ -182,7 +182,7 @@ async def test_call_timeout_reports_unreachable():
     client = make_client(Slow())
     client.timeout_s = 0.01
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await client.call("planner", make_task())
 
     assert exc_info.value.code == "A2A_002"
@@ -193,10 +193,10 @@ async def test_circuit_opens_after_repeated_peer_failures():
     client = make_client(FakePeer(error=ConnectionError("gone")))
 
     for _ in range(5):
-        with pytest.raises(MalkuthError):
+        with pytest.raises(AaestroError):
             await client.call("planner", make_task())
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await client.call("planner", make_task())
 
     assert exc_info.value.details.get("reason") == "circuit open"
@@ -230,7 +230,7 @@ def test_server_rejects_a_forged_token():
     )
     server = A2AServer(agent="planner", allowlist=allowlist)
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         server.authorize("researcher", "forged")
 
     assert exc_info.value.code == "A2A_004"
@@ -242,7 +242,7 @@ def test_server_rejects_an_undeclared_caller():
     )
     server = A2AServer(agent="planner", allowlist=allowlist)
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         server.authorize("intruder", "any")
 
     assert exc_info.value.code == "A2A_004"
@@ -297,14 +297,14 @@ async def test_peer_rejection_does_not_open_the_circuit():
     task = make_task()
     failed = TaskResult.failed(
         task,
-        MalkuthErrorPayload(
+        AaestroErrorPayload(
             category="internal", code="INTERNAL_001", message="cannot do that", retryable=False
         ),
     )
     client = make_client(FakePeer(result=failed))
 
     for _ in range(6):
-        with pytest.raises(MalkuthError) as exc_info:
+        with pytest.raises(AaestroError) as exc_info:
             await client.call("planner", make_task())
         assert exc_info.value.code == "A2A_003"
 
@@ -314,11 +314,11 @@ async def test_peer_rejection_does_not_open_the_circuit():
 
 async def test_a_refusal_the_transport_already_classified_is_not_rewritten():
     """피호출자의 A2A_004 를 A2A_001 로 뭉개면 연결 회수와 제출 실패가 구분되지 않는다 (#281)."""
-    from malkuth.protocols.a2a.errors import not_allowed
+    from aaestro.protocols.a2a.errors import not_allowed
 
     client = make_client(FakePeer(error=not_allowed("researcher", "planner", owner="planner")))
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await client.call("planner", make_task())
 
     assert exc_info.value.code == "A2A_004"

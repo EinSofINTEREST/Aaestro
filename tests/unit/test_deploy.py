@@ -11,10 +11,10 @@ from pathlib import Path
 
 import pytest
 
-from malkuth.core.errors import ErrorCode, MalkuthError
-from malkuth.deploy import validate_deployment
-from malkuth.modules.promptset import PromptsetManifest
-from malkuth.orchestrator.topology import GraphTopology
+from aaestro.core.errors import AaestroError, ErrorCode
+from aaestro.deploy import validate_deployment
+from aaestro.modules.promptset import PromptsetManifest
+from aaestro.orchestrator.topology import GraphTopology
 from tests.fixtures.builders import make_manifest
 from tests.fixtures.topologies import mission_dict
 
@@ -62,11 +62,11 @@ def agent(name: str, **spec_extra) -> object:
 
 def group(name: str, **spec_extra):
     """그룹 manifest."""
-    from malkuth.core.manifest import GroupManifest
+    from aaestro.core.manifest import GroupManifest
 
     return GroupManifest.model_validate(
         {
-            "apiVersion": "malkuth/v1",
+            "apiVersion": "aaestro/v1",
             "kind": "Group",
             "metadata": {"name": name, "version": "0.1.0"},
             "spec": {"quotas": {"cpu": "8.0", "memory": "16Gi", "max_agents": 10}, **spec_extra},
@@ -484,7 +484,7 @@ def test_raise_if_failed_aborts_deployment():
     """미검증 상태로 컨테이너를 기동하지 않는다."""
     report = run([make_topology(["absent"])])
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         report.raise_if_failed()
 
     assert exc_info.value.code == "CFG_001"
@@ -507,7 +507,7 @@ def test_reference_deployment_passes_every_check():
     통과하면 아무것도 증명하지 못한다."""
     import yaml
 
-    from malkuth.core.manifest import AgentManifest, GroupManifest
+    from aaestro.core.manifest import AgentManifest, GroupManifest
 
     def load(relative: str) -> dict:
         document: dict = yaml.safe_load((REPO_ROOT / relative).read_text(encoding="utf-8"))
@@ -551,7 +551,7 @@ def test_unaffiliated_agent_cannot_use_global_group_secrets():
 
 def test_deploy_validation_agrees_with_runtime_resolution():
     """같은 manifest 를 두 경로가 다르게 판정하면 검증의 의미가 없다."""
-    from malkuth.runtime.scope import ScopedSecrets
+    from aaestro.runtime.scope import ScopedSecrets
 
     manifest = agent("solo", runtime={"env_allowlist": ["GROUP_ONLY_KEY"]})
     reserved = group("global", secrets=["GROUP_ONLY_KEY"])
@@ -562,7 +562,7 @@ def test_deploy_validation_agrees_with_runtime_resolution():
     )
 
     assert not report.ok
-    with pytest.raises(MalkuthError):
+    with pytest.raises(AaestroError):
         scoped.resolve("GROUP_ONLY_KEY")
 
 
@@ -577,7 +577,7 @@ def test_reference_guard_lists_every_file_the_test_reads():
 def make_promptset(templates: dict) -> PromptsetManifest:
     return PromptsetManifest.model_validate(
         {
-            "apiVersion": "malkuth/v1",
+            "apiVersion": "aaestro/v1",
             "kind": "Promptset",
             "metadata": {"name": "test", "version": "0.1.0"},
             "spec": {"engine": "jinja2", "templates": templates},
@@ -671,7 +671,7 @@ OPENAI = {"provider": "openai-compat", "name": "gpt-5"}
 @pytest.fixture
 def openai_known(monkeypatch):
     """논리 호스트가 알려진 두 번째 provider — 지금 저장소에는 anthropic 뿐이다."""
-    from malkuth.access import baselines
+    from aaestro.access import baselines
 
     monkeypatch.setitem(baselines.PROVIDER_HOSTS, "openai-compat", "api.openai.com")
 
@@ -759,7 +759,7 @@ def test_a_node_override_that_does_not_resolve_is_reported():
 
 
 def _override(data: dict):
-    from malkuth.core.manifest import ModelOverride
+    from aaestro.core.manifest import ModelOverride
 
     return ModelOverride.model_validate(data)
 
@@ -780,7 +780,7 @@ def test_deploy_overrides_layer_on_top_of_node_overrides():
 
 
 def test_a_deploy_override_for_an_unknown_node_is_rejected():
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         make_topology(["planner"]).with_model_overrides({"ghost": _override({"max_tokens": 1})})
 
     assert exc_info.value.code == ErrorCode.VAL_002

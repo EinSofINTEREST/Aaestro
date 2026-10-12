@@ -14,24 +14,24 @@ import pytest
 from prometheus_client import CollectorRegistry
 from structlog.testing import capture_logs
 
-from malkuth.agentd.executor import Executor, ExecutorConfig, ExecutorServices
-from malkuth.agentd.models import ModelChains, trigger_of
-from malkuth.agentd.telemetry import ExecutorTelemetry
-from malkuth.core.agent import TaskConfig, TaskStatus
-from malkuth.core.errors import (
+from aaestro.agentd.executor import Executor, ExecutorConfig, ExecutorServices
+from aaestro.agentd.models import ModelChains, trigger_of
+from aaestro.agentd.telemetry import ExecutorTelemetry
+from aaestro.core.agent import TaskConfig, TaskStatus
+from aaestro.core.errors import (
     RATE_LIMIT_RETRY,
+    AaestroError,
     ErrorCategory,
     ErrorCode,
-    MalkuthError,
 )
-from malkuth.core.manifest import (
+from aaestro.core.manifest import (
     CircuitDeclaration,
     FallbackModel,
     ModelConfig,
     ModelRetry,
     RetryDeclaration,
 )
-from malkuth.observability.metrics import Metrics
+from aaestro.observability.metrics import Metrics
 from tests.fixtures.builders import make_task
 from tests.fixtures.fake_model import FakeModel, FakeTools, text
 
@@ -43,22 +43,22 @@ ATTEMPTS = 3
 
 def model_error(
     category: ErrorCategory, code: ErrorCode, *, retryable: bool = True
-) -> MalkuthError:
-    return MalkuthError(
+) -> AaestroError:
+    return AaestroError(
         category=category, code=code, message="provider failed", retryable=retryable
     )
 
 
-def rate_limited() -> MalkuthError:
+def rate_limited() -> AaestroError:
     return model_error(ErrorCategory.RATE_LIMIT, ErrorCode.LLM_001)
 
 
-def server_error() -> MalkuthError:
+def server_error() -> AaestroError:
     # anthropic 어댑터가 5xx · 연결 실패에 내는 모양 — MODEL 카테고리라 재시도 정책이 집지 않는다
     return model_error(ErrorCategory.MODEL, ErrorCode.LLM_003)
 
 
-def context_overflow() -> MalkuthError:
+def context_overflow() -> AaestroError:
     return model_error(ErrorCategory.MODEL, ErrorCode.LLM_002, retryable=False)
 
 
@@ -127,7 +127,7 @@ class Rig:
 
     def _factory(self, config: ModelConfig) -> FakeModel:
         if config.provider != PROVIDER:
-            raise MalkuthError(
+            raise AaestroError(
                 category=ErrorCategory.CONFIG,
                 code=ErrorCode.CFG_001,
                 message="no model provider bound for this provider",
@@ -144,11 +144,11 @@ class Rig:
             "status": status,
             "fallback_index": str(fallback_index),
         }
-        return self.metrics.registry.get_sample_value("malkuth_model_requests_total", labels) or 0.0
+        return self.metrics.registry.get_sample_value("aaestro_model_requests_total", labels) or 0.0
 
     def circuit(self, model: str) -> float | None:
         return self.metrics.registry.get_sample_value(
-            "malkuth_circuit_state", {"target": f"model:{PROVIDER}/{model}"}
+            "aaestro_circuit_state", {"target": f"model:{PROVIDER}/{model}"}
         )
 
 
@@ -184,7 +184,7 @@ async def test_usage_and_token_labels_follow_the_model_that_answered():
     assert result.usage.model == "backup"
     assert result.usage.provider == PROVIDER
     tokens = rig.metrics.registry.get_sample_value(
-        "malkuth_model_tokens_total", {"agent": AGENT, "model": "backup", "direction": "input"}
+        "aaestro_model_tokens_total", {"agent": AGENT, "model": "backup", "direction": "input"}
     )
     assert tokens == 7.0
 
@@ -468,10 +468,10 @@ async def test_chains_are_built_once_per_declaration_and_share_breakers():
 
 async def test_the_production_assembly_builds_the_declared_chain(monkeypatch):
     """조립이 manifest 선언으로 체인을 만들고, 태스크 선언용 팩토리를 함께 건다."""
-    from malkuth.agentd.__main__ import build_executor, load_manifest
+    from aaestro.agentd.__main__ import build_executor, load_manifest
 
-    monkeypatch.delenv("MALKUTH_EXECUTOR", raising=False)
-    monkeypatch.setenv("MALKUTH_ROOT", str(REPO_ROOT))
+    monkeypatch.delenv("AAESTRO_EXECUTOR", raising=False)
+    monkeypatch.setenv("AAESTRO_ROOT", str(REPO_ROOT))
     manifest = load_manifest(REPO_ROOT / "agents/researcher/manifest.yaml")
     model = manifest.spec.model.model_copy(
         update={"fallbacks": (backup("rate_limit", name="claude-backup-1"),)}
@@ -487,7 +487,7 @@ async def test_the_production_assembly_builds_the_declared_chain(monkeypatch):
     assert built._services.chains is not None
     task_chain = built._services.chains(ModelConfig(provider=PROVIDER, name="claude-other"))
     assert task_chain.links[0].name == "claude-other"
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         built._services.chains(ModelConfig(provider="openai", name="gpt"))
     assert exc_info.value.code == ErrorCode.CFG_001
 

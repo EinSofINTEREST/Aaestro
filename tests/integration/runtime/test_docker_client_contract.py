@@ -10,8 +10,8 @@ from typing import Any
 
 import pytest
 
-from malkuth.runtime.docker.client import SdkDockerClient
-from malkuth.runtime.docker.engine import DockerClient
+from aaestro.runtime.docker.client import SdkDockerClient
+from aaestro.runtime.docker.engine import DockerClient
 from tests.integration.runtime.test_docker_lifecycle import (
     CliDockerClient,
     docker,
@@ -20,14 +20,14 @@ from tests.integration.runtime.test_docker_lifecycle import (
 )
 
 pytestmark = [pytest.mark.integration, requires_docker]
-NETWORK = "malkuth-contract-net"
+NETWORK = "aaestro-contract-net"
 
 
 def spec_kwargs(image: str, name: str) -> dict[str, Any]:
     return {
         "name": name,
         "image": image,
-        "environment": {"MALKUTH_AGENT_TOKEN": "contract"},
+        "environment": {"AAESTRO_AGENT_TOKEN": "contract"},
         "network": NETWORK,
         "ports": {"8080/tcp": ("127.0.0.1", None)},
         "nano_cpus": 500_000_000,
@@ -38,7 +38,7 @@ def spec_kwargs(image: str, name: str) -> dict[str, Any]:
         "cap_drop": ["ALL"],
         "tmpfs": {"/tmp": "size=64m", "/workspace": "size=64m"},  # noqa: S108 — 컨테이너 안 경로다
         "volumes": {},
-        "labels": {"malkuth.contract": "1"},
+        "labels": {"aaestro.contract": "1"},
         "network_mode": None,
         "publish_all_ports": False,
     }
@@ -69,7 +69,7 @@ def test_the_protocol_is_satisfied(client):
 
 def test_a_missing_image_is_an_error_not_a_silent_pass(client):
     with pytest.raises(Exception):  # noqa: B017 — 종류는 엔진이 RT_004 로 옮긴다
-        client.ensure_image("malkuth/does-not-exist:0.0.0")
+        client.ensure_image("aaestro/does-not-exist:0.0.0")
 
 
 def test_create_start_inspect_port_stop_round_trip(client, container):
@@ -104,7 +104,7 @@ def test_find_resolves_a_name_to_the_live_id_only(client, container):
     container_id = container
     name = f"contract-{type(client).__name__.lower()}"
     assert client.find(name) == container_id
-    assert client.find("malkuth-no-such-container") is None
+    assert client.find("aaestro-no-such-container") is None
     client.remove(container_id)
     assert client.find(name) is None
 
@@ -115,12 +115,12 @@ def test_remove_is_idempotent(client, container):
     client.remove(container)  # 두 번째도 조용히 성공해야 정리 경로가 안전하다
 
 
-INTERNAL = "malkuth-contract-internal"
+INTERNAL = "aaestro-contract-internal"
 
 
 def test_network_isolation_is_created_and_a_mismatch_is_refused(client):
     """두 구현이 같아야 통합 테스트가 격리 불일치를 실제로 검증한다 (#280)."""
-    from malkuth.runtime.docker.errors import NetworkIsolationError
+    from aaestro.runtime.docker.errors import NetworkIsolationError
 
     docker("network", "rm", INTERNAL, check=False)
     try:
@@ -142,10 +142,10 @@ def test_networks_and_address_are_read_from_the_container(client, container):
     assert client.networks_of(container) == (NETWORK,)
     assert client.address_of(container, NETWORK).count(".") == 3
     with pytest.raises(LookupError):
-        client.address_of(container, "malkuth-not-attached")
+        client.address_of(container, "aaestro-not-attached")
 
 
-SIDE = "malkuth-contract-side"
+SIDE = "aaestro-contract-side"
 
 
 def test_a_container_joins_and_leaves_a_second_network_idempotently(client, container):
@@ -173,10 +173,10 @@ def test_a_container_joins_and_leaves_a_second_network_idempotently(client, cont
 
 
 def test_labeled_finds_stopped_containers_and_nothing_else(client, container):
-    assert container in client.labeled({"malkuth.contract": "1"})
-    assert client.labeled({"malkuth.contract": "1", "malkuth.nothing": "x"}) == ()
+    assert container in client.labeled({"aaestro.contract": "1"})
+    assert client.labeled({"aaestro.contract": "1", "aaestro.nothing": "x"}) == ()
     client.remove(container)
-    assert container not in client.labeled({"malkuth.contract": "1"})
+    assert container not in client.labeled({"aaestro.contract": "1"})
 
 
 def test_sidecar_hardening_reaches_the_container(client, echo_image):  # noqa: F811

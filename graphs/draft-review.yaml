@@ -1,4 +1,4 @@
-apiVersion: malkuth/v1
+apiVersion: aaestro/v1
 kind: Graph
 metadata:
   name: draft-review
@@ -10,7 +10,7 @@ spec:
   goal: 질의에 대한 초안을 작성하고, 검토를 통과할 때까지 개정한다
 
   state:
-    schema: malkuth.graphs.schemas:DraftReviewState
+    schema: aaestro.graphs.schemas:DraftReviewState
 
   nodes:
     - id: drafter
@@ -30,6 +30,6 @@ spec:
     # max_iterations 를 요구한다 (미명시 시 배포 검증 실패)
     - from: reviewer
       to: drafter
-      condition: malkuth.graphs.conditions:needs_revision
+      condition: aaestro.graphs.conditions:needs_revision
       max_iterations: 3
-    - {from: reviewer, to: END, condition: malkuth.graphs.conditions:draft_approved}
+    - {from: reviewer, to: END, condition: aaestro.graphs.conditions:draft_approved}

@@ -10,9 +10,9 @@ from pathlib import Path
 
 import yaml
 
-from malkuth.cli.main import read_materials
-from malkuth.materials import DOCKERFILE, check_files
-from malkuth.runtime.images import check_dockerfile, image_tag
+from aaestro.cli.main import read_materials
+from aaestro.materials import DOCKERFILE, check_files
+from aaestro.runtime.images import check_dockerfile, image_tag
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SEED = REPO_ROOT / "examples" / "materials" / "claude-code"

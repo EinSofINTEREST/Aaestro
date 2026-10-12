@@ -3,7 +3,7 @@
 **[한국어](../../ko/ci/conventions.md)** | English
 
 Repository governance and GitHub Actions design rules. Ported from the IssueTracker
-repository and evolved for Malkuth's Python/uv toolchain and documentation policy.
+repository and evolved for Aaestro's Python/uv toolchain and documentation policy.
 
 Related: [Required Status Checks — Single Source](status-checks.md)
 
@@ -89,7 +89,7 @@ Workflows are **split by concern** (readability, clear Actions UI grouping):
 
 ### 3.2 Bootstrap Guard
 
-Malkuth starts as a docs/ruleset-first repository. Quality jobs check for
+Aaestro starts as a docs/ruleset-first repository. Quality jobs check for
 `pyproject.toml` + `Makefile` and **skip** when absent — skipped required checks pass
 the gate, so documentation PRs are never blocked while keeping the Ruleset registered
 from day one. The guard removes itself from relevance the moment code lands.

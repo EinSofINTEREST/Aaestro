@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import pytest
 
-from malkuth.core.errors import ErrorCode, MalkuthError
-from malkuth.materials import (
+from aaestro.core.errors import AaestroError, ErrorCode
+from aaestro.materials import (
     MAX_FILE_BYTES,
     MAX_FILES,
     InMemoryMaterialStore,
@@ -55,14 +55,14 @@ def test_layout_paths_are_accepted(path):
 )
 def test_paths_outside_the_build_context_are_refused(path):
     """컨텍스트를 벗어나는 경로를 받아 두면 조립이 임시 디렉토리 밖에 파일을 쓴다."""
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         check_path(path)
 
     assert exc_info.value.code == ErrorCode.VAL_002
 
 
 def test_a_file_that_is_too_large_is_refused():
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         check_files({"src/big.py": "x" * (MAX_FILE_BYTES + 1)})
 
     assert exc_info.value.code == ErrorCode.VAL_002
@@ -70,7 +70,7 @@ def test_a_file_that_is_too_large_is_refused():
 
 
 def test_too_many_files_are_refused():
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         check_files({f"src/m{i}.py": "" for i in range(MAX_FILES + 1)})
 
     assert exc_info.value.code == ErrorCode.VAL_002
@@ -82,7 +82,7 @@ def test_an_empty_set_is_allowed():
 
 
 def test_non_text_content_is_refused():
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         check_files({"src/agent.py": b"bytes"})  # type: ignore[dict-item]
 
     assert exc_info.value.code == ErrorCode.VAL_002

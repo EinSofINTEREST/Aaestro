@@ -36,7 +36,7 @@ from tests.e2e.test_stack import docker, requires_docker
 pytestmark = [pytest.mark.e2e, requires_docker]
 
 ENFORCER_TOKEN = "e2e-enforcer-token"  # noqa: S105
-FORWARDER = "malkuth-e2e-control-forwarder"
+FORWARDER = "aaestro-e2e-control-forwarder"
 FORWARD = f"""
 import asyncio
 
@@ -66,13 +66,13 @@ asyncio.run(main())
 CALL = """
 import asyncio, os, sys
 import yaml
-from malkuth.agentd.a2a_server import build_peer_client
-from malkuth.core.agent import TaskConfig, TaskRequest, TraceContext
-from malkuth.core.errors import MalkuthError
-from malkuth.core.manifest import AgentManifest
+from aaestro.agentd.a2a_server import build_peer_client
+from aaestro.core.agent import TaskConfig, TaskRequest, TraceContext
+from aaestro.core.errors import AaestroError
+from aaestro.core.manifest import AgentManifest
 
 async def main():
-    with open(os.environ["MALKUTH_MANIFEST"], encoding="utf-8") as handle:
+    with open(os.environ["AAESTRO_MANIFEST"], encoding="utf-8") as handle:
         manifest = AgentManifest.model_validate(yaml.safe_load(handle))
     client = build_peer_client(manifest)
     task = TaskRequest(task_id="e2e-a2a-" + sys.argv[1], run_id="e2e", node_id="planner",
@@ -81,7 +81,7 @@ async def main():
     try:
         await client.call("planner", task)
         print("OK")
-    except MalkuthError as err:
+    except AaestroError as err:
         print("DETAIL:" + str(err) + " " + str(err.details)[:400], file=sys.stderr)
         print("ERR:" + str(err.code))
 
@@ -91,13 +91,13 @@ asyncio.run(main())
 # 호출자 쪽 검사를 건너뛰고 transport 로 직접 보낸다 — 공유 서명 키로 만든 edge token 만 싣는다
 BYPASS = """
 import asyncio, os
-from malkuth.core.agent import TaskConfig, TaskRequest, TraceContext
-from malkuth.core.errors import MalkuthError
-from malkuth.protocols.a2a.allowlist import Edge, issue_token
-from malkuth.protocols.a2a.sdk import SdkPeerTransport
+from aaestro.core.agent import TaskConfig, TaskRequest, TraceContext
+from aaestro.core.errors import AaestroError
+from aaestro.protocols.a2a.allowlist import Edge, issue_token
+from aaestro.protocols.a2a.sdk import SdkPeerTransport
 
 async def main():
-    peers = dict(entry.split("=", 1) for entry in os.environ["MALKUTH_A2A_PEERS"].split(","))
+    peers = dict(entry.split("=", 1) for entry in os.environ["AAESTRO_A2A_PEERS"].split(","))
     transport = SdkPeerTransport(agent="researcher",
                                  addresses={"planner": "http://" + peers["planner"]})
     task = TaskRequest(task_id="e2e-bypass", run_id="e2e", node_id=None, input={},
@@ -106,7 +106,7 @@ async def main():
     try:
         await transport.send(callee="planner", task=task, token=token, headers={})
         print("OK")
-    except MalkuthError as err:
+    except AaestroError as err:
         print("ERR:" + str(err.code))
     finally:
         await transport.close()
@@ -124,7 +124,7 @@ def plane(stack, tmp_path) -> Iterator[dict[str, Any]]:
         "--add-host", "host.docker.internal:host-gateway",
         "--read-only", "--user", "1000:1000", "--cap-drop", "ALL",
         "--security-opt", "no-new-privileges:true",
-        "--entrypoint", "python", "malkuth/memory-service:0.1.0", "-c", FORWARD,
+        "--entrypoint", "python", "aaestro/memory-service:0.1.0", "-c", FORWARD,
     )  # fmt: skip
     config_dir = write_config(
         tmp_path,
@@ -139,7 +139,7 @@ def plane(stack, tmp_path) -> Iterator[dict[str, Any]]:
     tokens_path.write_text(json.dumps(memory_tokens()), encoding="utf-8")
     # 레지스트리를 켜면 에이전트는 신원을 메모리 토큰으로 내민다 — Memory Service 도
     # 레지스트리 모드여야 태스크가 기억을 불러올 수 있다 (둘은 함께 켠다)
-    env = {"MALKUTH_MEMORY_URL": f"http://{MEMORY_ALIAS}:8090"}
+    env = {"AAESTRO_MEMORY_URL": f"http://{MEMORY_ALIAS}:8090"}
     state = {"process": start_plane(config_dir, tokens_path, env=env)}
     start_memory()
     try:
@@ -176,10 +176,10 @@ def started_at(container: str) -> str:
 def test_a2a_connections_are_decided_by_the_callee_on_every_call(plane):
     status, record = api("POST", "/v1/deployments", {"graph": "research-pipeline"})
     assert status == 201, record
-    researcher, planner = "malkuth-researcher-0", "malkuth-planner-0"
+    researcher, planner = "aaestro-researcher-0", "aaestro-planner-0"
     started = {name: started_at(name) for name in (researcher, planner)}
     env = docker("inspect", "-f", "{{range .Config.Env}}{{println .}}{{end}}", researcher)
-    assert "MALKUTH_A2A_SECRET=" not in env, "레지스트리 모드에 공유 서명 키가 들어갔다"
+    assert "AAESTRO_A2A_SECRET=" not in env, "레지스트리 모드에 공유 서명 키가 들어갔다"
 
     calls = iter(range(1000))
 

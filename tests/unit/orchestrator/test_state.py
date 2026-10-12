@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from malkuth.core.errors import ErrorCategory, MalkuthError
-from malkuth.graphs.schemas import ResearchState
-from malkuth.orchestrator.state import (
+from aaestro.core.errors import AaestroError, ErrorCategory
+from aaestro.graphs.schemas import ResearchState
+from aaestro.orchestrator.state import (
     extract_input,
     merge_output,
     resolve_state_schema,
@@ -14,7 +14,7 @@ from malkuth.orchestrator.state import (
     state_fields,
     validate_state,
 )
-from malkuth.orchestrator.topology import NodeSpec
+from aaestro.orchestrator.topology import NodeSpec
 
 
 def make_node(**overrides: object) -> NodeSpec:
@@ -24,7 +24,7 @@ def make_node(**overrides: object) -> NodeSpec:
     return NodeSpec.model_validate(base)
 
 
-def assert_graph_003(exc_info: pytest.ExceptionInfo[MalkuthError]) -> None:
+def assert_graph_003(exc_info: pytest.ExceptionInfo[AaestroError]) -> None:
     """state 불일치/병합 실패는 GRAPH_003 으로 보고된다."""
     assert exc_info.value.code == "GRAPH_003"
     assert exc_info.value.category is ErrorCategory.GRAPH
@@ -34,19 +34,19 @@ def assert_graph_003(exc_info: pytest.ExceptionInfo[MalkuthError]) -> None:
 
 
 def test_resolve_state_schema_returns_model():
-    assert resolve_state_schema("malkuth.graphs.schemas:ResearchState") is ResearchState
+    assert resolve_state_schema("aaestro.graphs.schemas:ResearchState") is ResearchState
 
 
 def test_resolve_state_schema_rejects_non_model():
-    with pytest.raises(MalkuthError) as exc_info:
-        resolve_state_schema("malkuth.graphs.conditions:needs_research")
+    with pytest.raises(AaestroError) as exc_info:
+        resolve_state_schema("aaestro.graphs.conditions:needs_research")
 
     assert_graph_003(exc_info)
     assert "not a pydantic model" in exc_info.value.message
 
 
 def test_resolve_state_schema_rejects_unimportable():
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         resolve_state_schema("no.such.module:State")
 
     assert exc_info.value.code == "GRAPH_001"
@@ -91,7 +91,7 @@ def test_extract_input_supports_nested_paths():
 def test_extract_input_missing_field_raises_graph_003():
     node = make_node(input_map={"query": "state.absent"})
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         extract_input(node, {"query": "q"})
 
     assert_graph_003(exc_info)
@@ -135,7 +135,7 @@ def test_merge_output_supports_nested_source():
 def test_merge_output_missing_source_raises_graph_003():
     node = make_node(output_map={"plan": "output.absent"})
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         merge_output(node, {"plan": "P"})
 
     assert_graph_003(exc_info)
@@ -144,7 +144,7 @@ def test_merge_output_missing_source_raises_graph_003():
 def test_merge_output_rejects_undeclared_state_target():
     node = make_node(output_map={"unknown_field": "output.plan"})
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         merge_output(node, {"plan": "P"}, schema=ResearchState)
 
     assert_graph_003(exc_info)
@@ -169,14 +169,14 @@ def test_validate_state_returns_normalized_mapping():
 
 
 def test_validate_state_rejects_schema_mismatch():
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         validate_state(ResearchState, {"query": "q", "findings": "not-a-list"})
 
     assert_graph_003(exc_info)
 
 
 def test_validate_state_rejects_missing_required_field():
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         validate_state(ResearchState, {})
 
     assert_graph_003(exc_info)
@@ -239,7 +239,7 @@ def test_required_field_without_a_value_still_fails():
         {"id": "planner", "agent": "agents/planner@0.1.0", "input_map": {"query": "state.query"}}
     )
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         extract_input(node, {}, schema=ResearchState)
 
     assert exc_info.value.code == "GRAPH_003"
@@ -251,7 +251,7 @@ def test_missing_field_without_a_schema_still_fails():
         {"id": "writer", "agent": "agents/writer@0.1.0", "input_map": {"plan": "state.plan"}}
     )
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         extract_input(node, {})
 
     assert exc_info.value.code == "GRAPH_003"

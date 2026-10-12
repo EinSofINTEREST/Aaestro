@@ -13,12 +13,12 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from malkuth.core.errors import MalkuthError
-from malkuth.graphs.schemas import ResearchState
-from malkuth.orchestrator.builder import build_graph
-from malkuth.orchestrator.state import resolve_graph_state, state_fields
-from malkuth.orchestrator.submit import RunSubmitter
-from malkuth.orchestrator.topology import GraphTopology, StateSpec, validate_topology
+from aaestro.core.errors import AaestroError
+from aaestro.graphs.schemas import ResearchState
+from aaestro.orchestrator.builder import build_graph
+from aaestro.orchestrator.state import resolve_graph_state, state_fields
+from aaestro.orchestrator.submit import RunSubmitter
+from aaestro.orchestrator.topology import GraphTopology, StateSpec, validate_topology
 from tests.fixtures.fake_runtime import FakeRuntime
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -69,7 +69,7 @@ async def test_the_rewrite_routes_like_the_original(needs_research):
 
 async def test_a_required_inline_field_is_enforced_at_submission():
     """필수 필드가 빠진 제출은 슬롯을 잡기 전에 GRAPH_003 으로 거부된다 — 모델과 같은 규칙."""
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await RunSubmitter(runtime=FakeRuntime()).submit(declarative(), {})
 
     assert exc_info.value.code == "GRAPH_003"
@@ -86,7 +86,7 @@ def test_the_same_declaration_yields_the_same_model():
     "state",
     [
         {},  # 둘 다 없음
-        {"schema": "malkuth.graphs.schemas:ResearchState", "fields": {"q": {"type": "string"}}},
+        {"schema": "aaestro.graphs.schemas:ResearchState", "fields": {"q": {"type": "string"}}},
         {"fields": {"_run_id": {"type": "string"}}},  # 예약 채널과 겹침
         {"fields": {"query": {"type": "string", "required": True, "default": "x"}}},
         {"fields": {"query": {"type": "text"}}},

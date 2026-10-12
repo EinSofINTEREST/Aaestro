@@ -14,20 +14,20 @@ from pathlib import Path
 import httpx
 import pytest
 
-from malkuth.access.baselines import A2ABaseline
-from malkuth.access.client import AccessClient
-from malkuth.access.model import ResourceKind
-from malkuth.access.registry import AccessRegistry
-from malkuth.access.store import InMemoryAccessStore
-from malkuth.catalog import Catalog
-from malkuth.core.agent import TaskResult
-from malkuth.core.errors import ErrorCode, MalkuthError
-from malkuth.orchestrator.control import create_app as control_app
-from malkuth.orchestrator.runstore import InMemoryRunStore
-from malkuth.protocols.a2a.allowlist import Allowlist, Edge, issue_token
-from malkuth.protocols.a2a.client import A2AClient, A2AServer
-from malkuth.protocols.a2a.server import InboundGuard
-from malkuth.protocols.a2a.tickets import TicketSource
+from aaestro.access.baselines import A2ABaseline
+from aaestro.access.client import AccessClient
+from aaestro.access.model import ResourceKind
+from aaestro.access.registry import AccessRegistry
+from aaestro.access.store import InMemoryAccessStore
+from aaestro.catalog import Catalog
+from aaestro.core.agent import TaskResult
+from aaestro.core.errors import AaestroError, ErrorCode
+from aaestro.orchestrator.control import create_app as control_app
+from aaestro.orchestrator.runstore import InMemoryRunStore
+from aaestro.protocols.a2a.allowlist import Allowlist, Edge, issue_token
+from aaestro.protocols.a2a.client import A2AClient, A2AServer
+from aaestro.protocols.a2a.server import InboundGuard
+from aaestro.protocols.a2a.tickets import TicketSource
 from tests.fixtures.builders import make_task
 from tests.fixtures.waiting import until
 from tests.unit.protocols.a2a.test_sdk import serve, transport_to
@@ -116,8 +116,8 @@ async def stack():
             await watching
 
 
-async def refused(call) -> MalkuthError:
-    with pytest.raises(MalkuthError) as exc_info:
+async def refused(call) -> AaestroError:
+    with pytest.raises(AaestroError) as exc_info:
         await call
     return exc_info.value
 
@@ -255,7 +255,7 @@ async def test_the_caller_cannot_get_a_ticket_while_the_registry_is_down(stack):
 
 async def test_the_callee_still_checks_the_delegation_depth_in_registry_mode(stack):
     """깊이는 호출자가 정직하게 실었다고 믿지 않는다 — 레지스트리 모드에서도 수신 측이 본다."""
-    from malkuth.core.agent import TraceContext
+    from aaestro.core.agent import TraceContext
 
     deep = make_task(trace=TraceContext(trace_id="t", depth=9))
     caller = stack.caller()

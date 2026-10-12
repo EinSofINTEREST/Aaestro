@@ -1,4 +1,4 @@
-"""Claude Code as a Malkuth agent.
+"""Claude Code as an Aaestro agent.
 
 Claude Code CLI 를 자식 프로세스로 구동하는 실행기. agentd 의 기본 루프는
 Messages API 를 직접 호출하지만, 이 실행기는 **Claude Code 자신의 루프**에
@@ -17,17 +17,17 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
-from malkuth.core.agent import TaskResult, TaskStatus
-from malkuth.core.errors import ErrorCategory, ErrorCode, MalkuthError
-from malkuth.core.events import DoneEvent, TokenEvent
+from aaestro.core.agent import TaskResult, TaskStatus
+from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.core.events import DoneEvent, TokenEvent
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Sequence
 
-    from malkuth.core.agent import TaskRequest
-    from malkuth.core.events import TaskEvent
+    from aaestro.core.agent import TaskRequest
+    from aaestro.core.events import TaskEvent
 
-COMMAND_ENV = "MALKUTH_CLAUDE_COMMAND"
+COMMAND_ENV = "AAESTRO_CLAUDE_COMMAND"
 """CLI 호출 명령 — 플래그가 바뀌어도 이미지 교체로 끝나도록 env 로 받는다."""
 
 DEFAULT_COMMAND = "claude -p --output-format json --permission-mode bypassPermissions"
@@ -149,7 +149,7 @@ class ClaudeCodeExecutor:
         """
         try:
             output = await self._run(task)
-        except MalkuthError as err:
+        except AaestroError as err:
             log.error(
                 "claude code task failed",
                 agent=self.agent,
@@ -173,7 +173,7 @@ class ClaudeCodeExecutor:
 
     async def _run(self, task: TaskRequest) -> dict[str, Any]:
         """CLI 를 자식 프로세스로 실행한다."""
-        # 명령을 세우지 못한 것도 태스크 실패다 — execute 는 MalkuthError 만 결과로 옮기므로,
+        # 명령을 세우지 못한 것도 태스크 실패다 — execute 는 AaestroError 만 결과로 옮기므로,
         # 여기서 새는 ValueError/OSError 는 typed 실패가 아니라 최상위 INTERNAL 이 된다
         try:
             command = [*resolve_command(), build_prompt(task)]
@@ -252,9 +252,9 @@ class ClaudeCodeExecutor:
         *,
         retryable: bool = False,
         **details: str,
-    ) -> MalkuthError:
+    ) -> AaestroError:
         """실패를 구조화 에러로."""
-        return MalkuthError(
+        return AaestroError(
             category=category,
             code=code,
             message=message,

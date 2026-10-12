@@ -5,9 +5,9 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from malkuth.core.errors import MalkuthError
-from malkuth.modules.promptset import PromptsetLoader, VariableSpec
-from malkuth.modules.registry import ModuleRegistry
+from aaestro.core.errors import AaestroError
+from aaestro.modules.promptset import PromptsetLoader, VariableSpec
+from aaestro.modules.registry import ModuleRegistry
 from tests.fixtures.registry import fixture_registry
 
 REF = "promptsets/researcher@0.1.0"
@@ -38,7 +38,7 @@ def test_optional_variable_uses_declared_default(promptset):
 
 
 def test_missing_required_variable_raises_mod_004(promptset):
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         promptset.render("research")
 
     assert exc_info.value.code == "MOD_004"
@@ -47,7 +47,7 @@ def test_missing_required_variable_raises_mod_004(promptset):
 
 def test_undeclared_variable_raises_mod_004(promptset):
     """미선언 변수는 조용히 무시되지 않는다 — 04 Promptset Rules 1."""
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         promptset.render("research", query="q", unknown="x")
 
     assert exc_info.value.code == "MOD_004"
@@ -55,7 +55,7 @@ def test_undeclared_variable_raises_mod_004(promptset):
 
 
 def test_unknown_template_raises_mod_004(promptset):
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         promptset.render("nonexistent")
 
     assert exc_info.value.code == "MOD_004"
@@ -69,14 +69,14 @@ def test_string_variable_type_is_enforced(promptset, value, ok):
     if ok:
         assert promptset.render("research", query=value)
     else:
-        with pytest.raises(MalkuthError) as exc_info:
+        with pytest.raises(AaestroError) as exc_info:
             promptset.render("research", query=value)
         assert exc_info.value.code == "MOD_004"
 
 
 def test_boolean_is_not_accepted_as_integer(promptset):
     """bool 은 int 의 서브클래스지만 depth=True 는 의도된 입력이 아니다."""
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         promptset.render("research", query="q", depth=True)
 
     assert exc_info.value.code == "MOD_004"
@@ -108,7 +108,7 @@ def _write_promptset(tmp_path, *, yaml_body: str, files: dict[str, str] | None =
     return PromptsetLoader(ModuleRegistry.under(tmp_path))
 
 
-HEADER = """apiVersion: malkuth/v1
+HEADER = """apiVersion: aaestro/v1
 kind: Promptset
 metadata:
   name: custom
@@ -123,7 +123,7 @@ def test_missing_template_file_raises_mod_003(tmp_path):
         tmp_path, yaml_body=HEADER + "    a:\n      file: templates/absent.j2\n"
     )
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         loader.load("promptsets/custom@0.1.0")
 
     assert exc_info.value.code == "MOD_003"
@@ -132,7 +132,7 @@ def test_missing_template_file_raises_mod_003(tmp_path):
 def test_empty_templates_raises_mod_003(tmp_path):
     loader = _write_promptset(tmp_path, yaml_body=HEADER + "    {}\n")
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         loader.load("promptsets/custom@0.1.0")
 
     assert exc_info.value.code == "MOD_003"
@@ -147,7 +147,7 @@ def test_template_referencing_undeclared_variable_raises_mod_004(tmp_path):
     )
     promptset = loader.load("promptsets/custom@0.1.0")
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         promptset.render("a")
 
     assert exc_info.value.code == "MOD_004"

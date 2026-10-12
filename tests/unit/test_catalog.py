@@ -12,8 +12,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from malkuth.catalog import MODULE_TYPES, Catalog
-from malkuth.core.errors import ErrorCode, MalkuthError
+from aaestro.catalog import MODULE_TYPES, Catalog
+from aaestro.core.errors import AaestroError, ErrorCode
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -25,7 +25,7 @@ def write(path: Path, document: dict) -> None:
 
 def agent(name: str, version: str = "0.1.0") -> dict:
     return {
-        "apiVersion": "malkuth/v1",
+        "apiVersion": "aaestro/v1",
         "kind": "Agent",
         "metadata": {"name": name, "version": version},
         "spec": {
@@ -42,7 +42,7 @@ def workspace(tmp_path: Path) -> Path:
     write(
         tmp_path / "modules" / "promptsets" / "solo" / "0.1.0" / "promptset.yaml",
         {
-            "apiVersion": "malkuth/v1",
+            "apiVersion": "aaestro/v1",
             "kind": "Promptset",
             "metadata": {"name": "solo", "version": "0.1.0"},
             "spec": {"engine": "jinja2", "templates": {"default": {"file": "t.j2"}}},
@@ -69,7 +69,7 @@ def test_a_single_agent_is_returned(workspace):
 
 
 def test_an_unknown_agent_is_not_found(workspace):
-    with pytest.raises(MalkuthError) as excinfo:
+    with pytest.raises(AaestroError) as excinfo:
         Catalog.under(workspace).agent("nope")
 
     assert excinfo.value.code == ErrorCode.NF_001
@@ -82,7 +82,7 @@ def test_a_broken_declaration_is_reported_not_dropped(workspace):
     """조용히 빼면 운영자가 빠진 줄 모르고, 예외로 올리면 전체가 사라진다."""
     write(
         workspace / "agents" / "gamma" / "manifest.yaml",
-        {"apiVersion": "malkuth/v1", "kind": "Agent"},
+        {"apiVersion": "aaestro/v1", "kind": "Agent"},
     )
 
     found = Catalog.under(workspace).agents()
@@ -97,10 +97,10 @@ def test_a_broken_single_lookup_names_the_field(workspace):
     """어느 파일의 어느 필드가 왜 인지 — 500 하나로 뭉개지 않는다."""
     write(
         workspace / "agents" / "gamma" / "manifest.yaml",
-        {"apiVersion": "malkuth/v1", "kind": "Agent"},
+        {"apiVersion": "aaestro/v1", "kind": "Agent"},
     )
 
-    with pytest.raises(MalkuthError) as excinfo:
+    with pytest.raises(AaestroError) as excinfo:
         Catalog.under(workspace).agent("gamma")
 
     details = excinfo.value.details
@@ -137,7 +137,7 @@ def test_modules_group_versions_by_name(workspace):
     write(
         workspace / "modules" / "promptsets" / "solo" / "0.2.0" / "promptset.yaml",
         {
-            "apiVersion": "malkuth/v1",
+            "apiVersion": "aaestro/v1",
             "kind": "Promptset",
             "metadata": {"name": "solo", "version": "0.2.0"},
             "spec": {"engine": "jinja2", "templates": {"default": {"file": "t.j2"}}},
@@ -154,7 +154,7 @@ def test_a_module_document_is_integrity_checked(workspace):
 
 
 def test_an_unknown_module_version_is_not_found(workspace):
-    with pytest.raises(MalkuthError) as excinfo:
+    with pytest.raises(AaestroError) as excinfo:
         Catalog.under(workspace).module("promptsets", "solo", "9.9.9")
 
     assert excinfo.value.code == ErrorCode.NF_001
@@ -163,7 +163,7 @@ def test_an_unknown_module_version_is_not_found(workspace):
 @pytest.mark.parametrize("module_type", ["agents", "graphs", "nonsense"])
 def test_only_module_types_are_browsable_as_modules(workspace, module_type):
     """에이전트/그래프는 모듈 경로가 아니다 — 자기 엔드포인트가 있다."""
-    with pytest.raises(MalkuthError) as excinfo:
+    with pytest.raises(AaestroError) as excinfo:
         Catalog.under(workspace).modules(module_type)
 
     assert excinfo.value.code == ErrorCode.NF_001
@@ -179,7 +179,7 @@ def test_module_types_are_the_read_only_ones():
 
 def test_config_roots_resolve_against_the_repo_root(tmp_path):
     """설정의 상대 경로는 작업 디렉토리가 아니라 레포 루트 기준이다."""
-    from malkuth.config import RegistryRoots
+    from aaestro.config import RegistryRoots
 
     catalog = Catalog.from_config(RegistryRoots(), base=tmp_path)
 
@@ -218,7 +218,7 @@ def test_the_listing_key_is_the_location_not_the_declared_name(workspace):
 def test_a_single_lookup_rejects_a_name_mismatch_too(workspace):
     write(workspace / "agents" / "foo" / "manifest.yaml", agent("bar"))
 
-    with pytest.raises(MalkuthError) as excinfo:
+    with pytest.raises(AaestroError) as excinfo:
         Catalog.under(workspace).agent("foo")
 
     assert excinfo.value.details == {
@@ -242,7 +242,7 @@ def test_graphs_and_groups_use_the_filename_stem_as_identity(workspace):
     write(
         workspace / "groups" / "research.yaml",
         {
-            "apiVersion": "malkuth/v1",
+            "apiVersion": "aaestro/v1",
             "kind": "Group",
             "metadata": {"name": "science"},
             "spec": {},
@@ -282,7 +282,7 @@ def test_a_module_whose_document_contradicts_its_path_is_not_published(workspace
     write(
         workspace / "modules" / "promptsets" / "solo" / "0.9.0" / "promptset.yaml",
         {
-            "apiVersion": "malkuth/v1",
+            "apiVersion": "aaestro/v1",
             "kind": "Promptset",
             "metadata": {"name": "solo", "version": "0.1.0"},
             "spec": {"engine": "jinja2", "templates": {"default": {"file": "t.j2"}}},
@@ -297,7 +297,7 @@ def test_a_module_whose_document_contradicts_its_path_is_not_published(workspace
 
 def test_groups_have_their_own_root(tmp_path):
     """agents 루트를 옮겨도 groups 는 따라가지 않는다 — 명시 루트다."""
-    from malkuth.modules.registry import RegistryRoots
+    from aaestro.modules.registry import RegistryRoots
 
     roots = RegistryRoots.under(tmp_path)
     moved = RegistryRoots(**{**roots.__dict__, "agents": tmp_path / "elsewhere"})

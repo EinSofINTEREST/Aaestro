@@ -7,8 +7,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from malkuth.core.agent import TaskConfig, TaskRequest, TraceContext
-from malkuth.core.manifest import AgentManifest
+from aaestro.core.agent import TaskConfig, TaskRequest, TraceContext
+from aaestro.core.manifest import AgentManifest
 
 
 def _merge_mapping(base: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
@@ -29,7 +29,7 @@ def manifest_dict(**overrides: Any) -> dict[str, Any]:
     테스트가 원시 입력을 다루기 위해 사용합니다.
     """
     base: dict[str, Any] = {
-        "apiVersion": "malkuth/v1",
+        "apiVersion": "aaestro/v1",
         "kind": "Agent",
         "metadata": {"name": "test-agent", "version": "0.1.0"},
         "spec": {

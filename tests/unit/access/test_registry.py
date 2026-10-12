@@ -16,11 +16,11 @@ from pathlib import Path
 
 import pytest
 
-from malkuth.access.model import DECLARATION, OPERATOR, Mode, Outcome, ResourceKind
-from malkuth.access.registry import AccessRegistry, credential_hash
-from malkuth.access.store import InMemoryAccessStore, SqliteAccessStore
-from malkuth.catalog import Catalog
-from malkuth.core.errors import ErrorCode, MalkuthError
+from aaestro.access.model import DECLARATION, OPERATOR, Mode, Outcome, ResourceKind
+from aaestro.access.registry import AccessRegistry, credential_hash
+from aaestro.access.store import InMemoryAccessStore, SqliteAccessStore
+from aaestro.catalog import Catalog
+from aaestro.core.errors import AaestroError, ErrorCode
 from tests.fixtures.access import KNOWLEDGE, STEWARD, access_workspace, agent, group, write
 
 
@@ -68,8 +68,8 @@ def steward(registry: AccessRegistry) -> str:
     return registry.issue_identity(STEWARD, "dep-1")
 
 
-def refused(call) -> MalkuthError:
-    with pytest.raises(MalkuthError) as exc_info:
+def refused(call) -> AaestroError:
+    with pytest.raises(AaestroError) as exc_info:
         call()
     return exc_info.value
 
@@ -512,11 +512,11 @@ async def test_a_waiter_wakes_when_a_declaration_file_changes(registry, workspac
 
 def test_recent_denials_are_newest_first_and_bounded(tmp_path, monkeypatch):
     """화면용 기억 — 새것부터, 상한까지만 (#283)."""
-    from malkuth.access import registry as module
-    from malkuth.access.model import ResourceKind
-    from malkuth.access.registry import AccessRegistry
-    from malkuth.access.store import InMemoryAccessStore
-    from malkuth.catalog import Catalog
+    from aaestro.access import registry as module
+    from aaestro.access.model import ResourceKind
+    from aaestro.access.registry import AccessRegistry
+    from aaestro.access.store import InMemoryAccessStore
+    from aaestro.catalog import Catalog
     from tests.fixtures.access import access_workspace
 
     monkeypatch.setattr(module, "RECENT_DENIALS", 2)

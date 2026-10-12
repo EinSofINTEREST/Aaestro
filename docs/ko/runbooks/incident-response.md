@@ -2,7 +2,7 @@
 
 한국어 | **[English](../../en/runbooks/incident-response.md)**
 
-Malkuth 알림이 울렸을 때의 대응 절차. 규범 규칙:
+Aaestro 알림이 울렸을 때의 대응 절차. 규범 규칙:
 [05-error-handling.md](../../../.claude/rules/05-error-handling.md).
 
 ## 심각도
@@ -29,7 +29,7 @@ Malkuth 알림이 울렸을 때의 대응 절차. 규범 규칙:
 
 한 에이전트의 태스크 실패율이 10% 를 넘었다.
 
-1. `malkuth agent logs <agent>` — 지배적인 `error_code` 를 읽는다.
+1. `aaestro agent logs <agent>` — 지배적인 `error_code` 를 읽는다.
 2. `LLM_001` (rate limit) → [ModelRateLimited](#modelratelimited) 참조.
    `LLM_005` (max turns) → 프롬프트가 루프에 빠졌을 가능성이 높다, promptset 버전 확인.
    `MCP_003` → tool 이 실패 중이다, Protocol 대시보드 확인.
@@ -37,9 +37,9 @@ Malkuth 알림이 울렸을 때의 대응 절차. 규범 규칙:
 
 ### AgentDown
 
-`malkuth_agent_health == 0` 이 3분간 지속.
+`aaestro_agent_health == 0` 이 3분간 지속.
 
-1. `malkuth agent inspect <agent>` — manifest 와 실제 로드된 상태를 대조한다.
+1. `aaestro agent inspect <agent>` — manifest 와 실제 로드된 상태를 대조한다.
 2. `initialize()` 실패는 컨테이너를 Ready 로 보내지 않는다. 흔한 원인은
    `MCP_001` (필수 MCP 서버 기동 실패) 과 `CFG_002` (secret 키가 어느 스코프에서도
    해석되지 않음) 이다.
@@ -49,7 +49,7 @@ Malkuth 알림이 울렸을 때의 대응 절차. 규범 규칙:
 
 10분 내 재시작 5회 초과.
 
-1. `malkuth_container_restarts_total` 의 `reason` 을 확인한다. `RT_003` 은 OOM —
+1. `aaestro_container_restarts_total` 의 `reason` 을 확인한다. `RT_003` 은 OOM —
    `runtime.resources.memory` 를 올리거나 동시성을 낮춘다.
 2. `RT_001` 반복은 대개 이미지나 entrypoint 문제다 — 컨테이너가 health 를 보고할
    지점까지 도달하지 못한다.
@@ -74,7 +74,7 @@ Provider 가 요청을 거절하고 있다.
 decisionset 질문이 절반 넘게 `uncertain` 으로 답해, 결정 모델이 대부분의 일을 LLM 경로로
 되돌리고 있다.
 
-1. `malkuth_decision_bands_total` 을 질문별로 본다 — 한 질문인가, 전부인가? 한 질문이면 문구나
+1. `aaestro_decision_bands_total` 을 질문별로 본다 — 한 질문인가, 전부인가? 한 질문이면 문구나
    구간의 문제이고, 전부면 provider 나 locale 의 문제다.
 2. 그 decisionset 버전의 calibration 을 다시 돌려(06 Calibration — 모듈의 `calibration/` 라벨
    세트) 보고서를 선언된 `act_at` / `reject_at` 과 비교한다.
@@ -96,7 +96,7 @@ provider 의 timeout·오류·circuit open 으로 결정이 원래 경로로 되
 
 Service run 이 활성인데 30분간 진행이 없다.
 
-1. `malkuth_service_idle_delay_seconds` 를 확인한다 — idle 상한에 머물러 있다면
+1. `aaestro_service_idle_delay_seconds` 를 확인한다 — idle 상한에 머물러 있다면
    입력이 실제로 없는 경우이며 **설계대로 동작 중**이다.
 2. 입력이 있는데도 멈춰 있다면 watcher 노드가 조용히 실패하고 있을 가능성이 높다.
    iteration 로그(`iteration` 필드)를 읽고 `is_idle` 판정이 항상 참이 아닌지 확인한다.

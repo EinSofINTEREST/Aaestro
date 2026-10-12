@@ -7,10 +7,10 @@ from pathlib import Path
 import pytest
 import yaml
 
-from malkuth.catalog import Catalog
-from malkuth.core.errors import ErrorCode, MalkuthError
-from malkuth.orchestrator.models import CatalogModels, resolve_node_model, with_recorded_overrides
-from malkuth.orchestrator.topology import NodeSpec
+from aaestro.catalog import Catalog
+from aaestro.core.errors import AaestroError, ErrorCode
+from aaestro.orchestrator.models import CatalogModels, resolve_node_model, with_recorded_overrides
+from aaestro.orchestrator.topology import NodeSpec
 from tests.fixtures.topologies import make_mission
 
 
@@ -21,7 +21,7 @@ def catalog(tmp_path: Path) -> Catalog:
     path.write_text(
         yaml.safe_dump(
             {
-                "apiVersion": "malkuth/v1",
+                "apiVersion": "aaestro/v1",
                 "kind": "Agent",
                 "metadata": {"name": "planner", "version": "0.1.0"},
                 "spec": {
@@ -95,7 +95,7 @@ def test_recorded_overrides_layer_over_the_node_and_keep_explicit_empties(catalo
 
 
 def test_recorded_overrides_for_a_vanished_node_are_val_002():
-    with pytest.raises(MalkuthError) as excinfo:
+    with pytest.raises(AaestroError) as excinfo:
         with_recorded_overrides(make_mission(), {"ghost": {"name": "m"}})
 
     assert excinfo.value.code == ErrorCode.VAL_002

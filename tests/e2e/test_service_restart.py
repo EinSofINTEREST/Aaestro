@@ -18,14 +18,14 @@ from typing import Any
 import pytest
 import yaml
 
-from malkuth.core.errors import ErrorCategory, ErrorCode, MalkuthError
-from malkuth.orchestrator.checkpoint import build_checkpointer, close_checkpointer
-from malkuth.orchestrator.run import RunManager, RunStatus
-from malkuth.orchestrator.runstore import SqliteRunStore
-from malkuth.orchestrator.submit import RunSubmitter
-from malkuth.orchestrator.topology import GraphTopology
-from malkuth.runtime.control import ControlClient
-from malkuth.runtime.nodes import ControlNodeRuntime
+from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.orchestrator.checkpoint import build_checkpointer, close_checkpointer
+from aaestro.orchestrator.run import RunManager, RunStatus
+from aaestro.orchestrator.runstore import SqliteRunStore
+from aaestro.orchestrator.submit import RunSubmitter
+from aaestro.orchestrator.topology import GraphTopology
+from aaestro.runtime.control import ControlClient
+from aaestro.runtime.nodes import ControlNodeRuntime
 from tests.e2e.test_stack import (
     AGENT_TOKEN,
     COMPOSE_FILE,
@@ -42,7 +42,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # `agent_name(node.agent)` 로 클라이언트를 못 찾아 모든 노드가 GRAPH_002 로 실패한다. 회차만 세는
 # 검증은 그래도 통과해서 이 파일이 오래 그렇게 돌았다 (#310 에서 state 를 보자 드러남)
 AGENT_PORTS = {"researcher": 18083, "planner": 18082, "writer": 18084}
-CHECKPOINT_URL = "postgresql://malkuth:malkuth@127.0.0.1:15433/malkuth"
+CHECKPOINT_URL = "postgresql://aaestro:aaestro@127.0.0.1:15433/aaestro"
 
 
 def topology() -> GraphTopology:
@@ -233,7 +233,7 @@ class FailsAfterFirst:
         if node.id == "watcher":
             self.iterations += 1
         if self.iterations > 1:
-            raise MalkuthError(
+            raise AaestroError(
                 category=ErrorCategory.GRAPH, code=ErrorCode.GRAPH_002, message="injected"
             )
         return await self.live.invoke(node, task)

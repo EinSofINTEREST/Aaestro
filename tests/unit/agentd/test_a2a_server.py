@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from malkuth.agentd.a2a_server import (
+from aaestro.agentd.a2a_server import (
     EDGES_ENV,
     MAX_DEPTH_ENV,
     PORT_ENV,
@@ -24,8 +24,8 @@ from malkuth.agentd.a2a_server import (
     build_a2a_app,
     parse_edges,
 )
-from malkuth.core.manifest import AgentManifest
-from malkuth.protocols.a2a.allowlist import Edge
+from aaestro.core.manifest import AgentManifest
+from aaestro.protocols.a2a.allowlist import Edge
 
 
 async def invoke(task):  # pragma: no cover - 서버 구성만 검증한다
@@ -112,8 +112,8 @@ def test_the_depth_limit_is_injectable(monkeypatch, injected):
 @pytest.fixture
 def registry_mode(monkeypatch):
     """공유 서명 키 없이 레지스트리 주소와 에이전트 신원만 주입된 컨테이너."""
-    from malkuth.access.client import ACCESS_URL_ENV
-    from malkuth.access.registry import ACCESS_CREDENTIAL_ENV
+    from aaestro.access.client import ACCESS_URL_ENV
+    from aaestro.access.registry import ACCESS_CREDENTIAL_ENV
 
     monkeypatch.delenv(SECRET_ENV, raising=False)
     monkeypatch.setenv(PORT_ENV, "9100")
@@ -138,10 +138,10 @@ def test_token_mode_has_no_registry_verifier(injected):
 
 
 def test_registry_mode_calls_peers_with_tickets(registry_mode, monkeypatch):
-    from malkuth.agentd.a2a_server import PEERS_ENV, build_peer_client
-    from malkuth.protocols.a2a.tickets import TicketSource
+    from aaestro.agentd.a2a_server import PEERS_ENV, build_peer_client
+    from aaestro.protocols.a2a.tickets import TicketSource
 
-    monkeypatch.setenv(PEERS_ENV, "planner=malkuth-planner-0:9101")
+    monkeypatch.setenv(PEERS_ENV, "planner=aaestro-planner-0:9101")
 
     client = build_peer_client(manifest("researcher"))
 

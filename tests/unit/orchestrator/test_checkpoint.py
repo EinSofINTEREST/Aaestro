@@ -7,8 +7,8 @@ import asyncio
 import pytest
 from langgraph.checkpoint.memory import MemorySaver
 
-from malkuth.core.errors import ErrorCategory, MalkuthError
-from malkuth.orchestrator.checkpoint import (
+from aaestro.core.errors import AaestroError, ErrorCategory
+from aaestro.orchestrator.checkpoint import (
     DEFAULT_CHECKPOINTER,
     CheckpointerKind,
     build_checkpointer,
@@ -33,7 +33,7 @@ def test_memory_kind_builds_saver():
 
 @pytest.mark.parametrize("kind", [CheckpointerKind.REDIS, CheckpointerKind.POSTGRES])
 def test_external_backend_requires_url(kind):
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         build_checkpointer(kind)
 
     assert exc_info.value.code == "CFG_001"
@@ -43,7 +43,7 @@ def test_external_backend_requires_url(kind):
 
 def test_unknown_backend_is_rejected_with_cfg_001():
     """설정 오류는 비구조화 ValueError 가 아니라 CFG_001 로 보고돼야 한다."""
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         build_checkpointer("cassandra")
 
     assert exc_info.value.code == "CFG_001"
@@ -54,7 +54,7 @@ async def test_guarded_save_converts_failure_to_stor_001():
     async def failing():
         raise OSError("disk full")
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await guarded_save(failing, graph="g", run_id="r")
 
     assert exc_info.value.code == "STOR_001"
@@ -67,7 +67,7 @@ async def test_guarded_restore_converts_failure_to_stor_002():
     async def failing():
         raise OSError("corrupt")
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await guarded_restore(failing, graph="g", run_id="r")
 
     assert exc_info.value.code == "STOR_002"
@@ -81,16 +81,16 @@ async def test_guarded_helpers_pass_through_values():
     assert await guarded_restore(ok, graph="g", run_id="r") == "value"
 
 
-async def test_guarded_helpers_do_not_rewrap_malkuth_errors():
+async def test_guarded_helpers_do_not_rewrap_aaestro_errors():
     """이미 구조화된 에러는 그대로 전파한다 (이중 변환 방지)."""
-    original = MalkuthError(
+    original = AaestroError(
         category=ErrorCategory.STORAGE, code="STOR_003", message="registry error"
     )
 
     async def failing():
         raise original
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await guarded_save(failing, graph="g", run_id="r")
 
     assert exc_info.value is original

@@ -2,7 +2,7 @@
 
 ## Core Principle: Per-Agent Isolation
 
-프로토콜 자원은 **에이전트 단위로 격리**된다. 이것이 Malkuth 프로토콜 계층의 제1원칙이다.
+프로토콜 자원은 **에이전트 단위로 격리**된다. 이것이 Aaestro 프로토콜 계층의 제1원칙이다.
 
 1. **소유권**: 모든 A2A 엔드포인트와 MCP 서버/세션은 정확히 하나의 에이전트에 속한다
 2. **공유 금지**:
@@ -218,7 +218,7 @@ v0.1 은 **전달 전용 공유 프록시** 하나로 시작한다. 격리 요�
 
 ## Protocol Error Mapping
 
-프로토콜 계층에서 발생하는 에러는 boundary 에서 `MalkuthError` 로 변환한다.
+프로토콜 계층에서 발생하는 에러는 boundary 에서 `AaestroError` 로 변환한다.
 상세 규칙은 [05-error-handling.md](05-error-handling.md).
 
 | 상황 | Category | Code | Retryable |
@@ -261,6 +261,6 @@ log.info(
 
 - **A2A**: caller, callee, a2a_task_id, duration_ms, status
 - **MCP**: mcp_server, tool, duration_ms, status
-- 메트릭: `malkuth_a2a_calls_total{caller,callee,status}`,
-  `malkuth_mcp_tool_calls_total{agent,server,tool,status}`
+- 메트릭: `aaestro_a2a_calls_total{caller,callee,status}`,
+  `aaestro_mcp_tool_calls_total{agent,server,tool,status}`
 - Trace: TraceContext 를 A2A 호출에 전파 — run 전체를 단일 trace 로 연결

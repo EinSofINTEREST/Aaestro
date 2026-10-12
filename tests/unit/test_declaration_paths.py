@@ -16,12 +16,12 @@ from pathlib import Path
 import pytest
 import yaml
 
-from malkuth.authoring import Author
-from malkuth.catalog import Catalog
-from malkuth.core.errors import ErrorCode, MalkuthError
-from malkuth.materials import InMemoryMaterialStore
-from malkuth.orchestrator.control import create_app
-from malkuth.orchestrator.runstore import InMemoryRunStore
+from aaestro.authoring import Author
+from aaestro.catalog import Catalog
+from aaestro.core.errors import AaestroError, ErrorCode
+from aaestro.materials import InMemoryMaterialStore
+from aaestro.orchestrator.control import create_app
+from aaestro.orchestrator.runstore import InMemoryRunStore
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DECOY = "decoy: outside every declaration root\n"
@@ -68,7 +68,7 @@ def catalog(workspace: Path) -> Catalog:
 @pytest.mark.parametrize("name", BAD_NAMES)
 @pytest.mark.parametrize("kind", ["agent", "graph", "group"])
 def test_a_lookup_with_a_bad_name_is_refused_before_touching_disk(catalog, kind, name):
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         getattr(catalog, kind)(name)
 
     assert exc_info.value.code == ErrorCode.VAL_002
@@ -90,7 +90,7 @@ def test_a_symlink_that_leaves_the_root_is_refused(catalog, workspace, tmp_path)
     (outside / "manifest.yaml").write_text(yaml.safe_dump(document), encoding="utf-8")
     (workspace / "agents" / "escape").symlink_to(outside, target_is_directory=True)
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         catalog.agent("escape")
 
     assert exc_info.value.code == ErrorCode.VAL_002
@@ -104,7 +104,7 @@ def test_deleting_with_a_bad_name_removes_nothing(workspace, catalog, name):
     author = Author(catalog=catalog)
 
     for delete in (author.delete_agent, author.delete_graph):
-        with pytest.raises(MalkuthError) as exc_info:
+        with pytest.raises(AaestroError) as exc_info:
             delete(name)
         assert exc_info.value.code == ErrorCode.VAL_002
 
@@ -204,7 +204,7 @@ def test_a_symlink_loop_is_a_400_not_a_crash(catalog, workspace):
     (workspace / "agents" / "loop-a").symlink_to(workspace / "agents" / "loop-b")
     (workspace / "agents" / "loop-b").symlink_to(workspace / "agents" / "loop-a")
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         catalog.agent("loop-a")
 
     assert exc_info.value.code == ErrorCode.VAL_002
@@ -219,7 +219,7 @@ def test_the_checked_path_is_the_canonical_one(catalog, workspace, tmp_path):
 
 
 def test_a_module_behind_a_link_that_leaves_the_root_is_not_loaded(workspace, tmp_path):
-    from malkuth.modules.registry import ModuleRegistry
+    from aaestro.modules.registry import ModuleRegistry
 
     promptsets = workspace / "modules" / "promptsets"
     outside = tmp_path / "elsewhere-modules" / "planner"
@@ -227,7 +227,7 @@ def test_a_module_behind_a_link_that_leaves_the_root_is_not_loaded(workspace, tm
     shutil.rmtree(promptsets / "planner")
     (promptsets / "planner").symlink_to(outside, target_is_directory=True)
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         ModuleRegistry.under(workspace).resolve("promptsets/planner@0.3.0")
     listing = Catalog.under(workspace).modules("promptsets")
 

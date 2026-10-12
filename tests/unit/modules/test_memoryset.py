@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from malkuth.core.errors import MalkuthError
-from malkuth.modules.memoryset import (
+from aaestro.core.errors import AaestroError
+from aaestro.modules.memoryset import (
     MemoryKind,
     MemoryScope,
     MemorysetLoader,
     check_attachment_scope,
 )
-from malkuth.modules.registry import ModuleRegistry
+from aaestro.modules.registry import ModuleRegistry
 from tests.fixtures.registry import fixture_registry
 
 
@@ -48,7 +48,7 @@ def test_attachment_scope_mismatch_raises_mod_003(loader):
     """부착 위치와 선언 스코프 불일치 — 04 Attachment 규칙 4."""
     memoryset = loader.load("memorysets/agent-longterm@0.1.0")
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         check_attachment_scope(memoryset, MemoryScope.GROUP)
 
     assert exc_info.value.code == "MOD_003"
@@ -58,7 +58,7 @@ def _write_memoryset(tmp_path, spec_body: str):
     module = tmp_path / "modules" / "memorysets" / "custom" / "0.1.0"
     module.mkdir(parents=True)
     (module / "memoryset.yaml").write_text(
-        "apiVersion: malkuth/v1\nkind: Memoryset\nmetadata:\n"
+        "apiVersion: aaestro/v1\nkind: Memoryset\nmetadata:\n"
         "  name: custom\n  version: 0.1.0\nspec:\n" + spec_body,
         encoding="utf-8",
     )
@@ -78,7 +78,7 @@ def test_persistent_scope_without_retention_raises_mod_003(tmp_path, scope):
     """영구 스코프는 보존 정책 필수 — 09 Compaction & Retention 5."""
     loader = _write_memoryset(tmp_path, f"  scope: {scope}\n" + INDEX)
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         loader.load("memorysets/custom@0.1.0")
 
     assert exc_info.value.code == "MOD_003"
@@ -96,7 +96,7 @@ def test_overlap_must_be_smaller_than_chunk(tmp_path):
         "  scope: run\n" + INDEX + "    chunk:\n      max_tokens: 100\n      overlap_tokens: 100\n",
     )
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         loader.load("memorysets/custom@0.1.0")
 
     assert exc_info.value.code == "MOD_003"
@@ -108,7 +108,7 @@ def test_zero_hybrid_weights_are_rejected(tmp_path):
         "  scope: run\n" + INDEX + "    hybrid:\n      vector_weight: 0\n      lexical_weight: 0\n",
     )
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         loader.load("memorysets/custom@0.1.0")
 
     assert exc_info.value.code == "MOD_003"
@@ -117,7 +117,7 @@ def test_zero_hybrid_weights_are_rejected(tmp_path):
 def test_invalid_scope_raises_mod_003(tmp_path):
     loader = _write_memoryset(tmp_path, "  scope: task\n" + INDEX)
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         loader.load("memorysets/custom@0.1.0")
 
     assert exc_info.value.code == "MOD_003"

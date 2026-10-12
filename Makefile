@@ -19,7 +19,7 @@ fmt: ## ruff format 적용 + import 정렬
 	$(RUN) ruff format src tests
 	$(RUN) ruff check --fix src tests
 
-typecheck: ## mypy (malkuth.core 는 strict)
+typecheck: ## mypy (aaestro.core 는 strict)
 	$(RUN) mypy
 
 test: ## unit 테스트 + 커버리지 게이트 (>= 70%)
@@ -50,10 +50,10 @@ IMAGE_TAG ?= 0.1.0
 # compose 파일들이 `FROM` 으로 확장하는 바탕 — compose 는 이것을 빌드하지 않는다.
 # 스택을 올리는 타깃은 전부 이것을 선행해야 한다 (#222)
 build-base: ## agent-base 이미지 빌드
-	docker build -t malkuth/agent-base:$(IMAGE_TAG) -f $(DOCKER_DIR)/agent-base.Dockerfile .
+	docker build -t aaestro/agent-base:$(IMAGE_TAG) -f $(DOCKER_DIR)/agent-base.Dockerfile .
 
 build: build-base ## 에이전트 base image + 테스트 echo image 빌드
-	docker build -t malkuth/agent-echo:$(IMAGE_TAG) \
+	docker build -t aaestro/agent-echo:$(IMAGE_TAG) \
 		--build-arg BASE_TAG=$(IMAGE_TAG) \
 		-f $(DOCKER_DIR)/agent-echo.Dockerfile .
 

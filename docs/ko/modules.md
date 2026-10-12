@@ -2,7 +2,7 @@
 
 한국어 | **[English](../en/modules.md)**
 
-Malkuth 에서 배포 가능한 모든 것은 모듈입니다: 솔루션은 버저닝된 모듈의 배선으로
+Aaestro 에서 배포 가능한 모든 것은 모듈입니다: 솔루션은 버저닝된 모듈의 배선으로
 조립되며, 프레임워크 코드를 수정하지 않습니다. 규범 규칙:
 [04-module-system.md](../../.claude/rules/04-module-system.md),
 [09-memory-context.md](../../.claude/rules/09-memory-context.md).
@@ -64,10 +64,10 @@ tool 스키마는 `get_type_hints()` 로 시그니처에서 도출됩니다. 어
 ```python
 # 잘못됨 — get_type_hints() 가 NameError, 모든 파라미터가 타입을 잃는다
 if TYPE_CHECKING:
-    from malkuth.core.skill import SkillContext
+    from aaestro.core.skill import SkillContext
 
 # 올바름
-from malkuth.core.skill import SkillContext, skill
+from aaestro.core.skill import SkillContext, skill
 ```
 
 동적 정의 skill 을 막지 않기 위해 에러가 아닌 경고로 드러냅니다
@@ -127,8 +127,8 @@ spec:
   비교할 수 없는 값을 비교하면 다른 가지로 조용히 넘어가지 않고 run 이 실패한다
   (`GRAPH_003`).
 - **Deprecated**: `state.schema` 와 import ref 로 쓴 조건
-  (`malkuth.graphs.conditions:needs_research`) 은 한 버전 동안 그대로 동작한다. 가리킬 수
-  있는 곳은 `malkuth.graphs` 뿐이고, 검증이 import ref 조건마다 경고를 남긴다.
+  (`aaestro.graphs.conditions:needs_research`) 은 한 버전 동안 그대로 동작한다. 가리킬 수
+  있는 곳은 `aaestro.graphs` 뿐이고, 검증이 import ref 조건마다 경고를 남긴다.
 
 ## 에이전트 — 모델 회복력
 
@@ -206,13 +206,13 @@ nodes:
   `rate_limit`, 그 밖에는 `server_error`) 같은 부류를 `on` 에 둔 fallback 이 이어받습니다. 재시도
   도중 breaker 가 열리면 남은 재시도는 보내지 않고 곧장 다음 후보로 갑니다. 같은 모델은
   태스크·체인이 달라도 breaker 를 공유합니다. 모든 후보가 open 이면 마지막 breaker 를 연 실패
-  (`LLM_001` 또는 `LLM_003`)로, retryable 하게 실패합니다. 상태는 `malkuth_circuit_state{target="model:<provider>/<name>"}`
+  (`LLM_001` 또는 `LLM_003`)로, retryable 하게 실패합니다. 상태는 `aaestro_circuit_state{target="model:<provider>/<name>"}`
   로 노출됩니다.
 - fallback 은 `max_tokens`·`effort` 를 primary 에서 물려받습니다.
 - **관측**: `TaskResult.usage.model` / `.provider` 는 **마지막 턴에 응답한** 모델이고, 토큰
-  합계는 턴을 가로질러 합산됩니다. 시도별 정확한 값은 `malkuth_model_requests_total` /
-  `malkuth_model_tokens_total` 라벨에 있습니다.
-  `malkuth_model_requests_total` 에 `fallback_index` 라벨이 붙습니다 (0 = primary). 전환할 때마다
+  합계는 턴을 가로질러 합산됩니다. 시도별 정확한 값은 `aaestro_model_requests_total` /
+  `aaestro_model_tokens_total` 라벨에 있습니다.
+  `aaestro_model_requests_total` 에 `fallback_index` 라벨이 붙습니다 (0 = primary). 전환할 때마다
   `model`, `provider`, `fallback_index`, `error_code`, `next_model`, `next_provider` 필드의 WARN
   로그를 남기고, open circuit 을 건너뛸 때도 `opened_by` 필드의 WARN 을 남깁니다.
 - 범위 밖: 비-Anthropic provider 로의 전환은 어댑터(#361)가 들어와야 합니다 — 그 전에는 체인을 만들 때
@@ -233,7 +233,7 @@ finding 이 `details.findings` 로 실립니다. 하나라도 걸리면 아무�
   모르는 키)은 곧바로 `400 VAL_002` 입니다
 - 이그레스 baseline 은 fallback provider 의 호스트를 자동 포함합니다 (manifest 선언이 곧 기본 권한)
 
-`malkuth validate` 와 `malkuth deploy` 출력의 `models` 항목이 노드별로 해석된 모델 계층을
+`aaestro validate` 와 `aaestro deploy` 출력의 `models` 항목이 노드별로 해석된 모델 계층을
 보여 줍니다.
 
 ## 그룹

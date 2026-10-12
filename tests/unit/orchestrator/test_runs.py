@@ -8,16 +8,16 @@ from typing import Any
 
 import pytest
 
-from malkuth.core.agent import TaskResult
-from malkuth.core.errors import ErrorCategory, ErrorCode, MalkuthError
-from malkuth.core.manifest import ModelConfig
-from malkuth.orchestrator.checkpoint import build_checkpointer
-from malkuth.orchestrator.run import RESUMED_SUFFIX, RunHandle, RunManager, RunStatus
-from malkuth.orchestrator.runs import RoutedClients, RunService
-from malkuth.orchestrator.runstore import InMemoryRunStore, RunRecord
-from malkuth.orchestrator.submit import RunResult, RunSubmitter
-from malkuth.orchestrator.topology import GraphMode
-from malkuth.runtime.deployments import DeploymentRecord, DeploymentStatus
+from aaestro.core.agent import TaskResult
+from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.core.manifest import ModelConfig
+from aaestro.orchestrator.checkpoint import build_checkpointer
+from aaestro.orchestrator.run import RESUMED_SUFFIX, RunHandle, RunManager, RunStatus
+from aaestro.orchestrator.runs import RoutedClients, RunService
+from aaestro.orchestrator.runstore import InMemoryRunStore, RunRecord
+from aaestro.orchestrator.submit import RunResult, RunSubmitter
+from aaestro.orchestrator.topology import GraphMode
+from aaestro.runtime.deployments import DeploymentRecord, DeploymentStatus
 from tests.fixtures.topologies import make_mission, make_service
 
 
@@ -29,7 +29,7 @@ class FakeCatalog:
         try:
             return self._graphs[name]
         except KeyError:
-            raise MalkuthError(
+            raise AaestroError(
                 category="not_found", code=ErrorCode.NF_001, message=f"unknown graph: {name}"
             ) from None
 
@@ -42,7 +42,7 @@ class FakeDeployments:
         try:
             return self.records[deployment_id]
         except KeyError:
-            raise MalkuthError(
+            raise AaestroError(
                 category="not_found", code=ErrorCode.NF_001, message="unknown deployment"
             ) from None
 
@@ -152,7 +152,7 @@ async def test_an_unknown_deployment_is_not_found(parts):
     runs = service_for(parts, deployed("x"))
     runs.deployments = FakeDeployments({})
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await runs.submit("dep-nope", {})
 
     assert exc_info.value.code == ErrorCode.NF_001
@@ -162,7 +162,7 @@ async def test_a_deployment_that_is_not_ready_is_not_found(parts):
     _, _, _, mission, _ = parts
     runs = service_for(parts, deployed(mission.metadata.name, status=DeploymentStatus.STOPPED))
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await runs.submit("dep-1", {})
 
     assert exc_info.value.code == ErrorCode.NF_001
@@ -174,7 +174,7 @@ async def test_a_graph_edited_since_the_deployment_is_refused(parts):
     _, _, submitter, mission, _ = parts
     runs = service_for(parts, deployed(mission.metadata.name, version="0.9.0"))
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await runs.submit("dep-1", {})
 
     assert exc_info.value.code == ErrorCode.VAL_002
@@ -185,7 +185,7 @@ async def test_a_mode_that_contradicts_the_graph_is_refused(parts):
     _, _, submitter, mission, _ = parts
     runs = service_for(parts, deployed(mission.metadata.name))
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await runs.submit("dep-1", {}, mode="service")
 
     assert exc_info.value.code == ErrorCode.VAL_002
@@ -230,7 +230,7 @@ class FailOnceRuntime:
     async def invoke(self, node, task):
         self.invoked.append(node.id)
         if node.id == "researcher" and self.invoked.count("researcher") == 1:
-            raise MalkuthError(category=ErrorCategory.GRAPH, code="GRAPH_002", message="flaky")
+            raise AaestroError(category=ErrorCategory.GRAPH, code="GRAPH_002", message="flaky")
         return TaskResult.completed(task, output={})
 
 
@@ -263,7 +263,7 @@ async def test_resume_through_the_control_plane_skips_completed_nodes(parts):
 async def test_resume_of_an_unknown_run_is_not_found(parts):
     runs = service_for(parts, deployed("x"))
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await runs.resume("nope")
 
     assert exc_info.value.code == ErrorCode.NF_001
@@ -282,8 +282,8 @@ async def test_close_cancels_drivers_and_stops_services(parts):
 
 def test_routed_clients_follow_the_launcher_and_miss_cleanly():
     """없는 에이전트는 KeyError → 노드 런타임이 GRAPH_002 로 바꾼다."""
-    from malkuth.runtime.docker.engine import DockerEngine
-    from malkuth.runtime.launcher import AgentLauncher
+    from aaestro.runtime.docker.engine import DockerEngine
+    from aaestro.runtime.launcher import AgentLauncher
     from tests.fixtures.fake_docker import FakeDockerClient
 
     launcher = AgentLauncher(engine=DockerEngine(client=FakeDockerClient()))

@@ -1,17 +1,17 @@
 {
-  "title": "Malkuth — Protocol",
-  "uid": "malkuth-protocol",
+  "title": "Aaestro — Protocol",
+  "uid": "aaestro-protocol",
   "description": "A2A call matrix and MCP tool success rate / latency",
   "panels": [
     {"title": "A2A call matrix (caller x callee)", "type": "heatmap",
-     "targets": [{"expr": "sum by (caller, callee) (rate(malkuth_a2a_calls_total[5m]))"}]},
+     "targets": [{"expr": "sum by (caller, callee) (rate(aaestro_a2a_calls_total[5m]))"}]},
     {"title": "A2A failures", "type": "timeseries",
-     "targets": [{"expr": "sum by (caller, callee) (rate(malkuth_a2a_calls_total{status=\"failed\"}[5m]))"}]},
+     "targets": [{"expr": "sum by (caller, callee) (rate(aaestro_a2a_calls_total{status=\"failed\"}[5m]))"}]},
     {"title": "MCP tool calls by server", "type": "timeseries",
-     "targets": [{"expr": "sum by (server, status) (rate(malkuth_mcp_tool_calls_total[5m]))"}]},
+     "targets": [{"expr": "sum by (server, status) (rate(aaestro_mcp_tool_calls_total[5m]))"}]},
     {"title": "MCP tool failure rate", "type": "timeseries",
-     "targets": [{"expr": "sum by (server) (rate(malkuth_mcp_tool_calls_total{status=\"failed\"}[5m])) / sum by (server) (rate(malkuth_mcp_tool_calls_total[5m]))"}]},
+     "targets": [{"expr": "sum by (server) (rate(aaestro_mcp_tool_calls_total{status=\"failed\"}[5m])) / sum by (server) (rate(aaestro_mcp_tool_calls_total[5m]))"}]},
     {"title": "Circuit state", "type": "state-timeline",
-     "targets": [{"expr": "malkuth_circuit_state"}]}
+     "targets": [{"expr": "aaestro_circuit_state"}]}
   ]
 }

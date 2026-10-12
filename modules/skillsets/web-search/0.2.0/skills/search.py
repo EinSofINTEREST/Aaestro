@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from malkuth.core.skill import SkillContext, skill
+from aaestro.core.skill import SkillContext, skill
 
 
 @skill

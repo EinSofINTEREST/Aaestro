@@ -12,11 +12,11 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
-from malkuth.agentd import __main__ as agentd
-from malkuth.agentd.executor import Executor, ModuleBinding
-from malkuth.agentd.health import ModelHealth, agent_health
-from malkuth.core.agent import ComponentHealth, HealthState, TaskConfig
-from malkuth.core.errors import ErrorCategory, MalkuthError
+from aaestro.agentd import __main__ as agentd
+from aaestro.agentd.executor import Executor, ModuleBinding
+from aaestro.agentd.health import ModelHealth, agent_health
+from aaestro.core.agent import ComponentHealth, HealthState, TaskConfig
+from aaestro.core.errors import AaestroError, ErrorCategory
 from tests.fixtures.builders import make_manifest, make_task
 from tests.fixtures.fake_model import FakeTools
 
@@ -89,7 +89,7 @@ def test_a_failed_model_call_degrades_until_the_next_success():
 
 class FailingModel:
     async def run(self, system, messages, tools):
-        raise MalkuthError(category=ErrorCategory.MODEL, code="LLM_003", message="provider down")
+        raise AaestroError(category=ErrorCategory.MODEL, code="LLM_003", message="provider down")
 
 
 async def test_the_executor_records_model_failures_for_health():

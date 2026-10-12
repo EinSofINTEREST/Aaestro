@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from malkuth.cli.integrity import (
+from aaestro.cli.integrity import (
     dangling_module_refs,
     ghost_containers,
     orphan_checkpoints,

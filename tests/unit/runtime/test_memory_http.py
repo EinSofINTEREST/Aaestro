@@ -9,8 +9,8 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from malkuth.runtime import memory_http
-from malkuth.runtime.memory_http import HttpMemoryAccess
+from aaestro.runtime import memory_http
+from aaestro.runtime.memory_http import HttpMemoryAccess
 
 
 @pytest.fixture

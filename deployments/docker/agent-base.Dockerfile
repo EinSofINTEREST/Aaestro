@@ -1,4 +1,4 @@
-# malkuth/agent-base — 모든 에이전트 이미지의 출발점 (02 Container Standards)
+# aaestro/agent-base — 모든 에이전트 이미지의 출발점 (02 Container Standards)
 #
 # 에이전트별 이미지는 이 base 를 FROM 으로 확장하고 manifest 와 추가 의존성만
 # 얹는다. agentd 는 여기에 이미 들어있다.
@@ -24,7 +24,7 @@ COPY --from=builder /install /usr/local
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    MALKUTH_MANIFEST=/app/manifest.yaml
+    AAESTRO_MANIFEST=/app/manifest.yaml
 
 WORKDIR /app
 
@@ -41,4 +41,4 @@ EXPOSE 8080
 HEALTHCHECK --interval=10s --timeout=3s --start-period=15s --retries=3 \
     CMD ["python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/v1/health', timeout=3).status == 200 else 1)"]
 
-ENTRYPOINT ["python", "-m", "malkuth.agentd"]
+ENTRYPOINT ["python", "-m", "aaestro.agentd"]

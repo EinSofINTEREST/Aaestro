@@ -15,8 +15,8 @@ import os
 
 import pytest
 
-from malkuth.core.errors import ErrorCode
-from malkuth.protocols.a2a.allowlist import Edge, issue_token
+from aaestro.core.errors import ErrorCode
+from aaestro.protocols.a2a.allowlist import Edge, issue_token
 from tests.e2e.test_graph_run import graph_stack  # noqa: F401 — fixture 재사용
 from tests.e2e.test_stack import docker, requires_docker
 
@@ -24,9 +24,9 @@ pytestmark = pytest.mark.e2e
 
 A2A_PORTS = {"planner": 19102, "researcher": 19103, "writer": 19104}
 
-SECRET = os.environ.get("MALKUTH_A2A_SECRET", "e2e-a2a-secret")
+SECRET = os.environ.get("AAESTRO_A2A_SECRET", "e2e-a2a-secret")
 
-CALLER_CONTAINER = "malkuth-e2e-agent-researcher-1"
+CALLER_CONTAINER = "aaestro-e2e-agent-researcher-1"
 """호출을 실행할 컨테이너.
 
 **컨테이너 안에서 불러야 한다**: 카드가 광고하는 주소(`agent-planner`)는
@@ -40,9 +40,9 @@ def call_from_container(caller: str, callee: str, *, token: str, depth: int = 0)
     """researcher 컨테이너 안에서 peer 를 호출하고 결과를 문자열로 돌려준다."""
     script = f"""
 import asyncio, json
-from malkuth.core.agent import TaskConfig, TaskRequest, TraceContext
-from malkuth.core.errors import MalkuthError
-from malkuth.protocols.a2a.sdk import SdkPeerTransport
+from aaestro.core.agent import TaskConfig, TaskRequest, TraceContext
+from aaestro.core.errors import AaestroError
+from aaestro.protocols.a2a.sdk import SdkPeerTransport
 
 async def main():
     transport = SdkPeerTransport(
@@ -61,7 +61,7 @@ async def main():
             callee={callee!r}, task=task, token={token!r}, headers={{}}
         )
         print("OK:" + json.dumps(result.output, ensure_ascii=False)[:120])
-    except MalkuthError as err:
+    except AaestroError as err:
         print("ERR:" + str(err.code))
     finally:
         await transport.close()

@@ -7,8 +7,8 @@ from __future__ import annotations
 
 import pytest
 
-from malkuth.core.errors import ErrorCategory, MalkuthError
-from malkuth.runtime.lifecycle import (
+from aaestro.core.errors import AaestroError, ErrorCategory
+from aaestro.runtime.lifecycle import (
     AgentLifecycle,
     AgentState,
     RestartPolicy,
@@ -67,7 +67,7 @@ def test_illegal_transitions_are_rejected(start, target):
     """조용히 통과시키면 lifecycle 버그가 런타임 깊은 곳에서 드러난다."""
     agent = AgentLifecycle(agent="a", state=start)
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         agent.transition(target)
 
     assert exc_info.value.code == "RT_007"
@@ -197,7 +197,7 @@ def test_crash_loop_marks_the_agent_failed():
     for _ in range(5):
         agent.plan_restart()
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         agent.plan_restart()
 
     assert exc_info.value.code == "RT_008"
@@ -219,13 +219,13 @@ def test_restarts_spread_over_time_do_not_trip_the_ceiling():
 def test_lifecycle_errors_use_distinct_codes():
     """RT_002 는 "컨테이너 unhealthy" 다 — lifecycle 위반과 섞으면 라우팅이 흐려진다."""
     illegal = AgentLifecycle(agent="a", state=AgentState.DECLARED)
-    with pytest.raises(MalkuthError) as transition_err:
+    with pytest.raises(AaestroError) as transition_err:
         illegal.transition(AgentState.READY)
 
     looping = ready_agent(clock=FakeClock())
     for _ in range(5):
         looping.plan_restart()
-    with pytest.raises(MalkuthError) as restart_err:
+    with pytest.raises(AaestroError) as restart_err:
         looping.plan_restart()
 
     codes = {transition_err.value.code, restart_err.value.code}

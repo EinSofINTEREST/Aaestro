@@ -9,15 +9,15 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from malkuth.core.errors import ErrorCode, MalkuthError
-from malkuth.memory.entry import MemoryEntry, MemorySource
-from malkuth.memory.http import TokenRegistry, create_app
-from malkuth.memory.index import IndexRegistry
-from malkuth.memory.recall import Recall
-from malkuth.memory.service import MemoryService, build_token
-from malkuth.memory.store import SqliteMemoryStore
-from malkuth.modules.memoryset import MemoryKind
-from malkuth.runtime.memory_http import HttpMemoryAccess
+from aaestro.core.errors import AaestroError, ErrorCode
+from aaestro.memory.entry import MemoryEntry, MemorySource
+from aaestro.memory.http import TokenRegistry, create_app
+from aaestro.memory.index import IndexRegistry
+from aaestro.memory.recall import Recall
+from aaestro.memory.service import MemoryService, build_token
+from aaestro.memory.store import SqliteMemoryStore
+from aaestro.modules.memoryset import MemoryKind
+from aaestro.runtime.memory_http import HttpMemoryAccess
 
 BASE_URL = "http://memory.test"
 
@@ -83,7 +83,7 @@ async def test_undeclared_space_is_denied(served):
     """선언되지 않은 space 는 서비스가 거부한다 — 클라이언트가 판단하지 않는다."""
     access, *_ = served
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await access.search("무엇이든", spaces=["secret"])
 
     assert exc_info.value.code == ErrorCode.MEM_001
@@ -95,7 +95,7 @@ async def test_unknown_token_is_denied(served):
     access, *_ = served
     forged = HttpMemoryAccess(base_url=BASE_URL, token="forged", client=access.client)
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await forged.spaces()
 
     assert exc_info.value.code == ErrorCode.MEM_001
@@ -105,7 +105,7 @@ async def test_missing_token_is_denied(served):
     access, *_ = served
     anonymous = HttpMemoryAccess(base_url=BASE_URL, token="", client=access.client)
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await anonymous.spaces()
 
     assert exc_info.value.code == ErrorCode.MEM_001
@@ -116,7 +116,7 @@ async def test_forgotten_token_stops_working(served):
     access, _service, _token, _space_id, _indexes, tokens = served
     tokens.forget(access.token)
 
-    with pytest.raises(MalkuthError):
+    with pytest.raises(AaestroError):
         await access.spaces()
 
 
@@ -132,7 +132,7 @@ async def test_unreachable_service_is_retryable():
     client = httpx.AsyncClient(transport=httpx.MockTransport(refuse), base_url=BASE_URL)
     access = HttpMemoryAccess(base_url=BASE_URL, token="t", client=client)
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await access.search("q")
 
     assert exc_info.value.code == ErrorCode.MEM_004
@@ -146,7 +146,7 @@ async def test_server_error_is_retryable():
     client = httpx.AsyncClient(transport=httpx.MockTransport(fail), base_url=BASE_URL)
     access = HttpMemoryAccess(base_url=BASE_URL, token="t", client=client)
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await access.search("q")
 
     assert exc_info.value.retryable
@@ -181,7 +181,7 @@ async def test_read_rejects_an_undeclared_space(served):
     """경계는 모든 창구에서 같아야 한다 — 한 곳만 열려도 ACL 이 무의미하다."""
     access, _service, _token, _space_id, _indexer, _tokens = served
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await access.read("someone-elses")
 
     assert exc_info.value.code == ErrorCode.MEM_001
@@ -209,7 +209,7 @@ async def test_latest_follows_a_correction_chain(served):
 async def test_latest_rejects_an_undeclared_space(served):
     access, _service, _token, _space_id, _indexer, _tokens = served
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await access.latest("someone-elses", "any-id")
 
     assert exc_info.value.code == ErrorCode.MEM_001
@@ -222,7 +222,7 @@ async def test_spaces_maps_transport_failure_to_mem_004():
     """같은 장애가 창구에 따라 다른 타입으로 나오면 재시도 판단이 갈라진다."""
     access = HttpMemoryAccess(base_url="http://127.0.0.1:1", token="opaque", timeout_s=0.2)
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await access.spaces()
 
     assert exc_info.value.code == ErrorCode.MEM_004
@@ -232,7 +232,7 @@ async def test_spaces_maps_transport_failure_to_mem_004():
 async def test_read_maps_transport_failure_to_mem_004():
     access = HttpMemoryAccess(base_url="http://127.0.0.1:1", token="opaque", timeout_s=0.2)
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await access.read("longterm")
 
     assert exc_info.value.code == ErrorCode.MEM_004
@@ -290,7 +290,7 @@ def test_a_local_space_is_still_advertised_writable():
 
 def test_a_read_only_group_space_is_advertised_read_only():
     """group 의 ro 선언도 그대로 보여야 한다."""
-    from malkuth.core.manifest import MemoryMode as Mode
+    from aaestro.core.manifest import MemoryMode as Mode
 
     spaces = advertise("researcher", group="research", group_spaces=[("knowledge", Mode.RO)])
 

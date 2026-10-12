@@ -12,11 +12,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from malkuth.core.agent import TaskResult
-from malkuth.orchestrator.checkpoint import build_checkpointer
-from malkuth.orchestrator.run import RunManager, RunStatus
-from malkuth.orchestrator.runstore import InMemoryRunStore
-from malkuth.orchestrator.submit import RunSubmitter
+from aaestro.core.agent import TaskResult
+from aaestro.orchestrator.checkpoint import build_checkpointer
+from aaestro.orchestrator.run import RunManager, RunStatus
+from aaestro.orchestrator.runstore import InMemoryRunStore
+from aaestro.orchestrator.submit import RunSubmitter
 from tests.fixtures.topologies import make_service
 
 
@@ -94,11 +94,11 @@ async def test_a_submitter_without_a_store_still_runs():
 
 async def test_a_halted_run_is_recorded_as_halted():
     """`resume_service` 는 halted 만 허용한다 — 남기지 않으면 재개할 수 없다."""
-    from malkuth.core.errors import ErrorCategory, ErrorCode, MalkuthError
+    from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 
     class AlwaysFails:
         async def invoke(self, node: Any, task: Any) -> TaskResult:
-            raise MalkuthError(
+            raise AaestroError(
                 category=ErrorCategory.GRAPH,
                 code=ErrorCode.GRAPH_002,
                 message="node failed",

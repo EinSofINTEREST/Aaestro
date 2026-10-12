@@ -13,14 +13,14 @@ import asyncio
 import pytest
 import yaml
 
-from malkuth.agentd import __main__ as agentd
-from malkuth.agentd.mcp import build_mcp_client
-from malkuth.core.errors import MalkuthError
-from malkuth.core.manifest import AgentManifest
-from malkuth.core.skill import SkillContext
-from malkuth.observability.metrics import Metrics
-from malkuth.protocols.mcp.client import McpClient
-from malkuth.protocols.mcp.transport import HttpTransport, StdioTransport, TransportSelector
+from aaestro.agentd import __main__ as agentd
+from aaestro.agentd.mcp import build_mcp_client
+from aaestro.core.errors import AaestroError
+from aaestro.core.manifest import AgentManifest
+from aaestro.core.skill import SkillContext
+from aaestro.observability.metrics import Metrics
+from aaestro.protocols.mcp.client import McpClient
+from aaestro.protocols.mcp.transport import HttpTransport, StdioTransport, TransportSelector
 from tests.fixtures.fake_mcp import FakeHttpClient, FakeStdioClient
 from tests.unit.agentd.test_reload import planner, root  # noqa: F401 — fixture
 
@@ -102,7 +102,7 @@ async def test_a_failed_required_server_leaves_no_session_behind(root, monkeypat
     monkeypatch.setattr(agentd, "build_mcp_client", launchers)
     remote = {"name": "corp", "transport": "streamable-http", "url": "https://mcp.example/mcp"}
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await agentd.build_executor(with_servers(FS, remote))
 
     assert exc_info.value.code == "MCP_001"
@@ -151,7 +151,7 @@ def test_an_agent_without_mcp_servers_does_not_load_the_mcp_sdk():
     import sys
 
     probe = (
-        "import sys, malkuth.agentd.__main__;"
+        "import sys, aaestro.agentd.__main__;"
         "print(any(m == 'mcp' or m.startswith('mcp.') for m in sys.modules))"
     )
     out = subprocess.run(  # noqa: S603
@@ -206,8 +206,8 @@ def test_a_failure_while_assembling_the_app_closes_the_sessions(
 
 async def test_an_optional_server_that_failed_at_startup_shows_as_degraded(root, monkeypatch):  # noqa: F811
     """생성자가 묶음의 일부만 받으면 degraded 가 빠져, 리로드 전까지 healthy 로 답한다."""
-    from malkuth.agentd.health import agent_health
-    from malkuth.core.agent import HealthState
+    from aaestro.agentd.health import agent_health
+    from aaestro.core.agent import HealthState
 
     class Refusing(FakeHttpClient):
         async def connect(self, *, url, headers):

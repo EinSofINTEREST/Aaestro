@@ -10,7 +10,7 @@ import sqlite3
 
 import pytest
 
-from malkuth.memory.store import SqliteMemoryStore
+from aaestro.memory.store import SqliteMemoryStore
 
 # 계약 테스트를 이 모듈로 수집시킨다 — pytest 는 import 된 테스트 함수도 모은다
 from tests.fixtures.store_contract import *  # noqa: F403

@@ -2,7 +2,7 @@
 
 **[한국어](../ko/testing.md)** | English
 
-How Malkuth stays deterministic around non-deterministic models. Normative rules:
+How Aaestro stays deterministic around non-deterministic models. Normative rules:
 [06-testing.md](../../.claude/rules/06-testing.md).
 
 ## Principles
@@ -19,7 +19,7 @@ How Malkuth stays deterministic around non-deterministic models. Normative rules
 
 ```
 tests/
-├── unit/           # no external deps — mirrors src/malkuth structure   (~70%)
+├── unit/           # no external deps — mirrors src/aaestro structure   (~70%)
 ├── integration/    # Docker / real MCP server fixtures                  (~25%)
 ├── e2e/            # full compose stack, fake LLM provider container    (~5%)
 └── fixtures/       # FakeModel, fake MCP server, builders, test yamls
@@ -50,7 +50,7 @@ took. CI installs the browser natively and falls back to the image if that fails
 |---|---|
 | core | manifest / topology / group schema validation, scope resolution |
 | orchestrator | config → StateGraph build, routing, state merge, mission & service mode rules |
-| protocols | error mapping to `MalkuthError`, A2A allowlist, tool namespacing |
+| protocols | error mapping to `AaestroError`, A2A allowlist, tool namespacing |
 | modules | ref parsing, schema snapshots (skillsets), render goldens (promptsets) |
 | memory | space ACL, alias resolution (local > group > global), hybrid search merge, recall budget |
 | agentd | tool loop bounds, cancellation cleanup, direct-task handling |
@@ -63,12 +63,12 @@ drain-mid-iteration resume, and failure-streak halt (`GRAPH_005`) scenarios.
 
 ```bash
 make lint          # ruff check + ruff format --check
-make typecheck     # mypy — strict on src/malkuth/core
+make typecheck     # mypy — strict on src/aaestro/core
 make test          # pytest unit + coverage ≥ 70% (fails below)
 make test-integration
 ```
 
-Coverage: a **single enforced gate** — ≥ 70% across `src/malkuth`, enforced by
+Coverage: a **single enforced gate** — ≥ 70% across `src/aaestro`, enforced by
 `make test` via pytest-cov `--cov-fail-under=70`. The 90%+ (critical paths) and 100%
 (error-conversion paths) figures are review targets, not separate CI gates.
 Check names and merge-gate wiring: [ci/status-checks.md](ci/status-checks.md).

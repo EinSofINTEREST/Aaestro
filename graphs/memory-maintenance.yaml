@@ -1,4 +1,4 @@
-apiVersion: malkuth/v1
+apiVersion: aaestro/v1
 kind: Graph
 metadata:
   name: memory-maintenance
@@ -18,7 +18,7 @@ spec:
     max_failure_streak: 3
 
   state:
-    schema: malkuth.graphs.schemas:MaintenanceState
+    schema: aaestro.graphs.schemas:MaintenanceState
 
   nodes:
     - id: scanner
@@ -36,8 +36,8 @@ spec:
     - {from: START, to: scanner}
     - from: scanner
       to: compactor
-      condition: malkuth.graphs.conditions:needs_compaction
+      condition: aaestro.graphs.conditions:needs_compaction
     - from: scanner
       to: END
-      condition: malkuth.graphs.conditions:maintenance_idle
+      condition: aaestro.graphs.conditions:maintenance_idle
     - {from: compactor, to: END}

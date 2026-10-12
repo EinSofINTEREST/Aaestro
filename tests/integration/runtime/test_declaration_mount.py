@@ -17,17 +17,17 @@ from pathlib import Path
 import pytest
 import yaml
 
-from malkuth.authoring import Author
-from malkuth.catalog import Catalog
-from malkuth.core.manifest import AgentManifest
-from malkuth.runtime.deployments import (
+from aaestro.authoring import Author
+from aaestro.catalog import Catalog
+from aaestro.core.manifest import AgentManifest
+from aaestro.runtime.deployments import (
     MANIFEST_MOUNT_PATH,
     DeploymentManager,
     InMemoryDeploymentStore,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-IMAGE = "malkuth/agent-base:0.1.0"
+IMAGE = "aaestro/agent-base:0.1.0"
 FOREIGN_UID = "4242:4242"
 """control plane 과 다른 uid — 같은 uid 면 0600 으로 교체된 파일도 읽혀 회귀를 못 본다."""
 
@@ -80,7 +80,7 @@ def container(workspace: Path) -> Iterator[str]:
     flags: list[str] = []
     for mount in manager._mounts("claude-code"):  # noqa: SLF001 — 배포의 실제 마운트 계산
         flags += ["--mount", f"type=bind,src={mount['name']},dst={mount['mount_path']},readonly"]
-    name = f"malkuth-mount-{uuid.uuid4().hex[:8]}"
+    name = f"aaestro-mount-{uuid.uuid4().hex[:8]}"
     docker(
         "run",
         "-d",

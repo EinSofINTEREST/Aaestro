@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import pytest
 
-from malkuth.core.errors import MalkuthError
-from malkuth.runtime.spec import (
+from aaestro.core.errors import AaestroError
+from aaestro.runtime.spec import (
     A2A_HOST_ENV,
     A2A_PORT_ENV,
     DEFAULT_CONTROL_PORT,
@@ -89,7 +89,7 @@ def test_the_assigned_a2a_port_reaches_the_container():
 def test_the_advertised_host_matches_the_container_name():
     """peer 는 이 이름으로 접속한다 — 해석되지 않으면 카드가 무의미하다.
 
-    컨테이너 이름은 ``malkuth-{agent}-{replica}`` 라 ``manifest.name`` 을
+    컨테이너 이름은 ``aaestro-{agent}-{replica}`` 라 ``manifest.name`` 을
     광고하면 Docker DNS 가 풀지 못한다.
     """
     spec = build_container_spec(agent_manifest(a2a={"enabled": True}), a2a_port=9137)
@@ -187,25 +187,25 @@ def test_resource_limits_come_from_the_manifest():
 
 
 def test_base_image_is_used_when_manifest_declares_none():
-    spec = build_container_spec(agent_manifest(), base_image="malkuth/agent-base:0.2.0")
+    spec = build_container_spec(agent_manifest(), base_image="aaestro/agent-base:0.2.0")
 
-    assert spec.image == "malkuth/agent-base:0.2.0"
+    assert spec.image == "aaestro/agent-base:0.2.0"
 
 
 def test_manifest_image_wins():
-    spec = build_container_spec(agent_manifest(runtime={"image": "malkuth/custom:1.0.0"}))
+    spec = build_container_spec(agent_manifest(runtime={"image": "aaestro/custom:1.0.0"}))
 
-    assert spec.image == "malkuth/custom:1.0.0"
+    assert spec.image == "aaestro/custom:1.0.0"
 
 
 def test_a_baked_image_wins_over_the_declaration():
     """#266 — 재료가 있는 에이전트는 빌드 단계가 정한 태그로만 돈다."""
     spec = build_container_spec(
-        agent_manifest(runtime={"image": "malkuth/custom:1.0.0"}),
-        image="malkuth/agent-custom:0.1.0",
+        agent_manifest(runtime={"image": "aaestro/custom:1.0.0"}),
+        image="aaestro/agent-custom:0.1.0",
     )
 
-    assert spec.image == "malkuth/agent-custom:0.1.0"
+    assert spec.image == "aaestro/agent-custom:0.1.0"
 
 
 # --- env 주입 ---------------------------------------------------------------
@@ -243,12 +243,12 @@ def test_labels_identify_the_agent_and_group():
         make_manifest(metadata={"name": "researcher", "version": "0.1.0", "group": "research"})
     )
 
-    assert spec.labels["malkuth.agent"] == "researcher"
-    assert spec.labels["malkuth.group"] == "research"
+    assert spec.labels["aaestro.agent"] == "researcher"
+    assert spec.labels["aaestro.group"] == "research"
 
 
 def test_group_label_falls_back_to_global():
-    assert build_container_spec(agent_manifest()).labels["malkuth.group"] == "global"
+    assert build_container_spec(agent_manifest()).labels["aaestro.group"] == "global"
 
 
 # --- 이름 ------------------------------------------------------------------
@@ -256,7 +256,7 @@ def test_group_label_falls_back_to_global():
 
 @pytest.mark.parametrize(
     ("replica", "expected"),
-    [(0, "malkuth-researcher-0"), (2, "malkuth-researcher-2")],
+    [(0, "aaestro-researcher-0"), (2, "aaestro-researcher-2")],
 )
 def test_container_names_are_unique_per_replica(replica, expected):
     assert container_name("researcher", replica) == expected
@@ -266,7 +266,7 @@ def test_spec_name_matches_the_replica():
     spec = build_container_spec(agent_manifest(), replica=1)
 
     assert spec.name.endswith("-1")
-    assert spec.labels["malkuth.replica"] == "1"
+    assert spec.labels["aaestro.replica"] == "1"
 
 
 # --- 격리 강제 --------------------------------------------------------------
@@ -275,14 +275,14 @@ def test_spec_name_matches_the_replica():
 @pytest.mark.parametrize("network", ["host", "bridge", "none", "container"])
 def test_shared_networks_are_rejected(network):
     """호스트/공유 네트워크를 쓰면 컨테이너 격리가 무너진다."""
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         build_container_spec(agent_manifest(), network=network)
 
     assert exc_info.value.code == "RT_001"
 
 
 def test_dedicated_bridge_network_is_accepted():
-    assert build_container_spec(agent_manifest(), network="malkuth-net").network == "malkuth-net"
+    assert build_container_spec(agent_manifest(), network="aaestro-net").network == "aaestro-net"
 
 
 def test_ports_bind_to_loopback_only():

@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from malkuth.agentd.__main__ import (
+from aaestro.agentd.__main__ import (
     CONTROL_PORT,
     ECHO_EXECUTOR,
     EXECUTOR_ENV,
@@ -19,10 +19,10 @@ from malkuth.agentd.__main__ import (
     build_executor,
     load_manifest,
 )
-from malkuth.agentd.echo import EchoExecutor
-from malkuth.core.agent import TaskStatus
-from malkuth.core.errors import MalkuthError
-from malkuth.core.manifest import AgentManifest
+from aaestro.agentd.echo import EchoExecutor
+from aaestro.core.agent import TaskStatus
+from aaestro.core.errors import AaestroError
+from aaestro.core.manifest import AgentManifest
 from tests.fixtures.builders import make_task
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -49,12 +49,12 @@ def test_shipped_echo_manifest_is_valid():
     manifest = load_manifest(ECHO_MANIFEST)
 
     assert manifest.name == "echo"
-    assert manifest.spec.runtime.image == "malkuth/agent-echo:0.1.0"
+    assert manifest.spec.runtime.image == "aaestro/agent-echo:0.1.0"
 
 
 def test_missing_manifest_is_a_config_error(tmp_path: Path):
     """읽을 수 없는 manifest 로는 기동하지 않는다."""
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         load_manifest(tmp_path / "absent.yaml")
 
     assert exc_info.value.code == "CFG_001"
@@ -62,9 +62,9 @@ def test_missing_manifest_is_a_config_error(tmp_path: Path):
 
 def test_invalid_manifest_is_rejected(tmp_path: Path):
     """미검증 manifest 로 컨테이너를 기동하지 않는다 (02 Manifest Rules 1)."""
-    path = write(tmp_path, "apiVersion: malkuth/v1\nkind: Agent\nmetadata: {}\n")
+    path = write(tmp_path, "apiVersion: aaestro/v1\nkind: Agent\nmetadata: {}\n")
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         load_manifest(path)
 
     assert exc_info.value.code == "CFG_001"
@@ -73,7 +73,7 @@ def test_invalid_manifest_is_rejected(tmp_path: Path):
 def test_unparseable_yaml_is_rejected(tmp_path: Path):
     path = write(tmp_path, "apiVersion: [unclosed\n")
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         load_manifest(path)
 
     assert exc_info.value.code == "CFG_001"
@@ -116,7 +116,7 @@ def test_concurrency_limit_comes_from_the_manifest(tmp_path: Path):
     """manifest 가 선언한 상한을 그대로 쓴다 — 하드코딩 금지."""
     path = write(
         tmp_path,
-        "apiVersion: malkuth/v1\nkind: Agent\n"
+        "apiVersion: aaestro/v1\nkind: Agent\n"
         "metadata: {name: sample, version: 0.1.0}\n"
         "spec:\n"
         "  model: {provider: anthropic, name: claude-sonnet-5}\n"
@@ -170,7 +170,7 @@ async def test_base_image_does_not_default_to_echo(monkeypatch):
     이제 표준 경로는 실 provider 를 세운다 — echo 로 조용히 떨어지지 않는다.
     """
     monkeypatch.delenv(EXECUTOR_ENV, raising=False)
-    monkeypatch.setenv("MALKUTH_ROOT", str(REPO_ROOT))
+    monkeypatch.setenv("AAESTRO_ROOT", str(REPO_ROOT))
 
     executor = await build_executor(load_manifest(ECHO_MANIFEST))
 
@@ -189,7 +189,7 @@ async def test_unbound_provider_is_rejected(monkeypatch):
         }
     )
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await build_executor(other)
 
     assert exc_info.value.code == "CFG_001"
@@ -199,7 +199,7 @@ async def test_unbound_provider_is_rejected(monkeypatch):
 async def test_unknown_executor_selection_is_rejected(monkeypatch):
     monkeypatch.setenv(EXECUTOR_ENV, "mystery")
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await build_executor(load_manifest(ECHO_MANIFEST))
 
     assert exc_info.value.code == "CFG_001"
@@ -211,7 +211,7 @@ async def test_unknown_executor_selection_is_rejected(monkeypatch):
 
 def test_runtime_issued_token_authorizes_the_agent():
     """runtime 이 발급해 주입한 토큰으로만 Control API 가 열려야 한다."""
-    from malkuth.runtime.tokens import AGENT_TOKEN_ENV, TokenIssuer, authenticated_env
+    from aaestro.runtime.tokens import AGENT_TOKEN_ENV, TokenIssuer, authenticated_env
 
     issuer = TokenIssuer()
     manifest = load_manifest(ECHO_MANIFEST)
@@ -231,7 +231,7 @@ def test_runtime_issued_token_authorizes_the_agent():
 
 def test_another_agents_token_is_rejected():
     """한 에이전트의 토큰으로 다른 에이전트를 열 수 없다."""
-    from malkuth.runtime.tokens import TokenIssuer
+    from aaestro.runtime.tokens import TokenIssuer
 
     issuer = TokenIssuer()
     manifest = load_manifest(ECHO_MANIFEST)
@@ -254,10 +254,10 @@ async def researcher_with_memory(monkeypatch):
     """memory space 를 선언한 researcher manifest."""
     import yaml
 
-    from malkuth.core.manifest import AgentManifest
+    from aaestro.core.manifest import AgentManifest
 
     monkeypatch.delenv(EXECUTOR_ENV, raising=False)
-    monkeypatch.setenv("MALKUTH_ROOT", str(REPO_ROOT))
+    monkeypatch.setenv("AAESTRO_ROOT", str(REPO_ROOT))
     doc = yaml.safe_load((REPO_ROOT / "agents" / "researcher" / "manifest.yaml").read_text("utf-8"))
     doc["spec"]["memory"] = {
         "spaces": [{"ref": "memorysets/agent-longterm@0.1.0", "as": "longterm"}]
@@ -267,7 +267,7 @@ async def researcher_with_memory(monkeypatch):
 
 async def test_unrunnable_tools_are_not_advertised(monkeypatch):
     """실행할 수 없는 tool 을 보이면 모델이 고를 때마다 거부되어 루프에 빠진다."""
-    from malkuth.memory.tool import MEMORY_SEARCH_TOOL
+    from aaestro.memory.tool import MEMORY_SEARCH_TOOL
 
     executor = await researcher_with_memory(monkeypatch)
 
@@ -291,9 +291,9 @@ def test_mcp_tools_carry_their_schema():
     예전에는 서버 이름 문자열을 담아서, 그대로 넘기면 provider 가
     ``to_tool_schema()`` 를 부르다 터졌다 (#115 에서 해소).
     """
-    from malkuth.agentd.__main__ import _executable_schemas
-    from malkuth.agentd.tools import AgentToolRegistry
-    from malkuth.core.skill import SkillSpec
+    from aaestro.agentd.__main__ import _executable_schemas
+    from aaestro.agentd.tools import AgentToolRegistry
+    from aaestro.core.skill import SkillSpec
 
     mcp_spec = SkillSpec(
         name="mcp__filesystem__read_file",
@@ -319,9 +319,9 @@ def test_mcp_tools_carry_their_schema():
 
 def test_mcp_tools_are_hidden_without_a_session():
     """세션이 없으면 부를 수 없다 — 광고하면 tool 에러 루프에 빠진다."""
-    from malkuth.agentd.__main__ import _executable_schemas
-    from malkuth.agentd.tools import AgentToolRegistry
-    from malkuth.core.skill import SkillSpec
+    from aaestro.agentd.__main__ import _executable_schemas
+    from aaestro.agentd.tools import AgentToolRegistry
+    from aaestro.core.skill import SkillSpec
 
     class Result:
         tools = {

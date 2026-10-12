@@ -8,12 +8,12 @@ import httpx
 import pytest
 import yaml
 
-from malkuth.authoring import Author
-from malkuth.catalog import Catalog
-from malkuth.core.errors import ErrorCode
-from malkuth.core.manifest import ModelOverride
-from malkuth.orchestrator.control import create_app
-from malkuth.orchestrator.runstore import InMemoryRunStore
+from aaestro.authoring import Author
+from aaestro.catalog import Catalog
+from aaestro.core.errors import ErrorCode
+from aaestro.core.manifest import ModelOverride
+from aaestro.orchestrator.control import create_app
+from aaestro.orchestrator.runstore import InMemoryRunStore
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -25,13 +25,13 @@ def write(path: Path, document: dict) -> None:
 
 def graph_doc(name: str, version: str = "1.0.0", agent: str = "alpha") -> dict:
     return {
-        "apiVersion": "malkuth/v1",
+        "apiVersion": "aaestro/v1",
         "kind": "Graph",
         "metadata": {"name": name, "version": version},
         "spec": {
             "mode": "mission",
             "goal": "test",
-            "state": {"schema": "malkuth.graphs.schemas:ResearchState"},
+            "state": {"schema": "aaestro.graphs.schemas:ResearchState"},
             "nodes": [{"id": "step", "agent": f"agents/{agent}@0.1.0"}],
             "edges": [{"from": "START", "to": "step"}, {"from": "step", "to": "END"}],
         },
@@ -40,7 +40,7 @@ def graph_doc(name: str, version: str = "1.0.0", agent: str = "alpha") -> dict:
 
 def agent_doc(name: str, version: str = "0.1.0") -> dict:
     return {
-        "apiVersion": "malkuth/v1",
+        "apiVersion": "aaestro/v1",
         "kind": "Agent",
         "metadata": {"name": name, "version": version},
         "spec": {
@@ -55,7 +55,7 @@ def workspace(tmp_path: Path) -> Path:
     write(
         tmp_path / "modules" / "promptsets" / "solo" / "0.1.0" / "promptset.yaml",
         {
-            "apiVersion": "malkuth/v1",
+            "apiVersion": "aaestro/v1",
             "kind": "Promptset",
             "metadata": {"name": "solo", "version": "0.1.0"},
             "spec": {
@@ -103,7 +103,7 @@ async def test_an_invalid_graph_is_400_with_findings_and_no_file(api, workspace)
 
 
 async def test_a_malformed_body_names_the_field(api):
-    response = await api.put("/v1/graphs/x", json={"apiVersion": "malkuth/v1", "kind": "Graph"})
+    response = await api.put("/v1/graphs/x", json={"apiVersion": "aaestro/v1", "kind": "Graph"})
 
     assert response.status_code == 400
     errors = response.json()["error"]["details"]["errors"]

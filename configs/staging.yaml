@@ -1,8 +1,8 @@
 # 스테이징 — 프로덕션과 같은 백엔드, 낮은 동시성
 runtime:
   backend: docker
-  network: malkuth-net
-  agent_base_image: malkuth/agent-base:0.1.0
+  network: aaestro-net
+  agent_base_image: aaestro/agent-base:0.1.0
   default_resources:
     cpu: "1.0"
     memory: 1Gi

@@ -52,20 +52,20 @@ from tests.e2e.test_stack import docker, requires_docker
 
 pytestmark = [pytest.mark.e2e, requires_docker]
 
-WRITER = "malkuth-writer-0"
-STEWARD = "malkuth-permission-agent-0"
+WRITER = "aaestro-writer-0"
+STEWARD = "aaestro-permission-agent-0"
 
 # ask_peer 가 보내는 모양 그대로 — 요청은 JSON 문자열 하나
 ASK = """
 import asyncio, json, os, sys
 import yaml
-from malkuth.agentd.a2a_server import build_peer_client
-from malkuth.core.agent import TaskConfig, TaskRequest, TraceContext
-from malkuth.core.errors import MalkuthError
-from malkuth.core.manifest import AgentManifest
+from aaestro.agentd.a2a_server import build_peer_client
+from aaestro.core.agent import TaskConfig, TaskRequest, TraceContext
+from aaestro.core.errors import AaestroError
+from aaestro.core.manifest import AgentManifest
 
 async def main():
-    with open(os.environ["MALKUTH_MANIFEST"], encoding="utf-8") as handle:
+    with open(os.environ["AAESTRO_MANIFEST"], encoding="utf-8") as handle:
         manifest = AgentManifest.model_validate(yaml.safe_load(handle))
     task = TaskRequest(task_id="e2e-ask-" + sys.argv[2], run_id="e2e", node_id=None,
                        input={"request": sys.argv[1]}, config=TaskConfig(),
@@ -73,7 +73,7 @@ async def main():
     try:
         result = await build_peer_client(manifest).call("permission-agent", task)
         print("OK:" + json.dumps(result.output))
-    except MalkuthError as err:
+    except AaestroError as err:
         peer = err.details.get("peer_error") or {}
         print("ERR:" + err.code + ":" + str(peer.get("code", "")))
 
@@ -106,7 +106,7 @@ def plane(stack, tmp_path) -> Iterator[dict[str, Any]]:
         "--add-host", "host.docker.internal:host-gateway",
         "--read-only", "--user", "1000:1000", "--cap-drop", "ALL",
         "--security-opt", "no-new-privileges:true",
-        "--entrypoint", "python", "malkuth/memory-service:0.1.0", "-c", FORWARD,
+        "--entrypoint", "python", "aaestro/memory-service:0.1.0", "-c", FORWARD,
     )  # fmt: skip
     config_dir = write_config(
         tmp_path,
@@ -121,8 +121,8 @@ def plane(stack, tmp_path) -> Iterator[dict[str, Any]]:
     tokens_path = tmp_path / "memory.json"
     tokens_path.write_text(json.dumps(memory_tokens()), encoding="utf-8")
     env = {
-        "MALKUTH_MEMORY_URL": f"http://{MEMORY_ALIAS}:8090",
-        "MALKUTH_REPO_ROOT": str(workspace(tmp_path)),
+        "AAESTRO_MEMORY_URL": f"http://{MEMORY_ALIAS}:8090",
+        "AAESTRO_REPO_ROOT": str(workspace(tmp_path)),
     }
     state = {"process": start_plane(config_dir, tokens_path, env=env)}
     start_memory()
@@ -148,7 +148,7 @@ def refusals() -> float:
     url = f"http://127.0.0.1:{METRICS_PORT}/metrics"
     with urllib.request.urlopen(url, timeout=10) as response:  # noqa: S310
         text = response.read().decode()
-    pattern = r'^malkuth_access_grants_total\{[^}]*op="refuse"[^}]*\} ([0-9.e+]+)$'
+    pattern = r'^aaestro_access_grants_total\{[^}]*op="refuse"[^}]*\} ([0-9.e+]+)$'
     return sum(float(value) for value in re.findall(pattern, text, re.MULTILINE))
 
 

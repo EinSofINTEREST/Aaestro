@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import pytest
 
-from malkuth.artifacts.scope import ArtifactScope, ScopedArtifacts
-from malkuth.artifacts.store import FilesystemArtifactStore
-from malkuth.core.errors import ErrorCode, MalkuthError
+from aaestro.artifacts.scope import ArtifactScope, ScopedArtifacts
+from aaestro.artifacts.store import FilesystemArtifactStore
+from aaestro.core.errors import AaestroError, ErrorCode
 
 
 def scoped(tmp_path, *, group=True, global_=True, quotas=None) -> ScopedArtifacts:
@@ -37,7 +37,7 @@ async def test_a_write_lands_in_the_local_scope(tmp_path):
 async def test_a_write_without_a_local_scope_is_denied(tmp_path):
     access = ScopedArtifacts(stores={})
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await access.put("out.txt", b"x")
 
     assert exc_info.value.code == ErrorCode.ART_001
@@ -63,7 +63,7 @@ async def test_an_undeclared_scope_is_denied(tmp_path):
     access = scoped(tmp_path, group=False)
     await FilesystemArtifactStore(root=tmp_path, scope="research").put("secret", b"theirs")
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await access.get("artifact://research/secret")
 
     assert exc_info.value.code == ErrorCode.ART_001
@@ -72,7 +72,7 @@ async def test_an_undeclared_scope_is_denied(tmp_path):
 async def test_a_completely_unknown_scope_is_denied(tmp_path):
     access = scoped(tmp_path)
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await access.get("artifact://someone-else/thing")
 
     assert exc_info.value.code == ErrorCode.ART_001
@@ -83,7 +83,7 @@ async def test_a_completely_unknown_scope_is_denied(tmp_path):
 
 def test_the_resolution_order_is_nearest_first():
     """01 Resource Scoping — 가까운 스코프가 이긴다."""
-    from malkuth.artifacts.scope import RESOLUTION_ORDER
+    from aaestro.artifacts.scope import RESOLUTION_ORDER
 
     assert RESOLUTION_ORDER == (
         ArtifactScope.LOCAL,
@@ -117,7 +117,7 @@ async def test_a_write_over_quota_is_refused(tmp_path):
     """상한을 넘겨 쓰고 나서 지우면 이미 디스크를 먹은 뒤다 — 쓰기 전에 막는다."""
     access = scoped(tmp_path, quotas={ArtifactScope.LOCAL: 100})
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await access.put("big", b"x" * 200)
 
     assert exc_info.value.code == ErrorCode.ART_002
@@ -128,7 +128,7 @@ async def test_quota_counts_what_is_already_stored(tmp_path):
     access = scoped(tmp_path, quotas={ArtifactScope.LOCAL: 150})
     await access.put("first", b"x" * 100)
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await access.put("second", b"x" * 100)
 
     assert exc_info.value.code == ErrorCode.ART_002
@@ -148,7 +148,7 @@ async def test_no_quota_means_no_limit(tmp_path):
 
 def test_a_group_quota_is_parsed_from_its_declaration():
     """`dict[str, Any]` 로 두면 오타가 조용히 통과하고 quota 가 강제되지 않는다."""
-    from malkuth.core.manifest import ArtifactSpec
+    from aaestro.core.manifest import ArtifactSpec
 
     assert ArtifactSpec(quota="50Gi").quota_bytes == 50 * 1024**3
 
@@ -157,13 +157,13 @@ def test_a_group_quota_is_parsed_from_its_declaration():
 def test_a_malformed_quota_is_rejected(bad):
     from pydantic import ValidationError
 
-    from malkuth.core.manifest import ArtifactSpec
+    from aaestro.core.manifest import ArtifactSpec
 
     with pytest.raises(ValidationError):
         ArtifactSpec(quota=bad)
 
 
 def test_no_quota_declared_means_unlimited():
-    from malkuth.core.manifest import ArtifactSpec
+    from aaestro.core.manifest import ArtifactSpec
 
     assert ArtifactSpec().quota_bytes is None

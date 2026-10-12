@@ -13,20 +13,20 @@ from pathlib import Path
 import httpx
 import pytest
 
-from malkuth.access.baselines import MemoryBaseline
-from malkuth.access.client import AccessClient
-from malkuth.access.model import Mode, ResourceKind
-from malkuth.access.registry import AccessRegistry
-from malkuth.access.store import InMemoryAccessStore
-from malkuth.catalog import Catalog
-from malkuth.config import load_config
-from malkuth.core.errors import ErrorCode, MalkuthError
-from malkuth.memory.bootstrap import build_deployment
-from malkuth.memory.entry import MemoryEntry, MemorySource
-from malkuth.modules.memoryset import MemoryKind
-from malkuth.orchestrator.control import create_app as control_app
-from malkuth.orchestrator.runstore import InMemoryRunStore
-from malkuth.runtime.memory_http import HttpMemoryAccess
+from aaestro.access.baselines import MemoryBaseline
+from aaestro.access.client import AccessClient
+from aaestro.access.model import Mode, ResourceKind
+from aaestro.access.registry import AccessRegistry
+from aaestro.access.store import InMemoryAccessStore
+from aaestro.catalog import Catalog
+from aaestro.config import load_config
+from aaestro.core.errors import AaestroError, ErrorCode
+from aaestro.memory.bootstrap import build_deployment
+from aaestro.memory.entry import MemoryEntry, MemorySource
+from aaestro.modules.memoryset import MemoryKind
+from aaestro.orchestrator.control import create_app as control_app
+from aaestro.orchestrator.runstore import InMemoryRunStore
+from aaestro.runtime.memory_http import HttpMemoryAccess
 from tests.fixtures.waiting import until
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -97,8 +97,8 @@ def fact(space: str, content: str = "sidecar 이미지는 태그를 고정한다
     )
 
 
-async def refused(call) -> MalkuthError:
-    with pytest.raises(MalkuthError) as exc_info:
+async def refused(call) -> AaestroError:
+    with pytest.raises(AaestroError) as exc_info:
         await call
     return exc_info.value
 
@@ -206,7 +206,7 @@ async def test_a_granted_undeclared_space_is_reachable_by_its_space_id(stack):
     """권한 에이전트가 선언 밖 space 를 부여하면 에이전트에게는 별칭이 없다 — space id 로 부른다."""
     import time
 
-    from malkuth.access.model import Effect, Rule
+    from aaestro.access.model import Effect, Rule
 
     elsewhere = "group:ops:runbook"
     researcher = stack.agent(stack.registry.issue_identity("researcher", "dep-1"))

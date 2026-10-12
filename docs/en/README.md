@@ -1,8 +1,8 @@
-# Malkuth Documentation
+# Aaestro Documentation
 
 **[한국어](../ko/README.md)** | English
 
-User and operator documentation for **Malkuth**, a modular multi-agent orchestration
+User and operator documentation for **Aaestro**, a modular multi-agent orchestration
 framework built on LangGraph.
 
 > The authoritative development ruleset lives in

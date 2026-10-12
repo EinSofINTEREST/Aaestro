@@ -19,8 +19,8 @@ from tests.e2e.test_stack import docker, requires_docker
 
 pytestmark = [pytest.mark.e2e, requires_docker]
 
-MEMORY = "malkuth-e2e-memory-restart"
-VOLUME = "malkuth-e2e-memory-restart-data"
+MEMORY = "aaestro-e2e-memory-restart"
+VOLUME = "aaestro-e2e-memory-restart-data"
 PORT = 18091
 FACT = "sidecar 이미지는 태그를 고정해야 재기동 뒤에도 도구 목록이 같다"
 
@@ -37,11 +37,11 @@ def memory(stack) -> Iterator[None]:
         # /tokens 는 이미지가 uid 1000 소유로 만든다 — named volume 이 그 소유권을 물려받아
         # 재시작을 넘는 쓰기 자리가 된다. 저장소 파일도 여기 둔다
         "-v", f"{VOLUME}:/tokens",
-        "-e", "MALKUTH_EMBEDDING_BASE_URL=http://fake-provider:8000",
-        "-e", "MALKUTH_MEMORY__PATH=/tokens/memory.db",
-        "-e", "MALKUTH_MEMORY_TOKENS_PATH=/tokens/memory.json",
+        "-e", "AAESTRO_EMBEDDING_BASE_URL=http://fake-provider:8000",
+        "-e", "AAESTRO_MEMORY__PATH=/tokens/memory.db",
+        "-e", "AAESTRO_MEMORY_TOKENS_PATH=/tokens/memory.json",
         "-p", f"127.0.0.1:{PORT}:8090",
-        "malkuth/memory-service:0.1.0",
+        "aaestro/memory-service:0.1.0",
     )  # fmt: skip
     try:
         until(ready, what="file-backed memory service health")

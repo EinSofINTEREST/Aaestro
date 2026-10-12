@@ -1,4 +1,4 @@
-apiVersion: malkuth/v1
+apiVersion: aaestro/v1
 kind: Graph
 metadata:
   name: research-pipeline
@@ -10,7 +10,7 @@ spec:
   goal: 질의를 받아 계획 → 리서치 → 보고서 작성을 완료한다
 
   state:
-    schema: malkuth.graphs.schemas:ResearchState
+    schema: aaestro.graphs.schemas:ResearchState
     checkpointer: default
 
   memory:
@@ -38,10 +38,10 @@ spec:
     - {from: START, to: planner}
     - from: planner
       to: researcher
-      condition: malkuth.graphs.conditions:needs_research
+      condition: aaestro.graphs.conditions:needs_research
     - from: planner
       to: END
-      condition: malkuth.graphs.conditions:plan_only
+      condition: aaestro.graphs.conditions:plan_only
     - {from: researcher, to: writer}
     - {from: writer, to: END}
 

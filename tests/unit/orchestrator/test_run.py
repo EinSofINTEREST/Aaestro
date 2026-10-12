@@ -10,15 +10,15 @@ import asyncio
 
 import pytest
 
-from malkuth.core.agent import TaskRequest, TaskResult
-from malkuth.core.errors import ErrorCategory, ErrorCode, MalkuthError
-from malkuth.orchestrator.builder import build_graph
-from malkuth.orchestrator.run import (
+from aaestro.core.agent import TaskRequest, TaskResult
+from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.orchestrator.builder import build_graph
+from aaestro.orchestrator.run import (
     RunManager,
     RunStatus,
     ServiceRunner,
 )
-from malkuth.orchestrator.topology import GraphMode, NodeSpec
+from aaestro.orchestrator.topology import GraphMode, NodeSpec
 from tests.fixtures.topologies import make_mission, make_service
 
 
@@ -53,9 +53,9 @@ class FakeGraph:
         return {**state, **result}
 
 
-def graph_error() -> MalkuthError:
+def graph_error() -> AaestroError:
     """노드 실패를 흉내내는 그래프 에러."""
-    return MalkuthError(
+    return AaestroError(
         category=ErrorCategory.GRAPH, code=ErrorCode.GRAPH_002, message="node execution failed"
     )
 
@@ -87,7 +87,7 @@ def test_mission_slots_are_bounded():
     manager.acquire(topology)
     manager.acquire(topology)
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         manager.acquire(topology)
 
     assert exc_info.value.code == "GRAPH_001"
@@ -100,7 +100,7 @@ def test_service_slots_are_bounded_separately():
     manager = RunManager(max_concurrent_runs=5, max_service_runs=1)
     manager.acquire(make_service())
 
-    with pytest.raises(MalkuthError):
+    with pytest.raises(AaestroError):
         manager.acquire(make_service())
 
     # mission 슬롯은 여전히 비어 있다
@@ -130,7 +130,7 @@ def test_active_counts_only_live_runs():
 
 def test_unknown_run_lookup_is_rejected():
     """미존재 조회는 검증 코드가 아니라 not-found 전용 코드로 보고한다."""
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         RunManager().get("run-missing")
 
     assert exc_info.value.category is ErrorCategory.NOT_FOUND
@@ -145,7 +145,7 @@ def test_release_of_unknown_run_is_a_noop():
 
 
 def test_service_runner_rejects_mission_graph():
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         ServiceRunner(make_mission(), FakeGraph())
 
     assert exc_info.value.code == "GRAPH_001"
@@ -396,7 +396,7 @@ def test_duplicate_run_id_is_rejected():
     manager = RunManager()
     manager.acquire(make_mission(), run_id="run-dup")
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         manager.acquire(make_mission(), run_id="run-dup")
 
     assert exc_info.value.code == "VAL_002"
@@ -409,7 +409,7 @@ def test_released_run_id_stays_reserved():
     handle = manager.acquire(make_mission(), run_id="run-once")
     manager.release(handle.run_id, RunStatus.COMPLETED)
 
-    with pytest.raises(MalkuthError):
+    with pytest.raises(AaestroError):
         manager.acquire(make_mission(), run_id="run-once")
 
 
@@ -452,7 +452,7 @@ async def test_unexpected_exception_preserves_original_cause():
 
     assert handle.error is not None
     inner = handle.error.__cause__
-    assert isinstance(inner, MalkuthError)
+    assert isinstance(inner, AaestroError)
     assert inner.code == "INTERNAL_001"
     assert isinstance(inner.__cause__, RuntimeError)
 

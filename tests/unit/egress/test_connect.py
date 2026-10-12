@@ -9,8 +9,8 @@ import json
 
 import pytest
 
-from malkuth.access.client import DecisionSource, Verdict
-from malkuth.egress.connect import ConnectProxy, EgressMode, is_public
+from aaestro.access.client import DecisionSource, Verdict
+from aaestro.egress.connect import ConnectProxy, EgressMode, is_public
 
 PUBLIC = "93.184.216.34"
 

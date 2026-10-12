@@ -7,10 +7,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from malkuth.orchestrator.topology import GraphTopology
+from aaestro.orchestrator.topology import GraphTopology
 
-_STATE_REF = "malkuth.graphs.schemas:ResearchState"
-_CONDITION_REF = "malkuth.graphs.conditions:needs_research"
+_STATE_REF = "aaestro.graphs.schemas:ResearchState"
+_CONDITION_REF = "aaestro.graphs.conditions:needs_research"
 
 
 def mission_dict(**spec_overrides: Any) -> dict[str, Any]:
@@ -38,7 +38,7 @@ def mission_dict(**spec_overrides: Any) -> dict[str, Any]:
     }
     spec.update(spec_overrides)
     return {
-        "apiVersion": "malkuth/v1",
+        "apiVersion": "aaestro/v1",
         "kind": "Graph",
         "metadata": {"name": "research-pipeline", "version": "1.0.0"},
         "spec": spec,
@@ -54,7 +54,7 @@ def service_dict(**spec_overrides: Any) -> dict[str, Any]:
     spec: dict[str, Any] = {
         "mode": "service",
         "goal": "피드를 상시 감시하고 신규 항목을 알린다",
-        "state": {"schema": "malkuth.graphs.schemas:FeedMonitorState"},
+        "state": {"schema": "aaestro.graphs.schemas:FeedMonitorState"},
         "service": {
             "idle": {"min_delay_s": 30, "max_delay_s": 600},
             "max_failure_streak": 5,
@@ -68,15 +68,15 @@ def service_dict(**spec_overrides: Any) -> dict[str, Any]:
             {
                 "from": "watcher",
                 "to": "notifier",
-                "condition": "malkuth.graphs.conditions:has_new_items",
+                "condition": "aaestro.graphs.conditions:has_new_items",
             },
-            {"from": "watcher", "to": "END", "condition": "malkuth.graphs.conditions:idle"},
+            {"from": "watcher", "to": "END", "condition": "aaestro.graphs.conditions:idle"},
             {"from": "notifier", "to": "END"},
         ],
     }
     spec.update(spec_overrides)
     return {
-        "apiVersion": "malkuth/v1",
+        "apiVersion": "aaestro/v1",
         "kind": "Graph",
         "metadata": {"name": "feed-monitor", "version": "1.0.0"},
         "spec": spec,

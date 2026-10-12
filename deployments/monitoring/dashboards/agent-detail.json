@@ -1,35 +1,35 @@
 {
-  "title": "Malkuth — Agent Detail",
-  "uid": "malkuth-agent-detail",
+  "title": "Aaestro — Agent Detail",
+  "uid": "aaestro-agent-detail",
   "description": "Per-agent task latency, tool breakdown, model usage, restarts",
-  "templating": [{"name": "agent", "query": "label_values(malkuth_agent_health, agent)"}],
+  "templating": [{"name": "agent", "query": "label_values(aaestro_agent_health, agent)"}],
   "panels": [
     {"title": "Task latency p50/p95", "type": "timeseries",
      "targets": [
-       {"expr": "histogram_quantile(0.5, sum by (le) (rate(malkuth_agent_task_duration_seconds_bucket{agent=\"$agent\"}[5m])))"},
-       {"expr": "histogram_quantile(0.95, sum by (le) (rate(malkuth_agent_task_duration_seconds_bucket{agent=\"$agent\"}[5m])))"}
+       {"expr": "histogram_quantile(0.5, sum by (le) (rate(aaestro_agent_task_duration_seconds_bucket{agent=\"$agent\"}[5m])))"},
+       {"expr": "histogram_quantile(0.95, sum by (le) (rate(aaestro_agent_task_duration_seconds_bucket{agent=\"$agent\"}[5m])))"}
      ]},
     {"title": "Tool calls by source", "type": "timeseries",
-     "targets": [{"expr": "sum by (source, status) (rate(malkuth_tool_calls_total{agent=\"$agent\"}[5m]))"}]},
+     "targets": [{"expr": "sum by (source, status) (rate(aaestro_tool_calls_total{agent=\"$agent\"}[5m]))"}]},
     {"title": "Model requests", "type": "timeseries",
-     "targets": [{"expr": "sum by (model, status) (rate(malkuth_model_requests_total{agent=\"$agent\"}[5m]))"}]},
+     "targets": [{"expr": "sum by (model, status) (rate(aaestro_model_requests_total{agent=\"$agent\"}[5m]))"}]},
     {"title": "Tokens", "type": "timeseries",
-     "targets": [{"expr": "sum by (direction) (rate(malkuth_model_tokens_total{agent=\"$agent\"}[5m]))"}]},
+     "targets": [{"expr": "sum by (direction) (rate(aaestro_model_tokens_total{agent=\"$agent\"}[5m]))"}]},
     {"title": "Restarts by reason", "type": "timeseries",
-     "targets": [{"expr": "sum by (reason) (increase(malkuth_container_restarts_total{agent=\"$agent\"}[1h]))"}]},
+     "targets": [{"expr": "sum by (reason) (increase(aaestro_container_restarts_total{agent=\"$agent\"}[1h]))"}]},
     {"title": "Health", "type": "stat",
-     "targets": [{"expr": "malkuth_agent_health{agent=\"$agent\"}"}]},
+     "targets": [{"expr": "aaestro_agent_health{agent=\"$agent\"}"}]},
     {"title": "Recall tokens injected", "type": "timeseries",
-     "targets": [{"expr": "malkuth_memory_recall_injected_tokens{agent=\"$agent\"}"}]},
+     "targets": [{"expr": "aaestro_memory_recall_injected_tokens{agent=\"$agent\"}"}]},
     {"title": "Recall filter outcomes", "type": "timeseries",
-     "targets": [{"expr": "sum by (band) (rate(malkuth_memory_recall_filtered_total{agent=\"$agent\"}[5m]))"}]},
+     "targets": [{"expr": "sum by (band) (rate(aaestro_memory_recall_filtered_total{agent=\"$agent\"}[5m]))"}]},
     {"title": "Decision calls by use", "type": "timeseries",
-     "targets": [{"expr": "sum by (use, status) (rate(malkuth_decision_calls_total{agent=\"$agent\"}[5m]))"}]},
+     "targets": [{"expr": "sum by (use, status) (rate(aaestro_decision_calls_total{agent=\"$agent\"}[5m]))"}]},
     {"title": "Decision latency p95", "type": "timeseries",
-     "targets": [{"expr": "histogram_quantile(0.95, sum by (le, provider) (rate(malkuth_decision_duration_seconds_bucket{agent=\"$agent\"}[5m])))"}]},
+     "targets": [{"expr": "histogram_quantile(0.95, sum by (le, provider) (rate(aaestro_decision_duration_seconds_bucket{agent=\"$agent\"}[5m])))"}]},
     {"title": "Decision uncertain share", "type": "timeseries",
-     "targets": [{"expr": "sum without (band) (rate(malkuth_decision_bands_total{agent=\"$agent\",band=\"uncertain\"}[30m])) / sum without (band) (rate(malkuth_decision_bands_total{agent=\"$agent\"}[30m]))"}]},
+     "targets": [{"expr": "sum without (band) (rate(aaestro_decision_bands_total{agent=\"$agent\",band=\"uncertain\"}[30m])) / sum without (band) (rate(aaestro_decision_bands_total{agent=\"$agent\"}[30m]))"}]},
     {"title": "Decision fallbacks", "type": "timeseries",
-     "targets": [{"expr": "sum by (reason) (rate(malkuth_decision_unavailable_total{agent=\"$agent\"}[5m]))"}]}
+     "targets": [{"expr": "sum by (reason) (rate(aaestro_decision_unavailable_total{agent=\"$agent\"}[5m]))"}]}
   ]
 }

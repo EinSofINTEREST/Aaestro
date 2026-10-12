@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from malkuth.core.manifest import AccessCeiling
+from aaestro.core.manifest import AccessCeiling
 
 
 def ceiling(**fields) -> AccessCeiling:

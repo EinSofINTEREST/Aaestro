@@ -1,10 +1,10 @@
-# Malkuth
+# Aaestro
 
 **[한국어](docs/ko/README.md)** | English
 
 A modular multi-agent orchestration framework built on LangGraph.
 
-Malkuth composes each goal as a graph of **equal, Docker-isolated agents**. Agents carry
+Aaestro composes each goal as a graph of **equal, Docker-isolated agents**. Agents carry
 their own A2A endpoints and MCP servers, connect and disconnect through config-driven
 wiring, and share nothing except the graph state and declared, scoped memory.
 
@@ -51,7 +51,7 @@ uv sync --frozen        # or: make install
 
 ```bash
 make lint               # ruff check + ruff format --check
-make typecheck          # mypy (strict on malkuth.core)
+make typecheck          # mypy (strict on aaestro.core)
 make test               # unit tests + coverage gate (>= 70%)
 make check              # lint + typecheck + test — run this before pushing
 ```
@@ -66,21 +66,21 @@ make test-e2e           # marked `e2e` — full compose stack (nightly in CI)
 Checkpointer integration tests skip unless their backends are addressable:
 
 ```bash
-export MALKUTH_TEST_POSTGRES_URL=postgresql://malkuth:malkuth@127.0.0.1:15432/malkuth
-export MALKUTH_TEST_REDIS_URL=redis://127.0.0.1:16379    # needs RediSearch (redis-stack)
+export AAESTRO_TEST_POSTGRES_URL=postgresql://aaestro:aaestro@127.0.0.1:15432/aaestro
+export AAESTRO_TEST_REDIS_URL=redis://127.0.0.1:16379    # needs RediSearch (redis-stack)
 ```
 
 ### Images and stacks
 
 ```bash
-make build              # malkuth/agent-base + agent-echo images
+make build              # aaestro/agent-base + agent-echo images
 make up                 # dev stack — one echo agent, control port on 18080
 make down
 make e2e-up             # E2E stack — fake provider, memory service, 4 reference agents
 make e2e-down
 ```
 
-Both `up` targets rebuild `malkuth/agent-base` and the services on top of it first, so a
+Both `up` targets rebuild `aaestro/agent-base` and the services on top of it first, so a
 change under `src/` reaches the containers. The framework code lives only in the base
 image — bringing a stack up without rebuilding it would validate stale code.
 
@@ -94,26 +94,26 @@ material store, and a deploy refuses an agent whose image for that version is no
 repository ships the `claude-code` agent's materials as a seed:
 
 ```bash
-uv run malkuth agent-push claude-code examples/materials/claude-code
-uv run malkuth agent-build claude-code --wait   # exits non-zero with the log tail if it fails
+uv run aaestro agent-push claude-code examples/materials/claude-code
+uv run aaestro agent-build claude-code --wait   # exits non-zero with the log tail if it fails
 ```
 
 ### CLI
 
 ```bash
-uv run malkuth <command>          # or `malkuth` inside an activated venv
+uv run aaestro <command>          # or `aaestro` inside an activated venv
 ```
 
 | Command | What it does |
 |---|---|
-| `malkuth validate` | validate every graph, agent manifest, and module ref in the repo |
-| `malkuth deploy <graph.yaml>` | validate one graph as a deploy gate (`--a2a-port-range`) |
-| `malkuth status` | summarize declared agents, graphs, groups, and modules |
-| `malkuth config [env]` | print the resolved configuration (`dev` / `staging` / `prod`) |
-| `malkuth check <state.yaml>` | report integrity discrepancies against observed state |
-| `malkuth run <graph.yaml>` | submit a mission or service run against agents you address yourself |
-| `malkuth run --deployment <id>` | submit a run to a deployment — the control plane resolves the addresses |
-| `malkuth run-list` / `run-drain <id>` / `run-resume <id>` | operate runs through a control plane |
+| `aaestro validate` | validate every graph, agent manifest, and module ref in the repo |
+| `aaestro deploy <graph.yaml>` | validate one graph as a deploy gate (`--a2a-port-range`) |
+| `aaestro status` | summarize declared agents, graphs, groups, and modules |
+| `aaestro config [env]` | print the resolved configuration (`dev` / `staging` / `prod`) |
+| `aaestro check <state.yaml>` | report integrity discrepancies against observed state |
+| `aaestro run <graph.yaml>` | submit a mission or service run against agents you address yourself |
+| `aaestro run --deployment <id>` | submit a run to a deployment — the control plane resolves the addresses |
+| `aaestro run-list` / `run-drain <id>` / `run-resume <id>` | operate runs through a control plane |
 
 `--json` (before the subcommand) switches to machine-readable output; `--root` points at a
 repository other than the working directory.
@@ -122,17 +122,17 @@ Running a graph needs the address of each agent's Control API — the orchestrat
 guesses where an agent lives. Against the E2E stack:
 
 ```bash
-export MALKUTH_AGENT_TOKEN=e2e-token
+export AAESTRO_AGENT_TOKEN=e2e-token
 
 # mission run — terminates at END and prints the final state
-uv run malkuth run graphs/research-pipeline.yaml \
-  --input '{"query": "malkuth architecture"}' \
+uv run aaestro run graphs/research-pipeline.yaml \
+  --input '{"query": "aaestro architecture"}' \
   --agent planner=http://127.0.0.1:18082 \
   --agent researcher=http://127.0.0.1:18083 \
   --agent writer=http://127.0.0.1:18084
 
 # service run — perpetual loop, bounded here so it terminates
-uv run malkuth run graphs/feed-monitor.yaml --service --iterations 2 \
+uv run aaestro run graphs/feed-monitor.yaml --service --iterations 2 \
   --agent researcher=http://127.0.0.1:18083 \
   --agent planner=http://127.0.0.1:18082 \
   --agent writer=http://127.0.0.1:18084
@@ -146,9 +146,9 @@ one run. `postgres` and `redis` additionally need a connection URL, which is bes
 out of band so credentials never land in a file:
 
 ```bash
-MALKUTH_ENV=prod \
-MALKUTH_ORCHESTRATOR__CHECKPOINTER_URL=postgresql://user:pass@host:5432/malkuth \
-  uv run malkuth run graphs/research-pipeline.yaml --agent ...
+AAESTRO_ENV=prod \
+AAESTRO_ORCHESTRATOR__CHECKPOINTER_URL=postgresql://user:pass@host:5432/aaestro \
+  uv run aaestro run graphs/research-pipeline.yaml --agent ...
 ```
 
 With a durable backend, re-running the same `--run-id` resumes that run from its last
@@ -164,8 +164,8 @@ process driving the run stops at its next iteration boundary.
 control plane already knows where the deployed agents are.
 
 ```bash
-uv run malkuth run --deployment dep-2fc94a0b5f24 \
-  --input '{"query": "malkuth architecture"}' \
+uv run aaestro run --deployment dep-2fc94a0b5f24 \
+  --input '{"query": "aaestro architecture"}' \
   --control-url http://127.0.0.1:8700
 ```
 
@@ -178,17 +178,17 @@ never happened. See the [Control Plane API](docs/en/api.md) for the full surface
 ### Long-running processes
 
 ```bash
-python -m malkuth.agentd        # in-container agent daemon — Control API on 8080
-python -m malkuth.memory        # Memory Service — HTTP surface plus the async indexing loop
-python -m malkuth.orchestrator  # Control Plane — REST API + Web UI on /ui
+python -m aaestro.agentd        # in-container agent daemon — Control API on 8080
+python -m aaestro.memory        # Memory Service — HTTP surface plus the async indexing loop
+python -m aaestro.orchestrator  # Control Plane — REST API + Web UI on /ui
 ```
 
 `agentd` is what the runtime layer starts inside every agent container; it reads
-`MALKUTH_MANIFEST`, `MALKUTH_AGENT_TOKEN`, `MALKUTH_ROOT`, and — when memory is wired —
-`MALKUTH_MEMORY_URL` with `MALKUTH_MEMORY_TOKEN` or `MALKUTH_MEMORY_TOKEN_FILE`.
+`AAESTRO_MANIFEST`, `AAESTRO_AGENT_TOKEN`, `AAESTRO_ROOT`, and — when memory is wired —
+`AAESTRO_MEMORY_URL` with `AAESTRO_MEMORY_TOKEN` or `AAESTRO_MEMORY_TOKEN_FILE`.
 
-The Memory Service reads `MALKUTH_REPO_ROOT`, `MALKUTH_MEMORY_PORT`, and
-`MALKUTH_MEMORY_TOKENS_PATH`. It must run as its own process: appends commit immediately
+The Memory Service reads `AAESTRO_REPO_ROOT`, `AAESTRO_MEMORY_PORT`, and
+`AAESTRO_MEMORY_TOKENS_PATH`. It must run as its own process: appends commit immediately
 but indexing is asynchronous, so without the loop nothing becomes searchable.
 
 The Control Plane reads `orchestrator.run_store`, `control_host`, and `control_port` from
@@ -212,25 +212,25 @@ Open `http://127.0.0.1:8700/` for the Web UI — catalog, graph and agent editor
 and runs. It is served from the same process and calls only the documented REST API
 ([API reference](docs/en/api.md), [UI guide](docs/en/ui.md)).
 
-All three honour `MALKUTH_ENV`, `MALKUTH_CONFIG_DIR`, `MALKUTH_LOG_LEVEL`,
-`MALKUTH_LOG_FORMAT`, and `MALKUTH_METRICS_PORT`.
+All three honour `AAESTRO_ENV`, `AAESTRO_CONFIG_DIR`, `AAESTRO_LOG_LEVEL`,
+`AAESTRO_LOG_FORMAT`, and `AAESTRO_METRICS_PORT`.
 
 ### Configuration
 
 Configuration lives in `configs/{env}.yaml` (`dev`, `staging`, `prod`). The CLI selects it
-positionally; the long-running processes read `MALKUTH_ENV`:
+positionally; the long-running processes read `AAESTRO_ENV`:
 
 ```bash
-uv run malkuth config prod            # print the resolved prod configuration
+uv run aaestro config prod            # print the resolved prod configuration
 ```
 
 Overrides use a **double underscore** to separate section from key:
 
 ```bash
-MALKUTH_ORCHESTRATOR__NODE_TIMEOUT_S=600 uv run malkuth config
+AAESTRO_ORCHESTRATOR__NODE_TIMEOUT_S=600 uv run aaestro config
 ```
 
-Single-underscore `MALKUTH_*` variables are process settings (`MALKUTH_AGENT_TOKEN` and
+Single-underscore `AAESTRO_*` variables are process settings (`AAESTRO_AGENT_TOKEN` and
 the like), never configuration — the loader ignores them on purpose, so that injecting
 agent env into a container cannot corrupt that container's configuration.
 

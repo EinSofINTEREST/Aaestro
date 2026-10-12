@@ -13,7 +13,7 @@ import pytest
 from a2a.utils.constants import AGENT_CARD_WELL_KNOWN_PATH
 from fastapi.testclient import TestClient
 
-from malkuth.agentd.__main__ import build_app, build_executor, load_manifest
+from aaestro.agentd.__main__ import build_app, build_executor, load_manifest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 RESEARCHER = REPO_ROOT / "agents" / "researcher" / "manifest.yaml"
@@ -22,8 +22,8 @@ RESEARCHER = REPO_ROOT / "agents" / "researcher" / "manifest.yaml"
 @pytest.fixture
 async def served(monkeypatch):
     """표준 executor 로 세운 앱과 그 tool 목록."""
-    monkeypatch.delenv("MALKUTH_EXECUTOR", raising=False)
-    monkeypatch.setenv("MALKUTH_ROOT", str(REPO_ROOT))
+    monkeypatch.delenv("AAESTRO_EXECUTOR", raising=False)
+    monkeypatch.setenv("AAESTRO_ROOT", str(REPO_ROOT))
     manifest = load_manifest(RESEARCHER)
     executor = await build_executor(manifest)
     app = build_app(manifest, executor, tools=executor.tool_schemas)

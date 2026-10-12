@@ -9,8 +9,8 @@ import asyncio
 
 import pytest
 
-from malkuth.agentd import executor as executor_module
-from malkuth.agentd.executor import (
+from aaestro.agentd import executor as executor_module
+from aaestro.agentd.executor import (
     AssistantTurn,
     Executor,
     ExecutorConfig,
@@ -21,11 +21,11 @@ from malkuth.agentd.executor import (
     UserTurn,
     tool_outcome,
 )
-from malkuth.agentd.models import ModelChain, ModelLink
-from malkuth.core.agent import TaskConfig, TaskStatus
-from malkuth.core.errors import ErrorCategory, MalkuthError
-from malkuth.core.events import DoneEvent, ErrorEvent, ToolCallEvent, ToolResultEvent
-from malkuth.protocols.mcp.session import ToolResult as McpToolResult
+from aaestro.agentd.models import ModelChain, ModelLink
+from aaestro.core.agent import TaskConfig, TaskStatus
+from aaestro.core.errors import AaestroError, ErrorCategory
+from aaestro.core.events import DoneEvent, ErrorEvent, ToolCallEvent, ToolResultEvent
+from aaestro.protocols.mcp.session import ToolResult as McpToolResult
 from tests.fixtures.builders import make_task
 from tests.fixtures.fake_model import FakeModel, FakeTools, calls, text
 
@@ -152,7 +152,7 @@ async def test_mcp_tool_failure_becomes_mcp_003():
 
 async def test_structured_tool_errors_pass_through_unchanged():
     """이미 구조화된 에러는 재변환하지 않는다."""
-    original = MalkuthError(category=ErrorCategory.MCP, code="MCP_002", message="tool not found")
+    original = AaestroError(category=ErrorCategory.MCP, code="MCP_002", message="tool not found")
     tools = FakeTools().fail("mcp__fs__missing", original)
     executor, _, _ = make_executor([calls("mcp__fs__missing"), text("done")], tools)
 

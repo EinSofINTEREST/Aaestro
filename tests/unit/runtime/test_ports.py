@@ -11,12 +11,12 @@ from pathlib import Path
 import pytest
 import yaml
 
-from malkuth.core.errors import ErrorCode, MalkuthError
-from malkuth.core.manifest import AgentManifest
-from malkuth.runtime.docker.engine import DockerEngine
-from malkuth.runtime.launcher import AgentLauncher
-from malkuth.runtime.ports import A2APortAllocator
-from malkuth.runtime.spec import DEFAULT_CONTROL_PORT
+from aaestro.core.errors import AaestroError, ErrorCode
+from aaestro.core.manifest import AgentManifest
+from aaestro.runtime.docker.engine import DockerEngine
+from aaestro.runtime.launcher import AgentLauncher
+from aaestro.runtime.ports import A2APortAllocator
+from aaestro.runtime.spec import DEFAULT_CONTROL_PORT
 from tests.fixtures.fake_docker import FakeDockerClient
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -83,7 +83,7 @@ def test_exhausted_range_fails_loudly():
     allocator.allocate("a")
     allocator.allocate("b")
 
-    with pytest.raises(MalkuthError) as excinfo:
+    with pytest.raises(AaestroError) as excinfo:
         allocator.allocate("c")
 
     assert excinfo.value.code == ErrorCode.RT_001

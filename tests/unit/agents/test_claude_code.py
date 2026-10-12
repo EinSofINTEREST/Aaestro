@@ -14,8 +14,8 @@ import sys
 
 import pytest
 
-from malkuth.core.agent import TaskStatus
-from malkuth.core.errors import ErrorCode
+from aaestro.core.agent import TaskStatus
+from aaestro.core.errors import ErrorCode
 from tests.fixtures.builders import make_manifest, make_task
 
 # 실행기는 저장소의 agents/ 가 아니라 시드 재료에 있다 — 스토어로 올려 굽는다 (#266)
@@ -127,7 +127,7 @@ async def test_a_nonzero_exit_fails_the_task_without_raising(monkeypatch):
 @pytest.mark.parametrize(
     ("command", "message"),
     [
-        ('claude -p "unbalanced', "MALKUTH_CLAUDE_COMMAND is not a valid command line"),
+        ('claude -p "unbalanced', "AAESTRO_CLAUDE_COMMAND is not a valid command line"),
         ("/nonexistent/claude -p", "claude code could not be started"),
     ],
     ids=["malformed-command", "missing-executable"],
@@ -150,7 +150,7 @@ async def test_a_command_that_cannot_start_fails_the_task_without_raising(
 
 async def test_a_timeout_is_reported_as_to_001(monkeypatch):
     """TaskConfig.timeout_s 를 강제하지 않으면 노드가 영원히 매달린다."""
-    from malkuth.core.agent import TaskConfig
+    from aaestro.core.agent import TaskConfig
 
     fake_cli(monkeypatch, sleep=5)
 
@@ -166,7 +166,7 @@ async def test_a_timeout_leaves_no_child_process(monkeypatch):
     """자식을 정리하지 않으면 컨테이너에 좀비가 쌓인다."""
     import asyncio
 
-    from malkuth.core.agent import TaskConfig
+    from aaestro.core.agent import TaskConfig
 
     fake_cli(monkeypatch, sleep=5)
     started: list[asyncio.subprocess.Process] = []
@@ -301,13 +301,13 @@ def test_a_reported_failure_survives_trailing_noise():
 
 async def test_a_task_result_is_unwrapped_despite_trailing_noise(monkeypatch):
     """#133 을 실제 컨테이너로 돌려보고 잡은 결함."""
-    raw = json.dumps({"result": "hello from malkuth", "is_error": False})
+    raw = json.dumps({"result": "hello from aaestro", "is_error": False})
     fake_cli(monkeypatch, stdout=f"{raw}\n{TRAILING_NOISE}")
 
     result = await executor().execute(make_task())
 
     assert result.status is TaskStatus.COMPLETED
-    assert result.output["result"] == "hello from malkuth"
+    assert result.output["result"] == "hello from aaestro"
 
 
 # --- 권한 모드 (실제 실행으로 결정) ---------------------------------------------------

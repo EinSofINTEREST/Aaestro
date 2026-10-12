@@ -13,7 +13,7 @@ checkpoint 를 남기지 못하는 run 은 재개할 수 없다.
 1. checkpointer 백엔드를 먼저 확인한다 (Redis/PostgreSQL 연결, 디스크 여유).
 2. 이미 진행 중인 run 은 계속 실행된다 — 잃는 것은 재개 능력뿐이다.
 3. 백엔드가 정상화되면 마지막 정상 checkpoint 에서 재개한다:
-   `malkuth run resume <run_id>`.
+   `aaestro run resume <run_id>`.
 
 에러를 "지우려고" checkpoint 를 삭제하지 않는다 — 일관된 상태로 돌아가는 유일한
 경로다.
@@ -25,7 +25,7 @@ checkpoint 를 남기지 못하는 run 은 재개할 수 없다.
 
 1. 정지된 run 의 에러 코드 분포를 읽는다 — 연속 실패는 대개 단일 원인이 지배한다.
 2. 그 원인을 해소한다 (provider quota, MCP 서버, 토폴로지).
-3. 마지막 iteration checkpoint 에서 재개한다: `malkuth run resume <run_id>`.
+3. 마지막 iteration checkpoint 에서 재개한다: `aaestro run resume <run_id>`.
 
 run 은 **다음** iteration 부터 이어진다 — 완료된 iteration 은 반복되지 않는다.
 state 는 control plane 이 재시작한 뒤라도 checkpointer 에서 읽는다: 마지막 iteration 이 끝났으면
@@ -37,19 +37,19 @@ iteration checkpoint 를 남기지 않은 run 은 재개할 수 없다 (`STOR_00
 노드 실패(`GRAPH_002`)는 graph state 를 오염시키지 않는다 — 실패한 노드의 출력은
 병합되지 않는다.
 
-1. `malkuth run trace <run_id>` — 실패 노드와 그 `task_id` 를 찾는다.
-2. 저장된 요청으로 에이전트를 단독 재현한다: `malkuth replay <task>`.
-3. 수정 후 재개한다: `malkuth run resume <run_id>`. 이미 성공한 노드는 다시 실행되지
+1. `aaestro run trace <run_id>` — 실패 노드와 그 `task_id` 를 찾는다.
+2. 저장된 요청으로 에이전트를 단독 재현한다: `aaestro replay <task>`.
+3. 수정 후 재개한다: `aaestro run resume <run_id>`. 이미 성공한 노드는 다시 실행되지
    않는다.
 
 ## 메모리 인덱스 손상
 
 `MEM_003` (인덱싱 적체) 또는 `MEM_004` (검색 실패 / 인덱스 손상).
 
-1. `malkuth_memory_index_lag_seconds` 를 확인한다. 지연이 지속되면 인덱싱 큐가
+1. `aaestro_memory_index_lag_seconds` 를 확인한다. 지연이 지속되면 인덱싱 큐가
    빠지지 않는 것이며 대개 embedding provider 가 원인이다.
 2. 인덱스가 손상됐거나 embedding 모델이 바뀌었으면 재구축한다:
-   `malkuth memory reindex <space>`.
+   `aaestro memory reindex <space>`.
 3. 재구축 중에도 검색은 **구 인덱스**로 계속 서빙되고 완료 시 원자적으로 전환된다 —
    재인덱싱이 메모리를 중단시키지 않는다.
 
@@ -58,7 +58,7 @@ iteration checkpoint 를 남기지 않은 run 은 재개할 수 없다 (`STOR_00
 검색 인덱스는 서비스 메모리에, 항목은 저장소에 있다. 기동하면 서비스가 저장된 항목 전부를 색인
 큐에 넣고(`memory index warm-up queued`, 항목 수 포함) 평소의 색인 루프가 인덱스를 다시 채운다.
 `memory index warm-up completed` 가 찍히기 전에는 오래된 기억이 검색 결과에서 빠질 수 있다.
-진행은 `malkuth_memory_index_lag_seconds` 로 보이며, 각 항목의 저장 시각이 아니라 재시작
+진행은 `aaestro_memory_index_lag_seconds` 로 보이며, 각 항목의 저장 시각이 아니라 재시작
 시각부터 잰다. 재시작할 때마다 모든 항목을 다시 임베딩한다 — 유료 embedding provider 라면 그
 비용은 저장소 크기에 비례한다.
 

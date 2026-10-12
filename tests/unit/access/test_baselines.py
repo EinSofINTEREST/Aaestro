@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from malkuth.access.baselines import MemoryBaseline
-from malkuth.access.model import Mode
-from malkuth.catalog import Catalog
+from aaestro.access.baselines import MemoryBaseline
+from aaestro.access.model import Mode
+from aaestro.catalog import Catalog
 from tests.fixtures.access import agent, group, write
 
 
@@ -152,13 +152,13 @@ def egress_workspace(tmp_path: Path) -> Catalog:
     ],
 )
 def test_declarations_decide_egress(tmp_path, who, target, allowed, why):
-    from malkuth.access.baselines import EgressBaseline
+    from aaestro.access.baselines import EgressBaseline
 
     assert EgressBaseline(egress_workspace(tmp_path)).allows(who, target, None) is allowed, why
 
 
 def test_the_target_name_drops_only_the_https_port():
-    from malkuth.access.baselines import egress_target
+    from aaestro.access.baselines import egress_target
 
     assert egress_target("API.Example.com.", 443) == "api.example.com"
     assert egress_target("api.example.com", 8443) == "api.example.com:8443"
@@ -166,8 +166,8 @@ def test_the_target_name_drops_only_the_https_port():
 
 def test_a_broken_mcp_url_that_slipped_past_validation_does_not_break_decisions(tmp_path):
     """선언 검증을 거치지 않고 들어온 값에도 판정이 터지지 않는다 — 그 목적지가 없는 것으로."""
-    from malkuth.access.baselines import EgressBaseline
-    from malkuth.core.manifest import McpServerSpec
+    from aaestro.access.baselines import EgressBaseline
+    from aaestro.core.manifest import McpServerSpec
 
     write(tmp_path / "agents" / "researcher" / "manifest.yaml", agent("researcher"))
     manifest = Catalog.under(tmp_path).agent("researcher")
@@ -227,7 +227,7 @@ def mcp_workspace(tmp_path: Path) -> Catalog:
     ],
 )
 def test_declarations_decide_remote_mcp_tools(tmp_path, who, target, allowed, why):
-    from malkuth.access.baselines import McpToolBaseline
+    from aaestro.access.baselines import McpToolBaseline
 
     assert McpToolBaseline(mcp_workspace(tmp_path)).allows(who, target, None) is allowed, why
 
@@ -243,7 +243,7 @@ def test_declarations_decide_remote_mcp_tools(tmp_path, who, target, allowed, wh
     ],
 )
 def test_url_target_names_a_remote_server_like_the_egress_declaration(url, target):
-    from malkuth.access.baselines import url_target
+    from aaestro.access.baselines import url_target
 
     assert url_target(url) == target
 
@@ -269,7 +269,7 @@ def test_the_declared_memory_list_is_exactly_what_the_declarations_allow(baselin
 
 
 def test_the_declared_remote_tools_list_the_server_or_its_allowed_tools(tmp_path):
-    from malkuth.access.baselines import McpToolBaseline
+    from aaestro.access.baselines import McpToolBaseline
 
     declared = McpToolBaseline(mcp_workspace(tmp_path))
 
@@ -283,7 +283,7 @@ def test_the_declared_remote_tools_list_the_server_or_its_allowed_tools(tmp_path
 
 
 def test_the_declared_egress_list_is_what_egress_decisions_allow(tmp_path):
-    from malkuth.access.baselines import EgressBaseline
+    from aaestro.access.baselines import EgressBaseline
 
     declared = EgressBaseline(egress_workspace(tmp_path))
     listed = declared.declared_for("researcher")
@@ -294,8 +294,8 @@ def test_the_declared_egress_list_is_what_egress_decisions_allow(tmp_path):
 
 
 def test_the_declared_callees_are_the_deployed_connections_and_the_stewards():
-    from malkuth.access.baselines import A2ABaseline
-    from malkuth.access.store import InMemoryAccessStore
+    from aaestro.access.baselines import A2ABaseline
+    from aaestro.access.store import InMemoryAccessStore
     from tests.unit.access.test_tickets import REPO_ROOT
 
     catalog = Catalog.under(REPO_ROOT)
@@ -303,7 +303,7 @@ def test_the_declared_callees_are_the_deployed_connections_and_the_stewards():
     declared = A2ABaseline(catalog, store, stewards=frozenset({"permission-agent"}))
     assert declared.declared_for("researcher") == [("permission-agent", None)]
 
-    from malkuth.access.registry import AccessRegistry
+    from aaestro.access.registry import AccessRegistry
 
     AccessRegistry(store=store, catalog=catalog).issue_identity(
         "researcher", "dep-1", graph="research-pipeline"
@@ -328,8 +328,8 @@ def _with_fallback(name: str, provider: str) -> dict:
 
 def test_a_fallback_providers_logical_host_is_declared(tmp_path, monkeypatch):
     """빠지면 전환한 호출을 프록시가 거부한다 — 선언 목록과 판정 둘 다 본다."""
-    from malkuth.access import baselines
-    from malkuth.access.baselines import EgressBaseline
+    from aaestro.access import baselines
+    from aaestro.access.baselines import EgressBaseline
 
     monkeypatch.setitem(baselines.PROVIDER_HOSTS, "openai-compat", "api.openai.com")
     write(
@@ -350,7 +350,7 @@ def test_a_fallback_providers_logical_host_is_declared(tmp_path, monkeypatch):
 
 def test_an_unknown_fallback_provider_is_silently_left_out_of_the_declaration(tmp_path):
     """논리 호스트를 모르는 provider 는 선언에서 빠질 뿐 판정이 터지지 않는다 (검증은 배포가)."""
-    from malkuth.access.baselines import EgressBaseline
+    from aaestro.access.baselines import EgressBaseline
 
     write(tmp_path / "agents" / "planner" / "manifest.yaml", _with_fallback("planner", "mystery"))
     catalog = Catalog.under(tmp_path)

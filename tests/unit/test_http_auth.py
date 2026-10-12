@@ -6,7 +6,7 @@ import pytest
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
-from malkuth.http_auth import presented_token, require_token
+from aaestro.http_auth import presented_token, require_token
 
 
 def app_with(expected: str | None) -> TestClient:

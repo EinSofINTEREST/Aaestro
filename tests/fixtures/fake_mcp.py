@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from malkuth.protocols.mcp.session import Connection, ToolResult
+from aaestro.protocols.mcp.session import Connection, ToolResult
 
 SUPPORTED_VERSION = "2025-06-18"
 

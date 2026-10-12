@@ -16,9 +16,9 @@ from typing import Any
 
 import pytest
 
-from malkuth.core.errors import MalkuthError
-from malkuth.core.manifest import McpServerSpec
-from malkuth.protocols.mcp.session import Connection, McpSession, ToolResult
+from aaestro.core.errors import AaestroError
+from aaestro.core.manifest import McpServerSpec
+from aaestro.protocols.mcp.session import Connection, McpSession, ToolResult
 
 pytestmark = pytest.mark.integration
 
@@ -162,7 +162,7 @@ async def test_allowed_tools_filters_a_real_server(transport):
     tools = await session.initialize()
 
     assert tools == ("read_file",)
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await session.call_tool("list_directory", {})
     assert exc_info.value.code == "MCP_002"
 
@@ -172,7 +172,7 @@ async def test_server_death_is_detected_and_reconnected(transport):
     session = make_session(transport)
     await session.initialize()
 
-    with pytest.raises(MalkuthError):
+    with pytest.raises(AaestroError):
         await session.call_tool("__die__", {})
 
     # 죽은 뒤의 호출은 재연결을 거쳐 성공한다
@@ -190,7 +190,7 @@ async def test_slow_tool_hits_the_timeout(transport):
     session = make_session(transport, tool_timeout_s=0.2)
     await session.initialize()
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await session.call_tool("__slow__", {})
 
     assert exc_info.value.code == "TO_002"

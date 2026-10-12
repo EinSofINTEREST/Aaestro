@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from malkuth.modules.registry import ModuleRegistry
+from aaestro.modules.registry import ModuleRegistry
 
 FIXTURE_ROOT = Path(__file__).parent / "modules"
 

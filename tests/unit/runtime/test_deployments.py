@@ -8,26 +8,26 @@ from pathlib import Path
 import pytest
 import yaml
 
-from malkuth.access.registry import ACCESS_CREDENTIAL_ENV, AccessRegistry
-from malkuth.authoring import Author
-from malkuth.catalog import Catalog
-from malkuth.core.agent import HealthState, HealthStatus
-from malkuth.core.errors import ErrorCategory, ErrorCode, MalkuthError
-from malkuth.core.manifest import ModelOverride
-from malkuth.runtime.control import ControlClient
-from malkuth.runtime.deployments import (
+from aaestro.access.registry import ACCESS_CREDENTIAL_ENV, AccessRegistry
+from aaestro.authoring import Author
+from aaestro.catalog import Catalog
+from aaestro.core.agent import HealthState, HealthStatus
+from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.core.manifest import ModelOverride
+from aaestro.runtime.control import ControlClient
+from aaestro.runtime.deployments import (
     DeploymentManager,
     DeploymentRecord,
     DeploymentStatus,
     InMemoryDeploymentStore,
     SqliteDeploymentStore,
 )
-from malkuth.runtime.docker.engine import DockerEngine
-from malkuth.runtime.images import BuildRecord, BuildStatus
-from malkuth.runtime.launcher import AgentLauncher
-from malkuth.runtime.lifecycle import AgentState
-from malkuth.runtime.ports import A2APortAllocator
-from malkuth.runtime.spec import (
+from aaestro.runtime.docker.engine import DockerEngine
+from aaestro.runtime.images import BuildRecord, BuildStatus
+from aaestro.runtime.launcher import AgentLauncher
+from aaestro.runtime.lifecycle import AgentState
+from aaestro.runtime.ports import A2APortAllocator
+from aaestro.runtime.spec import (
     A2A_EDGES_ENV,
     A2A_PEERS_ENV,
     A2A_SECRET_ENV,
@@ -46,7 +46,7 @@ def write(path: Path, document: dict) -> None:
 
 def agent_doc(name: str) -> dict:
     return {
-        "apiVersion": "malkuth/v1",
+        "apiVersion": "aaestro/v1",
         "kind": "Agent",
         "metadata": {"name": name, "version": "0.1.0"},
         "spec": {
@@ -65,13 +65,13 @@ def graph_doc(name: str, agents: list[str]) -> dict:
         + [{"from": f"n{len(agents) - 1}", "to": "END"}]
     )
     return {
-        "apiVersion": "malkuth/v1",
+        "apiVersion": "aaestro/v1",
         "kind": "Graph",
         "metadata": {"name": name, "version": "1.0.0"},
         "spec": {
             "mode": "mission",
             "goal": "t",
-            "state": {"schema": "malkuth.graphs.schemas:ResearchState"},
+            "state": {"schema": "aaestro.graphs.schemas:ResearchState"},
             "nodes": nodes,
             "edges": edges,
         },
@@ -83,7 +83,7 @@ def workspace(tmp_path: Path) -> Path:
     write(
         tmp_path / "modules" / "promptsets" / "solo" / "0.1.0" / "promptset.yaml",
         {
-            "apiVersion": "malkuth/v1",
+            "apiVersion": "aaestro/v1",
             "kind": "Promptset",
             "metadata": {"name": "solo", "version": "0.1.0"},
             "spec": {
@@ -196,7 +196,7 @@ async def test_the_same_agent_on_two_nodes_is_launched_once(manager, docker):
 async def test_a_graph_that_fails_validation_launches_nothing(manager, docker, workspace):
     write(workspace / "graphs" / "bad.yaml", graph_doc("bad", ["nobody"]))
 
-    with pytest.raises(MalkuthError) as excinfo:
+    with pytest.raises(AaestroError) as excinfo:
         await manager.deploy("bad")
 
     assert excinfo.value.code == ErrorCode.VAL_001
@@ -205,7 +205,7 @@ async def test_a_graph_that_fails_validation_launches_nothing(manager, docker, w
 
 
 async def test_an_unknown_graph_is_not_found(manager):
-    with pytest.raises(MalkuthError) as excinfo:
+    with pytest.raises(AaestroError) as excinfo:
         await manager.deploy("nope")
 
     assert excinfo.value.code == ErrorCode.NF_001
@@ -227,7 +227,7 @@ async def test_a_launch_failure_rolls_back_what_was_started(manager, docker, mon
 
     monkeypatch.setattr(docker, "create", flaky)
 
-    with pytest.raises(MalkuthError):
+    with pytest.raises(AaestroError):
         await manager.deploy("two")
 
     record = manager.deployments()[0]
@@ -257,7 +257,7 @@ async def test_agents_that_never_get_healthy_time_out_and_roll_back(workspace, d
         clock=lambda: next(ticks),
     )
 
-    with pytest.raises(MalkuthError) as excinfo:
+    with pytest.raises(AaestroError) as excinfo:
         await manager.deploy("two")
 
     assert excinfo.value.code == ErrorCode.RT_002
@@ -279,7 +279,7 @@ async def test_teardown_stops_every_agent_and_keeps_the_record(manager, docker):
 
 
 async def test_teardown_of_an_unknown_deployment_is_not_found(manager):
-    with pytest.raises(MalkuthError) as excinfo:
+    with pytest.raises(AaestroError) as excinfo:
         await manager.teardown("dep-nope")
 
     assert excinfo.value.code == ErrorCode.NF_001
@@ -301,7 +301,7 @@ async def test_authoring_refuses_to_touch_a_deployed_agent(manager, workspace):
     await manager.deploy("two")
     author = Author(catalog=Catalog.under(workspace), in_use=manager.in_use)
 
-    with pytest.raises(MalkuthError) as excinfo:
+    with pytest.raises(AaestroError) as excinfo:
         author.delete_graph("two")
 
     assert "deployed" in excinfo.value.message
@@ -417,7 +417,7 @@ async def test_the_sqlite_store_survives_a_reopen(tmp_path, manager):
 @pytest.mark.parametrize("key", ["ANTHROPIC_API_KEY", "DB_PASSWORD", "MY_SECRET", "X_TOKEN"])
 def test_agent_env_refuses_secret_looking_keys(workspace, docker, key):
     catalog = Catalog.under(workspace)
-    with pytest.raises(MalkuthError) as excinfo:
+    with pytest.raises(AaestroError) as excinfo:
         DeploymentManager(
             catalog=catalog,
             author=Author(catalog=catalog),
@@ -473,7 +473,7 @@ def wired_manager(workspace: Path, docker: TrackingDocker, store=None) -> Deploy
 
 def env_of(docker: TrackingDocker, agent: str) -> dict[str, str]:
     for created in docker.created:
-        if created["name"] == f"malkuth-{agent}-0":
+        if created["name"] == f"aaestro-{agent}-0":
             return created["environment"]
     raise AssertionError(f"{agent} was not created")
 
@@ -491,7 +491,7 @@ async def test_the_graph_connections_become_a2a_env_in_the_containers(workspace,
     assert len(record.a2a_secret) >= 32
     # caller 만 peer 주소를 받는다 — 상대의 컨테이너 이름과 **상대의** A2A 포트
     alpha_port = next(a.a2a_port for a in record.agents if a.name == "alpha")
-    assert beta[A2A_PEERS_ENV] == f"alpha=malkuth-alpha-0:{alpha_port}"
+    assert beta[A2A_PEERS_ENV] == f"alpha=aaestro-alpha-0:{alpha_port}"
     assert A2A_PEERS_ENV not in alpha
     await manager.launcher.stop_all()
 
@@ -503,7 +503,7 @@ async def test_declarations_are_mounted_read_only_into_the_base_image(workspace,
 
     await manager.deploy("wired")
 
-    volumes = next(c for c in docker.created if c["name"] == "malkuth-alpha-0")["volumes"]
+    volumes = next(c for c in docker.created if c["name"] == "aaestro-alpha-0")["volumes"]
     declaration = str((workspace / "agents" / "alpha").resolve())
     promptsets = str((workspace / "modules" / "promptsets").resolve())
     assert volumes[declaration] == {"bind": "/app/declaration", "mode": "ro"}
@@ -513,14 +513,14 @@ async def test_declarations_are_mounted_read_only_into_the_base_image(workspace,
     assert all(v["mode"] == "ro" for v in volumes.values())
     # 파일 하나를 바인드하지 않는다 — 원자적 교체가 떠 있는 컨테이너에 반영되지 않는다 (#275)
     assert not any(v["bind"].endswith(".yaml") for v in volumes.values())
-    created = next(c for c in docker.created if c["name"] == "malkuth-alpha-0")
-    assert created["environment"]["MALKUTH_MANIFEST"] == "/app/declaration/manifest.yaml"
+    created = next(c for c in docker.created if c["name"] == "aaestro-alpha-0")
+    assert created["environment"]["AAESTRO_MANIFEST"] == "/app/declaration/manifest.yaml"
     await manager.launcher.stop_all()
 
 
 def test_runtime_a2a_env_names_match_agentd():
     """runtime 이 agentd 를 import 하지 않으므로 상수를 두 벌 둔다 — 드리프트 방지."""
-    from malkuth.agentd import a2a_server
+    from aaestro.agentd import a2a_server
 
     assert (A2A_EDGES_ENV, A2A_SECRET_ENV, A2A_PEERS_ENV) == (
         a2a_server.EDGES_ENV,
@@ -537,13 +537,13 @@ async def test_a_failed_deploy_returns_the_preallocated_ports(
     original = DockerEngine.start
 
     async def second_fails(self, spec):
-        if spec.name == "malkuth-beta-0":
-            raise MalkuthError(category=ErrorCategory.RUNTIME, code=ErrorCode.RT_001, message="x")
+        if spec.name == "aaestro-beta-0":
+            raise AaestroError(category=ErrorCategory.RUNTIME, code=ErrorCode.RT_001, message="x")
         return await original(self, spec)
 
     monkeypatch.setattr(DockerEngine, "start", second_fails)
 
-    with pytest.raises(MalkuthError):
+    with pytest.raises(AaestroError):
         await manager.deploy("wired")
 
     assert manager.launcher.ports is not None
@@ -598,7 +598,7 @@ async def test_reattach_refuses_containers_that_are_not_isolated(
     workspace, healthy, network_error, attached
 ):
     """재부착은 기동을 거치지 않는다 — 외부 경로가 남은 컨테이너를 격리된 것으로 붙이면 안 된다."""
-    from malkuth.runtime.docker.errors import NetworkIsolationError
+    from aaestro.runtime.docker.errors import NetworkIsolationError
 
     catalog = Catalog.under(workspace)
     store = InMemoryDeploymentStore()
@@ -649,7 +649,7 @@ async def test_reattach_refuses_containers_that_are_not_isolated(
     ]
     assert second.launcher.launched == {}, "격리되지 않은 컨테이너를 붙였다"
     for agent in record.agents:
-        with pytest.raises(MalkuthError):
+        with pytest.raises(AaestroError):
             registry.identify(agent.access_credential)  # 외부 경로가 남은 컨테이너의 신원은 회수
 
 
@@ -697,7 +697,7 @@ async def test_a_docker_failure_during_the_isolation_check_fails_closed_and_move
     write(workspace / "graphs" / "other.yaml", graph_doc("other", ["gamma"]))
     healthy_record = await manager_with(first_docker, internal=True).deploy("other")
 
-    later = VanishingDocker("malkuth-alpha-0", attached=("agents",))
+    later = VanishingDocker("aaestro-alpha-0", attached=("agents",))
     later.created = list(first_docker.created)
     second = manager_with(later, internal=True)
     second.access = registry
@@ -706,7 +706,7 @@ async def test_a_docker_failure_during_the_isolation_check_fails_closed_and_move
 
     assert touched[broken.deployment_id].status == DeploymentStatus.LOST
     assert touched[broken.deployment_id].error == "network isolation unverifiable: alpha"
-    with pytest.raises(MalkuthError):
+    with pytest.raises(AaestroError):
         registry.identify(broken.agents[0].access_credential)
     assert touched[healthy_record.deployment_id].status == DeploymentStatus.READY
     assert sorted(second.launcher.launched) == [("gamma", 0)]
@@ -728,7 +728,7 @@ async def test_reattach_hands_the_launcher_what_a_restart_needs(workspace, docke
     assert args["secrets"][A2A_SECRET_ENV] == record.a2a_secret
     assert args["secrets"][A2A_PEERS_ENV].endswith(f":{record.agents[0].a2a_port}")
     assert args["mounts"][0]["mount_path"] == "/app/declaration"
-    assert args["secrets"]["MALKUTH_MANIFEST"] == "/app/declaration/manifest.yaml"
+    assert args["secrets"]["AAESTRO_MANIFEST"] == "/app/declaration/manifest.yaml"
     # 기록된 포트를 그대로 잡는다 — 컨테이너 안의 env 는 이미 그 포트로 굳어 있다
     assert adopted.a2a_port == next(a.a2a_port for a in record.agents if a.name == "beta")
     await second.launcher.stop_all()
@@ -855,7 +855,7 @@ async def test_port_exhaustion_fails_the_deployment_and_frees_what_it_took(
     assert manager.launcher.ports is not None
     manager.launcher.ports.port_range = (9100, 9100)  # 두 에이전트, 포트 하나
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await manager.deploy("wired")
 
     assert exc_info.value.code == ErrorCode.RT_001
@@ -949,7 +949,7 @@ async def test_deploy_without_overrides_records_an_empty_map(manager):
 
 
 async def test_a_model_override_for_an_unknown_node_launches_nothing(manager, docker):
-    with pytest.raises(MalkuthError) as excinfo:
+    with pytest.raises(AaestroError) as excinfo:
         await manager.deploy("two", model_overrides={"ghost": ModelOverride(name="m")})
 
     assert excinfo.value.code == ErrorCode.VAL_002
@@ -961,7 +961,7 @@ async def test_validation_sees_the_deployment_overrides(manager, docker):
     """override 를 검증 **전에** 입히지 않으면 manifest 밖 provider 로의 교체가 통과한다."""
     override = ModelOverride(provider="openai-compat", name="gpt-5")
 
-    with pytest.raises(MalkuthError) as excinfo:
+    with pytest.raises(AaestroError) as excinfo:
         await manager.deploy("two", model_overrides={"n0": override})
 
     assert excinfo.value.code == ErrorCode.VAL_001
@@ -991,14 +991,14 @@ def built(agent: str, status: BuildStatus = BuildStatus.BUILT) -> BuildRecord:
         agent=agent,
         version="0.1.0",
         status=status,
-        image=f"malkuth/agent-{agent}:0.1.0",
+        image=f"aaestro/agent-{agent}:0.1.0",
         error="COPY failed" if status is BuildStatus.FAILED else None,
     )
 
 
 def image_of(docker: TrackingDocker, agent: str) -> str:
     for created in docker.created:
-        if created["name"] == f"malkuth-{agent}-0":
+        if created["name"] == f"aaestro-{agent}-0":
             return created["image"]
     raise AssertionError(f"{agent} was not created")
 
@@ -1018,13 +1018,13 @@ async def test_an_unbuilt_custom_agent_is_refused_before_anything_starts(
     """배포가 대신 굽지 않는다 (02 Lifecycle 1) — 굽힌 적 없거나 실패했거나 굽는 중이면 거절."""
     manager.images = FakeImages({"alpha"}, records)
 
-    with pytest.raises(MalkuthError) as excinfo:
+    with pytest.raises(AaestroError) as excinfo:
         await manager.deploy("two")
 
     assert excinfo.value.code == ErrorCode.RT_012
     assert excinfo.value.agent == "alpha"
     assert excinfo.value.details["build_status"] == status
-    assert excinfo.value.details["image"] == "malkuth/agent-alpha:0.1.0"
+    assert excinfo.value.details["image"] == "aaestro/agent-alpha:0.1.0"
     assert docker.created == [], "거절된 배포가 컨테이너를 띄웠다"
     assert manager.deployments() == [], "거절은 실패한 배포가 아니라 시작되지 않은 배포다"
 
@@ -1036,7 +1036,7 @@ async def test_a_built_custom_agent_runs_its_baked_image(manager, docker):
     record = await manager.deploy("two")
 
     assert record.status == DeploymentStatus.READY
-    assert image_of(docker, "alpha") == "malkuth/agent-alpha:0.1.0"
+    assert image_of(docker, "alpha") == "aaestro/agent-alpha:0.1.0"
     await manager.launcher.stop_all()
 
 
@@ -1053,17 +1053,17 @@ async def test_a_declarative_agent_needs_no_build(manager, docker):
 async def test_a_manifest_naming_another_image_is_refused(manager, docker, workspace):
     """두 곳이 다른 이미지를 가리키면 무엇이 도는지 알 수 없다."""
     doc = agent_doc("alpha")
-    doc["spec"]["runtime"]["image"] = "malkuth/agent-something-else:0.1.0"
+    doc["spec"]["runtime"]["image"] = "aaestro/agent-something-else:0.1.0"
     write(workspace / "agents" / "alpha" / "manifest.yaml", doc)
     manager.images = FakeImages({"alpha"}, {"alpha": built("alpha")})
 
-    with pytest.raises(MalkuthError) as excinfo:
+    with pytest.raises(AaestroError) as excinfo:
         await manager.deploy("two")
 
     assert excinfo.value.code == ErrorCode.VAL_002
     assert excinfo.value.details == {
-        "declared": "malkuth/agent-something-else:0.1.0",
-        "built": "malkuth/agent-alpha:0.1.0",
+        "declared": "aaestro/agent-something-else:0.1.0",
+        "built": "aaestro/agent-alpha:0.1.0",
     }
     assert docker.created == []
 
@@ -1071,7 +1071,7 @@ async def test_a_manifest_naming_another_image_is_refused(manager, docker, works
 async def test_a_manifest_naming_the_built_tag_is_accepted(manager, docker, workspace):
     """같은 태그를 적어 둔 기존 매니페스트(claude-code)는 그대로 통과한다."""
     doc = agent_doc("alpha")
-    doc["spec"]["runtime"]["image"] = "malkuth/agent-alpha:0.1.0"
+    doc["spec"]["runtime"]["image"] = "aaestro/agent-alpha:0.1.0"
     write(workspace / "agents" / "alpha" / "manifest.yaml", doc)
     manager.images = FakeImages({"alpha"}, {"alpha": built("alpha")})
 
@@ -1095,7 +1095,7 @@ async def test_a_restart_after_reattach_keeps_the_baked_image(workspace, docker,
     await second.reattach()
 
     assert second.launcher.launched[("alpha", 0)].restart_args["image"] == (
-        "malkuth/agent-alpha:0.1.0"
+        "aaestro/agent-alpha:0.1.0"
     )
     assert second.launcher.launched[("beta", 0)].restart_args["image"] == DEFAULT_BASE_IMAGE
     await second.launcher.stop_all()
@@ -1118,7 +1118,7 @@ async def test_reattach_restarts_with_the_image_that_was_deployed(workspace, doc
     await second.reattach()
 
     assert second.launcher.launched[("alpha", 0)].restart_args["image"] == (
-        "malkuth/agent-alpha:0.1.0"
+        "aaestro/agent-alpha:0.1.0"
     )
     await second.launcher.stop_all()
 
@@ -1127,7 +1127,7 @@ async def test_reattach_restarts_with_the_image_that_was_deployed(workspace, doc
 
 
 def with_access(manager: DeploymentManager) -> AccessRegistry:
-    from malkuth.access.store import InMemoryAccessStore
+    from aaestro.access.store import InMemoryAccessStore
 
     registry = AccessRegistry(store=InMemoryAccessStore(), catalog=manager.catalog)
     manager.access = registry
@@ -1141,7 +1141,7 @@ async def test_each_deployed_agent_carries_its_own_identity(manager, docker):
 
     credentials = {a.name: a.access_credential for a in record.agents}
     for name, credential in credentials.items():
-        created = next(c for c in docker.created if c["name"] == f"malkuth-{name}-0")
+        created = next(c for c in docker.created if c["name"] == f"aaestro-{name}-0")
         assert created["environment"][ACCESS_CREDENTIAL_ENV] == credential
         assert registry.identify(credential) == name
     assert len(set(credentials.values())) == 2, "에이전트끼리 신원을 공유하면 서로를 사칭한다"
@@ -1155,7 +1155,7 @@ async def test_tearing_down_revokes_the_identities(manager):
     await manager.teardown(record.deployment_id)
 
     for agent in record.agents:
-        with pytest.raises(MalkuthError) as exc_info:
+        with pytest.raises(AaestroError) as exc_info:
             registry.identify(agent.access_credential)
         assert exc_info.value.code == ErrorCode.ACC_001
 
@@ -1175,7 +1175,7 @@ async def test_a_rolled_back_deployment_leaves_no_live_identity(workspace, healt
     )
     registry = with_access(manager)
 
-    with pytest.raises(MalkuthError):
+    with pytest.raises(AaestroError):
         await manager.deploy("two")
 
     identities = list(registry.store._identities.values())  # noqa: SLF001
@@ -1241,7 +1241,7 @@ async def test_a_failing_stop_still_revokes_the_identities(manager, monkeypatch)
         await manager.teardown(record.deployment_id)
 
     for agent in record.agents:
-        with pytest.raises(MalkuthError) as exc_info:
+        with pytest.raises(AaestroError) as exc_info:
             registry.identify(agent.access_credential)
         assert exc_info.value.code == ErrorCode.ACC_001
 
@@ -1267,15 +1267,15 @@ async def test_reattach_revokes_identities_of_a_deployment_interrupted_while_sta
     second.access = registry
     await second.reattach()
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         registry.identify(credential)
     assert exc_info.value.code == ErrorCode.ACC_001
 
 
 def test_the_manifest_env_names_what_agentd_reads():
     """runtime 이 주입하는 env 이름과 agentd 가 읽는 이름이 어긋나면 base 기본값으로 떨어진다."""
-    from malkuth.agentd.__main__ import MANIFEST_ENV as AGENTD_MANIFEST_ENV
-    from malkuth.runtime.deployments import MANIFEST_ENV
+    from aaestro.agentd.__main__ import MANIFEST_ENV as AGENTD_MANIFEST_ENV
+    from aaestro.runtime.deployments import MANIFEST_ENV
 
     assert MANIFEST_ENV == AGENTD_MANIFEST_ENV
 
@@ -1285,7 +1285,7 @@ def test_the_manifest_env_names_what_agentd_reads():
 
 async def test_with_a_registry_the_memory_token_is_the_agent_identity(workspace, docker, healthy):
     """정적 메모리 토큰으로 되돌아가면 레지스트리 회수가 닿지 않는 뒷문이 된다."""
-    from malkuth.memory.http import MEMORY_TOKEN_ENV
+    from aaestro.memory.http import MEMORY_TOKEN_ENV
 
     wired_workspace(workspace)
     store = InMemoryDeploymentStore()
@@ -1327,7 +1327,7 @@ async def test_registry_mode_gives_agents_the_registry_address_and_no_shared_sec
     workspace, docker, healthy
 ):
     """공유 서명 키는 그래프의 모든 에이전트가 쥐어 누구든 다른 에이전트 행세를 한다 (#281)."""
-    from malkuth.access.client import ACCESS_URL_ENV
+    from aaestro.access.client import ACCESS_URL_ENV
 
     wired_workspace(workspace)
     manager = wired_manager(workspace, docker)
@@ -1352,7 +1352,7 @@ async def test_a_running_permission_agent_becomes_a_peer_of_every_later_deployme
     workspace, docker, healthy
 ):
     """권한 에이전트는 다른 배포에 있다 — 떠 있으면 레지스트리 모드의 모두가 요청할 수 있다."""
-    from malkuth.access.client import ACCESS_URL_ENV
+    from aaestro.access.client import ACCESS_URL_ENV
 
     wired_workspace(workspace)
     steward_doc = agent_doc("permission-agent")
@@ -1372,7 +1372,7 @@ async def test_a_running_permission_agent_becomes_a_peer_of_every_later_deployme
     for agent in ("alpha", "beta"):
         env = env_of(docker, agent)
         assert f"{agent}>permission-agent" in env[A2A_EDGES_ENV].split(",")
-        assert f"permission-agent=malkuth-permission-agent-0:{port}" in env[A2A_PEERS_ENV].split(
+        assert f"permission-agent=aaestro-permission-agent-0:{port}" in env[A2A_PEERS_ENV].split(
             ","
         )
         assert ACCESS_URL_ENV in env
@@ -1412,11 +1412,11 @@ async def test_with_an_egress_proxy_agents_get_no_model_key_and_go_out_through_t
     """프록시가 키를 주입한다 — 에이전트 env 에 키가 있으면 회수가 재배포 없이는 안 된다."""
     from urllib.parse import urlsplit
 
-    from malkuth.runtime.deployments import EgressEndpoints
+    from aaestro.runtime.deployments import EgressEndpoints
 
     with_access(manager)
     manager.egress = EgressEndpoints(
-        connect_url="http://malkuth-egress:8080", providers_url="http://malkuth-egress:8081"
+        connect_url="http://aaestro-egress:8080", providers_url="http://aaestro-egress:8081"
     )
     manager.agent_env = {"ANTHROPIC_BASE_URL": "https://api.anthropic.com"}
 
@@ -1426,9 +1426,9 @@ async def test_with_an_egress_proxy_agents_get_no_model_key_and_go_out_through_t
         env = env_of(docker, agent.name)
         assert "k" not in env.values(), "모델 API 키가 컨테이너에 들어갔다"
         assert env["ANTHROPIC_API_KEY"] == agent.access_credential, "키 자리에는 신원을 싣는다"
-        assert env["ANTHROPIC_BASE_URL"] == "http://malkuth-egress:8081/anthropic"
+        assert env["ANTHROPIC_BASE_URL"] == "http://aaestro-egress:8081/anthropic"
         proxy = urlsplit(env["HTTPS_PROXY"])
-        assert (proxy.hostname, proxy.port, proxy.username) == ("malkuth-egress", 8080, agent.name)
+        assert (proxy.hostname, proxy.port, proxy.username) == ("aaestro-egress", 8080, agent.name)
         assert proxy.password == agent.access_credential
         assert env["https_proxy"] == env["HTTPS_PROXY"]
         assert "HTTP_PROXY" not in env, "사설 네트워크의 http 서비스까지 프록시로 보내면 안 된다"
@@ -1444,10 +1444,10 @@ async def test_without_an_egress_proxy_the_model_key_is_injected_as_before(manag
 
 def test_a_proxy_terminated_key_never_leaves_even_without_an_identity_override(manager):
     """배선이 신원으로 덮어쓰지 않아도 프록시가 종단하는 키는 에이전트 env 로 나가지 않는다."""
-    from malkuth.runtime.deployments import EgressEndpoints, Provision
+    from aaestro.runtime.deployments import EgressEndpoints, Provision
 
     manager.egress = EgressEndpoints(
-        connect_url="http://malkuth-egress:8080", providers_url="http://malkuth-egress:8081"
+        connect_url="http://aaestro-egress:8080", providers_url="http://aaestro-egress:8081"
     )
     manifest = manager.catalog.agent("alpha")
 
@@ -1458,8 +1458,8 @@ def test_a_proxy_terminated_key_never_leaves_even_without_an_identity_override(m
 
 def test_a_remote_mcp_credential_stays_with_the_proxy(manager):
     """원격 MCP 서버 자격은 프록시가 붙인다 — 에이전트 env 에 있으면 회수가 재배포 없이 안 된다."""
-    from malkuth.core.manifest import AgentManifest
-    from malkuth.runtime.deployments import EgressEndpoints, Provision
+    from aaestro.core.manifest import AgentManifest
+    from aaestro.runtime.deployments import EgressEndpoints, Provision
 
     doc = agent_doc("alpha")
     doc["spec"]["runtime"] = {"env_allowlist": ["ANTHROPIC_API_KEY", "CORP_TOKEN", "LOCAL_TOKEN"]}
@@ -1485,7 +1485,7 @@ def test_a_remote_mcp_credential_stays_with_the_proxy(manager):
 
     plain = manager._env_for(manifest, provision)  # noqa: SLF001
     manager.egress = EgressEndpoints(
-        connect_url="http://malkuth-egress:8080", providers_url="http://malkuth-egress:8081"
+        connect_url="http://aaestro-egress:8080", providers_url="http://aaestro-egress:8081"
     )
     proxied = manager._env_for(manifest, provision)  # noqa: SLF001
 
@@ -1495,21 +1495,21 @@ def test_a_remote_mcp_credential_stays_with_the_proxy(manager):
 
 
 def test_the_proxy_wiring_points_remote_mcp_at_the_termination():
-    from malkuth.protocols.mcp.transport import MCP_PROXY_URL_ENV
-    from malkuth.runtime.deployments import EgressEndpoints
+    from aaestro.protocols.mcp.transport import MCP_PROXY_URL_ENV
+    from aaestro.runtime.deployments import EgressEndpoints
 
     env = EgressEndpoints(
-        connect_url="http://malkuth-egress:8080", providers_url="http://malkuth-egress:8081/"
+        connect_url="http://aaestro-egress:8080", providers_url="http://aaestro-egress:8081/"
     ).env_for("alpha", "cred")
 
-    assert env[MCP_PROXY_URL_ENV] == "http://malkuth-egress:8081/mcp"
+    assert env[MCP_PROXY_URL_ENV] == "http://aaestro-egress:8081/mcp"
 
 
 def test_an_ipv6_proxy_address_keeps_its_brackets():
     """hostname 은 IPv6 괄호를 벗긴다 — `@::1:8080` 은 프록시 주소가 아니다 (#294 리뷰)."""
     from urllib.parse import urlsplit
 
-    from malkuth.runtime.deployments import EgressEndpoints
+    from aaestro.runtime.deployments import EgressEndpoints
 
     env = EgressEndpoints(
         connect_url="http://[fd00::5]:8080", providers_url="http://[fd00::5]:8081"
@@ -1521,8 +1521,8 @@ def test_an_ipv6_proxy_address_keeps_its_brackets():
 
 # --- MCP 사이드카 (#304) -------------------------------------------------------------
 
-SIDECAR = "malkuth-alpha--mcp-search"
-SIDECAR_NET = "malkuth-alpha--mcp"
+SIDECAR = "aaestro-alpha--mcp-search"
+SIDECAR_NET = "aaestro-alpha--mcp"
 
 
 def with_sidecar(workspace: Path, agent: str = "alpha", image: str = "mcp/search:0.3.0") -> None:
@@ -1550,15 +1550,15 @@ def sidecar_manager(workspace: Path, docker: FakeDockerClient, store=None) -> De
 
 
 def behind_the_proxy(manager: DeploymentManager) -> None:
-    from malkuth.runtime.deployments import EgressEndpoints
-    from malkuth.runtime.sidecars import ProxyAttachment
+    from aaestro.runtime.deployments import EgressEndpoints
+    from aaestro.runtime.sidecars import ProxyAttachment
 
     with_access(manager)
     manager.launcher.engine.internal = True
     manager.egress = EgressEndpoints(
-        connect_url="http://malkuth-egress:8080", providers_url="http://malkuth-egress:8081"
+        connect_url="http://aaestro-egress:8080", providers_url="http://aaestro-egress:8081"
     )
-    manager.sidecar_proxy = ProxyAttachment(container="malkuth-egress-1", alias="malkuth-egress")
+    manager.sidecar_proxy = ProxyAttachment(container="aaestro-egress-1", alias="aaestro-egress")
 
 
 def created(docker: FakeDockerClient, name: str) -> dict:
@@ -1574,7 +1574,7 @@ async def test_a_sidecar_starts_before_its_agent_which_joins_its_network(
     record = await manager.deploy("two")
 
     names = [c["name"] for c in docker.created]
-    assert names.index(SIDECAR) < names.index("malkuth-alpha-0")
+    assert names.index(SIDECAR) < names.index("aaestro-alpha-0")
     alpha = next(a for a in record.agents if a.name == "alpha")
     # 프록시가 없는 배포 — 에이전트만 자기 사이드카 네트워크에 붙는다. beta 는 붙지 않는다
     assert docker.connected == [(SIDECAR_NET, alpha.container_id, ())]
@@ -1582,7 +1582,7 @@ async def test_a_sidecar_starts_before_its_agent_which_joins_its_network(
     await manager.teardown(record.deployment_id)
 
     assert docker.find(SIDECAR) is None, "해체가 사이드카를 남겼다"
-    assert docker.removed_networks == [SIDECAR_NET, "malkuth-beta--mcp"]
+    assert docker.removed_networks == [SIDECAR_NET, "aaestro-beta--mcp"]
     assert running(docker) == []
 
 
@@ -1592,7 +1592,7 @@ async def test_behind_the_proxy_only_the_proxy_reaches_the_sidecar(manager, dock
 
     record = await manager.deploy("two")
 
-    assert docker.connected == [(SIDECAR_NET, "malkuth-egress-1", ("malkuth-egress",))]
+    assert docker.connected == [(SIDECAR_NET, "aaestro-egress-1", ("aaestro-egress",))]
     agent_env, sidecar_env = env_of(docker, "alpha"), created(docker, SIDECAR)["environment"]
     # 바깥 호출은 소유 에이전트의 신원으로 같은 판정을 받는다 — 그 밖의 에이전트 env 는 없다
     assert sidecar_env["HTTPS_PROXY"] == agent_env["HTTPS_PROXY"]
@@ -1600,7 +1600,7 @@ async def test_behind_the_proxy_only_the_proxy_reaches_the_sidecar(manager, dock
     alpha = next(a for a in record.agents if a.name == "alpha")
     await manager.launcher.stop_all()
     await manager.teardown(record.deployment_id)
-    assert (SIDECAR_NET, "malkuth-egress-1") in docker.disconnected
+    assert (SIDECAR_NET, "aaestro-egress-1") in docker.disconnected
     assert alpha.container_id not in {c for _, c, _ in docker.connected}
 
 
@@ -1612,7 +1612,7 @@ async def test_behind_the_proxy_without_its_container_sidecars_are_refused(
     behind_the_proxy(manager)
     manager.sidecar_proxy = None
 
-    with pytest.raises(MalkuthError) as caught:
+    with pytest.raises(AaestroError) as caught:
         await manager.deploy("two")
 
     assert caught.value.code == ErrorCode.CFG_001
@@ -1646,13 +1646,13 @@ async def test_a_failed_deploy_removes_the_sidecars_it_started(workspace, health
     docker = NoBroken()
     manager = sidecar_manager(workspace, docker)
 
-    with pytest.raises(MalkuthError) as caught:
+    with pytest.raises(AaestroError) as caught:
         await manager.deploy("two")
 
     assert caught.value.code == ErrorCode.RT_004
     assert docker.find(SIDECAR) is None
     assert running(docker) == []
-    assert set(docker.removed_networks) >= {SIDECAR_NET, "malkuth-beta--mcp"}
+    assert set(docker.removed_networks) >= {SIDECAR_NET, "aaestro-beta--mcp"}
     assert [r.status for r in manager.deployments()] == [DeploymentStatus.FAILED]
 
 

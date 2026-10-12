@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from malkuth.core.agent import (
+from aaestro.core.agent import (
     ComponentHealth,
     HealthState,
     HealthStatus,
@@ -14,7 +14,7 @@ from malkuth.core.agent import (
     TaskStatus,
     TraceContext,
 )
-from malkuth.core.errors import ErrorCategory, ErrorCode, MalkuthError
+from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 from tests.fixtures.builders import make_task
 
 
@@ -53,7 +53,7 @@ def test_completed_result_carries_task_id_and_output():
 
 def test_failed_result_carries_error_payload():
     task = make_task()
-    err = MalkuthError(
+    err = AaestroError(
         category=ErrorCategory.MODEL,
         code=ErrorCode.LLM_005,
         message="max turns exceeded",
@@ -70,7 +70,7 @@ def test_failed_result_carries_error_payload():
 
 def test_failed_result_accepts_payload_directly():
     task = make_task()
-    payload = MalkuthError(
+    payload = AaestroError(
         category=ErrorCategory.TIMEOUT, code=ErrorCode.TO_001, message="task timeout"
     ).payload()
 

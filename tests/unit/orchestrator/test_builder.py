@@ -12,11 +12,11 @@ from typing import Any
 import pytest
 from langgraph.checkpoint.memory import MemorySaver
 
-from malkuth.core.agent import TaskResult
-from malkuth.core.errors import ErrorCategory, ErrorCode, MalkuthError
-from malkuth.core.manifest import ModelConfig, ModelOverride
-from malkuth.graphs.schemas import ResearchState
-from malkuth.orchestrator.builder import GraphBuilder, build_channel_schema, build_graph
+from aaestro.core.agent import TaskResult
+from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.core.manifest import ModelConfig, ModelOverride
+from aaestro.graphs.schemas import ResearchState
+from aaestro.orchestrator.builder import GraphBuilder, build_channel_schema, build_graph
 from tests.fixtures.fake_runtime import FakeRuntime
 from tests.fixtures.topologies import make_mission
 
@@ -25,9 +25,9 @@ _CONDITIONAL_EDGES = [
     {
         "from": "planner",
         "to": "researcher",
-        "condition": "malkuth.graphs.conditions:needs_research",
+        "condition": "aaestro.graphs.conditions:needs_research",
     },
-    {"from": "planner", "to": "END", "condition": "malkuth.graphs.conditions:plan_only"},
+    {"from": "planner", "to": "END", "condition": "aaestro.graphs.conditions:plan_only"},
     {"from": "researcher", "to": "END"},
 ]
 
@@ -198,7 +198,7 @@ async def test_a_model_that_does_not_resolve_fails_the_node_as_graph_002():
         )
         return base.overridden(ModelOverride.model_validate({"name": "claude-haiku-4-5"}))
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await build_graph(linear_topology(), runtime, models=broken).ainvoke({"query": "q"})
 
     assert exc_info.value.code == ErrorCode.GRAPH_002
@@ -213,11 +213,11 @@ async def test_a_typed_resolver_error_passes_through_unchanged():
     runtime = FakeRuntime().script("planner", output={"plan": "P"})
 
     def missing(node: Any) -> ModelConfig:
-        raise MalkuthError(
+        raise AaestroError(
             category=ErrorCategory.NOT_FOUND, code=ErrorCode.NF_001, message="agent not found"
         )
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await build_graph(linear_topology(), runtime, models=missing).ainvoke({"query": "q"})
 
     assert exc_info.value.code == ErrorCode.NF_001
@@ -283,7 +283,7 @@ async def test_conditional_edge_follows_node_when_true():
 async def test_node_failure_raises_graph_002():
     runtime = FakeRuntime().script("planner", output={"plan": "P"}).fail("researcher")
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await build_graph(linear_topology(), runtime).ainvoke({"query": "q", "_run_id": "run-1"})
 
     assert exc_info.value.code == "GRAPH_002"
@@ -300,7 +300,7 @@ async def test_failed_node_does_not_merge_output_into_state():
     runtime = FakeRuntime().script("planner", output={"plan": "P"}).fail("researcher")
     graph = build_graph(linear_topology(), runtime, checkpointer=checkpointer)
 
-    with pytest.raises(MalkuthError):
+    with pytest.raises(AaestroError):
         await graph.ainvoke({"query": "q", "_run_id": "run-1"}, config)
 
     snapshot = await graph.aget_state(config)
@@ -321,7 +321,7 @@ async def test_node_timeout_raises_to_003():
         ]
     )
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await build_graph(topology, SlowRuntime(), control_overhead_s=0).ainvoke(
             {"query": "q", "_run_id": "r"}
         )
@@ -349,12 +349,12 @@ async def test_an_agent_timeout_reaches_the_graph_as_to_001():
         async def invoke(self, node, task):
             # agentd 는 정확히 timeout_s 에 끊고, 결과는 왕복만큼 늦게 도착한다
             await asyncio.sleep(task.config.timeout_s + 0.02)
-            err = MalkuthError(category=ErrorCategory.TIMEOUT, code="TO_001", message="late")
+            err = AaestroError(category=ErrorCategory.TIMEOUT, code="TO_001", message="late")
             return TaskResult.failed(task, err)
 
     graph = build_graph(_timed_topology(0.05), AgentTimesOut(), control_overhead_s=0.5)
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await graph.ainvoke({"query": "q", "_run_id": "r"})
 
     assert exc_info.value.code == "GRAPH_002"
@@ -378,7 +378,7 @@ async def test_the_orchestrator_cancels_a_task_it_stopped_waiting_for():
 
     runtime = Hangs()
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await build_graph(_timed_topology(0.01), runtime, control_overhead_s=0).ainvoke(
             {"query": "q", "_run_id": "r"}
         )
@@ -393,9 +393,9 @@ async def test_a_failed_cancel_does_not_hide_the_timeout():
             await asyncio.sleep(10)
 
         async def cancel(self, node, task_id):
-            raise MalkuthError(category=ErrorCategory.NETWORK, code="NET_001", message="down")
+            raise AaestroError(category=ErrorCategory.NETWORK, code="NET_001", message="down")
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await build_graph(_timed_topology(0.01), CancelFails(), control_overhead_s=0).ainvoke(
             {"query": "q", "_run_id": "r"}
         )
@@ -418,7 +418,7 @@ async def test_resume_from_checkpoint_after_node_failure():
     )
     graph = build_graph(linear_topology(), runtime, checkpointer=checkpointer)
 
-    with pytest.raises(MalkuthError):
+    with pytest.raises(AaestroError):
         await graph.ainvoke({"query": "q", "_run_id": "run-1"}, config)
 
     # 같은 thread 로 재개하면 planner 는 다시 실행되지 않는다
@@ -462,21 +462,21 @@ async def test_max_iterations_exceeded_raises_graph_004():
             {
                 "from": "planner",
                 "to": "researcher",
-                "condition": "malkuth.graphs.conditions:needs_research",
+                "condition": "aaestro.graphs.conditions:needs_research",
             },
-            {"from": "planner", "to": "END", "condition": "malkuth.graphs.conditions:plan_only"},
+            {"from": "planner", "to": "END", "condition": "aaestro.graphs.conditions:plan_only"},
             {
                 "from": "researcher",
                 "to": "planner",
-                "condition": "malkuth.graphs.conditions:needs_research",
+                "condition": "aaestro.graphs.conditions:needs_research",
                 "max_iterations": 2,
             },
-            {"from": "researcher", "to": "END", "condition": "malkuth.graphs.conditions:plan_only"},
+            {"from": "researcher", "to": "END", "condition": "aaestro.graphs.conditions:plan_only"},
         ],
     )
     runtime = FakeRuntime().script("planner", output={"needs_research": True}).script("researcher")
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await build_graph(topology, runtime).ainvoke(
             {"query": "q", "_run_id": "r"}, {"recursion_limit": 50}
         )
@@ -510,14 +510,14 @@ async def test_unmatched_condition_without_fallback_raises_graph_001():
             {
                 "from": "planner",
                 "to": "researcher",
-                "condition": "malkuth.graphs.conditions:has_new_items",
+                "condition": "aaestro.graphs.conditions:has_new_items",
             },
             {"from": "researcher", "to": "END"},
         ],
     )
     runtime = FakeRuntime().script("planner").script("researcher")
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await build_graph(topology, runtime).ainvoke({"query": "q", "_run_id": "r"})
 
     assert exc_info.value.code == ErrorCode.GRAPH_001
@@ -548,7 +548,7 @@ async def test_conditions_declared_after_an_unconditional_edge_still_win():
             {
                 "from": "planner",
                 "to": "researcher",
-                "condition": "malkuth.graphs.conditions:needs_research",
+                "condition": "aaestro.graphs.conditions:needs_research",
             },
             {"from": "researcher", "to": "END"},
         ],
@@ -580,7 +580,7 @@ async def test_unconditional_edge_is_used_when_no_condition_matches():
             {
                 "from": "planner",
                 "to": "researcher",
-                "condition": "malkuth.graphs.conditions:needs_research",
+                "condition": "aaestro.graphs.conditions:needs_research",
             },
             {"from": "researcher", "to": "END"},
         ],

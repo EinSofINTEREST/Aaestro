@@ -11,9 +11,9 @@ from typing import Any
 
 import pytest
 
-from malkuth.core.agent import TaskResult
-from malkuth.core.errors import NETWORK_RETRY, ErrorCategory, ErrorCode, MalkuthError, RetryPolicy
-from malkuth.protocols.a2a.client import A2AClient
+from aaestro.core.agent import TaskResult
+from aaestro.core.errors import NETWORK_RETRY, AaestroError, ErrorCategory, ErrorCode, RetryPolicy
+from aaestro.protocols.a2a.client import A2AClient
 from tests.fixtures.builders import make_task
 
 A2A_RETRY = RetryPolicy(
@@ -28,7 +28,7 @@ class FlakyTransport:
     """정해진 횟수만큼 실패한 뒤 성공하는 peer transport 대역.
 
     transport 는 **원래 예외**를 던지는 계층이다 — `_send` 가 그것을 A2A 코드로
-    변환한다. 대역이 MalkuthError 를 던지면 그 변환 경로를 건너뛰어, 실제와
+    변환한다. 대역이 AaestroError 를 던지면 그 변환 경로를 건너뛰어, 실제와
     다른 코드로 검증하게 된다.
     """
 
@@ -106,7 +106,7 @@ async def test_a_rejected_task_is_not_retried(waits):
             self.sent.append(task.task_id)
             return TaskResult.failed(
                 task,
-                MalkuthError(
+                AaestroError(
                     category=ErrorCategory.MODEL,
                     code=ErrorCode.LLM_002,
                     message="context length exceeded",
@@ -115,7 +115,7 @@ async def test_a_rejected_task_is_not_retried(waits):
 
     transport = RejectingTransport()
 
-    with pytest.raises(MalkuthError) as excinfo:
+    with pytest.raises(AaestroError) as excinfo:
         await client(transport, waits).call("planner", make_task())
 
     assert excinfo.value.code == ErrorCode.A2A_003
@@ -127,7 +127,7 @@ async def test_retry_is_off_unless_the_assembly_turns_it_on(waits):
     """미주입이면 재시도하지 않는다 — 조립하는 쪽이 켠다."""
     transport = FlakyTransport(failures=1)
 
-    with pytest.raises(MalkuthError):
+    with pytest.raises(AaestroError):
         await client(transport, waits, retry=None).call("planner", make_task())
 
     assert len(transport.sent) == 1
@@ -137,7 +137,7 @@ async def test_exhausted_retries_surface_the_last_error(waits):
     """감싸서 올리면 호출자의 카테고리 기반 처리가 깨진다."""
     transport = FlakyTransport(failures=99)
 
-    with pytest.raises(MalkuthError) as excinfo:
+    with pytest.raises(AaestroError) as excinfo:
         await client(transport, waits).call("planner", make_task())
 
     assert excinfo.value.code == ErrorCode.A2A_002
@@ -146,7 +146,7 @@ async def test_exhausted_retries_surface_the_last_error(waits):
 
 async def test_the_default_network_policy_would_also_claim_it(waits):
     """05 의 표준 정책으로도 도달 실패는 재시도 대상이어야 한다."""
-    unreachable = MalkuthError(
+    unreachable = AaestroError(
         category=ErrorCategory.NETWORK,
         code=ErrorCode.NET_001,
         message="connection refused",

@@ -12,12 +12,12 @@ from http import HTTPStatus
 
 import pytest
 
-from malkuth.core.errors import ErrorCategory, ErrorCode, MalkuthError
-from malkuth.http_errors import status_for
+from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.http_errors import status_for
 
 
-def error(category: ErrorCategory, code: str, *, retryable: bool = False) -> MalkuthError:
-    return MalkuthError(category=category, code=code, message="x", retryable=retryable)
+def error(category: ErrorCategory, code: str, *, retryable: bool = False) -> AaestroError:
+    return AaestroError(category=category, code=code, message="x", retryable=retryable)
 
 
 @pytest.mark.parametrize(

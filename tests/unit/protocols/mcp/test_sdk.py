@@ -15,8 +15,8 @@ from typing import get_args, get_type_hints
 import httpx2
 import pytest
 
-from malkuth.protocols.mcp.sdk import _call, _open_streamable_http, _render_block, _terminate
-from malkuth.protocols.mcp.session import Connection
+from aaestro.protocols.mcp.sdk import _call, _open_streamable_http, _render_block, _terminate
+from aaestro.protocols.mcp.session import Connection
 
 
 class TextBlock:

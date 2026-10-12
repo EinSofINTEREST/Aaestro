@@ -9,11 +9,11 @@ from __future__ import annotations
 
 import pytest
 
-from malkuth.agentd.bootstrap import build_tool_registry
-from malkuth.agentd.executor import Executor, ExecutorServices
-from malkuth.core.errors import ErrorCode, MalkuthError
-from malkuth.core.skill import SkillSpec
-from malkuth.memory.tool import MEMORY_SEARCH_SPEC, MEMORY_SEARCH_TOOL, run_memory_search
+from aaestro.agentd.bootstrap import build_tool_registry
+from aaestro.agentd.executor import Executor, ExecutorServices
+from aaestro.core.errors import AaestroError, ErrorCode
+from aaestro.core.skill import SkillSpec
+from aaestro.memory.tool import MEMORY_SEARCH_SPEC, MEMORY_SEARCH_TOOL, run_memory_search
 from tests.fixtures.builders import make_task
 from tests.fixtures.fake_model import FakeModel, FakeTools, calls, text
 
@@ -130,7 +130,7 @@ def test_a_skillset_cannot_shadow_the_framework_tool():
                 )
             ]
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         build_tool_registry([FakeSkillset()], {}, agent="researcher", with_memory=True)
 
     assert exc_info.value.code == ErrorCode.MOD_002
@@ -179,7 +179,7 @@ class FailingRecall:
 async def test_recall_failure_becomes_an_error_event_not_an_exception():
     """같은 실패가 execute 에선 TaskResult 인데 stream 에서만 예외면 소비자가
     두 경로를 다르게 다뤄야 한다."""
-    from malkuth.core.events import ErrorEvent
+    from aaestro.core.events import ErrorEvent
 
     executor = make_executor([text("done")], recall=FailingRecall())
 
@@ -205,7 +205,7 @@ async def test_memory_search_rejects_a_missing_query(arguments):
         async def search(self, query: str, **kwargs):  # pragma: no cover - 도달 안 함
             return []
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await run_memory_search(Memory(), arguments)
 
     assert exc_info.value.code == ErrorCode.VAL_001

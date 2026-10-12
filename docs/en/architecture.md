@@ -2,7 +2,7 @@
 
 **[한국어](../ko/architecture.md)** | English
 
-Malkuth orchestrates multiple AI agents through LangGraph state graphs, with each agent
+Aaestro orchestrates multiple AI agents through LangGraph state graphs, with each agent
 isolated in its own Docker container. This document is a condensed overview; the
 normative rules are in [01-architecture.md](../../.claude/rules/01-architecture.md).
 

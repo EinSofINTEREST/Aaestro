@@ -14,7 +14,7 @@ tool, a connection to another agent.
    **회수** (or **쓰기 회수** / **전체 회수** for memory) on the declared permission. Through the API:
 
    ```bash
-   curl -X POST -H "Authorization: Bearer $MALKUTH_CONTROL_TOKEN" -H 'content-type: application/json' \
+   curl -X POST -H "Authorization: Bearer $AAESTRO_CONTROL_TOKEN" -H 'content-type: application/json' \
      -d '{"agent": "researcher", "kind": "egress", "target": "api.search.example.com",
           "reason": "incident 311"}' \
      http://127.0.0.1:8700/v1/access/revocations
@@ -34,7 +34,7 @@ tool, a connection to another agent.
 
 2. **Confirm it applies.** The agent's next attempt appears under **최근 거부** with
    `decided_by: operator`, or in `GET /v1/access/agents/{name}` → `denials`. Enforcement points
-   log the refusal (`decision: deny`), and `malkuth_access_grants_total{op="revoke"}` counts the
+   log the refusal (`decision: deny`), and `aaestro_access_grants_total{op="revoke"}` counts the
    revocation.
 
 3. **If it must stop everything the agent does,** tear its deployment down
@@ -79,7 +79,7 @@ allowed. The cost is that revoking does not work during the outage.
    off — a revocation made during the outage — they drop their cached decisions, and the
    revocation applies from the next request.
 2. If a revocation cannot wait, stop the affected agents without the control plane:
-   `docker stop malkuth-<agent>-<replica>`. When the control plane is back, tear the deployment
+   `docker stop aaestro-<agent>-<replica>`. When the control plane is back, tear the deployment
    down so its record matches.
 3. A registry that answers but **rejects** an enforcement point (a wrong enforcer token) is not an
    outage: that enforcement point drops its cache and denies everything. Fix the token.
@@ -91,8 +91,8 @@ itself, which is the network's gateway. Any host service listening on all interf
 from agents without passing through the proxy. Close it once per agent network, on the host:
 
 ```bash
-sudo deployments/docker/isolate-agent-network.sh apply malkuth-net     # runtime.network
-sudo deployments/docker/isolate-agent-network.sh status malkuth-net
+sudo deployments/docker/isolate-agent-network.sh apply aaestro-net     # runtime.network
+sudo deployments/docker/isolate-agent-network.sh status aaestro-net
 ```
 
 - It adds a chain to `INPUT` for that network's bridge: connections agents **open** to the host are

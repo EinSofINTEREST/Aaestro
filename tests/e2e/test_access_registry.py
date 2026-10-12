@@ -33,7 +33,7 @@ from tests.e2e.test_stack import docker, requires_docker
 pytestmark = [pytest.mark.e2e, requires_docker]
 
 ENFORCER_TOKEN = "e2e-enforcer-token"  # noqa: S105
-CREDENTIAL_ENV = "MALKUTH_ACCESS_CREDENTIAL"
+CREDENTIAL_ENV = "AAESTRO_ACCESS_CREDENTIAL"
 
 
 @pytest.fixture
@@ -89,7 +89,7 @@ def test_identities_are_injected_survive_a_restart_and_die_with_the_deployment(p
     deployment_id = record["deployment_id"]
 
     # --- 발급·주입: 에이전트마다 다른 신원이 실제 컨테이너 env 에 들어간다
-    credentials = {agent: credential_in(f"malkuth-{agent}-0") for agent in AGENTS}
+    credentials = {agent: credential_in(f"aaestro-{agent}-0") for agent in AGENTS}
     assert len(set(credentials.values())) == len(AGENTS), "에이전트끼리 신원을 공유했다"
     for agent, credential in credentials.items():
         assert identify(credential) == agent

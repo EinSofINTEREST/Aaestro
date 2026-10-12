@@ -8,11 +8,11 @@ from __future__ import annotations
 
 import pytest
 
-from malkuth.core.agent import TaskResult, TaskStatus
-from malkuth.core.errors import ErrorCategory, MalkuthError
-from malkuth.core.manifest import agent_name
-from malkuth.orchestrator.topology import NodeSpec
-from malkuth.runtime.nodes import ControlNodeRuntime
+from aaestro.core.agent import TaskResult, TaskStatus
+from aaestro.core.errors import AaestroError, ErrorCategory
+from aaestro.core.manifest import agent_name
+from aaestro.orchestrator.topology import NodeSpec
+from aaestro.runtime.nodes import ControlNodeRuntime
 from tests.fixtures.builders import make_task
 
 
@@ -77,7 +77,7 @@ async def test_subgraph_node_is_rejected_not_skipped():
     """조용히 건너뛰면 그래프가 실행된 것처럼 보이면서 아무 일도 하지 않는다."""
     runtime = ControlNodeRuntime(clients={})
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await runtime.invoke(subgraph_node(), make_task())
 
     assert exc_info.value.code == "GRAPH_002"
@@ -89,7 +89,7 @@ async def test_missing_container_is_graph_002():
     """노드가 가리키는 에이전트가 떠 있지 않으면 그래프가 진행할 수 없다."""
     runtime = ControlNodeRuntime(clients={})
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await runtime.invoke(node(), make_task())
 
     assert exc_info.value.code == "GRAPH_002"
@@ -100,7 +100,7 @@ async def test_failed_node_is_not_tracked_as_invoked():
     """호출되지 못한 노드를 호출됐다고 기록하면 trace 가 거짓말한다."""
     runtime = ControlNodeRuntime(clients={})
 
-    with pytest.raises(MalkuthError):
+    with pytest.raises(AaestroError):
         await runtime.invoke(node(), make_task())
 
     assert runtime.invoked == []

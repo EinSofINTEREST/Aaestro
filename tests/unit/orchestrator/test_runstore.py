@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import pytest
 
-from malkuth.orchestrator.run import RunManager, RunStatus, ServiceRunner
-from malkuth.orchestrator.runstore import (
+from aaestro.orchestrator.run import RunManager, RunStatus, ServiceRunner
+from aaestro.orchestrator.runstore import (
     InMemoryRunStore,
     RunRecord,
     SqliteRunStore,
@@ -246,7 +246,7 @@ class EchoRuntime:
     """노드를 빈 출력으로 완료시키는 runtime 대역."""
 
     async def invoke(self, node, task):
-        from malkuth.core.agent import TaskResult
+        from aaestro.core.agent import TaskResult
 
         return TaskResult.completed(task, output={})
 
@@ -260,7 +260,7 @@ async def test_a_service_run_stops_when_another_process_asks(tmp_path):
 
     저장소에 플래그만 남고 루프가 계속 돌면 drain 은 이름뿐이다.
     """
-    from malkuth.orchestrator.builder import build_graph
+    from aaestro.orchestrator.builder import build_graph
 
     path = tmp_path / "runs.db"
     driver = SqliteRunStore(path=path)
@@ -287,7 +287,7 @@ async def test_a_service_run_stops_when_another_process_asks(tmp_path):
 
 async def test_iteration_progress_is_visible_to_another_process(tmp_path):
     """진행이 보이지 않으면 운영자가 stalled 인지 도는 중인지 구분할 수 없다."""
-    from malkuth.orchestrator.builder import build_graph
+    from aaestro.orchestrator.builder import build_graph
 
     path = tmp_path / "runs.db"
     driver = SqliteRunStore(path=path)
@@ -312,7 +312,7 @@ async def test_iteration_progress_is_visible_to_another_process(tmp_path):
 
 async def test_a_service_run_without_a_store_is_unaffected(tmp_path):
     """저장소 미주입 시 기존 동작 그대로여야 한다."""
-    from malkuth.orchestrator.builder import build_graph
+    from aaestro.orchestrator.builder import build_graph
 
     topology = make_service()
     handle = RunManager().acquire(topology)

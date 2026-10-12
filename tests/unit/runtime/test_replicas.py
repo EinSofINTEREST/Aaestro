@@ -18,12 +18,12 @@ from pathlib import Path
 import pytest
 import yaml
 
-from malkuth.core.errors import ErrorCode, MalkuthError
-from malkuth.core.manifest import AgentManifest
-from malkuth.runtime.docker.engine import DockerEngine
-from malkuth.runtime.launcher import AgentLauncher
-from malkuth.runtime.ports import A2APortAllocator
-from malkuth.runtime.spec import A2A_PORT_ENV
+from aaestro.core.errors import AaestroError, ErrorCode
+from aaestro.core.manifest import AgentManifest
+from aaestro.runtime.docker.engine import DockerEngine
+from aaestro.runtime.launcher import AgentLauncher
+from aaestro.runtime.ports import A2APortAllocator
+from aaestro.runtime.spec import A2A_PORT_ENV
 from tests.fixtures.fake_docker import FakeDockerClient
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -78,7 +78,7 @@ async def test_the_same_replica_twice_is_still_rejected():
     agents = launcher(client)
     await agents.start(manifest())
 
-    with pytest.raises(MalkuthError) as excinfo:
+    with pytest.raises(AaestroError) as excinfo:
         await agents.start(manifest(), replica=0)
 
     assert excinfo.value.code == ErrorCode.RT_010
@@ -123,7 +123,7 @@ async def test_routing_an_unlaunched_agent_fails_loudly():
     """부를 대상이 없으면 그것이 드러나야 한다 — 조용히 None 을 주면 안 된다."""
     agents = launcher(FakeDockerClient())
 
-    with pytest.raises(MalkuthError) as excinfo:
+    with pytest.raises(AaestroError) as excinfo:
         agents.route("absent")
 
     assert excinfo.value.code == ErrorCode.RT_009

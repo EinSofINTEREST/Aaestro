@@ -13,11 +13,11 @@ from pathlib import Path
 import pytest
 import yaml
 
-from malkuth.catalog import Catalog
-from malkuth.core.errors import ErrorCategory, ErrorCode, MalkuthError
-from malkuth.materials import InMemoryMaterialStore, Materials
-from malkuth.runtime.docker.client import ImageBuildError
-from malkuth.runtime.images import (
+from aaestro.catalog import Catalog
+from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.materials import InMemoryMaterialStore, Materials
+from aaestro.runtime.docker.client import ImageBuildError
+from aaestro.runtime.images import (
     SKELETON_DOCKERFILE,
     BuildRecord,
     BuildStatus,
@@ -30,7 +30,7 @@ from malkuth.runtime.images import (
 from tests.fixtures.fake_docker import FakeDockerClient
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-VALID_DOCKERFILE = "FROM malkuth/agent-base:0.1.0\nCOPY manifest.yaml /app/manifest.yaml\n"
+VALID_DOCKERFILE = "FROM aaestro/agent-base:0.1.0\nCOPY manifest.yaml /app/manifest.yaml\n"
 
 
 def write(path: Path, document: dict) -> None:
@@ -43,7 +43,7 @@ def workspace(tmp_path: Path) -> Path:
     write(
         tmp_path / "modules" / "promptsets" / "solo" / "0.1.0" / "promptset.yaml",
         {
-            "apiVersion": "malkuth/v1",
+            "apiVersion": "aaestro/v1",
             "kind": "Promptset",
             "metadata": {"name": "solo", "version": "0.1.0"},
             "spec": {"engine": "jinja2", "templates": {"default": {"file": "t.j2"}}},
@@ -52,7 +52,7 @@ def workspace(tmp_path: Path) -> Path:
     write(
         tmp_path / "agents" / "custom" / "manifest.yaml",
         {
-            "apiVersion": "malkuth/v1",
+            "apiVersion": "aaestro/v1",
             "kind": "Agent",
             "metadata": {"name": "custom", "version": "0.1.0"},
             "spec": {
@@ -103,12 +103,12 @@ def test_the_skeleton_satisfies_its_own_rules():
     [
         ("COPY x /x\n", "FROM 이 없다"),
         ("FROM python:3.12-slim\n", "base 가 아니다 — agentd 가 없다"),
-        ("FROM malkuth/agent-base:0.1.0\nUSER root\n", "root 로 끝난다"),
-        ("FROM malkuth/agent-base:0.1.0\nUSER 0\n", "uid 0 으로 끝난다"),
+        ("FROM aaestro/agent-base:0.1.0\nUSER root\n", "root 로 끝난다"),
+        ("FROM aaestro/agent-base:0.1.0\nUSER 0\n", "uid 0 으로 끝난다"),
     ],
 )
 def test_layout_violations_are_refused_before_building(text, why):
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         check_dockerfile(text)
 
     assert exc_info.value.code == ErrorCode.VAL_002, why
@@ -117,7 +117,7 @@ def test_layout_violations_are_refused_before_building(text, why):
 def test_going_root_and_back_is_allowed():
     """설치 동안 root 로 올라가는 것은 흔하다 — 되돌리지 않고 끝나는 것이 문제다."""
     check_dockerfile(
-        "FROM malkuth/agent-base:0.1.0\nUSER root\nRUN apt-get update\nUSER 1000:1000\n"
+        "FROM aaestro/agent-base:0.1.0\nUSER root\nRUN apt-get update\nUSER 1000:1000\n"
     )
 
 
@@ -128,7 +128,7 @@ async def test_a_build_assembles_the_declared_layout(builder, docker):
     record = await builder.build("custom")
 
     assert record.status == BuildStatus.BUILT
-    assert record.image == image_tag("custom", "0.1.0") == "malkuth/agent-custom:0.1.0"
+    assert record.image == image_tag("custom", "0.1.0") == "aaestro/agent-custom:0.1.0"
     context = docker.contexts[0]
     assert context["Dockerfile"] == SKELETON_DOCKERFILE
     assert context["src/agent.py"] == "MARK = 'custom'"
@@ -179,7 +179,7 @@ async def test_a_violating_dockerfile_never_reaches_docker(builder, docker):
         Materials(agent="custom", version="0.1.0", files={"Dockerfile": "FROM alpine\n"})
     )
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await builder.build("custom")
 
     assert exc_info.value.code == ErrorCode.VAL_002
@@ -190,7 +190,7 @@ async def test_an_agent_without_materials_is_not_built(builder):
     """declarative agent 는 base 이미지로 돈다 — 굽게 만들면 모듈 시스템의 이점이 사라진다."""
     builder.materials.put(Materials(agent="custom", version="0.1.0", files={}))
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await builder.build("custom")
 
     assert exc_info.value.code == ErrorCode.VAL_002
@@ -198,7 +198,7 @@ async def test_an_agent_without_materials_is_not_built(builder):
 
 
 async def test_an_unknown_agent_is_not_found(builder):
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await builder.build("nobody")
 
     assert exc_info.value.code == ErrorCode.NF_001
@@ -255,7 +255,7 @@ async def test_a_second_build_of_the_same_version_is_refused(gated):
     await gated.start("custom")
     await asyncio.to_thread(gated.client.entered.wait, 5)
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         await gated.start("custom")
 
     assert exc_info.value.code == ErrorCode.RT_011
@@ -284,7 +284,7 @@ def test_the_sqlite_store_survives_a_reopen(tmp_path):
         agent="custom",
         version="0.1.0",
         status=BuildStatus.BUILT,
-        image="malkuth/agent-custom:0.1.0",
+        image="aaestro/agent-custom:0.1.0",
         log="Step 1/2",
         updated_at="2026-09-13T00:00:00+00:00",
     )

@@ -15,11 +15,11 @@ from pathlib import Path
 import pytest
 import yaml
 
-from malkuth.cli.main import build_parser, cmd_run, run_manager_for
-from malkuth.core.errors import ErrorCategory, ErrorCode, MalkuthError
-from malkuth.orchestrator import __main__ as entrypoint
-from malkuth.orchestrator.control import create_app
-from malkuth.orchestrator.runstore import SqliteRunStore
+from aaestro.cli.main import build_parser, cmd_run, run_manager_for
+from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.orchestrator import __main__ as entrypoint
+from aaestro.orchestrator.control import create_app
+from aaestro.orchestrator.runstore import SqliteRunStore
 
 
 def write_config(directory, orchestrator: dict) -> None:
@@ -35,14 +35,14 @@ def args_for(config_dir):
 def test_serving_without_a_store_is_refused(tmp_path, monkeypatch):
     """빈 목록은 "run 이 없다" 로 읽힌다 — 설정 누락과 구분되지 않는다."""
     write_config(tmp_path, {"control_port": 18999})
-    monkeypatch.setenv("MALKUTH_ENV", "local")
-    monkeypatch.setenv("MALKUTH_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("AAESTRO_ENV", "local")
+    monkeypatch.setenv("AAESTRO_CONFIG_DIR", str(tmp_path))
     monkeypatch.setattr(entrypoint, "_setup_observability", lambda: None)
     # 거절이 사라지면 진짜 서버가 떠서 테스트가 **멈춘다** — 실패는 소리나야 한다
     served: list[object] = []
     monkeypatch.setattr(entrypoint.uvicorn, "run", lambda app, **_kwargs: served.append(app))
 
-    with pytest.raises(MalkuthError) as excinfo:
+    with pytest.raises(AaestroError) as excinfo:
         entrypoint.main()
 
     assert excinfo.value.code == ErrorCode.CFG_001
@@ -54,8 +54,8 @@ def test_the_configured_store_is_served(tmp_path, monkeypatch):
     """설정의 저장소를 열어 서빙해야 한다 — 다른 저장소를 보면 늘 비어 있다."""
     store_path = tmp_path / "runs.db"
     write_config(tmp_path, {"run_store": str(store_path), "control_port": 18999})
-    monkeypatch.setenv("MALKUTH_ENV", "local")
-    monkeypatch.setenv("MALKUTH_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("AAESTRO_ENV", "local")
+    monkeypatch.setenv("AAESTRO_CONFIG_DIR", str(tmp_path))
     monkeypatch.setattr(entrypoint, "_setup_observability", lambda: None)
 
     served: dict = {}
@@ -81,7 +81,7 @@ async def test_the_served_app_refuses_resume(tmp_path):
     """
     import httpx
 
-    from malkuth.orchestrator.runstore import RunRecord
+    from aaestro.orchestrator.runstore import RunRecord
 
     store = SqliteRunStore(path=str(tmp_path / "runs.db"))
     store.upsert(RunRecord(run_id="halted", graph="g", mode="service", status="halted"))
@@ -165,11 +165,11 @@ def test_a_private_store_is_rejected_for_every_store_setting(tmp_path, setting, 
     배포 기록과 빌드 재료는 **프로세스를 넘겨** 읽혀야 한다: 재부착(#243)도, 저작과 빌드가
     다른 시점에 일어나는 것(#264/#265)도 그 전제 위에 있다.
     """
-    from malkuth.config import load_config
+    from aaestro.config import load_config
 
     write_config(tmp_path, {"run_store": str(tmp_path / "runs.db"), setting: value})
 
-    with pytest.raises(MalkuthError) as excinfo:
+    with pytest.raises(AaestroError) as excinfo:
         load_config("local", config_dir=str(tmp_path))
 
     assert excinfo.value.code == ErrorCode.CFG_001
@@ -179,7 +179,7 @@ def test_a_private_store_is_rejected_for_every_store_setting(tmp_path, setting, 
 @pytest.mark.parametrize("setting", ["deployment_store", "material_store"])
 def test_a_file_path_is_accepted_for_every_store_setting(tmp_path, setting):
     """과잉 거절 방지 — 정상 경로는 통과해야 한다."""
-    from malkuth.config import load_config
+    from aaestro.config import load_config
 
     write_config(
         tmp_path, {"run_store": str(tmp_path / "runs.db"), setting: str(tmp_path / "x.db")}
@@ -200,7 +200,7 @@ def test_a_private_run_store_is_rejected(tmp_path, value):
     """
     write_config(tmp_path, {"run_store": value})
 
-    with pytest.raises(MalkuthError) as excinfo:
+    with pytest.raises(AaestroError) as excinfo:
         run_manager_for(args_for(tmp_path))
 
     assert excinfo.value.code == ErrorCode.CFG_001
@@ -242,7 +242,7 @@ def test_a_whitespace_padded_memory_marker_is_still_rejected(tmp_path):
     """
     write_config(tmp_path, {"run_store": " :memory: "})
 
-    with pytest.raises(MalkuthError) as excinfo:
+    with pytest.raises(AaestroError) as excinfo:
         run_manager_for(args_for(tmp_path))
 
     assert excinfo.value.code == ErrorCode.CFG_001
@@ -251,9 +251,9 @@ def test_a_whitespace_padded_memory_marker_is_still_rejected(tmp_path):
 def test_the_served_author_pins_running_declarations(monkeypatch, tmp_path):
     """#249 리뷰 — 프로덕션 Author 에 in_use 가 비어 있으면 가드가 무동작이다."""
     write_config(tmp_path, {"run_store": str(tmp_path / "runs.db"), "control_port": 18999})
-    monkeypatch.setenv("MALKUTH_ENV", "local")
-    monkeypatch.setenv("MALKUTH_CONFIG_DIR", str(tmp_path))
-    monkeypatch.setenv("MALKUTH_REPO_ROOT", str(Path(__file__).resolve().parents[3]))
+    monkeypatch.setenv("AAESTRO_ENV", "local")
+    monkeypatch.setenv("AAESTRO_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("AAESTRO_REPO_ROOT", str(Path(__file__).resolve().parents[3]))
     monkeypatch.setattr(entrypoint, "_setup_observability", lambda: None)
     captured: dict = {}
     monkeypatch.setattr(
@@ -270,8 +270,8 @@ def test_the_served_author_pins_running_declarations(monkeypatch, tmp_path):
 
 def test_deployments_ask_the_builder_before_starting_custom_agents(tmp_path, monkeypatch):
     """#266 — 게이트가 있어도 진입점이 빌더를 물리지 않으면 배포는 아무것도 묻지 않는다."""
-    from malkuth.runtime.docker import client as docker_client
-    from malkuth.runtime.images import ImageBuilder
+    from aaestro.runtime.docker import client as docker_client
+    from aaestro.runtime.images import ImageBuilder
 
     write_config(
         tmp_path,
@@ -283,8 +283,8 @@ def test_deployments_ask_the_builder_before_starting_custom_agents(tmp_path, mon
             "control_port": 18999,
         },
     )
-    monkeypatch.setenv("MALKUTH_ENV", "local")
-    monkeypatch.setenv("MALKUTH_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("AAESTRO_ENV", "local")
+    monkeypatch.setenv("AAESTRO_CONFIG_DIR", str(tmp_path))
     monkeypatch.setattr(entrypoint, "_setup_observability", lambda: None)
     # 데몬 없이 조립만 본다 — SDK 핸들은 만들기만 하고 부르지 않는다
     monkeypatch.setattr(docker_client.docker, "from_env", lambda: object())
@@ -315,9 +315,9 @@ async def test_the_served_app_drives_runs_when_deployments_are_configured(tmp_pa
     """
     import httpx
 
-    from malkuth.orchestrator.runstore import RunRecord
-    from malkuth.runtime.docker.engine import DockerEngine
-    from malkuth.runtime.launcher import AgentLauncher
+    from aaestro.orchestrator.runstore import RunRecord
+    from aaestro.runtime.docker.engine import DockerEngine
+    from aaestro.runtime.launcher import AgentLauncher
     from tests.fixtures.fake_docker import FakeDockerClient
 
     store_path = tmp_path / "runs.db"
@@ -329,8 +329,8 @@ async def test_the_served_app_drives_runs_when_deployments_are_configured(tmp_pa
             "control_port": 18999,
         },
     )
-    monkeypatch.setenv("MALKUTH_ENV", "local")
-    monkeypatch.setenv("MALKUTH_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("AAESTRO_ENV", "local")
+    monkeypatch.setenv("AAESTRO_CONFIG_DIR", str(tmp_path))
     monkeypatch.setattr(entrypoint, "_setup_observability", lambda: None)
 
     class NoDockerDeployments:
@@ -343,7 +343,7 @@ async def test_the_served_app_drives_runs_when_deployments_are_configured(tmp_pa
             return False
 
         def get(self, deployment_id: str):
-            raise MalkuthError(
+            raise AaestroError(
                 category=ErrorCategory.NOT_FOUND, code=ErrorCode.NF_001, message="unknown"
             )
 
@@ -374,13 +374,13 @@ async def test_the_served_app_drives_runs_when_deployments_are_configured(tmp_pa
 
 def _serve_with(tmp_path, monkeypatch, orchestrator: dict):
     """진입점을 데몬 없이 돌려 조립된 앱과 배포 관리자, 노출되는 계측기를 돌려준다."""
-    from malkuth.observability.metrics import Metrics
+    from aaestro.observability.metrics import Metrics
 
     write_config(
         tmp_path, {"run_store": str(tmp_path / "runs.db"), "control_port": 18999, **orchestrator}
     )
-    monkeypatch.setenv("MALKUTH_ENV", "local")
-    monkeypatch.setenv("MALKUTH_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("AAESTRO_ENV", "local")
+    monkeypatch.setenv("AAESTRO_CONFIG_DIR", str(tmp_path))
     served_metrics = Metrics()
     monkeypatch.setattr(entrypoint, "_setup_observability", lambda: served_metrics)
 
@@ -409,7 +409,7 @@ async def test_the_registry_reaches_deployments_and_the_served_app(tmp_path, mon
     """배포에 물리지 않으면 신원이 발급되지 않고, 앱에 없으면 강제 지점이 물을 곳이 없다."""
     import httpx
 
-    from malkuth.access.registry import AccessRegistry
+    from aaestro.access.registry import AccessRegistry
 
     captured, deployments, served_metrics = _serve_with(
         tmp_path,
@@ -425,15 +425,15 @@ async def test_the_registry_reaches_deployments_and_the_served_app(tmp_path, mon
     assert isinstance(deployments.access, AccessRegistry)
     assert deployments.access.stewards == frozenset({"permission-agent"})
     assert deployments.access_url == "http://control-plane:8700", "에이전트가 표를 받을 곳을 모른다"
-    from malkuth.access.baselines import A2ABaseline, MemoryBaseline
-    from malkuth.access.model import ResourceKind
+    from aaestro.access.baselines import A2ABaseline, MemoryBaseline
+    from aaestro.access.model import ResourceKind
 
     # 선언 판정이 빠지면 선언된 메모리·연결이 전부 기본 거부된다
     assert isinstance(deployments.access.baselines[ResourceKind.MEMORY], MemoryBaseline)
     a2a = deployments.access.baselines[ResourceKind.A2A]
     assert isinstance(a2a, A2ABaseline)
     assert a2a.store is deployments.access.store, "배포 기록과 다른 저장소를 보면 그래프를 모른다"
-    from malkuth.access.baselines import EgressBaseline, McpToolBaseline
+    from aaestro.access.baselines import EgressBaseline, McpToolBaseline
 
     assert isinstance(deployments.access.baselines[ResourceKind.EGRESS], EgressBaseline)
     # 빠지면 선언된 원격 MCP 도구가 전부 기본 거부된다 (#282)
@@ -459,11 +459,11 @@ def test_an_exposed_registry_without_an_enforcer_token_is_refused(tmp_path, monk
             "access_store": str(tmp_path / "access.db"),
         },
     )
-    monkeypatch.setenv("MALKUTH_ENV", "local")
-    monkeypatch.setenv("MALKUTH_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("AAESTRO_ENV", "local")
+    monkeypatch.setenv("AAESTRO_CONFIG_DIR", str(tmp_path))
     monkeypatch.setattr(entrypoint, "_setup_observability", lambda: None)
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         entrypoint.main()
 
     assert exc_info.value.code == ErrorCode.CFG_001
@@ -480,11 +480,11 @@ def test_a_registry_without_an_agent_url_is_refused(tmp_path, monkeypatch):
             "access_enforcer_token": "enforcer",
         },
     )
-    monkeypatch.setenv("MALKUTH_ENV", "local")
-    monkeypatch.setenv("MALKUTH_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("AAESTRO_ENV", "local")
+    monkeypatch.setenv("AAESTRO_CONFIG_DIR", str(tmp_path))
     monkeypatch.setattr(entrypoint, "_setup_observability", lambda: None)
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         entrypoint.main()
 
     assert exc_info.value.code == ErrorCode.CFG_001
@@ -495,19 +495,19 @@ def test_a_registry_without_an_agent_url_is_refused(tmp_path, monkeypatch):
 
 
 EGRESS = {
-    "connect_url": "http://malkuth-egress:8080",
-    "providers_url": "http://malkuth-egress:8081",
+    "connect_url": "http://aaestro-egress:8080",
+    "providers_url": "http://aaestro-egress:8081",
 }
 
 
-@pytest.mark.parametrize("container", [None, "malkuth-egress-1"])
+@pytest.mark.parametrize("container", [None, "aaestro-egress-1"])
 def test_the_egress_proxy_reaches_deployments(tmp_path, monkeypatch, container):
     """배포에 물리지 않으면 에이전트는 설정과 무관하게 모델 키를 받고 직접 나간다.
 
     프록시 컨테이너는 사이드카 네트워크에 붙일 대상이다 (#304) — 에이전트가 쓰는 이름을 별칭으로.
     """
-    from malkuth.runtime.deployments import EgressEndpoints
-    from malkuth.runtime.sidecars import ProxyAttachment
+    from aaestro.runtime.deployments import EgressEndpoints
+    from aaestro.runtime.sidecars import ProxyAttachment
 
     orchestrator = {
         "access_store": str(tmp_path / "access.db"),
@@ -534,7 +534,7 @@ def test_the_egress_proxy_reaches_deployments(tmp_path, monkeypatch, container):
         globals()["write_config"] = original
 
     assert deployments.egress == EgressEndpoints(**EGRESS)
-    expected = ProxyAttachment(container, "malkuth-egress") if container else None
+    expected = ProxyAttachment(container, "aaestro-egress") if container else None
     assert deployments.sidecar_proxy == expected
 
 
@@ -548,11 +548,11 @@ def test_an_egress_proxy_without_the_registry_is_refused(tmp_path, monkeypatch):
         ),
         encoding="utf-8",
     )
-    monkeypatch.setenv("MALKUTH_ENV", "local")
-    monkeypatch.setenv("MALKUTH_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("AAESTRO_ENV", "local")
+    monkeypatch.setenv("AAESTRO_CONFIG_DIR", str(tmp_path))
     monkeypatch.setattr(entrypoint, "_setup_observability", lambda: None)
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         entrypoint.main()
 
     assert exc_info.value.details["setting"] == "runtime.egress_proxy"
@@ -560,7 +560,7 @@ def test_an_egress_proxy_without_the_registry_is_refused(tmp_path, monkeypatch):
 
 def test_agents_run_on_an_internal_network_exactly_when_an_egress_proxy_is_configured():
     """프록시가 유일한 출구여야 판정을 우회하지 못한다 — 없으면 게시 포트 그대로다 (#280)."""
-    from malkuth.config import RuntimeConfig
+    from aaestro.config import RuntimeConfig
     from tests.fixtures.fake_docker import FakeDockerClient
 
     isolated = entrypoint.agent_engine(
@@ -574,11 +574,11 @@ def test_agents_run_on_an_internal_network_exactly_when_an_egress_proxy_is_confi
 
 def test_the_startup_grace_and_ready_timeout_reach_the_runtime(tmp_path, monkeypatch):
     """유예만 올리고 배포 대기를 안 올리면 배포가 먼저 끝난다 — 둘 다 설정에서 와야 한다 (#297)."""
-    from malkuth.catalog import Catalog
-    from malkuth.config import MalkuthConfig, OrchestratorConfig
+    from aaestro.catalog import Catalog
+    from aaestro.config import AaestroConfig, OrchestratorConfig
 
     monkeypatch.setattr(entrypoint, "agent_engine", lambda runtime, client: None)
-    config = MalkuthConfig.model_validate({"runtime": {"health_check": {"startup_grace_s": 120}}})
+    config = AaestroConfig.model_validate({"runtime": {"health_check": {"startup_grace_s": 120}}})
     orchestrator = OrchestratorConfig(
         deployment_store=str(tmp_path / "deployments.db"), deployment_ready_timeout_s=180
     )
@@ -592,7 +592,7 @@ def test_the_startup_grace_and_ready_timeout_reach_the_runtime(tmp_path, monkeyp
     # 기본값도 같은 관계를 지킨다 — 유예가 배포 대기보다 길면 유예가 의미를 잃는다
     assert (
         OrchestratorConfig().deployment_ready_timeout_s
-        > MalkuthConfig().runtime.health_check.startup_grace_s
+        > AaestroConfig().runtime.health_check.startup_grace_s
     )
 
 
@@ -608,7 +608,7 @@ def test_the_startup_grace_and_ready_timeout_reach_the_runtime(tmp_path, monkeyp
 )
 def test_isolated_agents_reaching_the_control_plane_is_warned(proxy, host, warned):
     """격리돼도 브리지 게이트웨이는 호스트다 — 밖에 열린 control plane 을 알린다 (#303)."""
-    from malkuth.config import RuntimeConfig
+    from aaestro.config import RuntimeConfig
 
     runtime = RuntimeConfig(
         egress_proxy=(
@@ -637,8 +637,8 @@ def test_the_served_run_service_resolves_node_models_from_the_catalog(tmp_path):
     """resolver 를 물리지 않으면 배포의 model_overrides 가 기록만 되고 태스크에 닿지 않는다."""
     from types import SimpleNamespace
 
-    from malkuth.catalog import Catalog
-    from malkuth.orchestrator.models import CatalogModels
+    from aaestro.catalog import Catalog
+    from aaestro.orchestrator.models import CatalogModels
 
     catalog = Catalog.under(tmp_path)
     config = SimpleNamespace(
@@ -662,7 +662,7 @@ def test_the_served_run_service_resolves_node_models_from_the_catalog(tmp_path):
 
 
 def test_proxy_providers_is_none_without_a_proxy_and_the_declared_set_with_one():
-    from malkuth.config import RuntimeConfig
+    from aaestro.config import RuntimeConfig
 
     plain = RuntimeConfig()
     proxied = RuntimeConfig(egress_proxy={**EGRESS, "providers": ["anthropic", "openai-compat"]})
@@ -696,8 +696,8 @@ def test_the_served_author_and_the_deployment_wiring_get_the_proxy_providers(tmp
         ),
         encoding="utf-8",
     )
-    monkeypatch.setenv("MALKUTH_ENV", "local")
-    monkeypatch.setenv("MALKUTH_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("AAESTRO_ENV", "local")
+    monkeypatch.setenv("AAESTRO_CONFIG_DIR", str(tmp_path))
     monkeypatch.setattr(entrypoint, "_setup_observability", lambda: None)
 
     class Deployments:
@@ -727,11 +727,11 @@ def test_the_served_author_and_the_deployment_wiring_get_the_proxy_providers(tmp
 
 def test_the_deployment_managers_own_author_gets_the_proxy_providers(tmp_path, monkeypatch):
     """배포 관리자가 안에서 만드는 Author — 진입점의 두 번째 조립 지점."""
-    from malkuth.catalog import Catalog
-    from malkuth.config import MalkuthConfig, OrchestratorConfig
+    from aaestro.catalog import Catalog
+    from aaestro.config import AaestroConfig, OrchestratorConfig
 
     monkeypatch.setattr(entrypoint, "agent_engine", lambda runtime, client: None)
-    config = MalkuthConfig.model_validate(
+    config = AaestroConfig.model_validate(
         {"runtime": {"egress_proxy": {**EGRESS, "providers": ["anthropic", "openai-compat"]}}}
     )
     orchestrator = OrchestratorConfig(deployment_store=str(tmp_path / "deployments.db"))

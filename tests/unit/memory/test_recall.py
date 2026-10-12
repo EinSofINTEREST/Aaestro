@@ -10,9 +10,9 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from malkuth.memory.entry import MemoryEntry, MemorySource
-from malkuth.memory.index import Hit, SpaceIndex
-from malkuth.memory.recall import (
+from aaestro.memory.entry import MemoryEntry, MemorySource
+from aaestro.memory.index import Hit, SpaceIndex
+from aaestro.memory.recall import (
     RRF_K,
     AutoRecall,
     Recall,
@@ -23,7 +23,7 @@ from malkuth.memory.recall import (
     render_context,
     resolve_corrections,
 )
-from malkuth.modules.memoryset import ChunkSpec, HybridSpec, MemoryKind, RecallSpec
+from aaestro.modules.memoryset import ChunkSpec, HybridSpec, MemoryKind, RecallSpec
 
 SPACE = "local:researcher:longterm"
 
@@ -372,7 +372,7 @@ def test_auto_recall_logs_the_standard_fields(monkeypatch):
     def capture(_event: str, **fields: object) -> None:
         recorded.append(dict(fields))
 
-    from malkuth.memory import recall as recall_module
+    from aaestro.memory import recall as recall_module
 
     monkeypatch.setattr(recall_module.log, "debug", capture)
 

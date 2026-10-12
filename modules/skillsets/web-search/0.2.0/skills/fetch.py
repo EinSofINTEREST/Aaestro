@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from malkuth.core.skill import SkillContext, skill
+from aaestro.core.skill import SkillContext, skill
 
 
 @skill

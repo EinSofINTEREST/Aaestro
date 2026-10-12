@@ -14,10 +14,10 @@ from contextlib import asynccontextmanager
 import httpx
 import pytest
 
-from malkuth.core.agent import CONTROL_OVERHEAD_S, HealthState, TaskConfig, TaskResult, TaskStatus
-from malkuth.core.errors import ErrorCategory, MalkuthError
-from malkuth.core.events import DoneEvent, TokenEvent, ToolCallEvent
-from malkuth.runtime.control import ControlClient, control_url
+from aaestro.core.agent import CONTROL_OVERHEAD_S, HealthState, TaskConfig, TaskResult, TaskStatus
+from aaestro.core.errors import AaestroError, ErrorCategory
+from aaestro.core.events import DoneEvent, TokenEvent, ToolCallEvent
+from aaestro.runtime.control import ControlClient, control_url
 from tests.fixtures.builders import make_task
 
 BASE_URL = "http://agent-researcher:8080"
@@ -154,7 +154,7 @@ async def test_connection_failure_becomes_retryable_net_001():
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("refused")
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         async with client_with(handler) as client:
             await client.invoke(make_task())
 
@@ -168,7 +168,7 @@ async def test_timeout_becomes_retryable_net_002():
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ReadTimeout("slow")
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         async with client_with(handler) as client:
             await client.invoke(make_task())
 
@@ -193,7 +193,7 @@ async def test_invoke_waits_past_the_task_timeout_for_the_agents_answer():
 
 
 async def test_server_error_is_retryable_runtime_error():
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         async with client_with(json_response({}, status=503)) as client:
             await client.invoke(make_task())
 
@@ -204,7 +204,7 @@ async def test_server_error_is_retryable_runtime_error():
 
 
 async def test_client_error_is_not_retryable():
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         async with client_with(json_response({}, status=400)) as client:
             await client.invoke(make_task())
 
@@ -213,7 +213,7 @@ async def test_client_error_is_not_retryable():
 
 @pytest.mark.parametrize("status", [401, 403])
 async def test_rejected_token_is_forbidden(status):
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         async with client_with(json_response({}, status=status)) as client:
             await client.invoke(make_task())
 
@@ -221,7 +221,7 @@ async def test_rejected_token_is_forbidden(status):
 
 
 async def test_missing_endpoint_is_not_found():
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         async with client_with(json_response({}, status=404)) as client:
             await client.invoke(make_task())
 
@@ -232,7 +232,7 @@ async def test_missing_endpoint_is_not_found():
 async def test_errors_carry_the_task_id():
     task = make_task(task_id="task-err")
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         async with client_with(json_response({}, status=500)) as client:
             await client.invoke(task)
 
@@ -240,7 +240,7 @@ async def test_errors_carry_the_task_id():
 
 
 async def test_error_never_leaks_the_token():
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         async with client_with(json_response({}, status=500)) as client:
             await client.invoke(make_task())
 
@@ -293,7 +293,7 @@ async def test_stream_skips_comments_and_sentinels():
 
 
 async def test_stream_reports_non_success_status():
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         async with client_with(sse_handler([], status=503)) as client:
             [event async for event in client.stream(make_task())]
 
@@ -304,7 +304,7 @@ async def test_stream_converts_transport_failure():
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("refused")
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         async with client_with(handler) as client:
             [event async for event in client.stream(make_task())]
 
@@ -412,7 +412,7 @@ async def test_stream_cancellation_closes_the_response():
             await task
 
 
-async def test_cancellation_is_not_converted_to_a_malkuth_error():
+async def test_cancellation_is_not_converted_to_a_aaestro_error():
     """취소를 NET_* 로 감싸면 협조적 종료가 실패로 오인된다."""
     started = asyncio.Event()
 
@@ -440,9 +440,9 @@ async def test_a_resolved_model_survives_the_http_hop_into_agentd():
     같은 프로세스에서 객체만 넘기면 직렬화에서 필드가 빠져도 초록이다 — 실제 agentd 앱을
     ASGI 로 태워 ControlClient 가 보낸 본문이 서버에서 같은 TaskRequest 로 복원되는지 본다.
     """
-    from malkuth.agentd.server import AgentRuntime, create_app
-    from malkuth.core.agent import TaskRequest
-    from malkuth.core.manifest import ModelConfig
+    from aaestro.agentd.server import AgentRuntime, create_app
+    from aaestro.core.agent import TaskRequest
+    from aaestro.core.manifest import ModelConfig
 
     model = ModelConfig.model_validate(
         {

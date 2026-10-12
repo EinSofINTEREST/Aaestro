@@ -18,15 +18,15 @@ import pytest
 import uvicorn
 import yaml
 
-from malkuth.authoring import Author
-from malkuth.catalog import Catalog
-from malkuth.cli import main as cli
-from malkuth.cli.main import main, read_materials
-from malkuth.core.errors import ErrorCode, MalkuthError
-from malkuth.materials import InMemoryMaterialStore
-from malkuth.orchestrator.control import create_app
-from malkuth.orchestrator.runstore import InMemoryRunStore
-from malkuth.runtime.images import ImageBuilder, InMemoryBuildStore
+from aaestro.authoring import Author
+from aaestro.catalog import Catalog
+from aaestro.cli import main as cli
+from aaestro.cli.main import main, read_materials
+from aaestro.core.errors import AaestroError, ErrorCode
+from aaestro.materials import InMemoryMaterialStore
+from aaestro.orchestrator.control import create_app
+from aaestro.orchestrator.runstore import InMemoryRunStore
+from aaestro.runtime.images import ImageBuilder, InMemoryBuildStore
 from tests.fixtures.fake_docker import FakeDockerClient
 
 
@@ -41,7 +41,7 @@ def workspace(tmp_path: Path) -> Path:
     write(
         root / "modules" / "promptsets" / "solo" / "0.1.0" / "promptset.yaml",
         {
-            "apiVersion": "malkuth/v1",
+            "apiVersion": "aaestro/v1",
             "kind": "Promptset",
             "metadata": {"name": "solo", "version": "0.1.0"},
             "spec": {"engine": "jinja2", "templates": {"default": {"file": "t.j2"}}},
@@ -50,7 +50,7 @@ def workspace(tmp_path: Path) -> Path:
     write(
         root / "agents" / "custom" / "manifest.yaml",
         {
-            "apiVersion": "malkuth/v1",
+            "apiVersion": "aaestro/v1",
             "kind": "Agent",
             "metadata": {"name": "custom", "version": "0.1.0"},
             "spec": {
@@ -123,7 +123,7 @@ def test_a_directory_becomes_context_relative_files(materials):
 def test_a_binary_file_is_refused_with_its_path(materials):
     (materials / "src" / "blob.bin").write_bytes(b"\x00\xff\xfe")
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         read_materials(materials)
 
     assert exc_info.value.code == ErrorCode.VAL_002
@@ -139,7 +139,7 @@ def test_a_symbolic_link_is_refused_instead_of_followed(materials, tmp_path, tar
     target = outside / "credentials" if target_kind == "file" else outside
     (materials / "src" / "linked").symlink_to(target)
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         read_materials(materials)
 
     assert exc_info.value.code == ErrorCode.VAL_002
@@ -178,7 +178,7 @@ def test_build_wait_reports_the_baked_image(served, materials, docker, capsys):
     assert code == 0
     body = out_json(capsys)
     assert body["status"] == "built"
-    assert body["image"] == "malkuth/agent-custom:0.1.0"
+    assert body["image"] == "aaestro/agent-custom:0.1.0"
     assert docker.contexts[0]["src/agent.py"] == "MARK = 'seeded'\n"
 
 

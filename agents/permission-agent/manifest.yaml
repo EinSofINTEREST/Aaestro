@@ -1,4 +1,4 @@
-apiVersion: malkuth/v1
+apiVersion: aaestro/v1
 kind: Agent
 metadata:
   name: permission-agent
@@ -15,7 +15,7 @@ spec:
     ref: promptsets/permission-agent@0.1.0
 
   # 프레임워크가 제공하는 실행기 — 빌드 재료 없이 base 이미지에서 돈다
-  entrypoint: malkuth.access.steward:PermissionAgent
+  entrypoint: aaestro.access.steward:PermissionAgent
 
   a2a:
     enabled: true

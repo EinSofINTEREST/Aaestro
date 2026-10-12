@@ -1,6 +1,6 @@
 # graphs/research-pipeline.yaml 을 src/ 없이 다시 쓴 것 (#316) — state 는 인라인 필드,
 # 조건은 선언식이다. 레포 그래프와 같은 라우팅을 내는지 test_declarative_graphs 가 본다.
-apiVersion: malkuth/v1
+apiVersion: aaestro/v1
 kind: Graph
 metadata:
   name: research-pipeline-declarative

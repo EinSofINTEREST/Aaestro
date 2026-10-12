@@ -17,7 +17,7 @@
    - 카테고리 기반 처리(재시도/라우팅/알림)가 가능하도록 구조화 에러 사용
    - 기계 판독 가능한 error code 포함
 
-## The `MalkuthError` Type
+## The `AaestroError` Type
 
 ```python
 class ErrorCategory(StrEnum):
@@ -49,7 +49,7 @@ class ErrorCategory(StrEnum):
     INTERNAL = "internal"
 
 
-class MalkuthError(Exception):
+class AaestroError(Exception):
     """시스템 전반의 구조화 에러 타입."""
 
     def __init__(
@@ -72,21 +72,21 @@ class MalkuthError(Exception):
         self.retryable = retryable
         self.details = details or {}
 
-    def payload(self) -> MalkuthErrorPayload:
+    def payload(self) -> AaestroErrorPayload:
         """TaskResult / API 응답에 실리는 직렬화 표현."""
         ...
 ```
 
-- 원인 예외는 `raise MalkuthError(...) from err` 로 연결 — `err` 필드 별도 보관 불필요
-- 에러 매칭은 `except MalkuthError as e: if e.category is ...` 또는 code 비교로
+- 원인 예외는 `raise AaestroError(...) from err` 로 연결 — `err` 필드 별도 보관 불필요
+- 에러 매칭은 `except AaestroError as e: if e.category is ...` 또는 code 비교로
 
-## Layer Rules — When to Use `MalkuthError` vs Plain Exceptions
+## Layer Rules — When to Use `AaestroError` vs Plain Exceptions
 
 모든 에러 생성을 일률적으로 구조화하지 않고, 레이어별 규칙을 분리한다.
 
-### MUST — `MalkuthError` 로 변환해야 하는 boundary
+### MUST — `AaestroError` 로 변환해야 하는 boundary
 
-재시도/라우팅/알림 전략이 카테고리·코드에 의존하는 경계에서는 반드시 `MalkuthError` 로
+재시도/라우팅/알림 전략이 카테고리·코드에 의존하는 경계에서는 반드시 `AaestroError` 로
 변환해 전파한다.
 
 | Boundary | Categories |
@@ -115,12 +115,12 @@ class MalkuthError(Exception):
 ### 예시 — boundary 변환 패턴
 
 ```python
-# protocols/mcp/client.py (boundary — MalkuthError 로 변환)
+# protocols/mcp/client.py (boundary — AaestroError 로 변환)
 async def call_tool(self, name: str, args: dict[str, Any]) -> ToolResult:
     try:
         return await self._session.call_tool(name, args)
     except McpError as err:
-        raise MalkuthError(
+        raise AaestroError(
             category=ErrorCategory.MCP,
             code="MCP_003",
             message=f"tool call failed: {name}",
@@ -128,7 +128,7 @@ async def call_tool(self, name: str, args: dict[str, Any]) -> ToolResult:
             retryable=False,
         ) from err
     except ConnectionError as err:
-        raise MalkuthError(
+        raise AaestroError(
             category=ErrorCategory.MCP,
             code="MCP_004",
             message="mcp transport disconnected",
@@ -266,7 +266,7 @@ DECISION_RETRY = RetryPolicy(
 ### Retry Rules
 
 1. 구현은 `tenacity` 사용 — 수제 재시도 루프 금지
-2. `MalkuthError.retryable == False` 면 즉시 중단 — 카테고리가 retryable 목록에 있어도
+2. `AaestroError.retryable == False` 면 즉시 중단 — 카테고리가 retryable 목록에 있어도
 3. 재시도 전 대기 중에도 cancellation 존중 (`asyncio.CancelledError` 즉시 전파)
 4. 재시도 시 WARN 로그: `attempt`, `max_attempts`, `delay_ms` 필드 필수
 5. **부수효과가 있는 호출**(external tool)은 멱등성이 확보된 경우에만 자동 재시도
@@ -300,12 +300,12 @@ breaker = CircuitBreaker(max_failures=5, reset_timeout_s=60)
 
 async def call(self, fn: Callable[[], Awaitable[T]]) -> T:
     if not breaker.can_attempt():
-        raise MalkuthError(category=..., code=..., message="circuit open",
+        raise AaestroError(category=..., code=..., message="circuit open",
                            retryable=True)
     ...
 ```
 
-Open 상태 전환/복구 시 WARN 로그 + `malkuth_circuit_state` 메트릭 갱신.
+Open 상태 전환/복구 시 WARN 로그 + `aaestro_circuit_state` 메트릭 갱신.
 
 ## Logging
 
@@ -471,53 +471,53 @@ Prometheus (`prometheus-client`) 사용. 표준 메트릭:
 
 ```python
 # Task metrics — 에이전트 단위 메트릭은 group 라벨 포함 (그룹별 집계/quota 감시용)
-malkuth_agent_tasks_total{agent, group, graph, status}   # Counter — graph: 그래프명 | "direct"
-malkuth_agent_task_duration_seconds{agent, group, graph} # Histogram
+aaestro_agent_tasks_total{agent, group, graph, status}   # Counter — graph: 그래프명 | "direct"
+aaestro_agent_task_duration_seconds{agent, group, graph} # Histogram
 
 # Model metrics
-malkuth_model_requests_total{agent, provider, model, status, fallback_index}
-malkuth_model_tokens_total{agent, model, direction}      # direction: input|output
+aaestro_model_requests_total{agent, provider, model, status, fallback_index}
+aaestro_model_tokens_total{agent, model, direction}      # direction: input|output
 
 # Decision metrics (01 Decision Models)
-malkuth_decision_calls_total{agent, provider, model, use, status}   # use: recall_filter|input_screen|tool_gate|node|compaction
-malkuth_decision_bands_total{agent, use, question, band}            # band: act|uncertain|reject — uncertain 비율이 구간 건강도
-malkuth_decision_duration_seconds{agent, provider}
-malkuth_decision_unavailable_total{agent, provider, reason}         # reason: timeout|error|circuit_open — 원래 경로로 간 횟수
+aaestro_decision_calls_total{agent, provider, model, use, status}   # use: recall_filter|input_screen|tool_gate|node|compaction
+aaestro_decision_bands_total{agent, use, question, band}            # band: act|uncertain|reject — uncertain 비율이 구간 건강도
+aaestro_decision_duration_seconds{agent, provider}
+aaestro_decision_unavailable_total{agent, provider, reason}         # reason: timeout|error|circuit_open — 원래 경로로 간 횟수
 
 # Tool / protocol metrics
-malkuth_tool_calls_total{agent, source, tool, status}    # source: skillset|mcp
-malkuth_mcp_tool_calls_total{agent, server, tool, status}
-malkuth_a2a_calls_total{caller, callee, status}
+aaestro_tool_calls_total{agent, source, tool, status}    # source: skillset|mcp
+aaestro_mcp_tool_calls_total{agent, server, tool, status}
+aaestro_a2a_calls_total{caller, callee, status}
 
 # Runtime metrics
-malkuth_containers_running{agent}                        # Gauge
-malkuth_container_restarts_total{agent, reason}
-malkuth_agent_health{agent}                              # Gauge: 1 healthy / 0 unhealthy
+aaestro_containers_running{agent}                        # Gauge
+aaestro_container_restarts_total{agent, reason}
+aaestro_agent_health{agent}                              # Gauge: 1 healthy / 0 unhealthy
 
 # Orchestrator metrics
-malkuth_runs_active{graph, mode}                         # Gauge — mode: mission|service
-malkuth_runs_total{graph, mode, status}
-malkuth_node_duration_seconds{graph, node_id}
-malkuth_checkpoint_operations_total{operation, status}
+aaestro_runs_active{graph, mode}                         # Gauge — mode: mission|service
+aaestro_runs_total{graph, mode, status}
+aaestro_node_duration_seconds{graph, node_id}
+aaestro_checkpoint_operations_total{operation, status}
 
 # Service run metrics
-malkuth_service_iterations_total{graph, status}          # Counter — iteration 단위
-malkuth_service_idle_delay_seconds{graph}                # Gauge — 현재 idle backoff
+aaestro_service_iterations_total{graph, status}          # Counter — iteration 단위
+aaestro_service_idle_delay_seconds{graph}                # Gauge — 현재 idle backoff
 
 # Memory metrics ([09-memory-context.md](09-memory-context.md))
-malkuth_memory_operations_total{space, op, status}       # op: append|read|latest|search|recall
-malkuth_memory_search_duration_seconds{space}
-malkuth_memory_entries{space}                            # Gauge
-malkuth_memory_index_lag_seconds{space}
+aaestro_memory_operations_total{space, op, status}       # op: append|read|latest|search|recall
+aaestro_memory_search_duration_seconds{space}
+aaestro_memory_entries{space}                            # Gauge
+aaestro_memory_index_lag_seconds{space}
 
 # Circuit breaker
-malkuth_circuit_state{target}                            # Gauge: 0 closed / 1 open / 2 half
+aaestro_circuit_state{target}                            # Gauge: 0 closed / 1 open / 2 half
 
 # Access control ([01-architecture.md](01-architecture.md) Access Control)
-malkuth_access_decisions_total{resource, decision, source}  # decision: allow|deny, source: fresh|cache|unreachable
-malkuth_access_grants_total{resource, op, decided_by}       # op: grant|revoke|refuse
-malkuth_access_registry_reachable{component}                # Gauge: 1 / 0 — 강제 지점별
-malkuth_access_cache_invalidations_total{component}
+aaestro_access_decisions_total{resource, decision, source}  # decision: allow|deny, source: fresh|cache|unreachable
+aaestro_access_grants_total{resource, op, decided_by}       # op: grant|revoke|refuse
+aaestro_access_registry_reachable{component}                # Gauge: 1 / 0 — 강제 지점별
+aaestro_access_cache_invalidations_total{component}
 ```
 
 ### Health Checks
@@ -538,41 +538,41 @@ Health check 대상:
 
 ```yaml
 groups:
-  - name: malkuth
+  - name: aaestro
     interval: 30s
     rules:
       - alert: AgentHighFailureRate
         expr: |
-          rate(malkuth_agent_tasks_total{status="failed"}[5m]) /
-          rate(malkuth_agent_tasks_total[5m]) > 0.1
+          rate(aaestro_agent_tasks_total{status="failed"}[5m]) /
+          rate(aaestro_agent_tasks_total[5m]) > 0.1
         for: 5m
         labels: {severity: warning}
         annotations:
           summary: "Agent {{ $labels.agent }} failure rate > 10%"
 
       - alert: AgentDown
-        expr: malkuth_agent_health == 0
+        expr: aaestro_agent_health == 0
         for: 3m
         labels: {severity: critical}
         annotations:
           summary: "Agent {{ $labels.agent }} unhealthy for 3m"
 
       - alert: ContainerRestartLoop
-        expr: increase(malkuth_container_restarts_total[10m]) > 5
+        expr: increase(aaestro_container_restarts_total[10m]) > 5
         labels: {severity: critical}
         annotations:
           summary: "Agent {{ $labels.agent }} restart loop"
 
       - alert: ModelRateLimited
         expr: |
-          rate(malkuth_model_requests_total{status="rate_limited"}[5m]) > 1
+          rate(aaestro_model_requests_total{status="rate_limited"}[5m]) > 1
         for: 5m
         labels: {severity: warning}
 
       - alert: DecisionModelMostlyUncertain
         expr: |
-          sum without (band) (rate(malkuth_decision_bands_total{band="uncertain"}[30m])) /
-          sum without (band) (rate(malkuth_decision_bands_total[30m])) > 0.5
+          sum without (band) (rate(aaestro_decision_bands_total{band="uncertain"}[30m])) /
+          sum without (band) (rate(aaestro_decision_bands_total[30m])) > 0.5
         for: 30m
         labels: {severity: warning}
         annotations:
@@ -580,7 +580,7 @@ groups:
 
       - alert: DecisionModelUnavailable
         expr: |
-          sum by (agent, provider) (rate(malkuth_decision_unavailable_total[10m])) > 0.5
+          sum by (agent, provider) (rate(aaestro_decision_unavailable_total[10m])) > 0.5
         for: 10m
         labels: {severity: warning}
         annotations:
@@ -588,7 +588,7 @@ groups:
 
       - alert: CheckpointFailures
         expr: |
-          rate(malkuth_checkpoint_operations_total{status="failed"}[5m]) > 0
+          rate(aaestro_checkpoint_operations_total{status="failed"}[5m]) > 0
         for: 5m
         labels: {severity: critical}
         annotations:
@@ -596,27 +596,27 @@ groups:
 
       - alert: ServiceRunStalled
         expr: |
-          malkuth_runs_active{mode="service"} > 0
-          and increase(malkuth_service_iterations_total[30m]) == 0
+          aaestro_runs_active{mode="service"} > 0
+          and increase(aaestro_service_iterations_total[30m]) == 0
         labels: {severity: critical}
         annotations:
           summary: "Service graph {{ $labels.graph }} made no progress for 30m"
 
       - alert: ServiceRunHalted
-        expr: increase(malkuth_service_iterations_total{status="halted"}[10m]) > 0
+        expr: increase(aaestro_service_iterations_total{status="halted"}[10m]) > 0
         labels: {severity: critical}
         annotations:
           summary: "Service graph {{ $labels.graph }} halted (GRAPH_005 failure streak)"
 
       - alert: AccessRegistryUnreachable
-        expr: malkuth_access_registry_reachable == 0
+        expr: aaestro_access_registry_reachable == 0
         for: 1m
         labels: {severity: critical}
         annotations:
           summary: "{{ $labels.component }} cannot reach the access registry — new decisions are denied, revocations are not applied"
 
       - alert: AccessGrantRefusalsSpike
-        expr: sum without (op) (increase(malkuth_access_grants_total{op="refuse"}[10m])) > 20
+        expr: sum without (op) (increase(aaestro_access_grants_total{op="refuse"}[10m])) > 20
         labels: {severity: warning}
         annotations:
           summary: "Many refused grants — a worker agent may be trying to talk the permission agent past its ceiling"
@@ -647,7 +647,7 @@ Grafana 대시보드 구성:
    - MCP 서버 불안정: `optional` 전환 또는 해당 skillset 비활성 버전으로 롤백
    - 토폴로지 문제: 이전 그래프 버전으로 롤백 (모듈 버저닝 덕에 즉시 가능)
    - Service run 정지 (GRAPH_005): 에러 코드 분포로 원인 해소 확인 후
-     `malkuth run resume <run_id>` 로 마지막 iteration checkpoint 에서 재개
+     `aaestro run resume <run_id>` 로 마지막 iteration checkpoint 에서 재개
 
 3. **Escalation**
    - P0 (Critical): 전체 run 실패, checkpoint 유실
@@ -663,15 +663,15 @@ Grafana 대시보드 구성:
 
 2. **Replay Capability**
    - Checkpoint 기반 특정 node 부터 재실행
-   - 태스크 입력(TaskRequest) 저장 → 동일 입력으로 에이전트 단독 재현 (`malkuth replay`)
+   - 태스크 입력(TaskRequest) 저장 → 동일 입력으로 에이전트 단독 재현 (`aaestro replay`)
 
 3. **Debug Commands**
    ```
-   malkuth status                        # 그래프/에이전트 상태 요약
-   malkuth agent logs <agent>            # 에이전트 컨테이너 로그
-   malkuth agent inspect <agent>         # manifest + 실제 로드 상태 비교
-   malkuth run trace <run_id>            # run 의 node 실행 타임라인
-   malkuth run resume <run_id>           # 마지막 checkpoint 에서 재개
+   aaestro status                        # 그래프/에이전트 상태 요약
+   aaestro agent logs <agent>            # 에이전트 컨테이너 로그
+   aaestro agent inspect <agent>         # manifest + 실제 로드 상태 비교
+   aaestro run trace <run_id>            # run 의 node 실행 타임라인
+   aaestro run resume <run_id>           # 마지막 checkpoint 에서 재개
    ```
 
 ## Data Integrity

@@ -1,4 +1,4 @@
-"""`malkuth run --deployment` — 주소를 모르고도 배포에 run 을 낸다 (#244)."""
+"""`aaestro run --deployment` — 주소를 모르고도 배포에 run 을 낸다 (#244)."""
 
 from __future__ import annotations
 
@@ -10,12 +10,12 @@ from typing import Any
 import pytest
 import uvicorn
 
-from malkuth.cli.main import build_parser, main
-from malkuth.orchestrator.control import create_app
-from malkuth.orchestrator.run import RunStatus
-from malkuth.orchestrator.runstore import InMemoryRunStore, RunRecord
-from malkuth.orchestrator.submit import RunResult
-from malkuth.orchestrator.topology import GraphMode
+from aaestro.cli.main import build_parser, main
+from aaestro.orchestrator.control import create_app
+from aaestro.orchestrator.run import RunStatus
+from aaestro.orchestrator.runstore import InMemoryRunStore, RunRecord
+from aaestro.orchestrator.submit import RunResult
+from aaestro.orchestrator.topology import GraphMode
 
 
 class TwoStepRuns:

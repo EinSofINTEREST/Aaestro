@@ -12,11 +12,11 @@ from pathlib import Path
 import httpx
 import pytest
 
-from malkuth.access.registry import AccessRegistry
-from malkuth.access.store import InMemoryAccessStore
-from malkuth.catalog import Catalog
-from malkuth.orchestrator.control import create_app
-from malkuth.orchestrator.runstore import InMemoryRunStore
+from aaestro.access.registry import AccessRegistry
+from aaestro.access.store import InMemoryAccessStore
+from aaestro.catalog import Catalog
+from aaestro.orchestrator.control import create_app
+from aaestro.orchestrator.runstore import InMemoryRunStore
 from tests.fixtures.access import STEWARD, access_workspace
 
 REPO_ROOT = Path(__file__).resolve().parents[3]

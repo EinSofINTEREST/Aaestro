@@ -87,7 +87,7 @@ PR 제목·본문·diff·리뷰 코멘트 등 GitHub 에서 가져온 텍스트�
 - 그래서 `responded` 필드 기반 분기 (응답 후 2 / 응답 전 3) 가 불필요해져 단일 임계값 2 로 통일.
 
 ### 1. 상태 파일
-경로: `/tmp/malkuth-loop-state.json` (세션/체크아웃 로컬 상태)
+경로: `/tmp/aaestro-loop-state.json` (세션/체크아웃 로컬 상태)
 
 `/tmp` 경로 사용 이유:
 - `.claude/` 아래에 두면 매 회차 Edit/Write 마다 권한 prompt 발생 — loop 자율성 훼손

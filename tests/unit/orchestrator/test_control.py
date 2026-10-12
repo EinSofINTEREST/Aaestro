@@ -11,9 +11,9 @@ from pathlib import Path
 import httpx
 import pytest
 
-from malkuth.core.errors import ErrorCategory, ErrorCode, MalkuthError
-from malkuth.orchestrator.control import create_app
-from malkuth.orchestrator.runstore import InMemoryRunStore, RunRecord, SqliteRunStore
+from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.orchestrator.control import create_app
+from aaestro.orchestrator.runstore import InMemoryRunStore, RunRecord, SqliteRunStore
 
 BASE_URL = "http://control.test"
 
@@ -200,7 +200,7 @@ class EchoRuntime:
     """노드를 빈 출력으로 완료시키는 runtime 대역."""
 
     async def invoke(self, node, task):
-        from malkuth.core.agent import TaskResult
+        from aaestro.core.agent import TaskResult
 
         return TaskResult.completed(task, output={})
 
@@ -214,8 +214,8 @@ async def test_an_api_drain_actually_stops_the_loop(tmp_path):
 
     운영 프로세스가 API 로 요청하고, 구동 프로세스의 루프가 그것을 읽는다.
     """
-    from malkuth.orchestrator.builder import build_graph
-    from malkuth.orchestrator.run import RunManager, RunStatus, ServiceRunner
+    from aaestro.orchestrator.builder import build_graph
+    from aaestro.orchestrator.run import RunManager, RunStatus, ServiceRunner
     from tests.fixtures.topologies import make_service
 
     path = tmp_path / "runs.db"
@@ -256,8 +256,8 @@ class BrokenStore:
         raise self._boom()
 
     @staticmethod
-    def _boom() -> MalkuthError:
-        return MalkuthError(
+    def _boom() -> AaestroError:
+        return AaestroError(
             category=ErrorCategory.STORAGE,
             code=ErrorCode.STOR_003,
             message="run store could not be opened",
@@ -292,7 +292,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 
 @pytest.fixture
 async def catalog_api(store):
-    from malkuth.catalog import Catalog
+    from aaestro.catalog import Catalog
 
     async with client_for(create_app(store, catalog=Catalog.under(REPO_ROOT))) as client:
         yield client
@@ -379,7 +379,7 @@ async def test_without_a_catalog_the_routes_do_not_exist(api):
 
 async def test_module_listing_reports_broken_versions(store, tmp_path):
     """게시되지 않은 것을 조용히 빼면 UI 는 그 버전이 왜 안 보이는지 모른다."""
-    from malkuth.catalog import Catalog
+    from aaestro.catalog import Catalog
 
     (tmp_path / "modules" / "promptsets" / "ghost" / "0.1.0").mkdir(parents=True)
     for d in ("agents", "graphs", "groups"):

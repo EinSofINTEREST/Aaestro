@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import pytest
 
-from malkuth.core.errors import ErrorCategory, MalkuthError
-from malkuth.memory.entry import MAX_CONTENT_BYTES, MemoryEntry, MemorySource
-from malkuth.modules.memoryset import MemoryKind
+from aaestro.core.errors import AaestroError, ErrorCategory
+from aaestro.memory.entry import MAX_CONTENT_BYTES, MemoryEntry, MemorySource
+from aaestro.modules.memoryset import MemoryKind
 
 
 def make_entry(**overrides) -> MemoryEntry:
@@ -112,7 +112,7 @@ def test_provenance_is_required(store):
     """출처 없는 기억은 나중에 믿어도 되는지 판단할 근거가 없다."""
     entry = make_entry(source=MemorySource(agent=""))
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         store.append(entry)
 
     assert exc_info.value.code == "MEM_002"
@@ -123,7 +123,7 @@ def test_oversized_content_is_rejected(store):
     """대용량 원문은 artifact 로 — 검색 품질과 주입 비용이 함께 망가진다."""
     entry = make_entry(content="x" * (MAX_CONTENT_BYTES + 1))
 
-    with pytest.raises(MalkuthError) as exc_info:
+    with pytest.raises(AaestroError) as exc_info:
         store.append(entry)
 
     assert exc_info.value.code == "MEM_002"
@@ -140,7 +140,7 @@ def test_multibyte_content_is_measured_in_bytes(store):
     """한글은 문자 수와 바이트 수가 다르다 — 상한은 바이트 기준이다."""
     entry = make_entry(content="가" * (MAX_CONTENT_BYTES // 3 + 1))
 
-    with pytest.raises(MalkuthError):
+    with pytest.raises(AaestroError):
         store.append(entry)
 
 

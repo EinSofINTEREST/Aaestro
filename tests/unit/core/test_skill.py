@@ -8,7 +8,7 @@ from typing import Any, Literal
 import pytest
 from pydantic import BaseModel
 
-from malkuth.core.skill import SkillContext, build_spec, get_spec, skill
+from aaestro.core.skill import SkillContext, build_spec, get_spec, skill
 
 
 @skill
@@ -292,7 +292,7 @@ def _captured_warnings(monkeypatch) -> list[dict]:
     def capture(event: str, **fields: object) -> None:
         recorded.append({"event": event, **fields})
 
-    monkeypatch.setattr("malkuth.core.skill.log.warning", capture)
+    monkeypatch.setattr("aaestro.core.skill.log.warning", capture)
     return recorded
 
 
@@ -307,7 +307,7 @@ def test_unresolvable_hints_are_warned(monkeypatch):
     namespace: dict = {}
     exec(  # noqa: S102 — 미해결 힌트를 만들려면 지연 평가가 필요하다
         "from __future__ import annotations\n"
-        "from malkuth.core.skill import skill\n"
+        "from aaestro.core.skill import skill\n"
         "@skill\n"
         "async def broken(ctx: 'NotImportedHere', query: str) -> str:\n"
         '    """설명."""\n',
@@ -355,7 +355,7 @@ def test_untyped_skill_still_loads(monkeypatch):
         """설명."""
         return "x"
 
-    spec = dynamic.__malkuth_skill__
+    spec = dynamic.__aaestro_skill__
     assert spec.name == "dynamic"
     assert "payload" in spec.parameters["properties"]
 
@@ -379,7 +379,7 @@ def test_warnings_use_the_exposed_tool_name(monkeypatch):
     namespace: dict = {}
     exec(  # noqa: S102 — 미해결 힌트를 만들려면 지연 평가가 필요하다
         "from __future__ import annotations\n"
-        "from malkuth.core.skill import skill\n"
+        "from aaestro.core.skill import skill\n"
         "@skill(name='public_name')\n"
         "async def internal_fn(ctx: 'NotImportedHere', q: str) -> str:\n"
         '    """설명."""\n',

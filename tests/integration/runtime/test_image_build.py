@@ -20,14 +20,14 @@ from pathlib import Path
 import pytest
 import yaml
 
-from malkuth.catalog import Catalog
-from malkuth.materials import InMemoryMaterialStore, Materials
-from malkuth.runtime.docker.client import SdkDockerClient
-from malkuth.runtime.images import BuildStatus, ImageBuilder, InMemoryBuildStore
+from aaestro.catalog import Catalog
+from aaestro.materials import InMemoryMaterialStore, Materials
+from aaestro.runtime.docker.client import SdkDockerClient
+from aaestro.runtime.images import BuildStatus, ImageBuilder, InMemoryBuildStore
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DOCKER_BIN = shutil.which("docker")
-BASE_IMAGE = "malkuth/agent-base:0.1.0"
+BASE_IMAGE = "aaestro/agent-base:0.1.0"
 READY_TIMEOUT_S = 90.0
 
 pytestmark = pytest.mark.integration
@@ -63,7 +63,7 @@ def serve(image: str) -> Iterator[int]:
     배포가 거는 것과 같은 격리 플래그를 건다 (02 Security 3): read-only rootfs,
     cap-drop, non-root. 여기서 뜨지 않으면 배포에서도 뜨지 않는다.
     """
-    name = f"malkuth-baked-{uuid.uuid4().hex[:8]}"
+    name = f"aaestro-baked-{uuid.uuid4().hex[:8]}"
     container = docker(
         "run",
         "-d",
@@ -207,7 +207,7 @@ async def test_a_broken_dockerfile_fails_with_its_log(builder, workspace):
             agent="custom",
             version="0.1.0",
             files={
-                "Dockerfile": ("FROM malkuth/agent-base:0.1.0\nCOPY does-not-exist.txt /app/x\n"),
+                "Dockerfile": ("FROM aaestro/agent-base:0.1.0\nCOPY does-not-exist.txt /app/x\n"),
                 "src/agent.py": "MARK = 1\n",
             },
         )

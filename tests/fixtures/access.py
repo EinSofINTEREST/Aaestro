@@ -20,7 +20,7 @@ def agent(name: str, group: str | None = None) -> dict:
     if group:
         metadata["group"] = group
     return {
-        "apiVersion": "malkuth/v1",
+        "apiVersion": "aaestro/v1",
         "kind": "Agent",
         "metadata": metadata,
         "spec": {
@@ -32,7 +32,7 @@ def agent(name: str, group: str | None = None) -> dict:
 
 def group(name: str, spec: dict) -> dict:
     return {
-        "apiVersion": "malkuth/v1",
+        "apiVersion": "aaestro/v1",
         "kind": "Group",
         "metadata": {"name": name, "version": "0.1.0"},
         "spec": spec,
@@ -43,7 +43,7 @@ def access_workspace(tmp_path: Path) -> Path:
     write(
         tmp_path / "modules" / "promptsets" / "solo" / "0.1.0" / "promptset.yaml",
         {
-            "apiVersion": "malkuth/v1",
+            "apiVersion": "aaestro/v1",
             "kind": "Promptset",
             "metadata": {"name": "solo", "version": "0.1.0"},
             "spec": {"engine": "jinja2", "templates": {"default": {"file": "t.j2"}}},

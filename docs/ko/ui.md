@@ -9,7 +9,7 @@ Control Plane 은 `/ui` 에서 운영자 화면을 서빙한다. 에이전트 �
 할 수 있다.
 
 ```bash
-python -m malkuth.orchestrator      # API 와 UI 를 함께 서빙한다
+python -m aaestro.orchestrator      # API 와 UI 를 함께 서빙한다
 ```
 
 `http://127.0.0.1:8700/` 을 열면 `/ui/` 로 리다이렉트된다.
@@ -84,7 +84,7 @@ python -m malkuth.orchestrator      # API 와 UI 를 함께 서빙한다
 3. **재료 저장** 이 행들을 저장한다. `Dockerfile` 을 빼면 스켈레톤으로 굽고, 스켈레톤은
    `src/` 를 import 경로에 올린다 — `src/agent.py` 의 클래스를 돌리려면 **entrypoint** 에
    `agent:MyAgent` 를 적는다. **image** 는 비워 둔다: 커스텀 에이전트는
-   `malkuth/agent-<name>:<version>` 으로 돌고, 다른 이미지를 적으면 배포가 거절한다.
+   `aaestro/agent-<name>:<version>` 으로 돌고, 다른 이미지를 적으면 배포가 거절한다.
 4. **빌드** 는 빌드를 제출하고 끝날 때까지 따라간다:
 
 | 상태 줄 | 의미 |

@@ -9,7 +9,7 @@ talks to the [Control Plane API](api.md) over `fetch`, nothing else. It never to
 filesystem or Docker; anything the UI can do, the API can do.
 
 ```bash
-python -m malkuth.orchestrator      # serves both the API and the UI
+python -m aaestro.orchestrator      # serves both the API and the UI
 ```
 
 Open `http://127.0.0.1:8700/` — `/` redirects to `/ui/`.
@@ -86,7 +86,7 @@ form, at its current version, so save the agent first.
    send anything while one is listed.
 3. **재료 저장** stores the rows. Leave the `Dockerfile` out to build on the skeleton, which
    puts `src/` on the import path — set **entrypoint** to `agent:MyAgent` to run a class from
-   `src/agent.py`. Leave **image** empty: a custom agent runs as `malkuth/agent-<name>:<version>`,
+   `src/agent.py`. Leave **image** empty: a custom agent runs as `aaestro/agent-<name>:<version>`,
    and naming a different image makes deploys refuse it.
 4. **빌드** submits the build and follows it until it ends:
 

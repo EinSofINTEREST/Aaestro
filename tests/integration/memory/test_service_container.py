@@ -23,9 +23,9 @@ from tests.e2e.test_stack import docker, requires_docker
 pytestmark = pytest.mark.integration
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-BASE_IMAGE = "malkuth/agent-base:0.1.0"
-IMAGE = "malkuth/memory-service:0.1.0"
-CONTAINER = "malkuth-memory-itest"
+BASE_IMAGE = "aaestro/agent-base:0.1.0"
+IMAGE = "aaestro/memory-service:0.1.0"
+CONTAINER = "aaestro-memory-itest"
 PORT = 18093
 
 
@@ -45,7 +45,7 @@ def status_of(path: str, *, token: str | None = None) -> int:
 def service():
     """이미지를 빌드해 띄운다 — finalizer 가 반드시 정리한다.
 
-    base 를 **먼저** 빌드한다: memory-service 는 `FROM malkuth/agent-base` 인데
+    base 를 **먼저** 빌드한다: memory-service 는 `FROM aaestro/agent-base` 인데
     그 이미지는 공개 레지스트리에 없다 — 로컬에 없으면 Docker 가 pull 을
     시도해 `pull access denied` 로 죽는다. 개발 기계에는 이미 있어서 드러나지
     않고, CI 에서만 실패한다.
@@ -126,7 +126,7 @@ def test_no_store_credentials_reach_an_agent_image(service):
     """
     compose = (REPO_ROOT / "deployments/docker/compose.e2e.yaml").read_text("utf-8")
 
-    assert "MALKUTH_MEMORY__DSN" not in compose
+    assert "AAESTRO_MEMORY__DSN" not in compose
 
 
 @requires_docker
