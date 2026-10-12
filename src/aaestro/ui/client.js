@@ -198,9 +198,17 @@ export function agentsOfGraph(graph) {
 }
 
 // 배포 전에 보여 줄 빌드 문제 — 재료가 있는데 그 버전이 `built` 가 아닌 에이전트.
-// 서버의 배포 게이트(#266)와 같은 판정이다. 빌드 표면이 꺼져 조회가 안 되면 경고하지 않는다
+// 서버의 배포 게이트(#266, #383)와 같은 판정이다: 상태가 `built` 가 아니거나 기록의 태그가
+// 기대 태그와 다르면 미빌드. 빌드 표면이 꺼져 조회가 안 되면 경고하지 않고, 옛 서버처럼
+// expected_image 가 없으면 상태만 본다
 export function unbuiltAgents(images) {
-  return images.filter((image) => image && image.needs_build && image.status !== "built");
+  return images.filter(
+    (image) =>
+      image &&
+      image.needs_build &&
+      (image.status !== "built" ||
+        (image.expected_image != null && image.image !== image.expected_image)),
+  );
 }
 
 export function moduleRef(type, name, version) {
