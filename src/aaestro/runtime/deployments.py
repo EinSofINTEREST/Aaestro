@@ -842,7 +842,8 @@ class DeploymentManager:
 
         Raises:
             AaestroError: VALIDATION/``VAL_002`` 매니페스트가 다른 이미지를 선언,
-                RUNTIME/``RT_012`` 그 버전이 아직 `built` 가 아님 (HTTP 409).
+                RUNTIME/``RT_012`` 그 버전이 아직 `built` 가 아니거나, 기록의 태그가
+                띄울 태그와 다름 (HTTP 409).
         """
         for manifest in manifests:
             tag = self._baked_image(manifest)
@@ -870,6 +871,23 @@ class DeploymentManager:
                         "version": manifest.metadata.version,
                         "build_status": None if record is None else record.status,
                         "build_error": None if record is None else record.error,
+                    },
+                )
+            if record.image != tag:
+                # 태그 규칙이 코드에서 바뀌면 (예: 이미지 접두사 변경) 이전에 구운 기록은
+                # 옛 태그를 가리킨 채 `built` 로 남는다 — 상태만 믿으면 런타임이 새 태그를
+                # 띄우다 기동 단계에서 터진다
+                raise AaestroError(
+                    category=ErrorCategory.RUNTIME,
+                    code=ErrorCode.RT_012,
+                    message="agent image was built under another tag — rebuild it before deploying",
+                    agent=manifest.name,
+                    details={
+                        "image": tag,
+                        "recorded_image": record.image,
+                        "version": manifest.metadata.version,
+                        "build_status": record.status,
+                        "build_error": record.error,
                     },
                 )
 
