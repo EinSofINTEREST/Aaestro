@@ -17,7 +17,8 @@ Turn a described change into one changelog line and the version it belongs to.
 1. Classify the change with the table in [the category reference](references/CATEGORIES.md).
 2. Decide the bump: `major` for a breaking change, `minor` for a backwards-compatible
    feature, `patch` for a fix.
-3. Compute the next version:
+3. Compute the next version. Paths in this skill are relative to the skill directory —
+   run the bundled script from there, not from the project being edited:
 
    ```bash
    python scripts/next_version.py 1.4.2 minor
