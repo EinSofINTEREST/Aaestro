@@ -285,7 +285,8 @@ Runtime layer →  env_allowlist 각 키를 local > group > global 순으로 해
               → (기동 시) docker env 주입 → 컨테이너
 ```
 
-- **프록시가 종단하는 서비스의 자격증명은 env 로 넣지 않는다**: 모델 API 키, 결정 모델 API 키,
+- **프록시가 종단하는 서비스의 자격증명은 env 로 넣지 않는다**: 모델 API 키(`ANTHROPIC_API_KEY`,
+  `OPENAI_COMPAT_API_KEY` — 그 자리에는 에이전트 신원이 들어간다), 결정 모델 API 키,
   원격 MCP 서버 자격증명은 egress proxy 가 요청에 주입한다. 에이전트 컨테이너는 그 값을 갖지 않으므로
   회수가 재배포 없이 반영된다
 - 그 밖의 secrets 는 runtime 이 기동 시점에 env 로 주입 — `env_allowlist` 에 있는 키만.

@@ -325,11 +325,8 @@ def test_repository_validates_end_to_end(capsys):
 
 
 @pytest.fixture
-def with_openai_fallback(workspace: Path, monkeypatch) -> Path:
+def with_openai_fallback(workspace: Path) -> Path:
     """프록시 upstream 이 아닐 수 있는 provider 로 넘어가는 fallback 을 가진 저장소."""
-    from aaestro.access import baselines
-
-    monkeypatch.setitem(baselines.PROVIDER_HOSTS, "openai-compat", "api.openai.com")
     manifest = workspace / "agents" / "solo" / "manifest.yaml"
     document = yaml.safe_load(manifest.read_text())
     document["spec"]["model"]["fallbacks"] = [

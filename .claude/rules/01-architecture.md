@@ -614,7 +614,10 @@ aaestro/
 - **MCP**: `mcp` (official Model Context Protocol Python SDK)
 
 ### Models
-- **Generation**: Anthropic Messages API (`anthropic` SDK) — provider 재시도는 끄고 agentd 가 재시도
+- **Generation**: provider 어댑터 뒤의 모델 API — Anthropic Messages API (`anthropic` SDK, provider
+  재시도는 끄고 agentd 가 재시도) 와 OpenAI Chat Completions 호환 API (`openai-compat`, SDK 없이
+  HTTP 로 — 프록시가 종단하는 base URL 하나면 충분하고 어댑터 안에 재시도가 없다). provider 이름 →
+  어댑터는 `agentd/bootstrap.py` 의 테이블 하나다. fallback 은 provider 를 넘을 수 있다
 - **Decision**: `DecisionModel` 계약 뒤의 provider — v0.1 은 TypeSafe Jev (호스팅 API, 가중치
   비공개). SDK 가 아니라 HTTP 로 부른다 — 프록시가 종단하는 base URL 하나면 충분하고, provider
   SDK 의 자체 재시도·전송이 끼지 않는다

@@ -195,11 +195,18 @@ ALL_TOOLS = "*"
 HTTPS_PORT = 443
 HTTP_PORT = 80
 
-PROVIDER_HOSTS = {"anthropic": "api.anthropic.com"}
+PROVIDER_HOSTS = {
+    "anthropic": "api.anthropic.com",
+    "openai-compat": "openai-compat.invalid",
+}
 """모델 provider 의 논리 호스트 — 이그레스 프록시가 종단하는 호출은 이 이름으로 판정한다.
 
 실제 upstream(대역 provider 등)이 달라도 판정 대상은 이 이름이다: 운영자가 회수하는 것은 "모델 API"
-이지 테스트 배치의 주소가 아니다."""
+이지 테스트 배치의 주소가 아니다.
+
+``openai-compat`` 은 upstream 이 설정에서 와서 자연스러운 호스트가 없다 — 합성 이름을 쓴다.
+``.invalid`` 는 예약 TLD(RFC 2606)라 풀리지 않는다: 이 이름이 선언 목적지에 들어가도 같은 이름의
+CONNECT 터널이 열리지 않는다. 판정 문자열일 뿐 어디서도 연결 대상으로 쓰지 않는다."""
 
 
 def egress_target(host: str, port: int = HTTPS_PORT) -> str:

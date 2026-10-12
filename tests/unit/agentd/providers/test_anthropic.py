@@ -423,6 +423,23 @@ async def test_an_assistant_turn_without_provider_blocks_is_rebuilt():
     ]
 
 
+async def test_another_providers_assistant_turn_is_rebuilt():
+    """fallback 으로 넘어온 턴 — 남의 원본(블록 리스트가 아닌 것)을 content 로 보내지 않는다."""
+    provider = model(Message([Block(type="text", text="done")]))
+    turn = AssistantTurn(
+        content="",
+        tool_calls=(ToolCall(id="call_1", name="search", arguments={"q": 1}),),
+        raw={"role": "assistant", "tool_calls": []},
+    )
+
+    await provider.run("", [*OPENING, turn], [])
+
+    assistant = provider.client.messages.requests[0]["messages"][1]
+    assert assistant["content"] == [
+        {"type": "tool_use", "id": "call_1", "name": "search", "input": {"q": 1}}
+    ]
+
+
 async def test_the_response_keeps_the_provider_blocks_to_send_back():
     blocks = [
         Block(type="thinking", thinking="", signature="sig"),

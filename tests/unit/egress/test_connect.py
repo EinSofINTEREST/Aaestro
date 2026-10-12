@@ -232,3 +232,75 @@ async def test_a_listed_private_destination_is_reachable():
 def test_public_addresses_are_told_apart():
     assert is_public(PUBLIC) and is_public("2606:4700::1111")
     assert not any(is_public(a) for a in ["10.1.2.3", "192.168.0.1", "100.64.0.1", "0.0.0.0"])  # noqa: S104
+
+
+# --- 예약 이름 (#361 리뷰) -----------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "authority",
+    [
+        "openai-compat.invalid:443",
+        "OpenAI-Compat.INVALID:443",
+        "openai-compat.invalid.:443",
+        "anything.invalid:8443",
+        "invalid:443",
+    ],
+)
+async def test_a_reserved_invalid_name_is_refused_before_any_decision(authority):
+    """provider 의 합성 논리 호스트는 선언 목적지에 있다 — 판정에 맡기면 allow 다.
+
+    열리지 않는 근거가 "리졸버가 못 푼다" 뿐이어서는 안 된다: 묻지도 풀지도 않고 거절한다.
+    """
+    registry = Registry()
+    # provider 를 선언한 에이전트의 baseline 에는 이 이름이 있다
+    registry.allowed.update({"openai-compat.invalid", "anything.invalid:8443", "invalid"})
+    resolved: list[str] = []
+
+    async def resolver(host, port):
+        resolved.append(host)
+        return [PUBLIC]
+
+    async with echo_upstream() as upstream:
+        proxy, opened = proxy_for(registry, upstream)
+        proxy.resolver = resolver
+        async with running(proxy) as port:
+            status, head, _, writer = await connect(
+                port, authority, basic("researcher", "cred-researcher")
+            )
+            writer.close()
+
+    assert status == 403 and json.loads(head.split("\r\n\r\n", 1)[1])["error"]["code"] == "ACC_001"
+    assert registry.asked == [], "판정 전에 거절해야 한다"
+    assert resolved == [] and opened == []
+
+
+async def test_a_reserved_name_is_refused_in_record_mode_too():
+    """기록 모드는 선언 밖 호출을 드러내려는 것이다 — 목적지가 될 수 없는 이름을 열 이유는 없다."""
+    registry = Registry()
+    async with echo_upstream() as upstream:
+        proxy, opened = proxy_for(registry, upstream, mode=EgressMode.RECORD)
+        async with running(proxy) as port:
+            status, _, _, writer = await connect(
+                port, "openai-compat.invalid:443", basic("researcher", "cred-researcher")
+            )
+            writer.close()
+
+    assert status == 403 and opened == []
+
+
+async def test_a_name_that_only_contains_invalid_is_an_ordinary_destination():
+    """과잉 거절도 결함이다 — TLD 가 아니면 예약 이름이 아니다."""
+    registry = Registry()
+    registry.allowed.update({"invalid.example.com", "notinvalid"})
+    async with echo_upstream() as upstream:
+        proxy, opened = proxy_for(registry, upstream)
+        async with running(proxy) as port:
+            for authority in ("invalid.example.com:443", "notinvalid:443"):
+                status, _, _, writer = await connect(
+                    port, authority, basic("researcher", "cred-researcher")
+                )
+                writer.close()
+                assert status == 200, authority
+
+    assert len(opened) == 2

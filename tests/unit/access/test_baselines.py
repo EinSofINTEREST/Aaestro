@@ -326,12 +326,10 @@ def _with_fallback(name: str, provider: str) -> dict:
     return document
 
 
-def test_a_fallback_providers_logical_host_is_declared(tmp_path, monkeypatch):
+def test_a_fallback_providers_logical_host_is_declared(tmp_path):
     """빠지면 전환한 호출을 프록시가 거부한다 — 선언 목록과 판정 둘 다 본다."""
-    from aaestro.access import baselines
     from aaestro.access.baselines import EgressBaseline
 
-    monkeypatch.setitem(baselines.PROVIDER_HOSTS, "openai-compat", "api.openai.com")
     write(
         tmp_path / "agents" / "planner" / "manifest.yaml",
         _with_fallback("planner", "openai-compat"),
@@ -342,10 +340,41 @@ def test_a_fallback_providers_logical_host_is_declared(tmp_path, monkeypatch):
 
     declared = EgressBaseline.declared(catalog.agent("planner"))
 
-    assert {"api.anthropic.com", "api.openai.com"} <= declared
-    assert baseline.allows("planner", "api.openai.com", None) is True
+    assert {"api.anthropic.com", "openai-compat.invalid"} <= declared
+    assert baseline.allows("planner", "openai-compat.invalid", None) is True
     # 남의 fallback 은 내 권한이 아니다
-    assert baseline.allows("plain", "api.openai.com", None) is False
+    assert baseline.allows("plain", "openai-compat.invalid", None) is False
+
+
+async def test_the_openai_compat_logical_host_cannot_be_opened_as_a_tunnel(tmp_path):
+    """선언이 baseline 에 넣은 합성 이름은 판정용이다 — 같은 이름의 CONNECT 는 프록시가 닫는다."""
+    from aaestro.access.baselines import PROVIDER_HOSTS, EgressBaseline
+    from aaestro.egress.connect import ConnectProxy
+    from tests.unit.egress.test_connect import Registry, basic, connect, running
+
+    write(
+        tmp_path / "agents" / "planner" / "manifest.yaml",
+        _with_fallback("planner", "openai-compat"),
+    )
+    logical = PROVIDER_HOSTS["openai-compat"]
+    declared = EgressBaseline.declared(Catalog.under(tmp_path).agent("planner"))
+    assert logical in declared, "프록시 종단 판정에는 이 이름이 있어야 한다"
+    registry = Registry()
+    registry.allowed |= declared
+    opened: list[str] = []
+
+    async def never(host, port):
+        opened.append(host)
+        raise AssertionError("a reserved name was resolved or opened")
+
+    proxy = ConnectProxy(access=registry, resolver=never, opener=never)
+    async with running(proxy) as port:
+        status, _, _, writer = await connect(
+            port, f"{logical}:443", basic("planner", "cred-researcher")
+        )
+        writer.close()
+
+    assert status == 403 and opened == [] and registry.asked == []
 
 
 def test_an_unknown_fallback_provider_is_silently_left_out_of_the_declaration(tmp_path):

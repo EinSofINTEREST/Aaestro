@@ -1456,6 +1456,40 @@ def test_a_proxy_terminated_key_never_leaves_even_without_an_identity_override(m
     assert "ANTHROPIC_API_KEY" not in env
 
 
+def test_the_openai_compat_key_never_reaches_the_container_through_the_allowlist(manager):
+    """실 키는 프록시만 쥔다 — manifest 가 allowlist 에 올려도 컨테이너로 가지 않는다 (#361)."""
+    from aaestro.core.manifest import AgentManifest
+    from aaestro.runtime.deployments import EgressEndpoints, Provision
+
+    doc = agent_doc("alpha")
+    doc["spec"]["runtime"] = {"env_allowlist": ["ANTHROPIC_API_KEY", "OPENAI_COMPAT_API_KEY"]}
+    manifest = AgentManifest.model_validate(doc)
+    manager.secrets_env = {"ANTHROPIC_API_KEY": "k", "OPENAI_COMPAT_API_KEY": "sk-real-compat"}
+    provision = Provision(env={}, mounts=(), a2a_port=None, image=None)
+
+    plain = manager._env_for(manifest, provision)  # noqa: SLF001
+    manager.egress = EgressEndpoints(
+        connect_url="http://aaestro-egress:8080", providers_url="http://aaestro-egress:8081"
+    )
+    proxied = manager._env_for(manifest, provision)  # noqa: SLF001
+
+    assert plain["OPENAI_COMPAT_API_KEY"] == "sk-real-compat", "프록시가 없으면 직접 붙는다"
+    assert "OPENAI_COMPAT_API_KEY" not in proxied
+    assert "sk-real-compat" not in proxied.values()
+
+
+def test_the_proxy_wiring_puts_the_identity_in_the_openai_compat_key_slot():
+    """anthropic 과 같은 방식 — 주소는 프록시 종단 창구, 키 자리는 에이전트 신원."""
+    from aaestro.runtime.deployments import EgressEndpoints
+
+    env = EgressEndpoints(
+        connect_url="http://aaestro-egress:8080", providers_url="http://aaestro-egress:8081/"
+    ).env_for("alpha", "cred")
+
+    assert env["OPENAI_COMPAT_BASE_URL"] == "http://aaestro-egress:8081/openai-compat"
+    assert env["OPENAI_COMPAT_API_KEY"] == "cred" == env["ANTHROPIC_API_KEY"]
+
+
 def test_a_remote_mcp_credential_stays_with_the_proxy(manager):
     """원격 MCP 서버 자격은 프록시가 붙인다 — 에이전트 env 에 있으면 회수가 재배포 없이 안 된다."""
     from aaestro.core.manifest import AgentManifest

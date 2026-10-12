@@ -42,7 +42,6 @@ if TYPE_CHECKING:
     from fastapi import FastAPI
 
     from aaestro.core.agent import TaskRequest
-    from aaestro.core.manifest import ModelConfig
 
 CONTROL_PORT = 8080
 """Control port — 컨테이너 내부 고정 (02 Network). A2A 포트는 runtime 이 할당한다."""
@@ -66,9 +65,6 @@ GLOBAL_SCOPE = "global"
 ROOT_ENV = "AAESTRO_ROOT"
 DEFAULT_ROOT = "/app"
 """모듈 registry 루트 — 이미지가 modules/ 를 어디에 두는지."""
-
-ANTHROPIC_PROVIDER = "anthropic"
-"""이 이미지가 바인딩한 모델 provider — 다른 provider 선언은 CFG_001 로 거부한다."""
 
 LOG_LEVEL_ENV = "AAESTRO_LOG_LEVEL"
 LOG_FORMAT_ENV = "AAESTRO_LOG_FORMAT"
@@ -256,15 +252,12 @@ async def build_executor(manifest: AgentManifest, *, metrics: Metrics | None = N
         )
 
     # 표준 경로: manifest 의 모듈/모델 선언을 따르는 실행기
-    if manifest.spec.model.provider != ANTHROPIC_PROVIDER:
-        # 조용히 대역으로 떨어지면 운영에서 가짜 응답이 나간다
-        raise AaestroError(
-            category=ErrorCategory.CONFIG,
-            code=ErrorCode.CFG_001,
-            message="no model provider bound for this provider",
-            agent=manifest.name,
-            details={"provider": manifest.spec.model.provider},
-        )
+    from aaestro.agentd.bootstrap import MODEL_ADAPTERS
+    from aaestro.agentd.models import unsupported_provider
+
+    if manifest.spec.model.provider not in MODEL_ADAPTERS:
+        # 조용히 대역으로 떨어지면 운영에서 가짜 응답이 나간다. 모듈·MCP 를 올리기 전에 거절한다
+        raise unsupported_provider(manifest.name, manifest.spec.model.provider)
 
     from aaestro.modules.registry import ModuleRegistry
 
@@ -284,6 +277,7 @@ async def build_executor(manifest: AgentManifest, *, metrics: Metrics | None = N
 async def _standard_executor(
     manifest: AgentManifest, registry: Any, mcp: Any, *, metrics: Metrics | None
 ) -> Any:
+    from aaestro.agentd.bootstrap import model_factory
     from aaestro.agentd.executor import Executor, ExecutorServices
     from aaestro.agentd.models import ModelChains
 
@@ -299,7 +293,7 @@ async def _standard_executor(
     # 05 Retry Layering — 모델 호출의 재시도 주체는 agentd 다. 체인이 기본 정책
     # (MODEL_RETRY_POLICIES) 을 들고 온다 — 선언의 retry 가 있으면 그것을 쓴다
     chains = ModelChains(
-        agent=manifest.name, factory=_anthropic_factory(manifest.name), metrics=metrics
+        agent=manifest.name, factory=model_factory(manifest.name, os.environ), metrics=metrics
     )
     executor = Executor(
         agent=manifest.name,
@@ -535,22 +529,6 @@ def _memory_access(agent: str) -> Any:
     from aaestro.runtime.memory_http import HttpMemoryAccess
 
     return HttpMemoryAccess(base_url=url, token=token)
-
-
-def _anthropic_factory(agent: str) -> Callable[[ModelConfig], Any]:
-    """provider 이름으로 어댑터를 고르는 팩토리 — 지금 묶인 provider 는 anthropic 하나다.
-
-    체인을 만드는 시점에 검사한다: 기동이면 기동 실패, 태스크가 실어 온 선언이면 그 태스크 실패.
-    """
-    from aaestro.agentd.models import unsupported_provider
-    from aaestro.agentd.providers.anthropic import AnthropicModel
-
-    def build(config: ModelConfig) -> Any:
-        if config.provider != ANTHROPIC_PROVIDER:
-            raise unsupported_provider(agent, config.provider)
-        return AnthropicModel(config=config, agent=agent)
-
-    return build
 
 
 def _telemetry_for(manifest: AgentManifest, metrics: Metrics | None) -> ExecutorTelemetry | None:
