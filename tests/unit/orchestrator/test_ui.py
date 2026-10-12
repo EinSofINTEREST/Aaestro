@@ -106,3 +106,19 @@ def test_the_unbuilt_warning_compares_the_recorded_tag_with_the_expected_one():
 
     assert "expected_image" in body
     assert "image.image" in body
+
+
+def test_the_graph_editor_saves_over_the_declaration_of_its_own_name():
+    """그래프 저장·검증 경로도 저장 대상 이름의 원본(`graphBase`)을 거친다 (#385).
+
+    patchGraph 의 동작은 브라우저 E2E(`tests/e2e/test_ui_graph_preserve.py`)가 실행해 확인한다.
+    """
+    source = (UI_ROOT / "app.js").read_text(encoding="utf-8")
+    submit = source.split('graphForm.addEventListener("submit"')[1].split("\n});")[0]
+    validate = source.split("async function validateGraph(doc)")[1].split("\n}")[0]
+
+    assert submit.count("currentGraphDocument()") == 1  # 검증한 문서를 그대로 저장한다
+    assert "validateGraph(doc)" in submit
+    assert "loadedGraph = structuredClone(doc)" in submit  # 저장한 문서가 다음 저장의 원본
+    assert "currentGraphDocument()" in validate
+    assert "graphDocument(" not in (submit + validate).replace("currentGraphDocument(", "")
