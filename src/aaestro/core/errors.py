@@ -132,7 +132,7 @@ class ErrorCode(StrEnum):
     MEM_001 = "MEM_001"  # Memory space 미선언 / access 거부
     MEM_002 = "MEM_002"  # Memory 저장 실패
     MEM_003 = "MEM_003"  # 인덱싱 실패 누적 / 재인덱싱 필요
-    MEM_004 = "MEM_004"  # 검색 실패 / 인덱스 손상
+    MEM_004 = "MEM_004"  # 조회 · 검색 실패 / 인덱스 손상
 
     # Not found
     NF_001 = "NF_001"  # 대상 리소스 미존재 (run, 에이전트 등)

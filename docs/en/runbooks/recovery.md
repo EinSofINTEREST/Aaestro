@@ -46,7 +46,7 @@ never merged.
 
 ## Memory Index Corruption
 
-`MEM_003` (indexing backlog) or `MEM_004` (search failure / corrupt index).
+`MEM_003` (indexing backlog) or `MEM_004` (query or search failure / corrupt index).
 
 1. Check `aaestro_memory_index_lag_seconds`. Sustained lag means the indexing queue is
    not draining — usually the embedding provider.

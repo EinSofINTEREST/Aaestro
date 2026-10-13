@@ -281,7 +281,10 @@ Agent 컨테이너 (agentd) ──HTTP──▶ Memory Service (강제 지점) �
    되지 않는다
 5. 판정 캐시·변경 알림·레지스트리 장애 시 동작은 01 Access Control 을 따른다 — 캐시에 없는
    판정은 `MEM_001` 로 거부, 이미 허용된 캐시는 유지
-6. 모든 접근 감사 로그: `agent`, `group`, `memory_space`, `op`, `status`, `decision_source`
+6. 모든 접근 감사 로그: `agent`, `group`, `memory_space`, `op`, `status`, `decision_source` —
+   거부 (`denied`) 와 실패 (`failed` — 저장소 장애, 검증 거절) 도 한 줄씩 남는다 (검색 · 회상 포함). `decision_source` 는
+   그 접근을 허용 · 거부한 레지스트리 판정의 출처이고, space 판정을 묻지 않은 거부 (미선언 별칭) 는
+   신원 확인의 출처다. 레지스트리가 없는 토큰 모드는 `token`
 
 ### Context Assembly — 프롬프트 주입 규칙
 
@@ -355,9 +358,9 @@ agentd 가 태스크 프롬프트를 구성할 때:
 
 ```
 MEM_001: Space 미선언 / access 거부
-MEM_002: 저장 실패 (storage)
+MEM_002: 저장 실패 (storage) — 연결 · 잠금류 일시 장애는 retryable
 MEM_003: 인덱싱 실패 누적 / 재인덱싱 필요
-MEM_004: 검색 실패 / 인덱스 손상
+MEM_004: 조회 · 검색 실패 / 인덱스 손상 (저장소의 읽기 쿼리 실패 · 손상된 행 포함) — 연결 · 잠금류 일시 장애는 retryable
 ```
 
 메트릭:
@@ -370,6 +373,15 @@ aaestro_memory_index_lag_seconds{space}                # 인덱싱 큐 지연
 aaestro_memory_recall_injected_tokens{agent}           # 프롬프트 주입량 추적
 aaestro_memory_recall_filtered_total{agent, band}      # 회상 필터가 본 항목 — act|uncertain|reject
 ```
+
+`aaestro_memory_operations_total` 의 `space` 는 **space id** 다 (별칭이 아니다 — 별칭은 에이전트 관점의
+이름이라 서로 다른 space 가 한 시계열로 합쳐진다). space 로 해석되지 않은 접근 (미선언 별칭, 레지스트리가
+거부한 space) 은 고정값 `undeclared` 로 센다 — 호출자가 고른 문자열을 라벨로 쓰지 않는다. 감사 로그의
+`memory_space` 는 에이전트가 부른 별칭 그대로다.
+
+검색 · 회상은 **한 호출을 한 결과로** 센다: 여러 space 를 보는 검색이 도중에 실패하면 그 호출이 본
+space 전부가 `failed` 다 (호출자는 결과를 하나도 받지 못한다 — 감사 줄도 같다). `recall` 은 검색이 끝난
+뒤에 그 결과로 센다. 검색에서 해석되지 않은 별칭을 지정한 거부는 별칭마다 `denied` 로 센다.
 
 로그 필드: `memory_space`, `op`, `entry_id`, `k`, `min_score` — 표준 필드 규칙
 ([05-error-handling.md](05-error-handling.md)) 준수.

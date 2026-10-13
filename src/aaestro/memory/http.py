@@ -194,8 +194,12 @@ def create_app(
         token, aliases = await granted(
             http_request, list(request.spaces) if request.spaces else None, write=False
         )
-        resolved = [_space_id(token, alias) for alias in aliases]
-        found = recall.search(request.query, spaces=resolved, k=request.k)
+        resolved = service.searchable(token, aliases)
+        try:
+            found = recall.search(request.query, spaces=resolved, k=request.k)
+        except AaestroError:
+            service.record_search(token, aliases, status="failed")
+            raise
         service.record_search(token, aliases)
         return [
             {
@@ -256,14 +260,6 @@ def create_app(
         ]
 
     return app
-
-
-def _space_id(token: AccessToken, alias: str) -> str:
-    """별칭 해석이 곧 경계 검사다 — 미선언 별칭은 ``MEM_001``."""
-    space = token.resolve(alias)
-    if space is None:
-        raise unauthorized("memory space is not declared for this agent")
-    return space.space_id
 
 
 __all__ = [

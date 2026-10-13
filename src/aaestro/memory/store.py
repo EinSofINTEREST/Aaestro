@@ -8,16 +8,21 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass, field
+from functools import wraps
 from itertools import batched
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
+
+import structlog
 
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 from aaestro.memory.entry import MAX_CONTENT_BYTES, MemoryEntry
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
 
     from aaestro.modules.memoryset import MemoryKind
+
+log = structlog.get_logger(__name__)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS memory_entries (
@@ -73,6 +78,14 @@ class MemoryStore(Protocol):
         """항목 하나를 조회한다."""
         ...
 
+    def space_of(self, entry_id: str) -> str | None:
+        """항목이 속한 space id — 없는 id 는 ``None``.
+
+        행을 항목으로 만들지 않는다: 호출자가 그 space 를 읽을 수 있는지 정하기 **전에** 부르는
+        조회라서, 남의 행의 내용 (과 그 손상 여부) 이 답을 바꾸면 안 된다.
+        """
+        ...
+
     def get_many(self, entry_ids: Sequence[str]) -> dict[str, MemoryEntry]:
         """id 들의 항목을 한 번에 조회한다 — 저장소에 없는 id 는 결과에 빠진다.
 
@@ -98,8 +111,13 @@ class MemoryStore(Protocol):
         """항목이 하나라도 있는 space 들 — 재시작 뒤 인덱스를 다시 채울 대상이다."""
         ...
 
-    def latest_of_chain(self, entry_id: str) -> MemoryEntry | None:
-        """정정 체인의 최신 항목 — supersedes 로 대체된 항목은 건너뛴다."""
+    def latest_of_chain(self, space: str, entry_id: str) -> MemoryEntry | None:
+        """``space`` 안에서 정정 체인의 최신 항목 — supersedes 로 대체된 항목은 건너뛴다.
+
+        체인은 **space 를 넘지 않는다** (``superseded`` 와 같은 규칙): 시작 항목이 이 space 에
+        없으면 ``None`` 이고 — 없는 id 와 답이 같다 — 다른 space 에서 낸 정정은 후속이 아니다.
+        다른 space 의 행은 읽지도 않는다.
+        """
         ...
 
     def purge(self, entry_ids: Sequence[str]) -> int:
@@ -138,6 +156,143 @@ def validate_entry(entry: MemoryEntry) -> None:
         )
 
 
+UNCONVERTED_METHODS: Final = frozenset({"close"})
+"""변환하지 않는 계약 메서드 — 연결 정리는 쿼리가 아니고, 실패해도 호출자가 할 일이 없다."""
+
+WRITE_METHODS: Final = frozenset({"append", "purge"})
+"""저장소를 바꾸는 메서드 — 실패는 ``MEM_002``. 나머지 쿼리 메서드의 실패는 ``MEM_004``."""
+
+SPACE_SCOPED_METHODS: Final = frozenset({"superseded", "list_space", "latest_of_chain"})
+"""첫 인자가 space id 인 메서드 — 실패 사유에 어느 space 였는지 싣는다."""
+
+
+def query_methods() -> tuple[str, ...]:
+    """``MemoryStore`` 계약에서 드라이버를 부르는 메서드 이름.
+
+    계약에서 뽑는다 — 목록을 따로 적으면 계약에 메서드가 늘 때 변환이 빠진다.
+    """
+    return tuple(
+        name
+        for name, member in vars(MemoryStore).items()
+        if callable(member) and not name.startswith("_") and name not in UNCONVERTED_METHODS
+    )
+
+
+def query_failure(op: str, args: Sequence[Any], *, retryable: bool = False) -> AaestroError:
+    """저장소 실패 하나를 구조화 에러로 만든다 — 쓰기는 ``MEM_002``, 읽기는 ``MEM_004``.
+
+    싣는 것은 연산 이름과 space · 항목 식별자까지다. 쿼리 인자와 행의 내용은 싣지 않는다.
+    """
+    first = args[0] if args else None
+    details: dict[str, Any] = {"op": op}
+    message = "failed to query memory store"
+    if isinstance(first, MemoryEntry):
+        details = {"memory_space": first.space, "entry_id": first.entry_id}
+        message = "failed to store memory entry"
+    elif op in SPACE_SCOPED_METHODS and isinstance(first, str):
+        details["memory_space"] = first
+    if op in WRITE_METHODS and not isinstance(first, MemoryEntry):
+        message = "failed to modify memory store"
+    return AaestroError(
+        category=ErrorCategory.MEMORY,
+        code=ErrorCode.MEM_002 if op in WRITE_METHODS else ErrorCode.MEM_004,
+        message=message,
+        agent=first.source.agent if isinstance(first, MemoryEntry) else None,
+        retryable=retryable,
+        details=details,
+    )
+
+
+@dataclass(frozen=True)
+class DriverErrors:
+    """What a backend's driver raises, and how the conversion point reads it.
+
+    Attributes:
+        base: 드라이버의 예외 기반 클래스 — 이것만 드라이버 실패로 잡는다.
+        transient: 운영 계열 (연결 끊김 · 잠금 · 타임아웃) — 다시 걸어볼 만한 실패다.
+            무결성 · 프로그래밍 · 데이터 오류는 다시 걸어도 같으므로 여기 넣지 않는다.
+        recover: 실패한 쿼리 뒤의 뒷정리 (열린 트랜잭션 rollback) — 필요한 백엔드만 준다.
+    """
+
+    base: type[Exception]
+    transient: tuple[type[Exception], ...] = ()
+    recover: Callable[[Any], None] | None = None
+
+
+def converts_driver_errors[S](driver: DriverErrors) -> Callable[[type[S]], type[S]]:
+    """Wrap every query method of a store so failures leave as ``AaestroError``.
+
+    저장소 구현의 **유일한 변환 지점**. 계약의 쿼리 메서드 전부를 감싸므로 메서드마다 ``try`` 를
+    두지 않고, 계약에 메서드가 늘면 구현이 그것을 갖추는 순간 함께 감싸진다.
+
+    잡는 것은 둘이다: 드라이버 예외, 그리고 읽기 메서드가 행을 항목으로 바꾸다 낸
+    ``ValueError`` (손상된 행 — pydantic 검증 실패 포함). 그 밖의 예외와 ``AaestroError`` 는
+    그대로 지난다.
+
+    Args:
+        driver: The backend's driver error classes and recovery hook.
+
+    Returns:
+        The class decorator.
+
+    Raises:
+        TypeError: If the class does not define a contract query method itself.
+    """
+
+    def convert(cls: type[S]) -> type[S]:
+        own = vars(cls)
+        for name in query_methods():
+            if name not in own:
+                # 상속받은 메서드는 부모 쪽에서 이미 감싸였거나 전혀 감싸이지 않았다 —
+                # 어느 쪽인지 여기서 알 수 없으므로 조용히 넘어가지 않는다
+                raise TypeError(
+                    f"{cls.__name__} must define MemoryStore.{name} itself "
+                    "for its driver errors to be converted"
+                )
+            setattr(cls, name, _converting(name, own[name], driver))
+        return cls
+
+    return convert
+
+
+def _converting(op: str, method: Callable[..., Any], driver: DriverErrors) -> Callable[..., Any]:
+    corrupt_row: tuple[type[Exception], ...] = () if op in WRITE_METHODS else (ValueError,)
+
+    @wraps(method)
+    def call(self: Any, *args: Any, **kwargs: Any) -> Any:
+        try:
+            return method(self, *args, **kwargs)
+        except driver.base as err:
+            _recover(self, driver, op)
+            retryable = isinstance(err, driver.transient)
+            raise query_failure(op, args, retryable=retryable) from err
+        except corrupt_row as err:
+            # 손상된 행은 다시 읽어도 같다. 원인은 체인에만 두고 에러 본문에는 싣지 않는다 —
+            # 검증 실패의 글은 행의 값을 인용한다
+            raise query_failure(op, args) from err
+
+    return call
+
+
+def _recover(store: Any, driver: DriverErrors, op: str) -> None:
+    """실패한 쿼리 뒤 백엔드의 뒷정리를 돌린다 — 뒷정리의 실패가 원래 실패를 가리지 않게 한다."""
+    if driver.recover is None:
+        return
+    try:
+        driver.recover(store)
+    except driver.base as err:
+        log.warning("memory store recovery failed", op=op, exc_info=err)
+
+
+def _rollback(store: SqliteMemoryStore) -> None:
+    """실패한 문장이 연 트랜잭션을 버린다.
+
+    남겨 두면 다음에 성공한 호출의 commit 이 실패한 호출의 앞부분 (묶음 삭제의 앞 묶음) 을
+    함께 확정한다.
+    """
+    store._conn.rollback()  # noqa: SLF001 — 같은 모듈의 구현 내부다
+
+
 # SQLite 의 바인드 변수 상한은 빌드마다 다르다 (3.32 이전 999, 이후 32766) —
 # 낮은 쪽 아래로 잡아 ID 묶음이 아무리 커도 `IN (?, …)` 문이 상한을 넘지 않게 한다
 SQLITE_BATCH_SIZE = 500
@@ -152,6 +307,23 @@ def superseded_sql(count: int) -> str:
     )
 
 
+def successor_sql() -> str:
+    """정정 체인의 후속 한 건 — 구현과 색인 plan 테스트가 같은 문자열을 쓴다.
+
+    ``space`` 조건이 없으면 다른 space 에서 낸 정정이 이 space 의 기억을 가린다.
+    색인을 지정한다: 정렬을 피하려는 planner 가 ``(space, created_at)`` 색인을 골라 space 전체를
+    훑는다 — 같은 항목의 정정은 몇 건뿐이라 그것만 찾아 정렬하는 쪽이 싸다.
+    """
+    return (
+        "SELECT * FROM memory_entries INDEXED BY memory_entries_supersedes "
+        "WHERE supersedes = ? AND space = ? "
+        "ORDER BY created_at DESC, rowid DESC LIMIT 1"
+    )
+
+
+@converts_driver_errors(
+    DriverErrors(base=sqlite3.Error, transient=(sqlite3.OperationalError,), recover=_rollback)
+)
 @dataclass
 class SqliteMemoryStore:
     """SQLite-backed memory store (dev).
@@ -183,24 +355,15 @@ class SqliteMemoryStore:
             AaestroError: MEMORY/``MEM_002`` on validation or storage failure.
         """
         validate_entry(entry)
-        row = entry.to_row()
-        try:
-            self._conn.execute(
-                "INSERT INTO memory_entries "
-                "(entry_id, space, kind, content, tags, agent, run_id, task_id, "
-                " node_id, created_at, importance, supersedes) "
-                "VALUES (:entry_id, :space, :kind, :content, :tags, :agent, :run_id, "
-                " :task_id, :node_id, :created_at, :importance, :supersedes)",
-                row,
-            )
-            self._conn.commit()
-        except sqlite3.DatabaseError as err:
-            raise storage_error(
-                "failed to store memory entry",
-                space=entry.space,
-                agent=entry.source.agent,
-                entry_id=entry.entry_id,
-            ) from err
+        self._conn.execute(
+            "INSERT INTO memory_entries "
+            "(entry_id, space, kind, content, tags, agent, run_id, task_id, "
+            " node_id, created_at, importance, supersedes) "
+            "VALUES (:entry_id, :space, :kind, :content, :tags, :agent, :run_id, "
+            " :task_id, :node_id, :created_at, :importance, :supersedes)",
+            entry.to_row(),
+        )
+        self._conn.commit()
         return entry
 
     def get(self, entry_id: str) -> MemoryEntry | None:
@@ -209,6 +372,13 @@ class SqliteMemoryStore:
             "SELECT * FROM memory_entries WHERE entry_id = ?", (entry_id,)
         ).fetchone()
         return MemoryEntry.from_row(dict(row)) if row else None
+
+    def space_of(self, entry_id: str) -> str | None:
+        """항목이 속한 space id — 행을 항목으로 만들지 않는다."""
+        row = self._conn.execute(
+            "SELECT space FROM memory_entries WHERE entry_id = ?", (entry_id,)
+        ).fetchone()
+        return str(row["space"]) if row else None
 
     def get_many(self, entry_ids: Sequence[str]) -> dict[str, MemoryEntry]:
         """id 들의 항목을 쿼리 한 번으로 조회한다 — 없는 id 는 결과에 빠진다."""
@@ -269,29 +439,30 @@ class SqliteMemoryStore:
         ).fetchall()
         return tuple(str(r["space"]) for r in rows)
 
-    def latest_of_chain(self, entry_id: str) -> MemoryEntry | None:
-        """Follow the correction chain forward.
+    def latest_of_chain(self, space: str, entry_id: str) -> MemoryEntry | None:
+        """Follow the correction chain forward, inside one space.
 
         정정 체인을 앞으로 따라가 최신 항목을 찾습니다 — 대체된 기억을 주입하면
-        모델이 이미 틀린 것으로 정정된 사실을 다시 믿습니다.
+        모델이 이미 틀린 것으로 정정된 사실을 다시 믿습니다. 체인은 ``space`` 를 넘지 않습니다.
 
         Args:
+            space: The space the chain lives in.
             entry_id: Any entry id in the chain.
 
         Returns:
-            The newest entry superseding it, or None if the id is unknown.
+            The newest entry superseding it, or None if the id is unknown in this space.
         """
-        current = self.get(entry_id)
-        if current is None:
+        # 시작 행도 space 로 좁혀 읽는다 — 다른 space 의 행은 만들지 않는다
+        start = self._conn.execute(
+            "SELECT * FROM memory_entries WHERE entry_id = ? AND space = ?", (entry_id, space)
+        ).fetchone()
+        if start is None:
             return None
+        current = MemoryEntry.from_row(dict(start))
 
         seen = {entry_id}
         while True:
-            row = self._conn.execute(
-                "SELECT * FROM memory_entries WHERE supersedes = ? "
-                "ORDER BY created_at DESC, rowid DESC LIMIT 1",
-                (current.entry_id,),
-            ).fetchone()
+            row = self._conn.execute(successor_sql(), (current.entry_id, space)).fetchone()
             if row is None:
                 return current
             successor = MemoryEntry.from_row(dict(row))
@@ -332,4 +503,13 @@ class SqliteMemoryStore:
         self._conn.close()
 
 
-__all__ = ["MemoryStore", "SqliteMemoryStore", "storage_error", "validate_entry"]
+__all__ = [
+    "DriverErrors",
+    "MemoryStore",
+    "SqliteMemoryStore",
+    "converts_driver_errors",
+    "query_failure",
+    "query_methods",
+    "storage_error",
+    "validate_entry",
+]

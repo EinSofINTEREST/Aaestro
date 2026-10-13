@@ -16,7 +16,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 from aaestro.memory.entry import MemoryEntry
-from aaestro.memory.store import storage_error, validate_entry
+from aaestro.memory.store import DriverErrors, converts_driver_errors, validate_entry
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -66,6 +66,8 @@ _INSERT = (
 )
 
 
+# autocommit 연결이라 실패한 문장이 트랜잭션을 남기지 않는다 — 뒷정리 훅이 없다
+@converts_driver_errors(DriverErrors(base=psycopg.Error, transient=(psycopg.OperationalError,)))
 @dataclass
 class PostgresMemoryStore:
     """PostgreSQL-backed memory store (prod).
@@ -97,16 +99,8 @@ class PostgresMemoryStore:
             AaestroError: MEMORY/``MEM_002`` on validation or storage failure.
         """
         validate_entry(entry)
-        try:
-            with self._conn.cursor() as cursor:
-                cursor.execute(_INSERT, entry.to_row())
-        except psycopg.Error as err:
-            raise storage_error(
-                "failed to store memory entry",
-                space=entry.space,
-                agent=entry.source.agent,
-                entry_id=entry.entry_id,
-            ) from err
+        with self._conn.cursor() as cursor:
+            cursor.execute(_INSERT, entry.to_row())
         return entry
 
     def get(self, entry_id: str) -> MemoryEntry | None:
@@ -115,6 +109,13 @@ class PostgresMemoryStore:
             cursor.execute("SELECT * FROM memory_entries WHERE entry_id = %s", (entry_id,))
             row = cursor.fetchone()
         return MemoryEntry.from_row(row) if row else None
+
+    def space_of(self, entry_id: str) -> str | None:
+        """항목이 속한 space id — 행을 항목으로 만들지 않는다."""
+        with self._conn.cursor() as cursor:
+            cursor.execute("SELECT space FROM memory_entries WHERE entry_id = %s", (entry_id,))
+            row = cursor.fetchone()
+        return str(row["space"]) if row else None
 
     def get_many(self, entry_ids: Sequence[str]) -> dict[str, MemoryEntry]:
         """id 들의 항목을 쿼리 한 번으로 조회한다 — 없는 id 는 결과에 빠진다."""
@@ -174,29 +175,38 @@ class PostgresMemoryStore:
             rows = cursor.fetchall()
         return tuple(str(r["space"]) for r in rows)
 
-    def latest_of_chain(self, entry_id: str) -> MemoryEntry | None:
-        """Follow the correction chain forward.
+    def latest_of_chain(self, space: str, entry_id: str) -> MemoryEntry | None:
+        """Follow the correction chain forward, inside one space.
 
         정정 체인을 앞으로 따라가 최신 항목을 찾습니다 — 대체된 기억을 주입하면
-        모델이 이미 틀린 것으로 정정된 사실을 다시 믿습니다.
+        모델이 이미 틀린 것으로 정정된 사실을 다시 믿습니다. 체인은 ``space`` 를 넘지 않습니다
+        (``space`` 조건이 없으면 다른 space 에서 낸 정정이 이 space 의 기억을 가립니다).
 
         Args:
+            space: The space the chain lives in.
             entry_id: Any entry id in the chain.
 
         Returns:
-            The newest entry superseding it, or None if the id is unknown.
+            The newest entry superseding it, or None if the id is unknown in this space.
         """
-        current = self.get(entry_id)
-        if current is None:
+        # 시작 행도 space 로 좁혀 읽는다 — 다른 space 의 행은 만들지 않는다
+        with self._conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT * FROM memory_entries WHERE entry_id = %s AND space = %s",
+                (entry_id, space),
+            )
+            start = cursor.fetchone()
+        if start is None:
             return None
+        current = MemoryEntry.from_row(start)
 
         seen = {entry_id}
         while True:
             with self._conn.cursor() as cursor:
                 cursor.execute(
-                    "SELECT * FROM memory_entries WHERE supersedes = %s "
+                    "SELECT * FROM memory_entries WHERE supersedes = %s AND space = %s "
                     "ORDER BY created_at DESC, ctid DESC LIMIT 1",
-                    (current.entry_id,),
+                    (current.entry_id, space),
                 )
                 row = cursor.fetchone()
             if row is None:

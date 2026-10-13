@@ -14,12 +14,13 @@ psycopg = pytest.importorskip("psycopg")
 postgres_module = pytest.importorskip("testcontainers.postgres")
 
 from aaestro.config import MemoryConfig  # noqa: E402
+from aaestro.core.errors import AaestroError, ErrorCategory  # noqa: E402
 from aaestro.memory.backend import create_store  # noqa: E402
 from aaestro.memory.postgres import APPEND_ONLY_MESSAGE, PostgresMemoryStore  # noqa: E402
 
 # 계약 테스트를 이 모듈로 수집시킨다 — pytest 는 import 된 테스트 함수도 모은다
 from tests.fixtures.store_contract import *  # noqa: E402, F403
-from tests.fixtures.store_contract import make_entry  # noqa: E402
+from tests.fixtures.store_contract import QUERY_CALLS, make_entry  # noqa: E402
 
 pytestmark = pytest.mark.integration
 
@@ -77,6 +78,92 @@ def test_purge_still_removes_entries(store):
 
     assert removed == 1
     assert store.get(entry.entry_id) is None
+
+
+# --- 드라이버 예외 변환 (#447) --------------------------------------------------
+
+
+@pytest.fixture
+def dropped(postgres_dsn):
+    """테이블 이름이 바뀐 저장소 — 어떤 쿼리든 드라이버가 실패한다. 끝나면 되돌린다."""
+    store = PostgresMemoryStore(dsn=postgres_dsn)
+    with store._conn.cursor() as cursor:
+        cursor.execute("ALTER TABLE memory_entries RENAME TO memory_entries_away")
+    try:
+        yield store
+    finally:
+        with store._conn.cursor() as cursor:
+            cursor.execute("ALTER TABLE memory_entries_away RENAME TO memory_entries")
+        store.close()
+
+
+CODE_BY_METHOD = {
+    "append": "MEM_002",
+    "purge": "MEM_002",
+    "get": "MEM_004",
+    "space_of": "MEM_004",
+    "get_many": "MEM_004",
+    "superseded": "MEM_004",
+    "list_space": "MEM_004",
+    "spaces": "MEM_004",
+    "latest_of_chain": "MEM_004",
+}
+"""메서드 → 실패 코드 — 구현의 분류 상수에서 뽑지 않고 여기 적는다."""
+
+
+def test_the_code_table_covers_every_query_call():
+    assert set(CODE_BY_METHOD) == set(QUERY_CALLS)
+
+
+@pytest.mark.parametrize("method", sorted(CODE_BY_METHOD))
+def test_driver_failure_leaves_every_query_method_as_a_structured_error(dropped, method):
+    with pytest.raises(AaestroError) as exc_info:
+        QUERY_CALLS[method](dropped)
+
+    err = exc_info.value
+    assert err.category is ErrorCategory.MEMORY
+    assert err.code == CODE_BY_METHOD[method]
+    assert not err.retryable, "없는 테이블은 다시 걸어도 같다"
+    assert isinstance(err.__cause__, psycopg.Error), "원인 체인을 보존한다"
+
+
+@pytest.mark.parametrize(("method", "code"), [("get", "MEM_004"), ("append", "MEM_002")])
+def test_a_terminated_connection_is_a_retryable_failure(postgres_dsn, method, code):
+    """연결이 끊긴 저장소를 비재시도로 내보내면 호출자가 영구 실패로 읽는다."""
+    store = PostgresMemoryStore(dsn=postgres_dsn)
+    try:
+        pid = store._conn.info.backend_pid
+        with psycopg.connect(postgres_dsn, autocommit=True) as other:
+            other.execute("SELECT pg_terminate_backend(%s)", (pid,))
+
+        with pytest.raises(AaestroError) as exc_info:
+            QUERY_CALLS[method](store)
+    finally:
+        store.close()
+
+    assert isinstance(exc_info.value.__cause__, psycopg.OperationalError)
+    assert (exc_info.value.code, exc_info.value.retryable) == (code, True)
+
+
+def test_a_corrupt_row_leaves_a_read_as_mem_004_and_space_of_still_answers(store):
+    bad = make_entry(content="qqsecret payload")
+    with store._conn.cursor() as cursor:
+        cursor.execute(
+            "INSERT INTO memory_entries "
+            "(entry_id, space, kind, content, tags, agent, created_at, importance) "
+            "VALUES (%s, %s, 'qqbogus-kind', %s, '', 'researcher', %s, 0.5)",
+            (bad.entry_id, bad.space, bad.content, bad.created_at.isoformat()),
+        )
+
+    with pytest.raises(AaestroError) as exc_info:
+        store.get(bad.entry_id)
+
+    err = exc_info.value
+    assert (err.code, err.retryable) == ("MEM_004", False)
+    assert isinstance(err.__cause__, ValueError)
+    assert "qqsecret" not in str(err) + str(err.details)
+    assert store.space_of(bad.entry_id) == bad.space
+    assert store.latest_of_chain("local:someone-else:longterm", bad.entry_id) is None
 
 
 # --- backend 팩토리 ----------------------------------------------------------

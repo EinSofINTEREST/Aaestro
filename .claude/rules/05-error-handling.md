@@ -204,9 +204,10 @@ MOD_004: Promptset 변수 검증 실패 / 렌더 시점의 템플릿 문제 (거
          입력이 잘리지 않은 렌더의 표현식 평가 실패 — 예외 종류 이름만 싣는다) / decisionset 질문의 state 조각 불일치
 
 MEM_001: Memory space 미선언 / access 거부
-MEM_002: Memory 저장 실패
+MEM_002: Memory 저장 실패 — 저장소의 쓰기 쿼리 실패 포함. 연결 · 잠금류 일시 장애는 retryable
 MEM_003: 인덱싱 실패 누적 / 재인덱싱 필요
-MEM_004: 검색 실패 / 인덱스 손상
+MEM_004: 조회 · 검색 실패 / 인덱스 손상 — 저장소의 읽기 쿼리 실패와 손상된 행 포함 (쓰기 실패는 MEM_002).
+         연결 · 잠금류 일시 장애는 retryable, 손상된 행 · 무결성 · 프로그래밍 오류는 아니다
 
 VAL_001: 필수 필드 누락
 VAL_002: 필드 형식 오류 / 렌더할 수 없는 태스크 입력 — 너무 깊은 중첩, 출력할 수 없는 수,
@@ -401,7 +402,7 @@ log.info(f"task {task_id} done in {elapsed}ms")
 | `resource`      | str    | 권한 자원 종류 (`memory`/`egress`/`mcp_tool`/`a2a`) |
 | `target`        | str    | 권한 대상 (space id, 목적지 host, `server/tool`, 피호출자) |
 | `decision`      | str    | 판정 결과 (`allow`/`deny`) |
-| `decision_source` | str  | 판정 출처 (`fresh`/`cache`/`unreachable`) |
+| `decision_source` | str  | 판정 출처 (`fresh`/`cache`/`unreachable`, 레지스트리에 묻지 않는 토큰 모드의 메모리 접근은 `token`) |
 | `grant_id`      | str    | 부여 기록 id |
 | `decided_by`    | str    | 결정 주체 (`declaration`/`operator`/권한 에이전트 이름) |
 | `decision_use`  | str    | 결정 모델 쓰임 (`recall_filter`/`input_screen`/`tool_gate`/`node`/`compaction`) |
@@ -515,7 +516,7 @@ aaestro_state_compactions_total{graph, field, strategy, status}  # strategy: kee
 aaestro_state_field_tokens{graph, field}                 # Gauge — 압축을 선언한 필드의 추정 토큰 (경계마다)
 
 # Memory metrics ([09-memory-context.md](09-memory-context.md))
-aaestro_memory_operations_total{space, op, status}       # op: append|read|latest|search|recall
+aaestro_memory_operations_total{space, op, status}       # op: append|read|latest|search|recall — space: space id | "undeclared"
 aaestro_memory_search_duration_seconds{space}
 aaestro_memory_entries{space}                            # Gauge
 aaestro_memory_index_lag_seconds{space}

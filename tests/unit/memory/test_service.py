@@ -345,6 +345,7 @@ def test_cross_space_latest_is_audited_as_denied(service):
         "memory_space": "longterm",
         "op": "latest",
         "status": "denied",
+        "decision_source": "token",
     }
 
 
@@ -389,7 +390,11 @@ def test_successful_append_is_counted():
 
         service.append(token(), "longterm", entry())
 
-        assert metric_value(metrics, space="longterm", op="append", status="ok") == 1.0
+        assert (
+            metric_value(metrics, space="local:researcher:longterm", op="append", status="ok")
+            == 1.0
+        )
+        assert metric_value(metrics, space="longterm", op="append", status="ok") == 0.0
     finally:
         store.close()
 
@@ -403,7 +408,8 @@ def test_denied_access_is_counted_too():
         with pytest.raises(AaestroError):
             service.append(token(), "secret", entry())
 
-        assert metric_value(metrics, space="secret", op="append", status="denied") == 1.0
+        assert metric_value(metrics, space="undeclared", op="append", status="denied") == 1.0
+        assert metric_value(metrics, space="secret", op="append", status="denied") == 0.0
     finally:
         store.close()
 

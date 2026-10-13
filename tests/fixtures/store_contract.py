@@ -7,10 +7,13 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
 
 from aaestro.core.errors import AaestroError, ErrorCategory
 from aaestro.memory.entry import MAX_CONTENT_BYTES, MemoryEntry, MemorySource
+from aaestro.memory.store import MemoryStore
 from aaestro.modules.memoryset import MemoryKind
 
 
@@ -23,6 +26,31 @@ def make_entry(**overrides) -> MemoryEntry:
     }
     base.update(overrides)
     return MemoryEntry(**base)
+
+
+# --- 드라이버 예외 변환 (#447) — 백엔드별 파일이 저장소를 망가뜨리는 방법만 제공한다 ---------
+
+QUERY_CALLS = {
+    "append": lambda store: store.append(make_entry()),
+    "get": lambda store: store.get("a"),
+    "space_of": lambda store: store.space_of("a"),
+    "get_many": lambda store: store.get_many(["a"]),
+    "superseded": lambda store: store.superseded("local:researcher:longterm", ["a"]),
+    "list_space": lambda store: store.list_space("local:researcher:longterm"),
+    "spaces": lambda store: store.spaces(),
+    "latest_of_chain": lambda store: store.latest_of_chain("local:researcher:longterm", "a"),
+    "purge": lambda store: store.purge(["a"]),
+}
+"""계약의 쿼리 메서드마다 드라이버에 닿는 호출 하나 — 빈 입력은 쿼리 없이 돌아오므로 쓰지 않는다."""
+
+
+def contract_methods() -> list[str]:
+    """``MemoryStore`` 계약이 선언한 메서드 — 구현의 목록이 아니라 계약에서 직접 뽑는다."""
+    return sorted(
+        name
+        for name, member in vars(MemoryStore).items()
+        if callable(member) and not name.startswith("_")
+    )
 
 
 # --- 저장 --------------------------------------------------------------------
@@ -51,6 +79,16 @@ def test_entry_round_trips_through_the_row_form(store):
 
 def test_missing_entry_returns_none(store):
     assert store.get("absent") is None
+
+
+def test_space_of_names_the_space_an_entry_lives_in(store):
+    entry = store.append(make_entry(space="group:research:knowledge"))
+
+    assert store.space_of(entry.entry_id) == "group:research:knowledge"
+
+
+def test_space_of_an_unknown_entry_is_none(store):
+    assert store.space_of("absent") is None
 
 
 # --- append-only --------------------------------------------------------------
@@ -114,7 +152,7 @@ def test_correction_is_a_new_entry(store):
     store.append(corrected)
 
     assert store.get(original.entry_id).content == "포트는 9000 이다"
-    assert store.latest_of_chain(original.entry_id).entry_id == corrected.entry_id
+    assert store.latest_of_chain(original.space, original.entry_id).entry_id == corrected.entry_id
 
 
 def test_correction_chain_follows_to_the_newest(store):
@@ -125,18 +163,58 @@ def test_correction_chain_follows_to_the_newest(store):
     third = make_entry(content="v3", supersedes=second.entry_id)
     store.append(third)
 
-    assert store.latest_of_chain(first.entry_id).content == "v3"
+    assert store.latest_of_chain(first.space, first.entry_id).content == "v3"
 
 
 def test_chain_of_an_unsuperseded_entry_is_itself(store):
     entry = make_entry()
     store.append(entry)
 
-    assert store.latest_of_chain(entry.entry_id) == entry
+    assert store.latest_of_chain(entry.space, entry.entry_id) == entry
 
 
 def test_chain_of_unknown_entry_is_none(store):
-    assert store.latest_of_chain("absent") is None
+    assert store.latest_of_chain("local:researcher:longterm", "absent") is None
+
+
+def test_chain_ignores_a_correction_from_another_space(store):
+    """정정은 같은 space 의 항목만 대체한다 — ``superseded`` 와 같은 규칙이다."""
+    target = store.append(make_entry(content="org policy approved", space="global:global:org"))
+    store.append(
+        make_entry(content="hide it", space="local:attacker:longterm", supersedes=target.entry_id)
+    )
+
+    assert store.latest_of_chain("global:global:org", target.entry_id) == target
+
+
+def test_chain_prefers_the_same_space_correction_over_a_newer_foreign_one(store):
+    first = store.append(make_entry(content="v1", space="global:global:org"))
+    second = store.append(
+        make_entry(
+            content="v2",
+            space="global:global:org",
+            supersedes=first.entry_id,
+            created_at=first.created_at + timedelta(days=1),
+        )
+    )
+    store.append(
+        make_entry(
+            content="hide it",
+            space="local:attacker:longterm",
+            supersedes=first.entry_id,
+            created_at=first.created_at + timedelta(days=2),
+        )
+    )
+
+    assert store.latest_of_chain("global:global:org", first.entry_id) == second
+
+
+def test_chain_does_not_start_from_an_entry_in_another_space(store):
+    """다른 space 의 id 는 없는 id 와 답이 같다 — 다르면 id 존재 여부가 샌다."""
+    foreign = store.append(make_entry(space="local:writer:longterm"))
+    store.append(make_entry(content="mine", supersedes=foreign.entry_id))
+
+    assert store.latest_of_chain("local:researcher:longterm", foreign.entry_id) is None
 
 
 def test_cyclic_correction_does_not_hang(store):
@@ -152,7 +230,7 @@ def test_cyclic_correction_does_not_hang(store):
     store.append(make_entry(entry_id="a", content="a", supersedes="b"))
     store.append(make_entry(entry_id="b", content="b", supersedes="a"))
 
-    result = store.latest_of_chain("a")
+    result = store.latest_of_chain("local:researcher:longterm", "a")
 
     assert result is not None
 

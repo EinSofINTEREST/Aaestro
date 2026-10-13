@@ -82,33 +82,39 @@ class RegistryGate:
     async def admit(self, presented: str | None) -> AccessToken:
         if not presented:
             raise unauthorized("memory token is required")
-        agent, _ = await self.client.identify(presented)
+        agent, source = await self.client.identify(presented)
         if agent is None:
             # 모르는 신원, 폐기된 신원, 판정 불가 모두 — 무엇이 없는지 알려주지 않는다
             raise unauthorized("memory token is not recognised")
-        return self._declared(agent)
+        # space 별 판정이 없는 접근 (미선언 별칭) 의 출처는 신원 확인의 출처다
+        return replace(self._declared(agent), decision_source=source.value)
 
     async def narrow(
         self, presented: str, token: AccessToken, aliases: Sequence[str], *, write: bool
     ) -> AccessToken:
         mode = Mode.RW if write else Mode.RO
         allowed: list[MemorySpace] = []
+        refusals: list[tuple[str, str]] = []
         for alias in dict.fromkeys(aliases):
             space = token.resolve(alias) or _addressed_by_id(alias)
             if space is None:
                 continue  # 미선언 — 서비스가 MEM_001 로 거부하고 감사 로그를 남긴다
             verdict = await self.client.decide(presented, ResourceKind.MEMORY, space.space_id, mode)
             _log_decision(token.agent, space, verdict.allowed, verdict.source, mode)
-            if verdict.allowed:
-                # 판정이 곧 권한이다 — 선언의 mode/writers 대신 판정을 담는다
-                allowed.append(
-                    replace(
-                        space,
-                        mode=MemoryMode.RW if write else MemoryMode.RO,
-                        writers=(token.agent,) if write else (),
-                    )
+            if not verdict.allowed:
+                # 거부된 space 는 토큰에서 빠진다 — 감사 줄이 판정 출처를 잃지 않게 따로 싣는다
+                refusals.append((alias, verdict.source.value))
+                continue
+            # 판정이 곧 권한이다 — 선언의 mode/writers 대신 판정을 담는다
+            allowed.append(
+                replace(
+                    space,
+                    mode=MemoryMode.RW if write else MemoryMode.RO,
+                    writers=(token.agent,) if write else (),
+                    decision_source=verdict.source.value,
                 )
-        return replace(token, spaces=tuple(allowed))
+            )
+        return replace(token, spaces=tuple(allowed), refusals=tuple(refusals))
 
     def _declared(self, agent: str) -> AccessToken:
         try:
