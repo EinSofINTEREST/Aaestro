@@ -65,7 +65,9 @@ select = ["E", "F", "W", "I", "N", "UP", "B", "ASYNC", "S", "C4", "RET", "SIM", 
 [tool.ruff.lint.isort]
 known-first-party = ["aaestro", "tests"]
 
-# 규약 07: 상대 import 금지 — TID 계열 중 TID252 만 켠다
+# 규약 07: 상대 import 금지 — TID 계열 중 TID252 만 켠다.
+# 대상은 lint 가 보는 프레임워크 코드 (src · tests) 다. modules/ 의 스킬 코드는 넣지 않는다 —
+# 스킬셋은 위치 · 세대별 합성 패키지 이름으로 로드되어 내부 import 는 상대 import 뿐이다 (modules/skillset.py)
 [tool.ruff.lint.flake8-tidy-imports]
 ban-relative-imports = "all"
 
