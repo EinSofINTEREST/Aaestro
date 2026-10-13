@@ -27,11 +27,11 @@ from aaestro.catalog import Catalog
 from aaestro.cli.main import main as cli_main
 from aaestro.core.errors import AaestroError
 from aaestro.core.manifest import AgentManifest, GroupManifest
+from aaestro.core.topology import GraphTopology
 from aaestro.modules.memoryset import MemorysetLoader, MemorysetManifest
 from aaestro.modules.promptset import PromptsetLoader, PromptsetManifest
 from aaestro.modules.registry import ModuleRegistry
 from aaestro.modules.skillset import SkillsetLoader, SkillsetManifest
-from aaestro.orchestrator.topology import GraphTopology
 from tests.fixtures.builders import manifest_dict
 from tests.fixtures.declarations import (
     KIND_MODELS,

@@ -11,11 +11,11 @@ import pytest
 import uvicorn
 
 from aaestro.cli.main import build_parser, main
+from aaestro.core.topology import GraphMode
 from aaestro.orchestrator.control import create_app
 from aaestro.orchestrator.run import RunStatus
 from aaestro.orchestrator.runstore import InMemoryRunStore, RunRecord
 from aaestro.orchestrator.submit import RunResult
-from aaestro.orchestrator.topology import GraphMode
 
 
 class TwoStepRuns:

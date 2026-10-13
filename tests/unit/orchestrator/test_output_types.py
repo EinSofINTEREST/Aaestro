@@ -13,8 +13,8 @@ import pytest
 from pydantic import BaseModel, ConfigDict, Field
 
 from aaestro.core.errors import AaestroError, ErrorCode
+from aaestro.core.topology import NodeSpec
 from aaestro.orchestrator.state import merge_output
-from aaestro.orchestrator.topology import NodeSpec
 
 
 class State(BaseModel):

@@ -38,9 +38,7 @@ from aaestro.core.errors import (
     field_problems,
     raise_detached,
 )
-from aaestro.orchestrator.state import extract_input, merge_output, resolve_graph_state
-from aaestro.orchestrator.telemetry import OrchestratorTelemetry
-from aaestro.orchestrator.topology import (
+from aaestro.core.topology import (
     END,
     START,
     GraphMode,
@@ -49,6 +47,8 @@ from aaestro.orchestrator.topology import (
     reentry_targets,
     resolve_condition,
 )
+from aaestro.orchestrator.state import extract_input, merge_output, resolve_graph_state
+from aaestro.orchestrator.telemetry import OrchestratorTelemetry
 from aaestro.resilience import retrying
 
 if TYPE_CHECKING:

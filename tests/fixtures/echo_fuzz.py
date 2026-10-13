@@ -20,7 +20,7 @@ from pydantic import BaseModel
 
 from aaestro.config import AaestroConfig
 from aaestro.core.manifest import AgentManifest, GroupManifest
-from aaestro.orchestrator.topology import GraphTopology
+from aaestro.core.topology import GraphTopology
 from tests.fixtures.declarations import KIND_MODELS, MARKER, REPO_ROOT, _declaration_documents
 
 MIN_FRAGMENT = 8

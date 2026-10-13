@@ -17,8 +17,8 @@ import yaml
 
 from aaestro.core.agent import TaskResult
 from aaestro.core.errors import AaestroError, ErrorCode
+from aaestro.core.topology import GraphTopology
 from aaestro.orchestrator.builder import build_graph
-from aaestro.orchestrator.topology import GraphTopology
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 

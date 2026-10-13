@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aaestro.orchestrator.topology import GraphTopology, validate_topology
+from aaestro.core.topology import GraphTopology, validate_topology
 
 NODE_COUNT = 50
 

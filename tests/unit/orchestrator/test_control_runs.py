@@ -6,11 +6,11 @@ import httpx
 import pytest
 
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.core.topology import GraphMode
 from aaestro.orchestrator.control import create_app
 from aaestro.orchestrator.run import RunStatus
 from aaestro.orchestrator.runstore import InMemoryRunStore, RunRecord
 from aaestro.orchestrator.submit import RunResult
-from aaestro.orchestrator.topology import GraphMode
 
 
 class FakeRuns:

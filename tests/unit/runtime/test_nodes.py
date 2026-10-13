@@ -14,7 +14,7 @@ import structlog
 from aaestro.core.agent import TaskResult, TaskStatus
 from aaestro.core.errors import AaestroError, ErrorCategory
 from aaestro.core.manifest import agent_name
-from aaestro.orchestrator.topology import NodeSpec
+from aaestro.core.topology import NodeSpec
 from aaestro.runtime import nodes as nodes_module
 from aaestro.runtime.nodes import ControlNodeRuntime
 from tests.fixtures.builders import make_task

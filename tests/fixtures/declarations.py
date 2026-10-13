@@ -15,11 +15,11 @@ import yaml
 from pydantic import BaseModel
 
 from aaestro.core.manifest import AgentManifest, GroupManifest
+from aaestro.core.topology import GraphTopology
 from aaestro.modules.memoryset import MemorysetManifest
 from aaestro.modules.promptset import PromptsetManifest
 from aaestro.modules.skillpack import SkillpackManifest
 from aaestro.modules.skillset import SkillsetManifest
-from aaestro.orchestrator.topology import GraphTopology
 from tests.fixtures.builders import manifest_dict
 
 REPO_ROOT = Path(__file__).resolve().parents[2]

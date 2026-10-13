@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from aaestro.core.agent import TaskRequest, TaskResult
-    from aaestro.orchestrator.topology import NodeSpec
+    from aaestro.core.topology import NodeSpec
     from aaestro.runtime.control import ControlClient
 
 log = structlog.get_logger(__name__)

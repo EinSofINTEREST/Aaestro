@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aaestro.orchestrator.topology import GraphTopology
+from aaestro.core.topology import GraphTopology
 
 _STATE_REF = "aaestro.graphs.schemas:ResearchState"
 _CONDITION_REF = "aaestro.graphs.conditions:needs_research"

@@ -19,7 +19,7 @@ from aaestro.cli.main import (
     main,
     validate_root,
 )
-from aaestro.orchestrator.topology import GraphTopology
+from aaestro.core.topology import GraphTopology
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 

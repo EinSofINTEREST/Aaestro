@@ -10,7 +10,7 @@ import pytest
 
 from aaestro.core.agent import TraceContext
 from aaestro.core.errors import AaestroError, ErrorCategory
-from aaestro.orchestrator.topology import ConnectionSpec
+from aaestro.core.topology import ConnectionSpec
 from aaestro.protocols.a2a.allowlist import Allowlist, Edge, edges_from, issue_token
 
 SECRET = b"runtime-signing-secret"
