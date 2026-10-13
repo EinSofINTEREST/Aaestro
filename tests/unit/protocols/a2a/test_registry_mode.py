@@ -20,7 +20,7 @@ from aaestro.access.model import ResourceKind
 from aaestro.access.registry import AccessRegistry
 from aaestro.access.store import InMemoryAccessStore
 from aaestro.catalog import Catalog
-from aaestro.core.agent import TaskResult
+from aaestro.core.agent import TaskKey, TaskResult
 from aaestro.core.errors import AaestroError, ErrorCode
 from aaestro.orchestrator.control import create_app as control_app
 from aaestro.orchestrator.runstore import InMemoryRunStore
@@ -69,9 +69,11 @@ class Stack:
         )
 
         self.callers: list[str | None] = []
+        self.keys: list[TaskKey] = []
 
         async def handle(task):
             self.callers.append(task.caller)
+            self.keys.append(task.key)
             return TaskResult.completed(task, output={"plan": "ok"})
 
         self.planner = serve(guard, handle)
@@ -169,6 +171,33 @@ async def test_claiming_another_callers_name_with_your_own_ticket_is_refused(sta
     impostor.transport.agent = "writer"  # 헤더에는 writer 라고 적는다
 
     assert (await refused(impostor.call("planner", make_task()))).code == ErrorCode.A2A_004
+
+
+async def test_the_task_key_carries_the_tickets_owner_not_the_header_claim(stack):
+    """실행기의 태스크별 상태는 이 키로 갈린다 (#400) — 헤더에 적은 이름이 키가 되면 peer 가 고른다.
+
+    ``unknown`` 은 헤더가 없을 때와 같은 취급이라 이름 대조를 지나간다 — 그때도 키의 호출자는
+    표의 주인이어야 한다.
+    """
+    anonymous = stack.caller("researcher")
+    anonymous.transport.agent = "unknown"
+    task = make_task(task_id="task-keyed")
+
+    await anonymous.call("planner", task)
+
+    # 위임은 trace 만 자식으로 바꾼다 — 본문의 task_id 는 보낸 그대로다
+    assert stack.keys == [TaskKey(caller="researcher", task_id="task-keyed")]
+
+
+async def test_a_header_claim_that_differs_from_the_ticket_reaches_no_key_space(stack):
+    """표의 주인과 다른 이름을 대면 거부된다 — 그 이름의 키 공간에 태스크가 생기지 않는다."""
+    impostor = stack.caller("researcher")
+    impostor.transport.agent = "writer"
+
+    err = await refused(impostor.call("planner", make_task(task_id="task-keyed")))
+
+    assert err.code == ErrorCode.A2A_004
+    assert stack.keys == []
 
 
 async def test_a_valid_edge_token_is_not_accepted_in_registry_mode(stack):

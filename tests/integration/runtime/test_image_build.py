@@ -76,6 +76,8 @@ def serve(image: str) -> Iterator[int]:
         "--tmpfs=/workspace",
         "-e",
         "ANTHROPIC_API_KEY=test-key",
+        "-e",
+        "AAESTRO_AGENT_TOKEN=integration-token",
         "-P",
         image,
     )

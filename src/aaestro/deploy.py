@@ -16,7 +16,7 @@ import structlog
 from pydantic import ValidationError
 
 from aaestro.access.baselines import PROVIDER_HOSTS, EgressBaseline
-from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode, field_problems
 from aaestro.core.manifest import RESERVED_GLOBAL_GROUP, agent_name, agent_ref_parts
 from aaestro.modules.compatibility import check_promptset_templates
 from aaestro.modules.promptset import LoadedPromptset
@@ -165,7 +165,9 @@ class DeployValidator:
 
         report = ValidationReport(findings=tuple(findings))
         if report.ok:
-            log.info("deployment validation passed", graphs=len(topologies))
+            # 이 단계 (그래프 · 에이전트 대조) 의 범위만 말한다 — 호출자가 카탈로그 문제를 더해
+            # 최종 판정을 내리므로, 여기서 "validation passed" 라고 찍으면 실패한 실행에도 남는다
+            log.info("graph and agent checks passed", graphs=len(topologies))
         else:
             log.error(
                 "deployment validation failed",
@@ -377,15 +379,20 @@ class DeployValidator:
             group = self.groups.get(declared_group) if declared_group else None
             group_keys = frozenset(group.spec.secrets) if group else frozenset()
 
-            for key in manifest.spec.runtime.env_allowlist:
+            for index, key in enumerate(manifest.spec.runtime.env_allowlist):
                 if key in local or key in group_keys or key in self.global_secrets:
                     continue
+                # 키 이름이 아니라 위치로 가리킨다 (#386) — env 키 자리에 비밀 값 자체를 적는 실수가
+                # 드물지 않고, 스키마는 그 문자열을 통과시킨다. manifest 의 같은 검사와 맞춘다
                 findings.append(
                     Finding(
                         check="env_allowlist",
                         code=ErrorCode.CFG_002,
-                        message=f"env key cannot be resolved in any scope: {key}",
-                        details={"agent": name, "env_key": key, "group": declared_group},
+                        message=(
+                            "env key cannot be resolved in any scope: "
+                            f"spec.runtime.env_allowlist[{index}]"
+                        ),
+                        details={"agent": name, "index": index, "group": declared_group},
                     )
                 )
         return findings
@@ -570,7 +577,7 @@ class DeployValidator:
             try:
                 resolved = manifest.spec.model.overridden(node.model)
             except ValidationError as err:
-                reasons = "; ".join(str(e["msg"]) for e in err.errors())
+                reasons = "; ".join(p["problem"] for p in field_problems(err))
                 findings.append(
                     Finding(
                         check="model_providers",

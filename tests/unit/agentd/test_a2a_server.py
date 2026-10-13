@@ -150,3 +150,168 @@ def test_registry_mode_calls_peers_with_tickets(registry_mode, monkeypatch):
         "http://control-plane:8700",
         "researcher-identity",
     )
+
+
+# --- 태스크 조회·취소 창구 (#414) -----------------------------------------------------
+
+UNSUPPORTED = -32004
+"""SDK 의 ``UnsupportedOperationError`` 가 JSON-RPC 로 나가는 코드."""
+
+
+async def _post(app, method: str, params: dict, headers: dict | None = None):
+    import httpx
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://agent.test"
+    ) as http:
+        return await http.post(
+            "/",
+            json={"jsonrpc": "2.0", "id": "probe", "method": method, "params": params},
+            headers={"A2A-Version": "1.0", **(headers or {})},
+        )
+
+
+async def _ask(app, method: str, params: dict, headers: dict | None = None) -> dict:
+    return (await _post(app, method, params, headers)).json()
+
+
+@pytest.mark.parametrize("mode", ["injected", "registry_mode"])
+@pytest.mark.parametrize(
+    ("method", "params"),
+    [
+        ("GetTask", {"id": "any-task"}),
+        ("ListTasks", {"includeArtifacts": True}),
+        ("CancelTask", {"id": "any-task"}),
+        ("SubscribeToTask", {"id": "any-task"}),
+    ],
+)
+async def test_the_assembled_server_refuses_task_requests_in_both_modes(
+    mode, method, params, request
+):
+    """조립이 SDK 기본 핸들러로 돌아가면 이 창구가 자격 없이 다시 열린다.
+
+    거절 동작 자체는 `tests/unit/protocols/a2a/test_task_methods_guard.py` 가 본다 — 여기서는
+    **프로덕션 조립**이 그 핸들러를 쓰는지만 본다. SDK 기본 구현은 없는 태스크에 "not found" 로,
+    목록에는 결과로 답한다.
+    """
+    request.getfixturevalue(mode)
+    app = build_a2a_app(manifest("researcher"), invoke)
+
+    answer = await _ask(app, method, params)
+
+    assert "result" not in answer
+    assert answer["error"]["code"] == UNSUPPORTED
+
+
+# --- 이 포트에 열린 것 전부 (#414) ----------------------------------------------------
+
+OPEN_ROUTES = {("/.well-known/agent-card.json", "GET"), ("/", "POST")}
+"""A2A 포트가 답하는 경로 — 카드와 JSON-RPC. 그 밖의 것은 자격 없이 닿는 새 창구다."""
+
+METHOD_NOT_FOUND = -32601
+
+
+@pytest.mark.parametrize("mode", ["injected", "registry_mode"])
+def test_the_assembled_server_opens_only_the_card_and_the_rpc_endpoint(mode, request):
+    """문서 라우트 · REST 바인딩처럼 조립이 덧붙인 경로는 핸들러의 거절을 거치지 않거나 넓힌다."""
+    request.getfixturevalue(mode)
+    app = build_a2a_app(manifest("researcher"), invoke)
+
+    opened = {
+        (route.path, method)
+        for route in app.routes
+        for method in (getattr(route, "methods", None) or {"*"})
+    }
+
+    assert opened == OPEN_ROUTES
+
+
+@pytest.mark.parametrize("method", ["tasks/get", "tasks/cancel", "message/send"])
+async def test_the_assembled_server_does_not_route_the_older_protocol_names(method, injected):
+    """v0.3 호환을 켜면 같은 경로에 다른 이름의 요청이 열린다 — 라우트 표로는 보이지 않는다."""
+    app = build_a2a_app(manifest("researcher"), invoke)
+
+    answer = await _ask(app, method, {"id": "any-task"})
+
+    assert answer["error"]["code"] == METHOD_NOT_FOUND
+
+
+async def test_the_served_card_advertises_only_what_the_server_answers(injected):
+    """push 설정과 확장 카드는 전부 거절한다 — 카드가 광고하면 광고와 동작이 어긋난다."""
+    import httpx
+
+    app = build_a2a_app(manifest("researcher"), invoke)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://agent.test"
+    ) as http:
+        card = (await http.get("/.well-known/agent-card.json")).json()
+
+    assert not card["capabilities"].get("extendedAgentCard")
+    assert not card["capabilities"].get("pushNotifications")
+
+
+# --- 태스크를 쥐지 않는다 (#414) ------------------------------------------------------
+
+
+def _new_task() -> dict:
+    from a2a.types import a2a_pb2 as pb
+    from google.protobuf.json_format import MessageToDict
+
+    from aaestro.protocols.a2a.sdk import build_message
+    from tests.fixtures.builders import make_task
+
+    return MessageToDict(pb.SendMessageRequest(message=build_message(make_task())))
+
+
+def _saves(app) -> list[str]:
+    """store 에 닿은 저장 — 끝난 태스크는 남지 않으니 크기로는 '만들었다 지움' 이 안 보인다."""
+    saved: list[str] = []
+    store = app.state.task_store
+    save = store.save
+
+    async def recording(task, context):
+        saved.append(task.id)
+        await save(task, context)
+
+    store.save = recording
+    return saved
+
+
+@pytest.mark.parametrize("mode", ["injected", "registry_mode"])
+@pytest.mark.parametrize("method", ["SendMessage", "SendStreamingMessage"])
+async def test_an_uncredentialed_send_creates_no_task_in_either_mode(mode, method, request):
+    """자격 없는 요청마다 태스크를 만들면 그 수와 본문 크기만큼 컨테이너 메모리를 쓴다."""
+    request.getfixturevalue(mode)
+    app = build_a2a_app(manifest("researcher"), invoke)
+    saved = _saves(app)
+
+    for _ in range(3):
+        answer = await _ask(app, method, _new_task())
+        assert "a2a:A2A_004" in answer["error"]["message"]
+
+    assert saved == []
+    assert len(app.state.task_store) == 0
+
+
+@pytest.mark.parametrize("method", ["SendMessage", "SendStreamingMessage"])
+async def test_valid_sends_leave_nothing_in_the_assembled_store(method, injected):
+    """읽는 창구가 닫혀 있으니 끝난 태스크는 쌓이기만 한다 (02 Statelessness)."""
+    from aaestro.core.agent import TaskResult
+    from aaestro.protocols.a2a.allowlist import issue_token
+    from aaestro.protocols.a2a.sdk import CALLER_HEADER, TOKEN_HEADER
+
+    async def answer(task):
+        return TaskResult.completed(task, output={"plan": "ok"})
+
+    app = build_a2a_app(manifest("planner"), answer)
+    saved = _saves(app)
+    token = issue_token(b"runtime-signing-secret", Edge(caller="researcher", callee="planner"))
+    headers = {CALLER_HEADER: "researcher", TOKEN_HEADER: token}
+
+    for _ in range(3):
+        sent = await _post(app, method, _new_task(), headers)
+        assert "TASK_STATE_COMPLETED" in sent.text
+
+    assert len(saved) == 3, "태스크가 store 를 거치지 않았다 — 이 시험이 보는 경로가 아니다"
+    assert len(app.state.task_store) == 0

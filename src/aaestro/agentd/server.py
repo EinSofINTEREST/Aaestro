@@ -17,7 +17,7 @@ from fastapi import APIRouter, Depends, FastAPI, Request, status
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict
 
-from aaestro.core.agent import HealthState, HealthStatus, TaskRequest, TaskResult
+from aaestro.core.agent import HealthState, HealthStatus, TaskKey, TaskRequest, TaskResult
 from aaestro.core.errors import AaestroError, AaestroErrorPayload, ErrorCategory, ErrorCode
 from aaestro.http_auth import require_token
 from aaestro.http_errors import status_for
@@ -38,6 +38,19 @@ class Acknowledgement(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     status: str = "accepted"
+
+
+class SteerRequest(BaseModel):
+    """`/v1/steer/{task_id}` 본문.
+
+    길이·대기 수 상한은 대기열을 쥔 실행기가 ``VAL_002`` 로 판정한다 — 여기서 걸면 FastAPI 의
+    422 로 새어 다른 거절과 모양이 갈린다.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    text: str
+    by: str
 
 
 class AgentRuntime:
@@ -65,7 +78,7 @@ class AgentRuntime:
         # direct 요청과 그래프 태스크가 같은 큐를 공유한다 (02 Direct Request Rules 5)
         self.semaphore = asyncio.Semaphore(max_concurrent_tasks)
         self.draining = False
-        self._inflight: dict[str, asyncio.Task[Any]] = {}
+        self._inflight: dict[TaskKey, asyncio.Task[Any]] = {}
 
     def card(self) -> dict[str, Any]:
         """A2A AgentCard."""
@@ -95,17 +108,37 @@ class AgentRuntime:
             self._card = dict(card)
         return True
 
-    def track(self, task_id: str, task: asyncio.Task[Any]) -> None:
-        """진행 중 태스크를 등록한다 — 취소 대상 추적용."""
-        self._inflight[task_id] = task
-        task.add_done_callback(lambda _t: self._inflight.pop(task_id, None))
+    def track(self, key: TaskKey, task: asyncio.Task[Any]) -> None:
+        """진행 중 태스크를 등록한다 — 취소 대상 추적용.
+
+        키는 멱등 캐시와 같은 ``TaskRequest.key`` 다: id 만으로 잡으면 peer 가 같은 id 의
+        A2A 태스크로 진행 중 노드 태스크의 자리를 덮을 수 있다 (#400).
+        """
+        self._inflight[key] = task
+        task.add_done_callback(lambda _t: self._inflight.pop(key, None))
 
     def cancel(self, task_id: str) -> bool:
-        """진행 중 태스크를 취소한다. 없으면 False."""
-        task = self._inflight.get(task_id)
+        """Control API 로 들어온 진행 중 태스크를 취소한다. 없으면 False.
+
+        취소를 부를 수 있는 것은 Control API 뿐이므로 대상도 그쪽 태스크뿐이다 — peer 가 만든
+        동명 태스크는 이 id 로 가리켜지지 않는다.
+        """
+        task = self._inflight.get(TaskKey.from_control(task_id))
         if task is None:
             return False
         task.cancel()
+        return True
+
+    async def steer(self, task_id: str, text: str, *, by: str) -> bool:
+        """진행 중 태스크에 운영자 지시를 대기시킨다 — steer 를 모르는 실행기면 False.
+
+        진행 여부는 실행기가 안다: `/invoke` 뿐 아니라 `/stream` 과 A2A 로 받은 태스크도 같은
+        루프를 돌기 때문에, 서버의 취소 추적표(`/invoke` 만 등록)로 판정하면 그 둘이 빠진다.
+        """
+        steer = getattr(self.executor, "steer", None)
+        if not callable(steer):
+            return False
+        await steer(task_id, text, by=by)
         return True
 
     async def drain(self) -> None:
@@ -164,7 +197,7 @@ def create_app(runtime: AgentRuntime, *, token: str | None = None) -> FastAPI:
         task = _unverified(task)
         async with runtime.semaphore:
             running = asyncio.create_task(runtime.executor.execute(task))
-            runtime.track(task.task_id, running)
+            runtime.track(task.key, running)
             try:
                 result: TaskResult = await running
             except asyncio.CancelledError:
@@ -206,6 +239,33 @@ def create_app(runtime: AgentRuntime, *, token: str | None = None) -> FastAPI:
                 task_id=task_id,
             )
         return Acknowledgement(status="canceled")
+
+    @router.post(
+        "/steer/{task_id}",
+        response_model=Acknowledgement,
+        dependencies=[guard],
+        responses={
+            status.HTTP_501_NOT_IMPLEMENTED: {
+                "model": Acknowledgement,
+                "description": "이 실행기는 steer 를 지원하지 않는다",
+            }
+        },
+    )
+    async def steer(task_id: str, body: SteerRequest) -> Acknowledgement | JSONResponse:
+        """진행 중 태스크의 다음 턴 경계에 운영자 지시를 대기시킨다.
+
+        ``queued`` 는 **접수**다 — 반영은 다음 턴 경계에서 일어나고(``SteerEvent``), 태스크가
+        먼저 끝나면 일어나지 않는다. 끝났거나 모르는 태스크는 404.
+
+        steer 를 모르는 실행기(커스텀 entrypoint, echo)는 501 로 답한다 — 200 으로 삼키면
+        운영자가 방향이 바뀐 줄 안다. 본문은 `/reload` 와 같은 ``unsupported`` 다.
+        """
+        if not await runtime.steer(task_id, body.text, by=body.by):
+            return JSONResponse(
+                status_code=status.HTTP_501_NOT_IMPLEMENTED,
+                content=Acknowledgement(status="unsupported").model_dump(),
+            )
+        return Acknowledgement(status="queued")
 
     @router.post("/reload", response_model=Acknowledgement, dependencies=[guard])
     async def reload() -> Acknowledgement:
@@ -258,6 +318,7 @@ __all__ = [
     "Acknowledgement",
     "AgentRuntime",
     "AaestroErrorPayload",
+    "SteerRequest",
     "create_app",
     "require_token",
 ]

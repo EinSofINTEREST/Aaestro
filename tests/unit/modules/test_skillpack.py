@@ -1171,6 +1171,7 @@ def deny(monkeypatch):
 
     def _patch(path: Path) -> None:
         real_scandir, real_open, real_read_text = os.scandir, os.open, Path.read_text
+        real_read_bytes = Path.read_bytes  # 선언 파일은 yamlio 가 bytes 로 읽는다 (#386)
 
         def refuse(candidate, real, *args, **kwargs):
             named = isinstance(candidate, str | os.PathLike)
@@ -1186,6 +1187,9 @@ def deny(monkeypatch):
         monkeypatch.setattr(os, "open", lambda p, *a, **k: refuse(p, real_open, *a, **k))
         monkeypatch.setattr(
             Path, "read_text", lambda self, *a, **k: refuse(self, real_read_text, *a, **k)
+        )
+        monkeypatch.setattr(
+            Path, "read_bytes", lambda self, *a, **k: refuse(self, real_read_bytes, *a, **k)
         )
 
     def _deny(path: Path, mode: str) -> None:

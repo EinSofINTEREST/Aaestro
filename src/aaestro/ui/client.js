@@ -187,6 +187,92 @@ export function patchAgent(original, form) {
   return doc;
 }
 
+// 조회 응답(`model_dump(mode="json")`)은 별칭이 아니라 필드명으로 나온다. 저장 입력은 별칭을 받으므로
+// 응답을 그대로 PUT 하면 `apiVersion` 이 없어 거절된다. 편집기가 읽고 쓰는 모양(별칭)으로 되돌린다.
+// 기본값으로 채워진 null 은 응답이 만든 최상위 선택 필드(문서·metadata·spec·노드·edge 한 단계)에서만
+// 걷어 낸다. 그 아래 하위 트리(노드의 model · spec.memory …)는 키의 유무가 의미라 null · "" · 빈 값을
+// 포함해 그대로 둔다 (`ModelOverride` 의 `max_tokens: null` 은 "아래 계층 값을 지운다" 이다).
+// 원본은 변형하지 않는다.
+function dropNullKeys(object) {
+  return Object.fromEntries(Object.entries(object).filter(([, v]) => v !== null && v !== undefined));
+}
+
+export function normalizeGraph(document) {
+  const doc = dropNullKeys(structuredClone(document));
+  if ("api_version" in doc) {
+    doc.apiVersion = doc.apiVersion || doc.api_version;
+    delete doc.api_version;
+  }
+  if (doc.metadata) doc.metadata = dropNullKeys(doc.metadata);
+  const spec = dropNullKeys(doc.spec || {});
+  doc.spec = spec;
+  spec.nodes = (spec.nodes || []).map(dropNullKeys);
+  spec.edges = (spec.edges || []).map(({ source, target, ...rest }) =>
+    dropNullKeys({
+      ...(source !== undefined ? { from: source } : {}),
+      ...(target !== undefined ? { to: target } : {}),
+      ...rest,
+    }));
+  if (spec.state) {
+    const state = dropNullKeys(spec.state);
+    if ("schema_ref" in state) { state.schema = state.schema ?? state.schema_ref; delete state.schema_ref; }
+    if ("declared_fields" in state) { state.fields = state.fields ?? state.declared_fields; delete state.declared_fields; }
+    spec.state = state;
+  }
+  return doc;
+}
+
+// 불러온 그래프 위에 **폼이 다루는 키만** 덮어쓴 새 문서를 만든다 (#385, 에이전트의 #377 과 같은 문제).
+// 폼이 다루는 키: metadata.name/version/description, spec.mode/goal/state(schema·fields)/edges/connections,
+// 노드의 id/agent/input_map/output_map, service.idle.min_delay_s/max_delay_s/max_failure_streak.
+// 그 밖(노드의 model·retry·timeout_s·graph, spec.memory, state.checkpointer, idle.multiplier …)은
+// 원본을 깊이 그대로 보존한다. 정리(빈 값 제거)는 폼이 조립한 값에만 한다.
+// 노드는 id 로 짝짓는다 — 폼에서 id 를 바꾼 노드는 새 노드라 옛 선언을 물려받지 않는다.
+// 원본은 이름이 같을 때만 쓴다: 다른 이름으로 저장하면 새 그래프이고 숨은 선언이 복제되면 안 된다.
+export function patchGraph(original, form) {
+  const normalized = original ? normalizeGraph(original) : null;
+  const base = normalized && normalized.metadata?.name === form.name ? normalized : null;
+  const doc = base || emptyGraph();
+  const fresh = emptyGraph();
+  doc.apiVersion = fresh.apiVersion;
+  doc.kind = fresh.kind;
+  doc.metadata ||= {};
+  doc.spec ||= {};
+  const { metadata, spec } = doc;
+  put(metadata, "name", form.name);
+  put(metadata, "version", form.version);
+  put(metadata, "description", form.description);
+
+  spec.mode = form.mode;
+  put(spec, "goal", form.goal);
+  // state 의 필드 선언은 사용자가 편집한 JSON 그대로다 — 정리하지 않는다
+  spec.state = { ...(base?.spec?.state?.checkpointer ? { checkpointer: base.spec.state.checkpointer } : {}), ...form.state };
+
+  const hidden = new Map((base?.spec?.nodes || []).map((node) => [node.id, node]));
+  spec.nodes = form.nodes.map((row) => {
+    const node = structuredClone(hidden.get(row.id) || {});
+    put(node, "id", row.id);
+    put(node, "agent", row.agent);
+    // 폼에서 에이전트를 골랐으면 서브그래프 선언은 대체된다 — 둘을 함께 두면 서버가 거절한다
+    if (node.agent) delete node.graph;
+    if (Object.keys(row.inputMap).length) node.input_map = row.inputMap; else delete node.input_map;
+    if (Object.keys(row.outputMap).length) node.output_map = row.outputMap; else delete node.output_map;
+    return node;
+  });
+  spec.edges = form.edges.map((edge) => pruneEmpty({
+    from: edge.from, to: edge.to, condition: edge.condition, max_iterations: edge.maxIterations,
+  }));
+  spec.connections = form.connections.map(({ caller, callee }) => pruneEmpty({ caller, callee }));
+
+  if (form.mode === "service") {
+    const service = { ...spec.service };
+    service.idle = { ...service.idle, min_delay_s: form.service.minDelay, max_delay_s: form.service.maxDelay };
+    service.max_failure_streak = form.service.failureStreak;
+    spec.service = service;
+  } else delete spec.service;
+  return doc;
+}
+
 // select 옵션 목록에 카탈로그에 없는 선택 값을 덧붙인다. 옵션에 없는 값은 select 에 올라가지
 // 못해 폼 값이 비어 읽히고, 저장이 그 선언을 조용히 지우기 때문이다 (#377).
 export const UNLISTED_SUFFIX = " (카탈로그에 없음)";

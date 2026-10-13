@@ -39,6 +39,12 @@ HEADER_TIMEOUT_S = 10.0
 CONNECT_TIMEOUT_S = 10.0
 PIPE_CHUNK_BYTES = 64 * 1024
 UNKNOWN_IDENTITY = "unknown-identity"
+RESERVED_TLD = "invalid"
+"""RFC 2606 예약 TLD — 정당한 목적지가 될 수 없다.
+
+provider 의 합성 논리 호스트(``openai-compat.invalid``)가 선언 목적지에 들어가므로, 이 이름의
+CONNECT 는 판정이 allow 다. 열리지 않는 근거가 "리졸버가 못 푼다" 뿐이면 split DNS · NXDOMAIN
+하이재킹 · 네트워크 alias 에 안전성을 맡기게 된다 — 판정 전에 여기서 닫는다."""
 
 
 class EgressMode(StrEnum):
@@ -65,6 +71,12 @@ Opener = Callable[[str, int], Awaitable[tuple[asyncio.StreamReader, asyncio.Stre
 async def resolve(host: str, port: int) -> list[str]:
     infos = await asyncio.get_running_loop().getaddrinfo(host, port, type=socket.SOCK_STREAM)
     return list(dict.fromkeys(str(info[4][0]) for info in infos))
+
+
+def _is_reserved(host: str) -> bool:
+    """``.invalid`` 로 끝나는 이름인가 — 대소문자와 끝의 점은 같은 이름이다."""
+    name = host.lower().rstrip(".")
+    return name == RESERVED_TLD or name.endswith(f".{RESERVED_TLD}")
 
 
 def is_public(address: str) -> bool:
@@ -120,6 +132,16 @@ class ConnectProxy:
             host, port = _split_authority(authority)
         except ValueError:
             await _respond(writer, 400, "invalid CONNECT authority")
+            return
+        if _is_reserved(host):
+            log.warning(
+                "egress to a reserved name refused",
+                agent="",
+                resource=ResourceKind.EGRESS.value,
+                target=egress_target(host, port),
+                error_code="ACC_001",
+            )
+            await _respond(writer, 403, "destination is a reserved name", code="ACC_001")
             return
         credential = _credential(headers)
         if not credential:

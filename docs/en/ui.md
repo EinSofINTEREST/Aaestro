@@ -67,6 +67,17 @@ graph never reaches disk through the UI.
 changed content under the same version is refused — the version is how a deployment stays
 reproducible.
 
+Saving keeps what the form has no field for, as declared and without cleaning it up: a node's
+`model` override (explicit `null`s included), `retry`, `timeout_s`, or subgraph target (`graph:`),
+`spec.memory`, `state.checkpointer`, and the service `idle.multiplier`. Everything the form does
+show (nodes by id, edges, connections, mode, goal, state, idle delays) takes the form's value, so a
+row deleted in the form stays deleted. Nodes are matched by id: renaming a node's id in the form
+makes it a new node, and its hidden declarations (`model`, `retry`, `timeout_s`) do not follow.
+The base for a save is the declaration the form was loaded from while the name is unchanged;
+under a different name it is the server's graph of that name, if one exists, otherwise nothing
+(the graph is built from the form alone, so hidden declarations are not copied and a subgraph node
+must be re-bound there). After a successful save the saved document becomes the base for the next one.
+
 ### 에이전트 편집기 — manifests
 
 The same shape for agent manifests: metadata and group, the model, module references, and the

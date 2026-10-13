@@ -136,6 +136,8 @@ spec:
     budget_tokens: 2000
 ```
 
+> **구현 상태**: 위 memoryset 예시의 `compaction.importance` 는 v0.1 스키마가 아직 받지 않는다. 지금은 모르는 키로 `MOD_003` 거절된다 (`extra="forbid"`).
+
 ### Attachment — 스코프별 선언 위치
 
 Space 는 스코프에 대응하는 아티팩트에서 선언한다 — 선언 위치가 곧 접근 경계다.

@@ -8,13 +8,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
-import yaml
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.core.errors import (
+    AaestroError,
+    ErrorCategory,
+    ErrorCode,
+    field_problems,
+    raise_detached,
+)
 from aaestro.core.manifest import ParsedModuleRef
+from aaestro.core.yamlio import YamlReadError, load_yaml_file
 
 MODULE_FILENAMES: dict[str, str] = {
     "skillsets": "skillset.yaml",
@@ -234,14 +240,16 @@ def _within(root: Path, path: Path) -> bool:
 def _read_yaml(file: Path, ref: str) -> dict[str, Any]:
     """선언 yaml 을 읽어 매핑으로 반환한다."""
     try:
-        raw = yaml.safe_load(file.read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError) as err:
-        raise AaestroError(
-            category=ErrorCategory.MODULE,
-            code=ErrorCode.MOD_003,
-            message=f"failed to read module declaration: {ref}",
-            details={"module_ref": ref, "path": str(file)},
-        ) from err
+        raw = load_yaml_file(file)
+    except YamlReadError as err:
+        raise_detached(
+            AaestroError(
+                category=ErrorCategory.MODULE,
+                code=ErrorCode.MOD_003,
+                message=f"failed to read module declaration: {ref}",
+                details={"module_ref": ref, "path": str(file), "reason": err.reason},
+            )
+        )
 
     if not isinstance(raw, dict):
         raise AaestroError(
@@ -255,13 +263,14 @@ def _read_yaml(file: Path, ref: str) -> dict[str, Any]:
 
 def _check_integrity(document: dict[str, Any], path: ModulePath, ref: str) -> None:
     """문서의 kind/name/version 이 ref 와 일치하는지 확인한다."""
+    # 메시지는 **기대 값 (ref 에서 온 것) 만** 말한다. 이 검사는 스키마 검증보다 먼저 돌아 선언에
+    # 적힌 값이 어떤 문자열이든 될 수 있다 — 보간하면 선언의 값이 에러 · 로그로 나간다
     expected_kind = MODULE_KINDS[path.type]
-    actual_kind = document.get("kind")
-    if actual_kind != expected_kind:
+    if document.get("kind") != expected_kind:
         raise AaestroError(
             category=ErrorCategory.MODULE,
             code=ErrorCode.MOD_003,
-            message=f"module kind mismatch: expected {expected_kind}, got {actual_kind}",
+            message=f"module kind mismatch: declaration is not a {expected_kind}",
             details={"module_ref": ref},
         )
 
@@ -279,8 +288,8 @@ def _check_integrity(document: dict[str, Any], path: ModulePath, ref: str) -> No
             category=ErrorCategory.MODULE,
             code=ErrorCode.MOD_003,
             message=(
-                f"module name mismatch: ref says {path.name}, "
-                f"declaration says {metadata.get('name')}"
+                f"module name mismatch: declaration names a different module than the ref "
+                f"({path.name})"
             ),
             details={"module_ref": ref},
         )
@@ -290,21 +299,27 @@ def _check_integrity(document: dict[str, Any], path: ModulePath, ref: str) -> No
             category=ErrorCategory.MODULE,
             code=ErrorCode.MOD_003,
             message=(
-                f"module version mismatch: ref says {path.version}, "
-                f"declaration says {metadata.get('version')}"
+                f"module version mismatch: declaration names a different version than the ref "
+                f"({path.version})"
             ),
             details={"module_ref": ref},
         )
 
 
-def validation_error(ref: str, err: ValidationError) -> AaestroError:
-    """Convert a pydantic validation error at the module boundary.
+def reject_module(ref: str, err: ValidationError) -> NoReturn:
+    """Convert a pydantic validation error at the module boundary and raise it.
 
-    모듈 경계에서 pydantic 검증 실패를 ``MOD_003`` 으로 변환합니다.
+    모듈 경계에서 pydantic 검증 실패를 ``MOD_003`` 으로 변환해 던집니다 (원인 체인은 끊는다 —
+    :func:`~aaestro.core.errors.raise_detached`).
     """
-    return AaestroError(
-        category=ErrorCategory.MODULE,
-        code=ErrorCode.MOD_003,
-        message=f"module schema validation failed: {ref}",
-        details={"module_ref": ref, "errors": err.errors(include_url=False)},
+    problems = field_problems(err)
+    # 이 프레임은 던지는 에러의 traceback 에 남는다 — 입력 값을 실은 원인을 지역 변수로 두지 않는다
+    del err
+    raise_detached(
+        AaestroError(
+            category=ErrorCategory.MODULE,
+            code=ErrorCode.MOD_003,
+            message=f"module schema validation failed: {ref}",
+            details={"module_ref": ref, "errors": problems},
+        )
     )

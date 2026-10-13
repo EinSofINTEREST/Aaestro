@@ -13,16 +13,24 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
-import yaml
 from pydantic import BaseModel, ValidationError
 
-from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.core.errors import (
+    AaestroError,
+    ErrorCategory,
+    ErrorCode,
+    field_problems,
+    raise_detached,
+)
 from aaestro.core.manifest import NAME_PATTERN, AgentManifest, GroupManifest
+from aaestro.core.yamlio import YamlReadError, load_yaml_file
+from aaestro.modules.memoryset import MemorysetManifest
 from aaestro.modules.promptset import PromptsetManifest
 from aaestro.modules.registry import ModuleRegistry, RegistryRoots
 from aaestro.modules.skillpack import SkillpackLoader
+from aaestro.modules.skillset import SkillsetManifest
 from aaestro.orchestrator.topology import GraphTopology
 
 MODULE_TYPES: tuple[str, ...] = ("skillsets", "promptsets", "memorysets", "skillpacks")
@@ -39,6 +47,23 @@ class Problem:
     path: str
     code: str
     message: str
+    errors: tuple[dict[str, str], ...] = ()
+    """``{field, problem}`` — 스키마 위반이면 **어느 키가 왜** 인지. 값은 싣지 않는다."""
+    reason: str | None = None
+    """읽기 실패의 위치와 종류 — 중복 키 (이름 · 줄), 파싱 실패 (줄 · 열). 입력 조각은 없다."""
+
+
+def _problem(path: str, err: AaestroError) -> Problem:
+    """에러를 Problem 으로 — 에러가 싣고 온 필드 목록을 잃지 않는다."""
+    errors = err.details.get("errors")
+    reason = err.details.get("reason")
+    return Problem(
+        path=path,
+        code=err.code,
+        message=err.message,
+        errors=tuple(errors) if isinstance(errors, list) else (),
+        reason=reason if isinstance(reason, str) else None,
+    )
 
 
 @dataclass(frozen=True)
@@ -64,9 +89,9 @@ def load_yaml(path: Path) -> dict[str, Any]:
     from aaestro.config import config_error
 
     try:
-        document = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, yaml.YAMLError) as err:
-        raise config_error("cannot read yaml document", path=str(path)) from err
+        document = load_yaml_file(path)
+    except YamlReadError as err:
+        raise_detached(config_error("cannot read yaml document", path=str(path), reason=err.reason))
 
     if not isinstance(document, dict):
         raise config_error("yaml document must be a mapping", path=str(path))
@@ -127,36 +152,70 @@ def inside(root: Path, path: Path) -> Path | None:
     return resolved if resolved.is_relative_to(base) else None
 
 
-def _invalid(path: Path, err: ValidationError) -> AaestroError:
+def _invalid(path: Path, err: ValidationError) -> NoReturn:
     """스키마 위반을 파일 이름과 함께 — 어느 필드가 왜 인지까지."""
-    return AaestroError(
-        category=ErrorCategory.VALIDATION,
-        code=ErrorCode.VAL_002,
-        message="declaration failed schema validation",
-        details={
-            "path": str(path),
-            "errors": [
-                {"field": ".".join(str(loc) for loc in e["loc"]), "problem": e["msg"]}
-                for e in err.errors()
-            ],
-        },
+    problems = field_problems(err)
+    # 이 프레임은 던지는 에러의 traceback 에 남는다 — 입력 값을 실은 원인을 지역 변수로 두지 않는다
+    del err
+    raise_detached(
+        AaestroError(
+            category=ErrorCategory.VALIDATION,
+            code=ErrorCode.VAL_002,
+            message="declaration failed schema validation",
+            details={"path": str(path), "errors": problems},
+        )
     )
+
+
+_MODULE_MANIFESTS: dict[str, type[BaseModel]] = {
+    "skillsets": SkillsetManifest,
+    "promptsets": PromptsetManifest,
+    "memorysets": MemorysetManifest,
+}
+
+
+def _validate_module(module_type: str, ref: str, document: dict[str, Any]) -> None:
+    """모듈 선언을 종류별 스키마로 — 위반은 ``MOD_003`` 과 ``{field, problem}`` 목록."""
+    try:
+        _MODULE_MANIFESTS[module_type].model_validate(document)
+    except ValidationError as err:
+        raise_detached(
+            AaestroError(
+                category=ErrorCategory.MODULE,
+                code=ErrorCode.MOD_003,
+                message=f"module declaration failed schema validation: {ref}",
+                details={"module_ref": ref, "errors": field_problems(err)},
+            )
+        )
+
+
+def parse_declaration[T: BaseModel](path: Path, model: type[T]) -> T:
+    """Read one declaration file as ``model``.
+
+    선언 파일 하나를 모델로 — 스키마 위반은 ``VAL_002`` 과 ``{field, problem}`` 목록으로,
+    값은 싣지 않는다. CLI 도 같은 경로를 쓴다.
+    """
+    return _parse(path, model)
 
 
 def _parse[T: BaseModel](path: Path, model: type[T]) -> T:
     try:
         return model.model_validate(load_yaml(path))
     except ValidationError as err:
-        raise _invalid(path, err) from err
+        _invalid(path, err)
 
 
-def _mismatch(path: Path, *, declared: str, located: str) -> AaestroError:
-    """선언된 이름과 파일 위치가 다르다 — 04 Registry 3 의 integrity 위반."""
+def _mismatch(path: Path, *, located: str) -> AaestroError:
+    """선언된 이름과 파일 위치가 다르다 — 04 Registry 3 의 integrity 위반.
+
+    기대 값 (위치에서 온 이름) 만 싣는다. 선언에 적힌 이름은 싣지 않는다 — 이름 규칙을 통과한
+    문자열이라도 선언의 값이고, 운영자는 경로와 기대 이름만으로 고칠 수 있다.
+    """
     return AaestroError(
         category=ErrorCategory.VALIDATION,
         code=ErrorCode.VAL_002,
         message="declared name does not match its location",
-        details={"path": str(path), "declared": declared, "located": located},
+        details={"path": str(path), "located": located},
     )
 
 
@@ -165,7 +224,7 @@ def _checked[T: BaseModel](
 ) -> T:
     parsed = _parse(path, model)
     if key(parsed) != located:
-        raise _mismatch(path, declared=key(parsed), located=located)
+        raise _mismatch(path, located=located)
     return parsed
 
 
@@ -199,9 +258,9 @@ def _collect[T: BaseModel](
         try:
             parsed = _parse(path, model)
             if key(parsed) != located(path):
-                raise _mismatch(path, declared=key(parsed), located=located(path))
+                raise _mismatch(path, located=located(path))
         except AaestroError as err:
-            problems.append(Problem(path=str(path), code=err.code, message=err.message))
+            problems.append(_problem(str(path), err))
             continue
         items[located(path)] = parsed
     return Listing(items=items, problems=tuple(problems))
@@ -353,13 +412,18 @@ class Catalog:
                 if module_type == "skillpacks":
                     # skillpack 은 읽기만 해서 전부 검증된다 (코드를 실행하지 않는다) — 선언만
                     # 맞고 담긴 skill 이 표준을 어긴 팩을 게시된 것으로 넘기지 않는다.
-                    # 로더가 선언 무결성 검사 (load_document) 를 포함한다
+                    # 로더가 선언 무결성 검사 (load_document) 와 스키마 검증을 포함한다
                     loaded = SkillpackLoader(registry).load(ref)
                     warnings.extend(f"{ref}: {warning}" for warning in loaded.warnings)
                 else:
-                    registry.load_document(ref)
+                    # 선언 문서를 스키마로 읽는다 — 오타 난 키가 배포를 통과해 컨테이너나 Memory
+                    # Service 기동에서야 터지지 않게. yaml 스키마 검증만이다: 스킬 코드는 control
+                    # plane 에서 실행하지 않고 소유 에이전트 컨테이너 안에서만 로드된다
+                    # (04 Loading Isolation)
+                    _path, document = registry.load_document(ref)
+                    _validate_module(module_type, ref, document)
             except AaestroError as err:
-                problems.append(Problem(path=str(version_dir), code=err.code, message=err.message))
+                problems.append(_problem(str(version_dir), err))
                 continue
             found.setdefault(version_dir.parent.name, []).append(version_dir.name)
         return ModuleListing(
@@ -385,12 +449,14 @@ class Catalog:
         try:
             return PromptsetManifest.model_validate(document)
         except ValidationError as err:
-            raise AaestroError(
-                category=ErrorCategory.MODULE,
-                code=ErrorCode.MOD_003,
-                message=f"promptset failed schema validation: {ref}",
-                details={"module_ref": ref, "errors": err.error_count()},
-            ) from err
+            raise_detached(
+                AaestroError(
+                    category=ErrorCategory.MODULE,
+                    code=ErrorCode.MOD_003,
+                    message=f"promptset failed schema validation: {ref}",
+                    details={"module_ref": ref, "errors": field_problems(err)},
+                )
+            )
 
     def module(self, module_type: str, name: str, version: str) -> dict[str, Any]:
         """모듈 선언 문서 — 무결성 검사(`kind`/`name`/`version` 일치)를 거친다."""
@@ -432,5 +498,6 @@ __all__ = [
     "ModuleListing",
     "Problem",
     "load_yaml",
+    "parse_declaration",
     "not_found",
 ]

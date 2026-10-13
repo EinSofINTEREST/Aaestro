@@ -95,3 +95,45 @@ def test_an_uncomparable_value_is_an_error_not_a_silent_false():
 )
 def test_import_refs_and_expressions_are_told_apart(condition, expected):
     assert is_import_ref(condition) is expected
+
+
+# --- 에러는 식을 싣지 않는다 (#386) -------------------------------------------------------------
+
+SECRET_NAME = "sk_SECRET_123_marker"
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        SECRET_NAME,  # state 밖의 이름
+        "ｓｋ＿ＳＥＣＲＥＴ＿１２３＿ｍａｒｋｅｒ",  # 전각 — NFKC 로 ASCII 이름이 된다
+        f"{SECRET_NAME}.field == 1",
+        f"state.x == '{SECRET_NAME}' +",  # 문법 오류
+        f"len('{SECRET_NAME}')",
+    ],
+    ids=["name", "fullwidth-name", "attribute", "syntax-error", "call"],
+)
+def test_a_refused_condition_does_not_come_back_in_the_error(expression):
+    """식은 선언의 값이다 — 메시지에도 details 에도 원인 체인에도 싣지 않는다."""
+    with pytest.raises(AaestroError) as exc_info:
+        parse_condition(expression)
+
+    err = exc_info.value
+    assert err.code == "GRAPH_001"
+    assert "secret" not in (err.message + str(err.details)).lower()
+    # SyntaxError 는 식 전체를 text 로 쥐고 있다 — 체인 · 문맥으로 잇지 않는다
+    assert err.__cause__ is None
+    assert err.__context__ is None
+
+
+def test_an_evaluation_failure_does_not_carry_the_expression_or_the_state():
+    predicate = parse_condition(f"state.plan > 3 or state.note == '{SECRET_NAME}'")
+
+    with pytest.raises(AaestroError) as exc_info:
+        predicate({"plan": SECRET_NAME, "note": ""})
+
+    err = exc_info.value
+    assert err.code == "GRAPH_003"
+    assert err.message == "condition could not be evaluated"
+    assert "secret" not in str(err.details).lower()
+    assert "not supported between" in err.details["reason"]

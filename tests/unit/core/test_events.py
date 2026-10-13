@@ -10,6 +10,7 @@ from aaestro.core.events import (
     DoneEvent,
     ErrorEvent,
     EventType,
+    SteerEvent,
     TaskEvent,
     TokenEvent,
     ToolCallEvent,
@@ -20,11 +21,12 @@ _adapter: TypeAdapter[TaskEvent] = TypeAdapter(TaskEvent)
 
 
 def test_event_types_cover_documented_units():
-    """이벤트 단위: token / tool_call / tool_result / done / error — 02 stream 계약."""
+    """이벤트 단위: token / tool_call / tool_result / steer / done / error — 02 stream 계약."""
     assert {e.value for e in EventType} == {
         "token",
         "tool_call",
         "tool_result",
+        "steer",
         "done",
         "error",
     }
@@ -45,6 +47,16 @@ def test_tool_call_event_discriminates():
     assert isinstance(event, ToolCallEvent)
     assert event.tool == "mcp__fs__read_file"
     assert event.turn == 2
+
+
+def test_steer_event_discriminates_and_survives_the_wire():
+    """/stream 은 JSON 으로 흘린다 — 소비자가 판별 유니온으로 다시 읽을 수 있어야 한다."""
+    sent = SteerEvent(task_id="t1", text="narrow it down", by="alice", turn=3)
+
+    received = _adapter.validate_json(sent.model_dump_json())
+
+    assert isinstance(received, SteerEvent)
+    assert (received.text, received.by, received.turn) == ("narrow it down", "alice", 3)
 
 
 def test_tool_result_event_carries_error_payload():
