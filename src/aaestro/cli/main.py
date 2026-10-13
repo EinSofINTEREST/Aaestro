@@ -161,14 +161,19 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         state_artifacts=state_artifact_root_for(args) is not None,
     )
 
+    # 경고는 실패가 아니다 — 판정(status · 종료 코드)을 바꾸지 않고, 있을 때만 싣는다
+    warnings = [
+        *catalog.modules("skillpacks").warnings,
+        *(_finding_line(f) for f in report.warnings),
+    ]
     emit(
         {
             "graph": topology.metadata.name,
             "validated": len(manifests),
             "status": "ok" if report.ok else "failed",
             "failures": [_finding_line(f) for f in report.findings],
-            "warnings": [_finding_line(f) for f in report.warnings],
             "models": models_entry(catalog, [topology], as_json=args.json),
+            **({"warnings": warnings} if warnings else {}),
         },
         as_json=args.json,
     )
@@ -224,6 +229,11 @@ def cmd_validate(args: argparse.Namespace) -> int:
     )
     ok = report.ok and not graphs.problems
 
+    # 경고는 실패가 아니다 — 판정(status · 종료 코드)을 바꾸지 않고, 있을 때만 싣는다
+    warnings = [
+        *catalog.modules("skillpacks").warnings,
+        *(_finding_line(f) for f in report.warnings),
+    ]
     emit(
         {
             "graphs": len(topologies),
@@ -233,8 +243,8 @@ def cmd_validate(args: argparse.Namespace) -> int:
                 *(_problem_line(p) for p in graphs.problems),
                 *(_finding_line(f) for f in report.findings),
             ],
-            "warnings": [_finding_line(f) for f in report.warnings],
             "models": models_entry(catalog, topologies, as_json=args.json),
+            **({"warnings": warnings} if warnings else {}),
         },
         as_json=args.json,
     )

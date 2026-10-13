@@ -695,7 +695,8 @@ def test_a_clean_workspace_reports_no_warnings(workspace, capsys):
 
     run_cli(["--root", str(workspace), "--json", "validate"])
 
-    assert json.loads(capsys.readouterr().out)["warnings"] == []
+    # 경고가 없으면 키 자체를 싣지 않는다 (#373 과 같은 규약)
+    assert "warnings" not in json.loads(capsys.readouterr().out)
 
 
 def test_deploy_rejects_summarize_until_a_state_artifact_root_is_given(workspace, tmp_path, capsys):

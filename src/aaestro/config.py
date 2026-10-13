@@ -412,6 +412,7 @@ class RegistryRoots(BaseModel):
     skillsets: str = "./modules/skillsets"
     promptsets: str = "./modules/promptsets"
     memorysets: str = "./modules/memorysets"
+    skillpacks: str = "./modules/skillpacks"
     agents: str = "./agents"
     graphs: str = "./graphs"
     groups: str = "./groups"

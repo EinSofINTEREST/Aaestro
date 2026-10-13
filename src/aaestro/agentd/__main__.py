@@ -245,6 +245,15 @@ async def build_executor(manifest: AgentManifest, *, metrics: Metrics | None = N
     Raises:
         AaestroError: CONFIG/``CFG_001`` if the declared executor is unknown.
     """
+    if manifest.spec.skillpacks:
+        # 선언과 배포 검증까지만 있다 (#373) — skill 을 모델에 노출하는 것은 #374 다.
+        # 말없이 넘어가면 운영자는 선언한 skill 이 왜 쓰이지 않는지 알 길이 없다
+        log.warning(
+            "skillpacks declared but not loaded by this executor",
+            agent=manifest.name,
+            skillpacks=[item.ref for item in manifest.spec.skillpacks],
+        )
+
     # manifest 가 커스텀 실행기를 선언했으면 그것이 이 이미지의 실행기다.
     # truthiness 로 보면 `entrypoint: ""` 가 **미선언과 같아져** 조용히 표준
     # 실행기로 떨어진다 — 선언한 이상 해석 실패로 거부해야 한다

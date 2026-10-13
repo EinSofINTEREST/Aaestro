@@ -498,6 +498,7 @@ class DeployValidator:
         for name, manifest in self.manifests.items():
             refs = [manifest.spec.promptset.ref]
             refs.extend(s.ref for s in manifest.spec.skillsets)
+            refs.extend(s.ref for s in manifest.spec.skillpacks)
             refs.extend(s.ref for s in manifest.spec.memory.spaces)
 
             for ref in refs:

@@ -49,6 +49,7 @@ field.
 | **Skillset** | Python tools (capabilities) | `modules/skillsets/{name}/{version}/` |
 | **Promptset** | Jinja2 templates + variable schemas | `modules/promptsets/{name}/{version}/` |
 | **Memoryset** | Memory policy — scope, index, retention, recall | `modules/memorysets/{name}/{version}/` |
+| **Skillpack** | Agent Skills directories (`SKILL.md` + files), unmodified | `modules/skillpacks/{name}/{version}/` |
 | **Agent** | Contract — model, modules, protocols, resources | `agents/{name}/manifest.yaml` |
 | **Graph** | Goal — nodes, edges, connections, mode | `graphs/{name}.yaml` |
 | **Group** | Resource scope boundary — quotas, secrets, memory | `groups/{name}.yaml` |
@@ -230,6 +231,139 @@ embedding model (fixed per version), chunking, hybrid search weights, retention/
 and recall defaults (k, min score, token budget). Attachment location must match the
 scope: manifest (local), graph (run), `groups/<name>.yaml` (group),
 `groups/global.yaml` (global).
+
+## Skillpacks
+
+A skillpack carries [Agent Skills](https://agentskills.io/specification) directories
+**unmodified**: each skill is a directory with a `SKILL.md` (YAML frontmatter + Markdown
+instructions) and optional `scripts/`, `references/`, `assets/`. A skillpack does not replace
+a skillset — they are different things:
+
+| | Skillset | Skillpack |
+|---|---|---|
+| What it is | Python tools the framework imports and registers | Instructions a model reads, plus the files they point to |
+| Format | Aaestro-specific (`skillset.yaml` + `@skill` functions) | The Agent Skills standard, as published |
+| Loading | Code is imported inside the owning agent's container | Files are read and validated — **nothing is imported or run** |
+| What the model sees | A tool schema generated from the signature | `name` + `description` up front, the body on activation (#374) |
+| Manifest field | `spec.skillsets` | `spec.skillpacks` |
+
+```
+modules/skillpacks/docs/
+└── 1.0.0/
+    ├── skillpack.yaml            # apiVersion / kind: Skillpack / metadata — no skill list
+    └── skills/
+        ├── changelog-entry/      # directory name == frontmatter `name`
+        │   ├── SKILL.md
+        │   ├── scripts/
+        │   └── references/
+        └── doc-review/
+            ├── SKILL.md
+            ├── references/
+            └── assets/
+```
+
+`skillpack.yaml` does not list the skills: the directories under `skills/` are the list. Drop
+a standard skill directory in and it is part of the pack.
+
+```yaml
+# agents/<name>/manifest.yaml
+spec:
+  skillpacks:
+    - ref: skillpacks/docs@1.0.0
+```
+
+An agent declares a pack once: the same ref twice, or two versions of the same pack, is
+rejected when the manifest is validated.
+
+### Validation
+
+A pack that breaks any rule below is not published: it is listed under `problems` by
+`GET /v1/modules/skillpacks`, the single-pack lookup returns the same error, `aaestro validate`
+fails, and an agent referencing it fails deploy validation. Violations are `MOD_003` and name
+the skill and the field
+(`invalid skill 'doc-review' in skillpacks/docs@1.0.0: name: does not match its directory name`).
+
+| Field | Rule |
+|---|---|
+| `name` | required string; 1–64 characters; `a-z`, `0-9`, `-` only; no leading, trailing, or consecutive hyphens; **equals the directory name** |
+| `description` | required string; 1–1024 characters; not blank |
+| `license` | optional string |
+| `compatibility` | optional string; 1–500 characters; not blank |
+| `metadata` | optional map of string keys to values, at most 64 entries. Scalar values are taken **as written** — `version: 1.0` becomes `"1.0"`, `1.10` stays `"1.10"`, `true` becomes `"true"`. Lists, maps, and empty values are rejected |
+| `allowed-tools` | optional string — experimental in the standard, checked for type only and not interpreted |
+
+- `SKILL.md` must be a regular file (not a link) and start with a `---` line; the frontmatter
+  ends at the **first** following `---` line and may be at most 16 KiB — larger frontmatter is
+  rejected before it is parsed. A BOM and CRLF line endings are accepted; an empty body is
+  accepted.
+- Error messages carry field names and reasons, never frontmatter values or body text.
+
+**Warnings** do not reject a pack. It is published, and the warnings appear under `warnings`
+(API) and in `aaestro validate` / `aaestro deploy` output:
+
+- a `SKILL.md` longer than 500 lines (the standard's recommendation)
+- a top-level frontmatter key the standard does not define (`version`, `argument-hint`, …) —
+  many published skills carry them; the key is ignored and named in the warning
+- a regular file directly under `skills/` (`README.md`, `.DS_Store`, `.gitkeep`) — skipped
+
+**Not accepted**, deliberately — a skill that does this needs fixing before it can be packed:
+
+| Rejected | Why |
+|---|---|
+| `name: 123`, `description: 123` (not strings) | only `metadata` values are converted; a name that YAML reads as a number is a mistake, and the directory would have to match it |
+| a non-ASCII `name` (`démo`) | the standard's own examples and character list are `a-z`, `0-9`, `-`; the name is also a directory name and a ref component |
+| `allowed-tools` as a YAML list | the standard defines a space-separated string |
+| a `SKILL.md` that does not start with `---` | the standard requires frontmatter; without `name` and `description` nothing can select the skill |
+| a `SKILL.md` that is a symbolic link | it is read through a file descriptor so that what is checked is what is read (see below) |
+| hard-linked files | there is no way to tell what else they are a name for |
+| a broken pack no agent references | published packs are validated as a whole, like every other module type — otherwise the breakage surfaces the day someone references it |
+
+### Containment and limits
+
+A skill directory may come from outside, so its file names and link targets are untrusted
+input. Nothing inside a skill may point outside that skill's directory:
+
+- **Symbolic links** must be relative and stay inside the skill root at every step. A link is
+  rejected when it is absolute (even pointing inside), leaves the root and comes back, passes
+  through a link that leaves or through something that is not a directory, dangles, loops, or
+  names a special file.
+- **Directory links that lead back to themselves** are rejected even though they stay inside:
+  a link to its own ancestor (`self -> .`, `up -> ..`), or directory links that reach each
+  other in a cycle. Copying or mounting the tree while following links would never finish.
+- `SKILL.md` must not be a link at all. `skills/` and each skill directory must be real
+  directories, not links.
+- **Hard-linked files** are rejected — there is no way to tell what else they are a name for.
+- **Special files** (FIFO, socket, device) are rejected.
+- **File names** with control or format characters, a backslash, or undecodable bytes are
+  rejected.
+- **Limits**, per skill: 200 entries, 1 MiB per file, 8 MiB in total, 8 directory levels,
+  16 KiB of frontmatter, 64 `metadata` entries. At most 50 entries under `skills/`. Limits are
+  checked before the expensive step: a directory is read one entry past its limit, never in
+  full, and frontmatter is measured before it is parsed.
+
+**What this guarantees, exactly.** Validation describes the tree **as it was when it was
+loaded**. `SKILL.md` — the one file whose content is read — is opened through directory
+descriptors without following links, so a file swapped for a link between the check and the
+read is refused, not followed. Everything else is only `lstat`ed. Nothing here protects against
+someone who can modify the module tree **after** validation; published version directories are
+immutable by rule, not by enforcement. Whatever later copies or mounts a pack into a container
+(#374) must validate the tree it actually copies.
+
+### `scripts/` is not code inside the trust boundary
+
+Loading a skillpack — in the registry, the catalog, `aaestro validate`, or deploy validation —
+**never runs or imports** anything under a skill directory. The loader opens exactly one file
+per skill, `SKILL.md`, and only `lstat`s the rest. Treat `scripts/` as what it is: code that
+came with instructions, to be run (if ever) by an agent inside its own container under that
+agent's permissions, not by the framework.
+
+### Status — declaration and validation only
+
+This release covers the declaration: the module type, the registry, the catalog, the manifest
+field, and deploy validation. **agentd does not load skillpacks yet** — an agent that declares
+`spec.skillpacks` deploys and starts, the skills are not exposed to the model, and agentd logs
+`skillpacks declared but not loaded by this executor` at WARN on startup so the declaration is
+not silently ignored. Exposure to the model and mounting into the container are tracked in #374.
 
 ## Graphs
 
@@ -625,7 +759,9 @@ each other. Resource lookup resolves **local > group > global**.
   (e.g. skillset `requires.env` ⊆ agent `env_allowlist`)
 - Breaking-change guide (semver): tool rename/signature change/removal and required
   prompt-variable changes → **major**; backward-compatible additions → minor;
-  graph state schema changes → major; embedding model changes → minor+ with full reindex
+  graph state schema changes → major; embedding model changes → minor+ with full reindex;
+  skillpack: removing or renaming a skill → **major**, adding a skill or changing a
+  `description` → minor, body/reference/script edits → patch
 - Graph state compaction: adding or removing `summarize` on a field → **major** (the list gains
   or loses summary objects); adding, removing or switching `keep_last` / `keep_first` /
   `dedupe` → minor; tuning `n` / `over_tokens` / `keep_last` or changing the `compactor` /
