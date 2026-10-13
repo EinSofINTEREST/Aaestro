@@ -29,7 +29,6 @@ from aaestro.memory.recall import (
     apply_budget,
     reciprocal_rank_fusion,
     render_context,
-    resolve_corrections,
 )
 from aaestro.memory.service import (
     SCOPE_PRECEDENCE,
@@ -80,7 +79,6 @@ __all__ = [
     "plan_compaction",
     "reciprocal_rank_fusion",
     "render_context",
-    "resolve_corrections",
     "split_chunks",
     "storage_error",
     "tokenize",

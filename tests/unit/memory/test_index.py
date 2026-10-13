@@ -22,6 +22,7 @@ from aaestro.memory.index import (
     split_chunks,
 )
 from aaestro.memory.recall import Recall
+from aaestro.memory.store import SqliteMemoryStore
 from aaestro.modules.memoryset import ChunkSpec, MemoryKind
 
 SPACE = "local:researcher:longterm"
@@ -548,10 +549,18 @@ def test_drained_space_reports_zero_lag():
     assert gauge_value(metrics, "aaestro_memory_index_lag_seconds", space=SPACE) == 0.0
 
 
+def store_of(*items: MemoryEntry) -> SqliteMemoryStore:
+    """검색 hit 을 materialize 할 저장소 — 인덱스에 넣은 항목을 같이 저장한다."""
+    store = SqliteMemoryStore()
+    for item in items:
+        store.append(item)
+    return store
+
+
 def test_search_duration_is_observed_per_space():
     metrics = make_metrics()
-    index = index_with(entry("mcp sidecar 는 태그 고정이 필요하다"))
-    recall = Recall(indexes={SPACE: index}, metrics=metrics)
+    item = entry("mcp sidecar 는 태그 고정이 필요하다")
+    recall = Recall(indexes={SPACE: index_with(item)}, store=store_of(item), metrics=metrics)
 
     recall.search("sidecar", spaces=[SPACE], k=3)
 
@@ -568,8 +577,8 @@ def test_index_layer_works_without_metrics():
 def test_search_is_counted_as_an_operation():
     """09 는 search 도 집계 대상으로 둔다 — MemoryService 를 거치지 않으므로 여기서 센다."""
     metrics = make_metrics()
-    index = index_with(entry("mcp sidecar 는 태그 고정이 필요하다"))
-    recall = Recall(indexes={SPACE: index}, metrics=metrics)
+    item = entry("mcp sidecar 는 태그 고정이 필요하다")
+    recall = Recall(indexes={SPACE: index_with(item)}, store=store_of(item), metrics=metrics)
 
     recall.search("sidecar", spaces=[SPACE], k=3)
 
@@ -588,10 +597,10 @@ def test_auto_recall_is_counted_as_an_operation():
 
     metrics = make_metrics()
     item = entry("mcp sidecar 는 태그 고정이 필요하다")
-    recall = Recall(indexes={SPACE: index_with(item)}, metrics=metrics)
+    recall = Recall(indexes={SPACE: index_with(item)}, store=store_of(item), metrics=metrics)
     auto = AutoRecall(recall=recall, policy=RecallSpec(auto=True, k=3, min_score=0.0))
 
-    auto.for_task("sidecar", spaces=[SPACE], entries={item.entry_id: item})
+    auto.for_task("sidecar", spaces=[SPACE])
 
     assert (
         metrics.registry.get_sample_value(

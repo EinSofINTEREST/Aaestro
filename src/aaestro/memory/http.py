@@ -38,9 +38,6 @@ ACCESS_DENIED: dict[str, int] = {ErrorCode.MEM_001: status.HTTP_401_UNAUTHORIZED
 """이 서비스만의 매핑 — 토큰이 안 통한 것과 서버 장애를 클라이언트가 갈라야 한다."""
 
 
-DEFAULT_SCAN_LIMIT = 500
-
-
 @dataclass
 class TokenRegistry:
     """Opaque memory tokens the service hands out.
@@ -90,7 +87,6 @@ class SearchRequest(BaseModel):
     query: str
     spaces: tuple[str, ...] | None = None
     k: int = 6
-    scan: int = DEFAULT_SCAN_LIMIT
 
 
 class AppendRequest(BaseModel):
@@ -196,12 +192,8 @@ def create_app(
             http_request, list(request.spaces) if request.spaces else None, write=False
         )
         resolved = [_space_id(token, alias) for alias in aliases]
-        entries = {
-            entry.entry_id: entry
-            for alias in aliases
-            for entry in service.read(token, alias, limit=request.scan)
-        }
-        found = recall.search(request.query, spaces=resolved, k=request.k, entries=entries)
+        found = recall.search(request.query, spaces=resolved, k=request.k)
+        service.record_search(token, aliases)
         return [
             {
                 "entry": scored.entry.model_dump(mode="json"),

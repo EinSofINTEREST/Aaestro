@@ -148,8 +148,21 @@ class MemoryService:
             )
         return space
 
-    def _record(self, *, agent: str, group: str | None, space: str, op: str, status: str) -> None:
-        """감사 로그 — 모든 접근이 추적 가능해야 한다."""
+    def _record(
+        self,
+        *,
+        agent: str,
+        group: str | None,
+        space: str,
+        op: str,
+        status: str,
+        count_metric: bool = True,
+    ) -> None:
+        """감사 로그 — 모든 접근이 추적 가능해야 한다.
+
+        ``count_metric=False`` 는 연산 카운터를 다른 곳이 이미 세는 경우 (검색은 ``Recall`` 이 센다)
+        이중 집계를 피한다.
+        """
         entry = {
             "agent": agent,
             "group": group or "",
@@ -159,10 +172,28 @@ class MemoryService:
         }
         self._audit.append(entry)
         log.info("memory access", **entry)
-        if self.metrics is not None:
+        if self.metrics is not None and count_metric:
             self.metrics.counter("aaestro_memory_operations_total").labels(
                 space=space, op=op, status=status
             ).inc()
+
+    def record_search(
+        self, token: AccessToken, aliases: Sequence[str], *, op: str = "search"
+    ) -> None:
+        """성공한 검색의 감사 로그를 space 마다 한 줄 남긴다 (09 Access Enforcement 6).
+
+        검색은 저장소 조회가 id 점조회라 ``read`` 를 거치지 않는다 — 여기서 남기지 않으면 성공한
+        검색이 감사에서 사라진다. 접근 판정은 호출 측의 별칭 해석이 이미 했다.
+        """
+        for alias in aliases:
+            self._record(
+                agent=token.agent,
+                group=token.group,
+                space=alias,
+                op=op,
+                status="ok",
+                count_metric=False,
+            )
 
     @property
     def audit_log(self) -> tuple[dict[str, str], ...]:
@@ -199,9 +230,36 @@ class MemoryService:
             )
             raise
 
+        self._require_same_space_correction(token, alias, entry, space.space_id)
         stored = self.store.append(entry.model_copy(update={"space": space.space_id}))
         self._record(agent=token.agent, group=token.group, space=alias, op="append", status="ok")
         return stored
+
+    def _require_same_space_correction(
+        self, token: AccessToken, alias: str, entry: MemoryEntry, space_id: str
+    ) -> None:
+        """정정은 이 space 에서 지금 읽을 수 있는 항목만 가리킬 수 있다.
+
+        읽기만 되는 space 의 id 를 ``supersedes`` 로 달면 그 space 의 기억을 숨길 수 있다.
+        대상이 없는 경우와 다른 space 에 있는 경우는 같은 거절이다 — 다르게 답하면 호출자가
+        다른 space 의 id 존재 여부를 알아낼 수 있다. 대상 id 와 다른 space 이름도 싣지 않는다.
+        """
+        if entry.supersedes is None:
+            return
+        target = self.store.get(entry.supersedes)
+        if target is not None and target.space == space_id:
+            return
+        # 권한 거부가 아니라 검증 실패다 — denied 는 memory ACL 전용 어휘 (05)
+        self._record(
+            agent=token.agent, group=token.group, space=alias, op="append", status="failed"
+        )
+        raise AaestroError(
+            category=ErrorCategory.VALIDATION,
+            code=ErrorCode.VAL_002,
+            message="supersedes must reference an entry in the same space",
+            agent=token.agent,
+            details={"space": alias},
+        )
 
     def read(
         self,

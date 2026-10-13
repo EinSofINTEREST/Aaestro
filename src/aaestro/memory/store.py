@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS memory_entries (
     supersedes TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_memory_space ON memory_entries(space, created_at);
+CREATE INDEX IF NOT EXISTS memory_entries_supersedes ON memory_entries(supersedes, space);
 
 -- append-only 를 저장소가 강제한다. retention 삭제는 이 트리거를 우회하는
 -- 전용 경로(purge)로만 수행한다
@@ -69,6 +70,21 @@ class MemoryStore(Protocol):
 
     def get(self, entry_id: str) -> MemoryEntry | None:
         """항목 하나를 조회한다."""
+        ...
+
+    def get_many(self, entry_ids: Sequence[str]) -> dict[str, MemoryEntry]:
+        """id 들의 항목을 한 번에 조회한다 — 저장소에 없는 id 는 결과에 빠진다.
+
+        검색 hit 을 materialize 하는 경로다. 쿼리 한 번이어야 한다 (hit 마다 왕복하지 않는다).
+        """
+        ...
+
+    def superseded(self, space: str, entry_ids: Sequence[str]) -> set[str]:
+        """``space`` 안에서 다른 항목이 ``supersedes`` 로 가리키는 id — 정정으로 대체된 항목이다.
+
+        정정은 **같은 space 의 항목만** 대체한다 — 다른 space 에서 낸 정정이 이 space 의 기억을
+        숨기면 자기 권한 밖에 영향을 준다. 쿼리 한 번이어야 하고, 빈 입력은 빈 set 이다.
+        """
         ...
 
     def list_space(
@@ -119,6 +135,15 @@ def validate_entry(entry: MemoryEntry) -> None:
             size_bytes=size,
             limit_bytes=MAX_CONTENT_BYTES,
         )
+
+
+def superseded_sql(count: int) -> str:
+    """``superseded`` 의 쿼리 — 구현과 색인 plan 테스트가 같은 문자열을 쓴다."""
+    placeholders = ", ".join("?" for _ in range(count))
+    return (
+        "SELECT DISTINCT supersedes FROM memory_entries "  # noqa: S608
+        f"WHERE space = ? AND supersedes IN ({placeholders})"
+    )
 
 
 @dataclass
@@ -178,6 +203,25 @@ class SqliteMemoryStore:
             "SELECT * FROM memory_entries WHERE entry_id = ?", (entry_id,)
         ).fetchone()
         return MemoryEntry.from_row(dict(row)) if row else None
+
+    def get_many(self, entry_ids: Sequence[str]) -> dict[str, MemoryEntry]:
+        """id 들의 항목을 쿼리 한 번으로 조회한다 — 없는 id 는 결과에 빠진다."""
+        if not entry_ids:
+            return {}
+        placeholders = ", ".join("?" for _ in entry_ids)
+        rows = self._conn.execute(
+            f"SELECT * FROM memory_entries WHERE entry_id IN ({placeholders})",  # noqa: S608
+            list(entry_ids),
+        ).fetchall()
+        found = (MemoryEntry.from_row(dict(row)) for row in rows)
+        return {entry.entry_id: entry for entry in found}
+
+    def superseded(self, space: str, entry_ids: Sequence[str]) -> set[str]:
+        """같은 space 안에서 다른 항목이 ``supersedes`` 로 가리키는 id — 쿼리 한 번."""
+        if not entry_ids:
+            return set()
+        rows = self._conn.execute(superseded_sql(len(entry_ids)), [space, *entry_ids]).fetchall()
+        return {str(row["supersedes"]) for row in rows}
 
     def list_space(
         self, space: str, *, kinds: Sequence[MemoryKind] | None = None, limit: int | None = 100

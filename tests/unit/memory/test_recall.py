@@ -21,8 +21,8 @@ from aaestro.memory.recall import (
     normalize_scores,
     reciprocal_rank_fusion,
     render_context,
-    resolve_corrections,
 )
+from aaestro.memory.store import SqliteMemoryStore
 from aaestro.modules.memoryset import ChunkSpec, HybridSpec, MemoryKind, RecallSpec
 
 SPACE = "local:researcher:longterm"
@@ -48,6 +48,14 @@ def index_with(*entries: MemoryEntry) -> SpaceIndex:
     for item in entries:
         index.add(item, ChunkSpec())
     return index
+
+
+def store_of(*entries: MemoryEntry) -> SqliteMemoryStore:
+    """hit 을 materialize 할 저장소 — 인덱스에 넣은 항목을 같이 저장한다."""
+    store = SqliteMemoryStore()
+    for item in entries:
+        store.append(item)
+    return store
 
 
 # --- RRF 병합 -----------------------------------------------------------------
@@ -122,13 +130,11 @@ def test_search_merges_both_layers():
     identifier = entry("재연결 실패는 MCP_004 로 보고된다")
     semantic = entry("mcp transport 단절 시 재연결 backoff")
     index = index_with(identifier, semantic)
-    lookup = {e.entry_id: e for e in (identifier, semantic)}
+    store = store_of(identifier, semantic)
 
-    results = Recall(indexes={SPACE: index}).search(
-        "MCP_004 재연결", spaces=[SPACE], entries=lookup
-    )
+    results = Recall(indexes={SPACE: index}, store=store).search("MCP_004 재연결", spaces=[SPACE])
 
-    assert {r.entry.entry_id for r in results} == set(lookup)
+    assert {r.entry.entry_id for r in results} == {identifier.entry_id, semantic.entry_id}
 
 
 def test_search_only_looks_at_named_spaces():
@@ -139,10 +145,11 @@ def test_search_only_looks_at_named_spaces():
 
     other_index = SpaceIndex(space=other_space)
     other_index.add(theirs, ChunkSpec())
-    recall = Recall(indexes={SPACE: index_with(mine), other_space: other_index})
-    lookup = {mine.entry_id: mine, theirs.entry_id: theirs}
+    recall = Recall(
+        indexes={SPACE: index_with(mine), other_space: other_index}, store=store_of(mine, theirs)
+    )
 
-    results = recall.search("기억", spaces=[SPACE], entries=lookup)
+    results = recall.search("기억", spaces=[SPACE])
 
     assert [r.entry.entry_id for r in results] == [mine.entry_id]
 
@@ -168,48 +175,104 @@ def test_search_applies_the_configured_weights():
     identifier = entry("오류 코드 MCP_004 정의")
     semantic = entry("mcp transport 재연결 backoff 동작")
     index = index_with(identifier, semantic)
-    lookup = {e.entry_id: e for e in (identifier, semantic)}
-
     results = Recall(
-        indexes={SPACE: index}, hybrid=HybridSpec(vector_weight=0.5, lexical_weight=0.5)
-    ).search("MCP_004 재연결", spaces=[SPACE], entries=lookup)
+        indexes={SPACE: index},
+        store=store_of(identifier, semantic),
+        hybrid=HybridSpec(vector_weight=0.5, lexical_weight=0.5),
+    ).search("MCP_004 재연결", spaces=[SPACE])
 
-    # 두 항목 모두 materialise 되어야 한다 — entries 를 넘기지 않으면 항상 빈다
-    assert {r.entry.entry_id for r in results} == set(lookup)
+    # 두 항목 모두 materialise 되어야 한다 — 저장소를 거치지 않으면 항상 빈다
+    assert {r.entry.entry_id for r in results} == {identifier.entry_id, semantic.entry_id}
     assert all(0.0 < r.score <= 1.0 for r in results)
 
 
-def test_search_materialises_only_known_entries():
-    """entries 에 없는 항목은 결과에 실리지 않는다 — 이 동작 때문에 빈 dict 를
-    넘기면 검증이 조용히 무의미해진다."""
-    known = entry("검색 대상 문서")
-    index = index_with(known)
+def test_search_drops_hits_the_store_no_longer_has(monkeypatch):
+    """TTL 삭제 뒤 인덱스가 늦으면 hit 은 있는데 항목이 없다 — 그 hit 만 탈락한다."""
+    from aaestro.memory import recall as recall_module
 
-    assert Recall(indexes={SPACE: index}).search("문서", spaces=[SPACE], entries={}) == ()
+    # 전역 structlog 설정은 다른 테스트가 바꾼다 — capture_logs 대신 로거를 직접 가로챈다
+    logged: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        recall_module.log, "debug", lambda event, **fields: logged.append((event, fields))
+    )
+    gone = entry("삭제된 문서 sidecar")
+    kept = entry("남은 문서 sidecar")
+
+    recall = Recall(indexes={SPACE: index_with(gone, kept)}, store=store_of(kept))
+    results = recall.search("sidecar 문서", spaces=[SPACE])
+
+    assert [r.entry.entry_id for r in results] == [kept.entry_id]
+    # 조용히 건너뛰지 않는다 — 어느 hit 이 왜 빠졌는지 남는다
+    dropped = [f for event, f in logged if event == "memory index hit has no stored entry"]
+    assert [f["entry_id"] for f in dropped] == [gone.entry_id]
+
+
+def test_search_drops_hits_stored_in_another_space():
+    """인덱스가 다른 space 의 id 를 내놓아도 그 기억은 이 space 의 결과가 아니다."""
+    indexed = entry("다른 space 의 문서")
+    # 인덱스는 add 단계에서 타 space 항목을 거부하므로, 저장소 쪽을 어긋나게 만든다
+    foreign = indexed.model_copy(update={"space": "local:writer:longterm"})
+
+    recall = Recall(indexes={SPACE: index_with(indexed)}, store=store_of(foreign))
+
+    assert recall.search("문서", spaces=[SPACE]) == ()
+
+
+def test_search_finds_the_oldest_of_many_entries():
+    """저장소 scan 상한과 무관하게 인덱스에 있는 기억은 찾아야 한다 (#324)."""
+    oldest = entry("zyxwvut 가장 오래된 기억")
+    rest = [entry(f"무관한 기록 {i}") for i in range(120)]
+
+    recall = Recall(indexes={SPACE: index_with(oldest, *rest)}, store=store_of(oldest, *rest))
+
+    results = recall.search("zyxwvut", spaces=[SPACE], k=3)
+
+    assert oldest.entry_id in [r.entry.entry_id for r in results]
 
 
 def test_unknown_space_is_skipped():
-    recall = Recall(indexes={})
+    recall = Recall(indexes={}, store=store_of())
 
-    assert recall.search("q", spaces=["absent"], entries={}) == ()
+    assert recall.search("q", spaces=["absent"]) == ()
 
 
 # --- 정정 반영 ----------------------------------------------------------------
 
 
-def test_superseded_entries_are_dropped():
+def test_search_drops_entries_a_correction_replaced():
     """대체된 기억을 주입하면 모델이 정정된 사실을 다시 믿는다."""
-    old, new = scored("포트는 9000", 0.9), scored("포트는 9100", 0.8)
+    old = entry("the port is 9000 for the sidecar")
+    new = entry("the port is 9100 for the sidecar", supersedes=old.entry_id)
+    recall = Recall(indexes={SPACE: index_with(old, new)}, store=store_of(old, new))
 
-    survivors = resolve_corrections([old, new], frozenset({old.entry.entry_id}))
+    results = recall.search("sidecar port", spaces=[SPACE])
 
-    assert [r.entry.entry_id for r in survivors] == [new.entry.entry_id]
+    assert [r.entry.entry_id for r in results] == [new.entry_id]
 
 
-def test_nothing_superseded_keeps_everything():
-    results = [scored("a", 0.9), scored("b", 0.8)]
+def test_correction_outside_the_hits_still_replaces_the_original():
+    """정정이 hit 에 없어도 저장소에 있으면 원본은 대체된 것이다."""
+    old = entry("the port is 9000 for the sidecar")
+    new = entry("completely unrelated wording", supersedes=old.entry_id)
+    recall = Recall(indexes={SPACE: index_with(old)}, store=store_of(old, new))
 
-    assert resolve_corrections(results, frozenset()) == tuple(results)
+    assert recall.search("sidecar port", spaces=[SPACE]) == ()
+
+
+def test_search_scores_follow_their_own_hits():
+    """entry 와 score 의 짝이 어긋나면 순위가 조용히 뒤집힌다."""
+    strong = entry("mcp sidecar port pinning sidecar sidecar")
+    weak = entry("unrelated cooking notes with sidecar once")
+    recall = Recall(indexes={SPACE: index_with(strong, weak)}, store=store_of(strong, weak))
+
+    results = recall.search("mcp sidecar port pinning", spaces=[SPACE], k=5)
+    by_id = {r.entry.entry_id: r.score for r in results}
+
+    index = recall.indexes[SPACE]
+    ranked = [h.entry_id for h in index.search_lexical("mcp sidecar port pinning", k=5)]
+    assert ranked[0] == strong.entry_id
+    assert by_id[strong.entry_id] == pytest.approx(1.0)
+    assert by_id[strong.entry_id] > by_id[weak.entry_id]
 
 
 # --- 예산과 문턱 --------------------------------------------------------------
@@ -279,42 +342,41 @@ def test_empty_context_renders_nothing():
 # --- auto-recall ---------------------------------------------------------------
 
 
-def make_auto(**policy) -> tuple[AutoRecall, dict[str, MemoryEntry]]:
+def make_auto(**policy) -> AutoRecall:
     relevant = entry("mcp transport 재연결 backoff 정책")
     noise = entry("전혀 무관한 요리 이야기")
-    recall = Recall(indexes={SPACE: index_with(relevant, noise)})
-    lookup = {e.entry_id: e for e in (relevant, noise)}
-    return AutoRecall(recall=recall, policy=RecallSpec(**policy)), lookup
+    recall = Recall(indexes={SPACE: index_with(relevant, noise)}, store=store_of(relevant, noise))
+    return AutoRecall(recall=recall, policy=RecallSpec(**policy))
 
 
 async def test_auto_recall_runs_once_per_task():
     """루프마다 자동 재검색하지 않는다 — 추가 탐색은 tool 호출이다 (09 Rule 7)."""
-    auto, lookup = make_auto()
+    auto = make_auto()
 
-    auto.for_task("mcp 재연결", spaces=[SPACE], entries=lookup)
+    auto.for_task("mcp 재연결", spaces=[SPACE])
 
     assert auto.invocations == 1
 
 
 async def test_auto_recall_can_be_disabled():
-    auto, lookup = make_auto(auto=False)
+    auto = make_auto(auto=False)
 
-    assert auto.for_task("mcp", spaces=[SPACE], entries=lookup) == ()
+    assert auto.for_task("mcp", spaces=[SPACE]) == ()
     assert auto.invocations == 0
 
 
 async def test_auto_recall_applies_the_threshold():
-    auto, lookup = make_auto(min_score=0.99)
+    auto = make_auto(min_score=0.99)
 
-    results = auto.for_task("mcp 재연결", spaces=[SPACE], entries=lookup)
+    results = auto.for_task("mcp 재연결", spaces=[SPACE])
 
     assert all(r.score >= 0.99 for r in results)
 
 
 async def test_auto_recall_applies_the_budget():
-    auto, lookup = make_auto(min_score=0.0, budget_tokens=5)
+    auto = make_auto(min_score=0.0, budget_tokens=5)
 
-    results = auto.for_task("mcp 재연결", spaces=[SPACE], entries=lookup)
+    results = auto.for_task("mcp 재연결", spaces=[SPACE])
 
     assert sum(r.estimated_tokens() for r in results) <= 5
 
@@ -322,13 +384,12 @@ async def test_auto_recall_applies_the_budget():
 async def test_auto_recall_excludes_superseded():
     relevant = entry("포트는 9000 이다")
     correction = entry("포트는 9100 이다", supersedes=relevant.entry_id)
-    recall = Recall(indexes={SPACE: index_with(relevant, correction)})
-    auto = AutoRecall(recall=recall, policy=RecallSpec(min_score=0.0))
-    lookup = {e.entry_id: e for e in (relevant, correction)}
-
-    results = auto.for_task(
-        "포트", spaces=[SPACE], entries=lookup, superseded=frozenset({relevant.entry_id})
+    recall = Recall(
+        indexes={SPACE: index_with(relevant, correction)}, store=store_of(relevant, correction)
     )
+    auto = AutoRecall(recall=recall, policy=RecallSpec(min_score=0.0))
+
+    results = auto.for_task("포트", spaces=[SPACE])
 
     assert relevant.entry_id not in {r.entry.entry_id for r in results}
 
@@ -376,8 +437,8 @@ def test_auto_recall_logs_the_standard_fields(monkeypatch):
 
     monkeypatch.setattr(recall_module.log, "debug", capture)
 
-    auto, lookup = make_auto()
-    auto.for_task("mcp", spaces=[SPACE], entries=lookup)
+    auto = make_auto()
+    auto.for_task("mcp", spaces=[SPACE])
 
     assert recorded[-1]["memory_space"] == SPACE
     assert recorded[-1]["op"] == "recall"

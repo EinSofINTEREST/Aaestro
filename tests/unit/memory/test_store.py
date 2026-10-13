@@ -40,3 +40,40 @@ def test_update_is_rejected_by_the_store(store):
             "UPDATE memory_entries SET content = 'tampered' WHERE entry_id = ?",
             (entry.entry_id,),
         )
+
+
+def test_get_many_issues_one_select_for_many_ids(store):
+    """get 를 반복하면 hit 수만큼 왕복한다 — id N 개에 쿼리 1회여야 한다."""
+    ids = [store.append(make_entry(content=f"항목 {i}")).entry_id for i in range(8)]
+    statements: list[str] = []
+    store._conn.set_trace_callback(statements.append)  # noqa: SLF001
+
+    found = store.get_many(ids)
+
+    store._conn.set_trace_callback(None)  # noqa: SLF001
+    assert set(found) == set(ids)
+    assert len([s for s in statements if s.lstrip().upper().startswith("SELECT")]) == 1
+
+
+def test_superseded_issues_one_select_for_many_ids(store):
+    ids = [store.append(make_entry(content=f"항목 {i}")).entry_id for i in range(8)]
+    statements: list[str] = []
+    store._conn.set_trace_callback(statements.append)  # noqa: SLF001
+
+    store.superseded("local:researcher:longterm", ids)
+
+    store._conn.set_trace_callback(None)  # noqa: SLF001
+    assert len([s for s in statements if s.lstrip().upper().startswith("SELECT")]) == 1
+
+
+def test_superseded_lookup_uses_an_index(store):
+    """색인이 없으면 검색마다 저장소 전체를 훑는다 — 비용이 저장소 크기에 비례한다."""
+    from aaestro.memory.store import superseded_sql
+
+    plan = store._conn.execute(  # noqa: SLF001
+        f"EXPLAIN QUERY PLAN {superseded_sql(2)}", ("local:researcher:longterm", "a", "b")
+    ).fetchall()
+
+    detail = " ".join(str(row["detail"]) for row in plan)
+    # space 색인만으로는 space 전체를 훑는다 — supersedes 색인을 타야 한다
+    assert "memory_entries_supersedes" in detail, detail

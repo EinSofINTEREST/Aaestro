@@ -237,3 +237,32 @@ async def test_a_granted_undeclared_space_is_reachable_by_its_space_id(stack):
     assert (await refused(researcher.read("local:writer:longterm"))).code == ErrorCode.MEM_001, (
         "space id 로 부른다고 선언·부여 없는 space 가 열리면 안 된다"
     )
+
+
+# --- 검색 경계 (#324) -----------------------------------------------------------
+
+
+async def test_search_refuses_a_revoked_space_by_alias_and_by_id(stack):
+    """회수된 space 는 별칭으로도 id 로도 검색되지 않는다 — 검색은 저장소를 점조회로 읽는다."""
+    researcher = stack.agent(stack.registry.issue_identity("researcher", "dep-1"))
+    await researcher.append("longterm", entry=fact(LONGTERM))
+    stack.memory.indexer.drain()
+    assert await researcher.search("sidecar", spaces=["longterm"]), "회수 전에는 검색돼야 한다"
+
+    stack.registry.revoke("researcher", ResourceKind.MEMORY, LONGTERM, reason="incident")
+    await settled(stack)
+
+    for target in ("longterm", LONGTERM):
+        assert (await refused(researcher.search("sidecar", spaces=[target]))).code == (
+            ErrorCode.MEM_001
+        )
+
+
+async def test_search_refuses_another_agents_space_id_and_undeclared_alias(stack):
+    researcher = stack.agent(stack.registry.issue_identity("researcher", "dep-1"))
+    await settled(stack)
+
+    for target in ("local:writer:longterm", "no-such-alias"):
+        assert (await refused(researcher.search("sidecar", spaces=[target]))).code == (
+            ErrorCode.MEM_001
+        )
