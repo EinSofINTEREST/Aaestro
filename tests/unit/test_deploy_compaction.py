@@ -13,9 +13,9 @@ from typing import Any
 import yaml
 
 from aaestro.core.errors import ErrorCode
+from aaestro.core.topology import GraphTopology
 from aaestro.deploy import ValidationReport, validate_deployment
 from aaestro.modules.promptset import PromptsetLoader, PromptsetManifest
-from aaestro.orchestrator.topology import GraphTopology
 from tests.fixtures.builders import make_manifest
 from tests.fixtures.registry import fixture_registry
 from tests.fixtures.topologies import mission_dict, service_dict

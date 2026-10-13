@@ -24,9 +24,9 @@ from aaestro.memory.http import TokenRegistry, create_app
 from aaestro.memory.providers import build_index_registry
 from aaestro.memory.recall import Recall
 from aaestro.memory.service import MemoryService
+from aaestro.memory.tokens import issue_token
 from aaestro.modules.memoryset import ChunkSpec, EmbeddingSpec, MemorysetLoader
 from aaestro.modules.registry import ModuleRegistry
-from aaestro.runtime.memory import issue_token
 
 if TYPE_CHECKING:
     from collections.abc import Iterator

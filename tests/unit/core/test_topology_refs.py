@@ -5,8 +5,8 @@ from __future__ import annotations
 import pytest
 
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.core.topology import GraphTopology, validate_topology
 from aaestro.modules.registry import ModuleRegistry
-from aaestro.orchestrator.topology import GraphTopology, validate_topology
 from tests.fixtures.topologies import make_mission
 
 

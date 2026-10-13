@@ -35,8 +35,8 @@ SUMMARY_TIMEOUT_S = 120.0
 노드만큼 오래 기다리면 그동안 run 이 멈춘 것처럼 보이고 drain 도 그만큼 늦는다."""
 
 if TYPE_CHECKING:
+    from aaestro.core.topology import NodeSpec
     from aaestro.orchestrator.builder import NodeRuntime
-    from aaestro.orchestrator.topology import NodeSpec
 
 
 def summary_error(code: ErrorCode, message: str, **details: Any) -> AaestroError:

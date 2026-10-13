@@ -16,7 +16,7 @@ import re
 import pytest
 from pydantic import ValidationError
 
-from aaestro.orchestrator.topology import GraphTopology
+from aaestro.core.topology import GraphTopology
 from aaestro.ui import UI_ROOT
 from tests.e2e.test_stack import requires_docker
 from tests.e2e.test_ui_browser import browser  # noqa: F401 — 같은 브라우저 fixture

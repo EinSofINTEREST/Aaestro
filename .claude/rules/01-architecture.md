@@ -491,12 +491,13 @@ aaestro/
 │       │   ├── manifest.py      # AgentManifest 스키마 (pydantic)
 │       │   ├── skill.py         # @skill 데코레이터 + SkillContext
 │       │   ├── decision.py      # DecisionModel 계약, Question/Decision, 판정 구간(Band)
+│       │   ├── topology.py      # GraphTopology 스키마 + 검증 (pure — langgraph 무관, egress·memory 프로세스도 import)
+│       │   ├── compaction.py    # state 압축 정책 스키마 (pure) — topology 가 참조, 적용은 orchestrator/compaction.py
 │       │   ├── errors.py        # AaestroError + ErrorCategory + 코드 상수
 │       │   └── events.py        # TaskEvent, 스트리밍 이벤트 모델
 │       │
 │       ├── orchestrator/        # LangGraph 오케스트레이션
-│       │   ├── builder.py       # Graph config → StateGraph 빌드
-│       │   ├── topology.py      # GraphTopology 스키마 + 검증
+│       │   ├── builder.py       # Graph config → StateGraph 빌드 (토폴로지 스키마는 core/topology.py)
 │       │   ├── state.py         # 공통 state schema 유틸
 │       │   └── checkpoint.py    # Checkpointer 설정 (memory/redis/postgres)
 │       │
@@ -528,6 +529,7 @@ aaestro/
 │       │   ├── client.py        # 에이전트 쪽 클라이언트 — 서버 코드를 import 하지 않는다 (agentd 가 쓴다)
 │       │   ├── service.py       # space 관리 + access 토큰 검증 API
 │       │   ├── store.py         # MemoryStore 추상 + sqlite/postgres 구현
+│       │   ├── tokens.py        # 선언 → 접근 토큰 조립 (control plane 과 Memory Service 공용 — runtime 에 의존하지 않는다)
 │       │   ├── index.py         # 하이브리드 인덱스 (vector + lexical + filter)
 │       │   └── recall.py        # 검색/병합(RRF) + 컨텍스트 주입 예산
 │       │
@@ -593,7 +595,7 @@ aaestro/
 
 **`src/aaestro/core/`**: Framework contracts
 - Depended on by every other layer; depends on nothing internal
-- Pure schemas, interfaces, and errors — no I/O
+- Pure schemas, interfaces, and errors — no I/O. Exceptions: the `importlib` in condition resolution (`resolve_import_ref`) is limited to `aaestro.graphs`; logging is structlog only
 
 **`src/aaestro/orchestrator/`**: Graph brain
 - The only layer that touches LangGraph APIs directly

@@ -16,11 +16,11 @@ import pytest
 import yaml
 
 from aaestro.core.manifest import AgentManifest, GroupManifest
+from aaestro.core.topology import GraphTopology, validate_topology
 from aaestro.modules.memoryset import MemoryScope, MemorysetLoader
 from aaestro.modules.promptset import PromptsetLoader
 from aaestro.modules.registry import ModuleRegistry
 from aaestro.modules.skillset import SkillsetLoader
-from aaestro.orchestrator.topology import GraphTopology, validate_topology
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 AGENTS = ("planner", "researcher", "writer")

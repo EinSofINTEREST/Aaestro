@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal, Protocol
 import structlog
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from aaestro.core.compaction import CompactionPolicy
 from aaestro.core.conditions import Predicate, is_import_ref, parse_condition
 from aaestro.core.errors import (
     AaestroError,
@@ -25,12 +26,10 @@ from aaestro.core.errors import (
     repeated_positions,
 )
 from aaestro.core.manifest import AgentName, MemorySpec, ModelOverride, SemVer
-from aaestro.orchestrator.compaction import CompactionPolicy
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from aaestro.modules.registry import ModuleRegistry
 
 START = "START"
 END = "END"
@@ -685,7 +684,7 @@ def _check_input_maps(topology: GraphTopology, state_fields: frozenset[str]) -> 
                 )
 
 
-def _check_refs(topology: GraphTopology, registry: ModuleRegistry) -> None:
+def _check_refs(topology: GraphTopology, registry: ModuleResolver) -> None:
     """노드가 참조하는 에이전트/서브그래프 ref 가 해석 가능해야 한다."""
     for node in topology.spec.nodes:
         try:
@@ -697,6 +696,14 @@ def _check_refs(topology: GraphTopology, registry: ModuleRegistry) -> None:
                 node_id=node.id,
                 module_ref=node.ref,
             ) from err
+
+
+class ModuleResolver(Protocol):
+    """Anything that resolves a module ref — core 가 모듈 레지스트리를 직접 참조하지 않게 한다."""
+
+    def resolve(self, ref: str) -> object:
+        """Resolve ``ref`` or raise; the result is unused here."""
+        ...
 
 
 class SubgraphLoader(Protocol):
@@ -733,7 +740,7 @@ def _check_subgraph_cycles(
 def validate_topology(
     topology: GraphTopology,
     *,
-    registry: ModuleRegistry | None = None,
+    registry: ModuleResolver | None = None,
     state_fields: frozenset[str] | None = None,
     load_subgraph: SubgraphLoader | None = None,
 ) -> None:

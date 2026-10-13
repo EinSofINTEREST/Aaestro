@@ -19,17 +19,17 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 import structlog
 
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.core.topology import GraphMode
 from aaestro.orchestrator.models import with_recorded_overrides
 from aaestro.orchestrator.run import RunStatus
 from aaestro.orchestrator.runstore import RunRecord
-from aaestro.orchestrator.topology import GraphMode
 from aaestro.runtime.deployments import DeploymentStatus
 
 if TYPE_CHECKING:
     from aaestro.catalog import Catalog
+    from aaestro.core.topology import GraphTopology
     from aaestro.orchestrator.runstore import RunStore
     from aaestro.orchestrator.submit import RunResult, RunSubmitter
-    from aaestro.orchestrator.topology import GraphTopology
     from aaestro.runtime.control import ControlClient
     from aaestro.runtime.deployments import DeploymentManager, DeploymentRecord
     from aaestro.runtime.launcher import AgentLauncher

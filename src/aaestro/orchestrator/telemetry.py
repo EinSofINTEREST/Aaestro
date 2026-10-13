@@ -11,8 +11,8 @@ from typing import TYPE_CHECKING, Final
 from prometheus_client import Gauge
 
 if TYPE_CHECKING:
+    from aaestro.core.topology import GraphMode
     from aaestro.observability.metrics import Metrics
-    from aaestro.orchestrator.topology import GraphMode
 
 STATUS_COMPLETED: Final = "completed"
 STATUS_FAILED: Final = "failed"
