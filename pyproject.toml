@@ -60,10 +60,14 @@ target-version = "py312"
 src = ["src", "tests"]
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "N", "UP", "B", "ASYNC", "S", "C4", "RET", "SIM", "PTH"]
+select = ["E", "F", "W", "I", "N", "UP", "B", "ASYNC", "S", "C4", "RET", "SIM", "PTH", "TID252"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["aaestro", "tests"]
+
+# 규약 07: 상대 import 금지 — TID 계열 중 TID252 만 켠다
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
 
 [tool.ruff.lint.per-file-ignores]
 # 테스트는 assert 사용이 본질 (S101), 픽스처 스코프상 하드코딩 값 허용 (S105~S107)
