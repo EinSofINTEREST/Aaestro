@@ -174,7 +174,9 @@ python -m aaestro.orchestrator  # Control Plane — REST API + /ui 의 Web UI
 `agentd` 는 runtime layer 가 모든 에이전트 컨테이너 안에서 띄우는 프로세스입니다.
 `AAESTRO_MANIFEST`, `AAESTRO_AGENT_TOKEN`, `AAESTRO_ROOT` 를 읽고, 메모리가 배선된
 경우 `AAESTRO_MEMORY_URL` 과 `AAESTRO_MEMORY_TOKEN` 또는 `AAESTRO_MEMORY_TOKEN_FILE` 을
-읽습니다.
+읽습니다. `AAESTRO_AGENT_TOKEN` 은 필수입니다 — 없으면 agentd 가 `CFG_001` 로 종료합니다.
+무인증 기동은 `AAESTRO_ALLOW_UNAUTHENTICATED=1` 과 loopback 인 `AAESTRO_AGENT_BIND_HOST`
+(기본 `0.0.0.0`) 가 함께 있어야 합니다.
 
 Memory Service 는 `AAESTRO_REPO_ROOT`, `AAESTRO_MEMORY_PORT`,
 `AAESTRO_MEMORY_TOKENS_PATH` 를 읽습니다. 별도 프로세스로 떠 있어야 합니다 — append 는

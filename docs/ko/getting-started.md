@@ -164,6 +164,13 @@ Control API 는 에이전트별 토큰을 요구합니다. `/v1/health` 만 무�
 난수 토큰을 발급해 주입하며, 개발 스택은 같은 코드 경로를 유지하려고 고정
 placeholder 를 씁니다.
 
+agentd 는 `AAESTRO_AGENT_TOKEN` 이 없으면 (미설정 · 빈 값 · 공백뿐) 기동하지 않습니다.
+변수 이름을 밝힌 `CFG_001` 로 종료하므로, env 를 빠뜨려도 Control API 가 조용히 열리지
+않습니다. 토큰 없는 기동은 명시적 opt-in (`AAESTRO_ALLOW_UNAUTHENTICATED=1`) 이고, 바인드
+주소가 loopback 일 때만 유효합니다 (`AAESTRO_AGENT_BIND_HOST=127.0.0.1` — 컨테이너 기본값
+`0.0.0.0` 은 거절됩니다). 기동 시 WARN 로그를 남기며, 토큰 값은 어떤 메시지·로그에도 나오지
+않습니다.
+
 placeholder 는 스택마다 다릅니다: `make e2e-up` (`compose.e2e.yaml`) 은
 `e2e-token`, 일반 개발 스택 (`compose.yaml`) 은 `dev-local-token` 이 기본값입니다.
 띄운 스택에 맞는 값을 넘기거나, 기동 전에 `AAESTRO_AGENT_TOKEN` 을 export 해서

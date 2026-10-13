@@ -25,6 +25,7 @@ DOCKER_DIR = REPO_ROOT / "deployments" / "docker"
 ECHO_IMAGE = "aaestro/agent-echo:0.1.0"
 NETWORK = "aaestro-net-test"
 READY_TIMEOUT_S = 90.0
+TOKEN = "integration-token"  # noqa: S105
 
 
 def docker(*args: str, check: bool = True) -> str:
@@ -105,6 +106,8 @@ def echo_container(echo_image: str, network: str) -> Iterator[tuple[str, int]]:
         "--pids-limit=256",
         "--tmpfs=/tmp",
         "--tmpfs=/workspace",
+        "-e",
+        f"AAESTRO_AGENT_TOKEN={TOKEN}",
         "-P",
         echo_image,
     )
@@ -121,7 +124,7 @@ def request_json(port: int, path: str, body: dict | None = None) -> dict:
     request = urllib.request.Request(  # noqa: S310 — 루프백 고정 URL
         f"http://127.0.0.1:{port}{path}",
         data=data,
-        headers={"content-type": "application/json"},
+        headers={"content-type": "application/json", "authorization": f"Bearer {TOKEN}"},
     )
     with urllib.request.urlopen(request, timeout=10) as response:  # noqa: S310
         result: dict = json.loads(response.read())
