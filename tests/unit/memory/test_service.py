@@ -412,3 +412,115 @@ def test_memory_service_works_without_metrics(service):
     stored = service.append(token(), "longterm", entry())
 
     assert stored.entry_id
+
+
+# --- 정정은 같은 space 안에서만 (#324) ----------------------------------------------
+
+
+def _org_and_attacker():
+    """global org 를 읽기만 하는 에이전트와, org 에 쓸 수 있는 사서."""
+    store = SqliteMemoryStore()
+    service = MemoryService(store=store)
+    librarian = build_token(agent="librarian", group=None, global_spaces=[("org", ("librarian",))])
+    attacker = build_token(
+        agent="attacker", group=None, local=[("longterm", "attacker")], global_spaces=[("org", ())]
+    )
+    return store, service, librarian, attacker
+
+
+def test_append_refuses_a_correction_that_points_into_another_space():
+    store, service, librarian, attacker = _org_and_attacker()
+    org_entry = service.append(
+        librarian,
+        "org",
+        MemoryEntry(
+            space="x", kind=MemoryKind.FACT, content="org policy", source=MemorySource(agent="l")
+        ),
+    )
+
+    with pytest.raises(AaestroError) as exc_info:
+        service.append(
+            attacker,
+            "longterm",
+            MemoryEntry(
+                space="x",
+                kind=MemoryKind.FACT,
+                content="hide it",
+                source=MemorySource(agent="attacker"),
+                supersedes=org_entry.entry_id,
+            ),
+        )
+
+    err = exc_info.value
+    assert err.code == "VAL_002"
+    assert err.message == "supersedes must reference an entry in the same space"
+    assert err.details == {"space": "longterm"}
+    assert org_entry.entry_id not in str(err.details), "대상 id 를 흘리지 않는다"
+    assert store.list_space("local:attacker:longterm") == ()
+    store.close()
+
+
+def test_append_refuses_a_correction_whose_target_is_gone_with_the_same_error():
+    """없는 id 와 다른 space 의 id 를 다르게 답하면 다른 space 의 id 존재 여부가 샌다."""
+    store, service, librarian, attacker = _org_and_attacker()
+    org_entry = service.append(
+        librarian,
+        "org",
+        MemoryEntry(
+            space="x", kind=MemoryKind.FACT, content="org policy", source=MemorySource(agent="l")
+        ),
+    )
+
+    def attempt(target: str) -> AaestroError:
+        with pytest.raises(AaestroError) as exc_info:
+            service.append(
+                attacker,
+                "longterm",
+                MemoryEntry(
+                    space="x",
+                    kind=MemoryKind.FACT,
+                    content="correction",
+                    source=MemorySource(agent="attacker"),
+                    supersedes=target,
+                ),
+            )
+        return exc_info.value
+
+    missing, foreign = attempt("no-such-entry"), attempt(org_entry.entry_id)
+
+    assert (missing.code, missing.message, missing.details) == (
+        foreign.code,
+        foreign.message,
+        foreign.details,
+    )
+    assert missing.code == "VAL_002"
+    # 검증 실패는 권한 거부가 아니다 — denied 는 memory ACL 전용 어휘
+    assert {r["status"] for r in service.audit_log if r["op"] == "append"} >= {"failed"}
+    assert not [r for r in service.audit_log if r["op"] == "append" and r["status"] == "denied"]
+    store.close()
+
+
+def test_append_allows_a_correction_inside_the_same_space():
+    store, service, _librarian, attacker = _org_and_attacker()
+    first = service.append(
+        attacker,
+        "longterm",
+        MemoryEntry(
+            space="x", kind=MemoryKind.FACT, content="old", source=MemorySource(agent="attacker")
+        ),
+    )
+
+    stored = service.append(
+        attacker,
+        "longterm",
+        MemoryEntry(
+            space="x",
+            kind=MemoryKind.FACT,
+            content="new",
+            source=MemorySource(agent="attacker"),
+            supersedes=first.entry_id,
+        ),
+    )
+
+    assert stored.supersedes == first.entry_id
+    store.close()

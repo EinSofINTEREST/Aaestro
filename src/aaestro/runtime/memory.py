@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
-from aaestro.memory.recall import AutoRecall, render_context, superseded_ids
+from aaestro.memory.recall import AutoRecall, render_context
 from aaestro.memory.service import access_denied, build_token
 
 if TYPE_CHECKING:
@@ -26,10 +26,6 @@ if TYPE_CHECKING:
     from aaestro.memory.recall import Recall
     from aaestro.memory.service import AccessToken, MemoryService
     from aaestro.modules.memoryset import MemoryKind, RecallSpec
-
-
-DEFAULT_SCAN_LIMIT = 500
-"""검색 대상 후보를 space 당 몇 개까지 읽을지 — 인덱스가 아니라 저장소 상한이다."""
 
 
 def issue_token(
@@ -119,8 +115,6 @@ class ServiceMemoryAccess:
             Scored entries, best-first.
         """
         requested: Sequence[str] | None = kwargs.pop("spaces", None)
-        # comprehension 안에서 pop 하면 첫 회차만 값을 쓰고 나머지는 기본값이 된다
-        scan = kwargs.pop("scan", DEFAULT_SCAN_LIMIT)
         if requested is None:
             requested = [space.alias for space in self.token.spaces]
         # 같은 별칭을 두 번 넘겨도 한 번만 본다 — 중복 검색은 비용만 늘린다
@@ -128,12 +122,9 @@ class ServiceMemoryAccess:
 
         # 별칭 해석이 곧 경계 검사다 — 선언되지 않은 별칭은 여기서 MEM_001
         resolved = [self._space_id(alias) for alias in requested]
-        entries = {
-            entry.entry_id: entry
-            for alias in requested
-            for entry in self.service.read(self.token, alias, limit=scan)
-        }
-        return list(self.recall.search(query, spaces=resolved, entries=entries, **kwargs))
+        found = list(self.recall.search(query, spaces=resolved, **kwargs))
+        self.service.record_search(self.token, requested)
+        return found
 
     def _space_id(self, alias: str) -> str:
         """별칭을 실제 space id 로 해석한다 — 인덱스는 id 로 색인된다.
@@ -165,7 +156,7 @@ class ServiceMemoryAccess:
             threshold and budget.
         """
         if not policy.auto:
-            # 정책이 껐는데 500건씩 훑으면 아무 것도 쓰지 않을 데이터를 읽는다
+            # 정책이 껐는데 검색하면 아무 것도 쓰지 않을 데이터를 읽는다
             return ""
 
         # 같은 별칭이 여러 스코프에 있을 수 있다 — dedup 하지 않으면 중복 읽기와
@@ -174,18 +165,9 @@ class ServiceMemoryAccess:
         if not aliases:
             return ""
 
-        entries = {
-            entry.entry_id: entry
-            for alias in aliases
-            for entry in self.service.read(self.token, alias, limit=DEFAULT_SCAN_LIMIT)
-        }
         auto = AutoRecall(recall=self.recall, policy=policy)
-        selected = auto.for_task(
-            query,
-            spaces=[self._space_id(alias) for alias in aliases],
-            entries=entries,
-            superseded=superseded_ids(entries.values()),
-        )
+        selected = auto.for_task(query, spaces=[self._space_id(alias) for alias in aliases])
+        self.service.record_search(self.token, aliases, op="recall")
         return render_context(selected)
 
     async def append(self, space: str, **kwargs: Any) -> Any:

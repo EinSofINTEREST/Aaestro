@@ -120,7 +120,7 @@ def access():
     try:
         yield (
             ServiceMemoryAccess(
-                service=service, token=token, recall=Recall(indexes=registry.indexes)
+                service=service, token=token, recall=Recall(indexes=registry.indexes, store=store)
             ),
             space_id,
             registry,
@@ -200,22 +200,46 @@ def test_group_declaration_for_an_unaffiliated_agent_is_rejected():
     assert exc_info.value.code == ErrorCode.MEM_001
 
 
-async def test_scan_limit_applies_to_every_space(access, monkeypatch):
-    """comprehension 안에서 pop 하면 첫 space 만 값을 쓰고 나머지는 기본값이 된다."""
-    adapter, space_id, _registry = access
-    seen: list[int] = []
-    original = adapter.service.read
+TOTAL = 600
+"""예전 scan 상한(500)보다 많이 쌓는다 — 가장 오래된 항목이 어떤 최근 N건 창에도 들지 않는다."""
 
-    def spy(token, alias, **kwargs):
-        seen.append(kwargs.get("limit"))
-        return original(token, alias, **kwargs)
 
-    monkeypatch.setattr(adapter.service, "read", spy)
+def fill_beyond_the_horizon(adapter, space_id, registry):
+    """상한보다 많은 항목을 쌓는다 — 첫 항목이 가장 오래됐다. 그 항목을 돌려준다."""
+    policy = ChunkSpec(max_tokens=400, overlap_tokens=40)
+    # created_at 은 생성 시각이다 — 가장 오래된 항목을 가장 먼저 만들어야 한다
+    items = [entry(space_id, "zyxwvut oldest unique marker about the sidecar tag pinning")]
+    items += [
+        entry(space_id, f"filler record number {i} about nothing in particular")
+        for i in range(1, TOTAL)
+    ]
+    for item in items:
+        adapter.service.append(adapter.token, "longterm", item)
+        registry.indexes[space_id].add(item, policy)
+    return items[0]
 
-    await adapter.search("무엇이든", spaces=["longterm", "longterm"], scan=7)
 
-    # 중복 별칭은 한 번만 보고, 그 한 번은 지정한 상한을 쓴다
-    assert seen == [7]
+async def test_search_finds_entries_beyond_any_recent_window(access):
+    """scan 상한이 기억의 지평선이면 안 된다 — 인덱스에 있는 기억은 찾아야 한다 (#324)."""
+    adapter, space_id, registry = access
+    oldest = fill_beyond_the_horizon(adapter, space_id, registry)
+
+    found = await adapter.search("zyxwvut oldest unique marker", k=3)
+
+    assert oldest.entry_id in [scored.entry.entry_id for scored in found]
+
+
+async def test_auto_recall_finds_entries_beyond_any_recent_window(access):
+    from aaestro.modules.memoryset import RecallSpec
+
+    adapter, space_id, registry = access
+    fill_beyond_the_horizon(adapter, space_id, registry)
+
+    context = await adapter.recall_for_task(
+        "zyxwvut oldest unique marker", policy=RecallSpec(auto=True, k=3, min_score=0.5)
+    )
+
+    assert "zyxwvut" in context
 
 
 # --- 태스크 진입 회상 ----------------------------------------------------------
@@ -254,8 +278,25 @@ async def test_recall_respects_the_min_score_threshold(access):
     assert context == ""
 
 
-async def test_recall_is_skipped_when_the_policy_disables_it(access, monkeypatch):
-    """정책이 껐는데 500건씩 훑으면 쓰지도 않을 데이터를 읽는다."""
+async def test_recall_is_skipped_when_the_policy_disables_it(access):
+    """정책이 껐으면 검색도 감사도 메트릭도 없어야 한다 — 거짓 'recall ok' 감사가 남으면 안 된다."""
+    from aaestro.modules.memoryset import RecallSpec
+
+    adapter, space_id, registry = access
+    item = entry(space_id, "mcp sidecar 는 이미지 태그 고정이 필요하다")
+    await adapter.append("longterm", entry=item)
+    registry.indexes[space_id].add(item, ChunkSpec(max_tokens=400, overlap_tokens=40))
+    before = len(adapter.service.audit_log)
+
+    context = await adapter.recall_for_task(
+        "sidecar", policy=RecallSpec(auto=False, k=3, min_score=0.0)
+    )
+
+    assert context == ""
+    assert [r["op"] for r in adapter.service.audit_log[before:]] == []
+
+
+async def test_recall_audits_each_searched_alias(access):
     from aaestro.modules.memoryset import RecallSpec
 
     adapter, space_id, registry = access
@@ -263,28 +304,21 @@ async def test_recall_is_skipped_when_the_policy_disables_it(access, monkeypatch
     await adapter.append("longterm", entry=item)
     registry.indexes[space_id].add(item, ChunkSpec(max_tokens=400, overlap_tokens=40))
 
-    reads: list[str] = []
-    original = adapter.service.read
-    monkeypatch.setattr(
-        adapter.service,
-        "read",
-        lambda token, alias, **kw: (reads.append(alias), original(token, alias, **kw))[1],
-    )
+    await adapter.recall_for_task("sidecar", policy=RecallSpec(auto=True, k=3, min_score=0.0))
 
-    context = await adapter.recall_for_task(
-        "sidecar", policy=RecallSpec(auto=False, k=3, min_score=0.0)
-    )
-
-    assert context == ""
-    assert reads == []
+    recalled = [r["memory_space"] for r in adapter.service.audit_log if r["op"] == "recall"]
+    assert recalled == ["longterm"]
 
 
-async def test_recall_reads_each_alias_once(access, monkeypatch):
-    """같은 별칭이 여러 스코프에 있으면 중복 읽기와 중복 히트로 예산이 낭비된다."""
+async def test_recall_searches_a_duplicated_alias_once(access):
+    """같은 별칭이 여러 스코프에 있어도 같은 space 를 한 번만 검색하고 hit 이 중복되지 않는다."""
     from aaestro.memory.service import MemorySpace
     from aaestro.modules.memoryset import MemoryScope, RecallSpec
 
-    adapter, space_id, _registry = access
+    adapter, space_id, registry = access
+    item = entry(space_id, "mcp sidecar 는 이미지 태그 고정이 필요하다")
+    await adapter.append("longterm", entry=item)
+    registry.indexes[space_id].add(item, ChunkSpec(max_tokens=400, overlap_tokens=40))
     # 같은 별칭을 group 스코프에도 둔다 — 토큰은 둘 다 담는다
     adapter.token = adapter.token.__class__(
         agent=adapter.token.agent,
@@ -295,17 +329,40 @@ async def test_recall_reads_each_alias_once(access, monkeypatch):
         ),
     )
 
-    reads: list[str] = []
-    original = adapter.service.read
-    monkeypatch.setattr(
-        adapter.service,
-        "read",
-        lambda token, alias, **kw: (reads.append(alias), original(token, alias, **kw))[1],
+    context = await adapter.recall_for_task(
+        "sidecar", policy=RecallSpec(auto=True, k=3, min_score=0.0)
     )
 
-    await adapter.recall_for_task("sidecar", policy=RecallSpec(auto=True, k=3, min_score=0.0))
+    assert context.count("sidecar") == 1, "hit 이 중복 주입됐다"
+    recalled = [r["memory_space"] for r in adapter.service.audit_log if r["op"] == "recall"]
+    assert recalled == ["longterm"]
 
-    assert reads == ["longterm"]
+
+async def test_a_search_is_counted_once_and_not_by_alias():
+    """검색 연산은 Recall 이 space id 로 센다 — 서비스가 별칭 라벨로 또 세면 이중 집계다."""
+    from prometheus_client import CollectorRegistry
+
+    from aaestro.observability.metrics import Metrics
+
+    metrics = Metrics(registry=CollectorRegistry())
+    store = SqliteMemoryStore()
+    service = MemoryService(store=store, metrics=metrics)
+    token = issue_token(manifest(**LOCAL))
+    space_id = token.resolve("longterm").space_id  # type: ignore[union-attr]
+    indexes = {space_id: SpaceIndex(space=space_id)}
+    adapter = ServiceMemoryAccess(
+        service=service, token=token, recall=Recall(indexes=indexes, store=store, metrics=metrics)
+    )
+
+    await adapter.search("sidecar")
+
+    def count(space: str) -> float | None:
+        labels = {"space": space, "op": "search", "status": "ok"}
+        return metrics.registry.get_sample_value("aaestro_memory_operations_total", labels)
+
+    assert count(space_id) == 1.0
+    assert count("longterm") is None
+    store.close()
 
 
 def test_a_local_space_declared_read_only_is_not_writable():
@@ -318,3 +375,95 @@ def test_a_local_space_declared_read_only_is_not_writable():
     assert notes is not None and not notes.may_write("test-agent")
     default = issue_token(manifest(**LOCAL)).resolve("longterm")
     assert default is not None and default.may_write("test-agent"), "mode 미선언 local 은 rw 기본"
+
+
+# --- 정정 반영과 감사 (#324) --------------------------------------------------------
+
+
+async def _fill_with_a_correction(adapter, space_id, registry):
+    """원본과 정정 뒤에 filler 를 쌓는다 — 둘 다 어떤 최근 N건 창에도 들지 않는다."""
+    policy = ChunkSpec(max_tokens=400, overlap_tokens=40)
+    old = entry(space_id, "the port is 9000 for the sidecar")
+    new = entry(space_id, "the port is 9100 for the sidecar").model_copy(
+        update={"supersedes": old.entry_id}
+    )
+    items = [old, new, *(entry(space_id, f"filler record {i} nothing") for i in range(30))]
+    for item in items:
+        adapter.service.append(adapter.token, "longterm", item)
+        registry.indexes[space_id].add(item, policy)
+    return old, new
+
+
+async def test_search_returns_only_the_correction_when_both_are_old(access):
+    adapter, space_id, registry = access
+    old, new = await _fill_with_a_correction(adapter, space_id, registry)
+
+    found = await adapter.search("sidecar port", k=5)
+
+    ids = [scored.entry.entry_id for scored in found]
+    assert new.entry_id in ids
+    assert old.entry_id not in ids
+
+
+async def test_auto_recall_injects_only_the_correction_when_both_are_old(access):
+    from aaestro.modules.memoryset import RecallSpec
+
+    adapter, space_id, registry = access
+    await _fill_with_a_correction(adapter, space_id, registry)
+
+    context = await adapter.recall_for_task(
+        "sidecar port", policy=RecallSpec(auto=True, k=5, min_score=0.0)
+    )
+
+    assert "9100" in context
+    assert "9000" not in context
+
+
+async def test_a_successful_search_is_audited_with_op_search(access):
+    adapter, space_id, registry = access
+    item = entry(space_id, "mcp sidecar 는 이미지 태그 고정이 필요하다")
+    await adapter.append("longterm", entry=item)
+    registry.indexes[space_id].add(item, ChunkSpec(max_tokens=400, overlap_tokens=40))
+
+    await adapter.search("sidecar")
+
+    record = adapter.service.audit_log[-1]
+    assert (record["op"], record["status"], record["memory_space"]) == ("search", "ok", "longterm")
+
+
+async def test_a_correction_in_another_space_does_not_hide_a_shared_memory():
+    """읽기만 되는 org 의 id 로 정정을 달아도 victim 의 org 검색에서 항목이 남는다 (#324)."""
+    from aaestro.memory.service import build_token
+
+    store = SqliteMemoryStore()
+    service = MemoryService(store=store)
+    librarian = build_token(agent="librarian", group=None, global_spaces=[("org", ("librarian",))])
+    attacker = build_token(
+        agent="attacker", group=None, local=[("longterm", "attacker")], global_spaces=[("org", ())]
+    )
+    victim = build_token(agent="victim", group=None, global_spaces=[("org", ())])
+    org_id = "global:global:org"
+    registry = IndexRegistry()
+    registry.indexes[org_id] = SpaceIndex(space=org_id)
+    org = service.append(librarian, "org", entry(org_id, "qqorg policy approved"))
+    registry.indexes[org_id].add(org, ChunkSpec(max_tokens=400, overlap_tokens=40))
+    recall = Recall(indexes=registry.indexes, store=store)
+
+    with pytest.raises(AaestroError) as exc_info:
+        service.append(
+            attacker,
+            "longterm",
+            entry("x", "hide it").model_copy(update={"supersedes": org.entry_id}),
+        )
+    assert exc_info.value.code == ErrorCode.VAL_002
+    # 검사를 우회해 저장소에 들어갔다고 가정해도 검색은 무시한다
+    store.append(
+        entry("local:attacker:longterm", "hide it").model_copy(update={"supersedes": org.entry_id})
+    )
+
+    found = await ServiceMemoryAccess(service=service, token=victim, recall=recall).search(
+        "qqorg policy", spaces=["org"]
+    )
+
+    assert [s.entry.entry_id for s in found] == [org.entry_id]
+    store.close()

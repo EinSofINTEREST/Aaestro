@@ -20,8 +20,6 @@ from aaestro.memory.recall import (
     ScoredEntry,
     apply_budget,
     render_context,
-    resolve_corrections,
-    superseded_ids,
 )
 
 if TYPE_CHECKING:
@@ -122,13 +120,13 @@ class HttpMemoryAccess:
 
         Args:
             query: The search text.
-            **kwargs: ``spaces`` / ``k`` / ``scan``.
+            **kwargs: ``spaces`` / ``k``.
 
         Returns:
             Scored entries, best-first.
         """
         payload: dict[str, Any] = {"query": query}
-        for key in ("spaces", "k", "scan"):
+        for key in ("spaces", "k"):
             if key in kwargs and kwargs[key] is not None:
                 payload[key] = kwargs[key]
 
@@ -163,10 +161,9 @@ class HttpMemoryAccess:
             return ""
 
         found = await self.search(query, k=policy.k)
-        # 정정 체인은 최신 항목만 주입한다 (09 Rule 4)
-        current = resolve_corrections(found, superseded_ids(scored.entry for scored in found))
+        # 정정으로 대체된 항목은 서비스의 검색이 이미 걸러 보낸다 (09 Rule 4)
         selected = apply_budget(
-            current, min_score=policy.min_score, budget_tokens=policy.budget_tokens
+            found, min_score=policy.min_score, budget_tokens=policy.budget_tokens
         )
         return render_context(selected)
 
