@@ -1,0 +1,23 @@
+apiVersion: aaestro/v1
+kind: Promptset
+metadata:
+  name: state-compactor
+  version: 0.1.0
+  description: 그래프 state 압축(summarize) 의 요약 템플릿 계약을 만족하는 테스트용 프롬프트셋
+
+spec:
+  engine: jinja2
+  default_locale: en
+  templates:
+    # state 압축의 요약 계약: 변수 `items` (array) → 출력 키 `summary` (문자열)
+    summarize_state:
+      file: templates/summarize_state.j2
+      output_keys: [summary]
+      variables:
+        items: {type: array, required: true}
+    # 계약을 어긴 템플릿 — 배포 검증이 거절하는지 보는 용도
+    wrong_contract:
+      file: templates/summarize_state.j2
+      output_keys: [compacted]
+      variables:
+        pending_spaces: {type: array, required: true}

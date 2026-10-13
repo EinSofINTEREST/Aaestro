@@ -139,8 +139,25 @@ RICH_GRAPH: dict[str, Any] = {
             "fields": {
                 "query": {"type": "string", "required": True, "description": "what to look for"},
                 "busy": {"type": "boolean", "default": False},
+                "seen_ids": {"type": "array"},
+                "first_seen": {"type": "array"},
+                "tags": {"type": "array"},
+                "notes": {"type": "array"},
             },
             "checkpointer": "default",
+            # 네 전략 전부 — fuzz 가 압축 정책 모델의 모든 필드를 지난다 (#371)
+            "compaction": {
+                "seen_ids": {"strategy": "keep_last", "n": 500},
+                "first_seen": {"strategy": "keep_first", "n": 10},
+                "tags": {"strategy": "dedupe"},
+                "notes": {
+                    "strategy": "summarize",
+                    "over_tokens": 4000,
+                    "keep_last": 3,
+                    "compactor": "agents/rich-agent@0.3.0",
+                    "template": "summarize_state",
+                },
+            },
         },
         "nodes": [
             {
@@ -202,6 +219,7 @@ RICH_CONFIG: dict[str, Any] = {
     "orchestrator": {
         "checkpointer": "redis",
         "checkpointer_url": "redis://checkpoints:6379/0",
+        "state_artifact_root": "/var/lib/aaestro/state-artifacts",
         "run_store": "/var/lib/aaestro/runs.db",
         "deployment_ready_timeout_s": 60,
         "control_host": "127.0.0.1",

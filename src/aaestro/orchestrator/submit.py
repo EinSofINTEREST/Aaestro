@@ -18,6 +18,7 @@ import structlog
 
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 from aaestro.orchestrator.builder import build_graph
+from aaestro.orchestrator.compactor import build_state_compactor
 from aaestro.orchestrator.run import (
     RESUMED_SUFFIX,
     RunHandle,
@@ -36,8 +37,10 @@ if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
     from langgraph.checkpoint.base import BaseCheckpointSaver
 
+    from aaestro.core.skill import ArtifactStore
     from aaestro.observability.metrics import Metrics
     from aaestro.orchestrator.builder import ModelResolver, NodeRuntime
+    from aaestro.orchestrator.compactor import StateCompactor
     from aaestro.orchestrator.topology import GraphTopology
 
 DEFAULT_NODE_TIMEOUT_S = 300.0
@@ -112,6 +115,11 @@ class RunSubmitter:
     """계측 registry — 여기서 넘기지 않으면 각 계층의 집계 로직이 무동작이다."""
     models: ModelResolver | None = None
     """노드별 해석된 모델을 태스크에 싣는다 — 없으면 agentd 가 manifest 기본값을 쓴다."""
+    artifacts: ArtifactStore | None = None
+    """state 압축(``summarize``)이 접은 원문을 두는 곳 — run 스코프 저장소 (#371).
+
+    없으면 ``summarize`` 를 선언한 그래프는 시작을 거부한다: 원문을 둘 곳 없이 요약하면 잃는다.
+    """
 
     def __post_init__(self) -> None:
         # 기본 manager 는 registry 를 모른 채 만들어진다 — 슬롯 게이지만 빠지면
@@ -156,9 +164,21 @@ class RunSubmitter:
             )
 
         self._reject_invalid_state(topology, initial_state)
+        # 슬롯을 잡기 전에 만든다 — 선언이 틀렸으면 여기서 GRAPH_001 로 끝난다
+        compactor = self._state_compactor(topology)
 
         handle = self.manager.acquire(topology, run_id=run_id or f"run-{uuid4().hex[:12]}")
-        return await self._drive(topology, handle, initial_state)
+        return await self._drive(topology, handle, initial_state, compactor)
+
+    def _state_compactor(self, topology: GraphTopology) -> StateCompactor | None:
+        """이 그래프의 state 압축기 — 선언이 없으면 None 이라 압축 경로 자체가 생기지 않는다."""
+        return build_state_compactor(
+            topology,
+            runtime=self.runtime,
+            artifacts=self.artifacts,
+            metrics=self.metrics,
+            timeout_s=self.node_timeout_s,
+        )
 
     def _reject_invalid_state(
         self, topology: GraphTopology, initial_state: Mapping[str, Any]
@@ -226,10 +246,11 @@ class RunSubmitter:
                 details={"run_id": run_id, "graph": topology.metadata.name},
             )
 
+        compactor = self._state_compactor(topology)
         # 이 프로세스가 끝까지 지켜본 run(실패한 run 을 UI 에서 재개)도 이어갈 수 있어야 한다 —
         # 재시작한 프로세스만 재개할 수 있으면 재개 버튼이 같은 프로세스에서 409 로 막힌다
         handle = self.manager.acquire(topology, run_id=run_id, resuming=True)
-        return await self._drive(topology, handle, None)
+        return await self._drive(topology, handle, None, compactor)
 
     async def start_service(
         self,
@@ -241,6 +262,7 @@ class RunSubmitter:
         is_idle: Callable[[dict[str, Any]], bool] | None = None,
         sleep: Callable[[float], Awaitable[None]] | None = None,
         start_iteration: int = 0,
+        pending_boundary: int | None = None,
     ) -> RunHandle:
         """Start a service graph's perpetual loop.
 
@@ -258,6 +280,8 @@ class RunSubmitter:
                 않게 합니다.
             start_iteration: Iteration counter to continue from — resume 경로가
                 이전 회차를 이어받습니다.
+            pending_boundary: The finished iteration ``initial_state`` comes from, when
+                its state compaction still has to be applied — resume 경로 전용.
 
         Returns:
             The run handle — drain 요청과 상태 조회 창구입니다.
@@ -276,6 +300,7 @@ class RunSubmitter:
             )
 
         self._reject_invalid_state(topology, initial_state)
+        compactor = self._state_compactor(topology)
 
         handle = self.manager.acquire(topology, run_id=run_id or f"svc-{uuid4().hex[:12]}")
         # 태스크가 돌기 전에 세워야 한다 — checkpoint thread_id 와 max_iterations
@@ -297,6 +322,7 @@ class RunSubmitter:
             # 남기지 않으면 저장소의 회차는 영원히 0 이고, 프로세스 밖에서
             # 남긴 drain 요청도 전달되지 않는다 (#197)
             store=self.manager.store,
+            compactor=compactor,
         )
         task = asyncio.create_task(
             runner.run(
@@ -304,6 +330,7 @@ class RunSubmitter:
                 seed_state(initial_state, run_id=handle.run_id),
                 max_iterations=max_iterations,
                 is_idle=is_idle,
+                pending_boundary=pending_boundary,
             ),
             name=f"service-run:{handle.run_id}",
         )
@@ -374,18 +401,20 @@ class RunSubmitter:
                 details={"run_id": run_id, "status": str(previous.status)},
             )
 
+        # checkpoint 가 정본이다 — 이 프로세스가 시작하지 않은 run 은 핸들에 state 가 없고
+        # (기록만 복원된다), 빈 state 로 시작하면 누적이 사라지거나 필수 필드가 없어
+        # GRAPH_003 으로 거부된다 (#310)
+        state, pending_boundary = await self._resume_point(topology, previous)
         resumed = await self.start_service(
             topology,
-            # checkpoint 가 정본이다 — 이 프로세스가 시작하지 않은 run 은 핸들에 state 가 없고
-            # (기록만 복원된다), 빈 state 로 시작하면 누적이 사라지거나 필수 필드가 없어
-            # GRAPH_003 으로 거부된다 (#310)
-            await self._iteration_state(topology, previous),
+            state,
             run_id=f"{run_id}{RESUMED_SUFFIX}",
             max_iterations=max_iterations,
             is_idle=is_idle,
             sleep=sleep,
             # 재개는 다음 회차부터다 — 실패한 회차를 다시 돌리면 부수효과가 겹친다
             start_iteration=previous.iteration,
+            pending_boundary=pending_boundary,
         )
         log.info(
             "service run resumed",
@@ -409,6 +438,18 @@ class RunSubmitter:
         Raises:
             AaestroError: STORAGE/``STOR_002`` if no iteration left a checkpoint.
         """
+        state, _ = await self._resume_point(topology, previous)
+        return state
+
+    async def _resume_point(
+        self, topology: GraphTopology, previous: RunHandle
+    ) -> tuple[dict[str, Any], int | None]:
+        """`_iteration_state` 의 state 와, 그 state 가 아직 지나지 않은 압축 경계.
+
+        끝까지 간 iteration 의 **출력** 은 압축 전이다 — 살아 있는 루프는 그것을 압축해 다음
+        입력을 만들었을 것이므로, 재개도 그 경계 (iteration 인덱스) 를 다시 지나야 한다.
+        실패한 iteration 의 **입력** 은 이미 경계를 지난 값이라 다시 지날 것이 없다 (None).
+        """
         # state 만 읽고 노드를 실행하지 않는다 — 모델 해석기를 넘겨도 쓰이지 않는다
         graph = build_graph(topology, self.runtime, checkpointer=self.checkpointer)
         for iteration in range(previous.iteration - 1, -1, -1):
@@ -418,8 +459,8 @@ class RunSubmitter:
                 if not snapshot.values:
                     continue  # 이 세대가 이 회차를 돌지 않았다
                 if not snapshot.next:
-                    return dict(snapshot.values)
-                return await _iteration_input(graph, config)
+                    return dict(snapshot.values), iteration
+                return await _iteration_input(graph, config), None
         raise AaestroError(
             category=ErrorCategory.STORAGE,
             code=ErrorCode.STOR_002,
@@ -467,6 +508,7 @@ class RunSubmitter:
         topology: GraphTopology,
         handle: RunHandle,
         initial_state: Mapping[str, Any] | None,
+        compactor: StateCompactor | None = None,
     ) -> RunResult:
         """그래프를 실행하고 슬롯을 반드시 반납한다.
 
@@ -479,6 +521,7 @@ class RunSubmitter:
             node_timeout_s=self.node_timeout_s,
             metrics=self.metrics,
             models=self.models,
+            compactor=compactor,
         )
         bound = log.bind(graph=topology.metadata.name, run_id=handle.run_id)
         outcome = RunStatus.FAILED

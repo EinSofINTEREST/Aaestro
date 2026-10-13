@@ -248,6 +248,11 @@ class OrchestratorConfig(BaseModel):
     그래프의 모든 에이전트가 쥐어 경계가 되지 못한다."""
     access_stewards: tuple[str, ...] = ()
     """권한 에이전트로 지정된 에이전트 이름 — 운영자 설정이다. 에이전트가 스스로 지정할 수 없다."""
+    state_artifact_root: str | None = Field(default=None, min_length=1)
+    """그래프 state 압축 (`summarize`) 이 접은 원문을 두는 디렉토리 (#371). 오케스트레이터
+    전용 저장소다 — 에이전트의 artifact 스코프 (local/group/global) 와 별개이고 에이전트는
+    여기에 닿지 못한다. 없으면 `summarize` 를 선언한 그래프는 배포 검증과 run 시작에서
+    거절된다. 자동 정리는 없다 — run 보존 기간에 맞춰 운영자가 비운다."""
     max_concurrent_runs: int = Field(default=10, gt=0)
     max_service_runs: int = Field(default=5, gt=0)
     node_timeout_s: float = Field(default=300.0, gt=0)

@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     from aaestro.observability.metrics import Metrics
+    from aaestro.orchestrator.compactor import StateCompactor
     from aaestro.orchestrator.runstore import RunStore
 
 DEFAULT_MAX_CONCURRENT_RUNS = 10
@@ -329,6 +330,7 @@ class ServiceRunner:
         sleep: Callable[[float], Awaitable[None]] | None = None,
         metrics: Metrics | None = None,
         store: RunStore | None = None,
+        compactor: StateCompactor | None = None,
     ) -> None:
         if topology.mode is not GraphMode.SERVICE:
             raise AaestroError(
@@ -350,6 +352,8 @@ class ServiceRunner:
         self._graph = graph
         self._sleep = sleep or _no_sleep
         self._store = store
+        # 선언이 없는 그래프는 None 이다 — 그 그래프의 루프는 압축 경로에 들어가지 않는다
+        self._compactor = compactor
         self.delays: list[float] = []
         self._telemetry = (
             None
@@ -397,6 +401,7 @@ class ServiceRunner:
         *,
         max_iterations: int | None = None,
         is_idle: Callable[[dict[str, Any]], bool] | None = None,
+        pending_boundary: int | None = None,
     ) -> RunHandle:
         """Run the service loop until drained, halted, or bounded.
 
@@ -408,6 +413,9 @@ class ServiceRunner:
             initial_state: State the first iteration starts from.
             max_iterations: Optional bound so tests can end the loop.
             is_idle: Predicate deciding whether an iteration found no work.
+            pending_boundary: The iteration whose finished state ``initial_state`` is,
+                when its compaction has not been carried forward yet — 재개가 끝난
+                iteration 의 checkpoint 에서 이어갈 때 같은 경계를 다시 지나게 한다.
 
         Returns:
             The same handle, with terminal status recorded.
@@ -416,12 +424,23 @@ class ServiceRunner:
         state.setdefault(_RUN_ID_KEY, handle.run_id)
         state.setdefault(_TRACE_ID_KEY, handle.run_id)
         idle_streak = 0
+        # 방금 끝난 iteration 의 인덱스 — 그 state 로 다음 입력을 만들 때가 압축의 경계다.
+        # 실패한 iteration 뒤에는 None 이다: state 가 그대로라 다시 지날 경계가 없다
+        boundary = pending_boundary
 
         while not self._drain_wanted(handle):
             if max_iterations is not None and handle.iteration >= max_iterations:
                 break
 
             try:
+                if boundary is not None and self._compactor is not None:
+                    compacted = await self._compact(state, boundary)
+                    if self._drain_wanted(handle):
+                        # 요약을 기다리는 사이 drain 이 들어왔다 — iteration 을 하나 더 돌리지
+                        # 않는다. 압축 결과는 버린다: 재개가 같은 경계를 다시 지난다
+                        break
+                    state = compacted
+                boundary = None
                 state = await self._iterate(handle, state)
             except asyncio.CancelledError:
                 # 협조적 취소는 그대로 전파한다 (drain/shutdown 경로)
@@ -438,6 +457,7 @@ class ServiceRunner:
                     return handle
                 continue
 
+            boundary = handle.iteration - 1  # _iterate 가 이미 카운터를 올렸다
             handle.failure_streak = 0
             self._record_iteration(STATUS_COMPLETED)
             self._publish(handle)
@@ -463,6 +483,20 @@ class ServiceRunner:
             handle.iteration += 1
         handle.state = dict(result)
         return dict(result)
+
+    async def _compact(self, state: dict[str, Any], iteration: int) -> dict[str, Any]:
+        """Build the next iteration's input from the finished iteration's state.
+
+        끝난 iteration 의 state 를 압축해 다음 iteration 의 입력을 만든다. 끝난 iteration 의
+        checkpoint 는 고치지 않는다 — 압축된 state 는 다음 iteration 의 checkpoint 들이
+        거기서 시작하는 것으로 남는다. 그래서 재개가 끝난 iteration 의 checkpoint 를 읽으면
+        이 경계를 다시 지나고, 원문 artifact 는 같은 key 를 덮어쓴다.
+        """
+        from aaestro.orchestrator.compaction_boundary import Boundary
+
+        assert self._compactor is not None  # noqa: S101 — 호출자가 확인했다
+        updates = await self._compactor.compact(state, Boundary.after_iteration(state, iteration))
+        return {**state, **updates} if updates else state
 
     @staticmethod
     def _wrap_unexpected(err: Exception, handle: RunHandle) -> AaestroError:

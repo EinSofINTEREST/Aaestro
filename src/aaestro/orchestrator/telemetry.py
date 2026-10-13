@@ -66,6 +66,18 @@ class OrchestratorTelemetry:
             seconds
         )
 
+    def state_compacted(self, *, field: str, strategy: str, status: str) -> None:
+        """state 필드 압축 한 번 — 실패도 센다 (연속 실패는 state 가 계속 자란다는 뜻이다)."""
+        self._metrics.counter("aaestro_state_compactions_total").labels(
+            graph=self._graph, field=field, strategy=strategy, status=status
+        ).inc()
+
+    def state_size(self, *, field: str, tokens: int) -> None:
+        """압축을 선언한 state 필드의 추정 토큰 — 경계마다 갱신한다."""
+        self._metrics.gauge("aaestro_state_field_tokens").labels(
+            graph=self._graph, field=field
+        ).set(tokens)
+
 
 class CheckpointTelemetry:
     """Records checkpoint operation outcomes.

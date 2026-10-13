@@ -144,6 +144,19 @@ METRIC_SPECS: Final[tuple[MetricSpec, ...]] = (
         ("graph",),
         "Current service idle backoff delay",
     ),
+    # Graph state compaction
+    MetricSpec(
+        "aaestro_state_compactions_total",
+        "counter",
+        ("graph", "field", "strategy", "status"),
+        "Graph state field compactions by strategy and status",
+    ),
+    MetricSpec(
+        "aaestro_state_field_tokens",
+        "gauge",
+        ("graph", "field"),
+        "Estimated tokens of a state field that declares compaction",
+    ),
     # Memory
     MetricSpec(
         "aaestro_memory_operations_total",

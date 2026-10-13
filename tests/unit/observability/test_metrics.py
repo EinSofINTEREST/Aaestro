@@ -140,6 +140,11 @@ def test_metric_contract_snapshot():
             "labels": ["graph", "status"],
         },
         "aaestro_service_idle_delay_seconds": {"kind": "gauge", "labels": ["graph"]},
+        "aaestro_state_compactions_total": {
+            "kind": "counter",
+            "labels": ["graph", "field", "strategy", "status"],
+        },
+        "aaestro_state_field_tokens": {"kind": "gauge", "labels": ["graph", "field"]},
         "aaestro_memory_operations_total": {
             "kind": "counter",
             "labels": ["space", "op", "status"],

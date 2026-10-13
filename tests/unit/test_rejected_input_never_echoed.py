@@ -441,6 +441,8 @@ def test_a_bad_state_field_name_is_named_because_it_is_a_key():
     """state 필드 이름은 매핑의 키다 — 키는 구조라 내보낸다 (정제해서)."""
     fields = {"ok": {"type": "string"}, "_bad\x1b[31m": {"type": "string"}}
     document = with_value(RICH_GRAPH, ("spec", "state", "fields"), fields)
+    # 필드를 통째로 바꾸면 압축 정책의 대상이 사라진다 — 여기서 보는 것은 이름 문제 하나다
+    document["spec"]["state"].pop("compaction", None)
 
     (found,) = _problems(GraphTopology, document)
 

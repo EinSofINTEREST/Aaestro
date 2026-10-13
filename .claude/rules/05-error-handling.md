@@ -510,6 +510,10 @@ aaestro_checkpoint_operations_total{operation, status}
 aaestro_service_iterations_total{graph, status}          # Counter — iteration 단위
 aaestro_service_idle_delay_seconds{graph}                # Gauge — 현재 idle backoff
 
+# Graph state compaction ([04-module-system.md](04-module-system.md) State Compaction)
+aaestro_state_compactions_total{graph, field, strategy, status}  # strategy: keep_last|keep_first|dedupe|summarize, status: completed|failed
+aaestro_state_field_tokens{graph, field}                 # Gauge — 압축을 선언한 필드의 추정 토큰 (경계마다)
+
 # Memory metrics ([09-memory-context.md](09-memory-context.md))
 aaestro_memory_operations_total{space, op, status}       # op: append|read|latest|search|recall
 aaestro_memory_search_duration_seconds{space}

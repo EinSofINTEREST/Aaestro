@@ -151,6 +151,7 @@ def _start(metrics: Metrics) -> None:
         in_use=any_of(*pins),
         materials=_material_store(orchestrator),
         providers=_proxy_providers(config),
+        state_artifacts=orchestrator.state_artifact_root is not None,
     )
     if deployments is not None:
         # manager 는 검증에 author 를 쓴다 — 서로를 가리키므로 여기서 잇는다
@@ -221,6 +222,7 @@ def _deployment_manager(
             catalog=catalog,
             a2a_port_range=config.protocols.a2a.port_range,
             providers=_proxy_providers(config),
+            state_artifacts=orchestrator.state_artifact_root is not None,
         ),
         launcher=launcher,
         store=SqliteDeploymentStore(path=orchestrator.deployment_store),
@@ -276,6 +278,7 @@ def _run_service(
     from aaestro.orchestrator.models import CatalogModels
     from aaestro.orchestrator.run import RunManager
     from aaestro.orchestrator.runs import RoutedClients, RunService
+    from aaestro.orchestrator.state_artifacts import state_artifact_store
     from aaestro.orchestrator.submit import RunSubmitter
     from aaestro.runtime.nodes import ControlNodeRuntime
 
@@ -293,6 +296,8 @@ def _run_service(
         node_timeout_s=orchestrator.node_timeout_s,
         metrics=metrics,
         models=CatalogModels(catalog),
+        # state 압축(summarize)의 원문 저장소 — 없으면 그런 그래프는 검증과 시작에서 거절된다
+        artifacts=state_artifact_store(orchestrator.state_artifact_root),
     )
     return RunService(catalog=catalog, deployments=deployments, submitter=submitter, store=store)
 

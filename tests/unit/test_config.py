@@ -487,3 +487,26 @@ def test_egress_proxy_providers_declared_in_yaml_reach_the_loaded_config(tmp_pat
     config = load_config("dev", config_dir=tmp_path, environ={})
 
     assert config.runtime.egress_proxy.providers == ("anthropic", "openai-compat")
+
+
+# --- state 압축 원문 저장소 (#371) ----------------------------------------------
+
+
+def test_state_artifact_root_is_unset_by_default(tmp_path):
+    config = load_config("dev", config_dir=write(tmp_path, ""), environ={})
+
+    assert config.orchestrator.state_artifact_root is None
+
+
+def test_state_artifact_root_is_read_from_file_and_environment(tmp_path):
+    directory = write(tmp_path, "orchestrator:\n  state_artifact_root: /var/lib/aaestro/state\n")
+
+    from_file = load_config("dev", config_dir=directory, environ={})
+    overridden = load_config(
+        "dev",
+        config_dir=directory,
+        environ={"AAESTRO_ORCHESTRATOR__STATE_ARTIFACT_ROOT": "/mnt/state"},
+    )
+
+    assert from_file.orchestrator.state_artifact_root == "/var/lib/aaestro/state"
+    assert overridden.orchestrator.state_artifact_root == "/mnt/state"

@@ -25,6 +25,7 @@ from aaestro.core.errors import (
     repeated_positions,
 )
 from aaestro.core.manifest import AgentName, MemorySpec, ModelOverride, SemVer
+from aaestro.orchestrator.compaction import CompactionPolicy
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -277,6 +278,21 @@ class StateSpec(BaseModel):
     schema_ref: str | None = Field(default=None, alias="schema")
     declared_fields: dict[str, StateField] | None = Field(default=None, alias="fields")
     checkpointer: str = "default"
+    compaction: dict[str, CompactionPolicy] = Field(default_factory=dict)
+    """필드 이름 → 압축 정책. 리스트 필드에만 선언하며 경계에서만 적용된다 (#371)."""
+
+    @model_validator(mode="after")
+    def _compaction_targets_declared_arrays(self) -> StateSpec:
+        """인라인 선언이면 여기서 닫는다 — ``schema`` ref 는 모델을 import 해야 알 수 있다."""
+        if self.declared_fields is None:
+            return self
+        for name in self.compaction:
+            declared = self.declared_fields.get(name)
+            if declared is None:
+                raise ValueError(f"compaction targets an undeclared state field: {name}")
+            if declared.type != "array":
+                raise ValueError(f"compaction targets a non-array state field: {name}")
+        return self
 
     @model_validator(mode="after")
     def _exactly_one_schema(self) -> StateSpec:
@@ -552,6 +568,15 @@ def _cycle_edges(topology: GraphTopology) -> list[EdgeSpec]:
     """순환에 놓인 edge 목록 — target 에서 source 로 되돌아올 수 있는 edge."""
     graph = _adjacency(topology)
     return [e for e in topology.spec.edges if _reaches(graph, e.target, e.source)]
+
+
+def reentry_targets(topology: GraphTopology) -> frozenset[str]:
+    """Nodes a run re-enters by taking a declared cycle edge.
+
+    순환 edge 를 타고 다시 들어가는 노드 — ``max_iterations`` 를 선언한 순환 edge 의 target.
+    순환에 놓인 edge 전부가 아니라 **되돌아가는 edge** 만 본다: 한 바퀴에 경계는 하나다.
+    """
+    return frozenset(e.target for e in _cycle_edges(topology) if e.max_iterations is not None)
 
 
 def _check_mode_topology(topology: GraphTopology) -> None:

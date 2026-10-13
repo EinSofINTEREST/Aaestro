@@ -20,6 +20,14 @@ from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode, field_pr
 from aaestro.core.manifest import RESERVED_GLOBAL_GROUP, agent_name, agent_ref_parts
 from aaestro.modules.compatibility import check_promptset_templates
 from aaestro.modules.promptset import LoadedPromptset
+from aaestro.orchestrator.compaction import (
+    SUMMARIZE_INPUT_KEY,
+    SUMMARIZE_OUTPUT_KEY,
+    SummarizePolicy,
+)
+from aaestro.orchestrator.compaction_schema import compaction_problems, list_fields
+from aaestro.orchestrator.state import resolve_graph_state
+from aaestro.orchestrator.state_artifacts import STATE_ARTIFACT_SETTING
 from aaestro.orchestrator.topology import GraphMode, validate_topology
 from aaestro.runtime.quota import check_group_quota, check_host_capacity
 
@@ -43,6 +51,22 @@ def _nodes_by_agent(topology: GraphTopology) -> dict[str, list[NodeSpec]]:
     return grouped
 
 
+_STATE_REF_PREFIX = "state."
+
+
+def _accumulating_fields(topology: GraphTopology) -> frozenset[str]:
+    """한 노드가 읽고 다시 쓰는 state 필드 — iteration 을 넘어 쌓일 수 있는 것들."""
+    accumulating: set[str] = set()
+    for node in topology.spec.nodes:
+        read = {
+            source.removeprefix(_STATE_REF_PREFIX).split(".", 1)[0]
+            for source in node.input_map.values()
+            if isinstance(source, str) and source.startswith(_STATE_REF_PREFIX)
+        }
+        accumulating.update(read & set(node.output_map))
+    return frozenset(accumulating)
+
+
 @dataclass(frozen=True)
 class Finding:
     """One failed contract check.
@@ -64,6 +88,8 @@ class ValidationReport:
     """
 
     findings: tuple[Finding, ...] = ()
+    warnings: tuple[Finding, ...] = ()
+    """배포를 막지 않는 지적 — ``ok`` 는 이것을 보지 않는다 (#371)."""
 
     @property
     def ok(self) -> bool:
@@ -135,6 +161,12 @@ class DeployValidator:
 
     None 이면 프록시가 없다 — 논리 호스트가 알려진 provider 면 통과한다.
     """
+    state_artifacts: bool = False
+    """state 압축 원문을 둘 저장소 (`orchestrator.state_artifact_root`) 가 설정됐는지.
+
+    없으면 `summarize` 를 선언한 그래프를 거절한다 — 배포는 되고 run 시작에서야 거절되면
+    컨테이너를 다 띄운 뒤에 안다 (#371).
+    """
 
     def validate(self, topologies: Sequence[GraphTopology]) -> ValidationReport:
         """Run every contract check across the graphs being deployed.
@@ -149,12 +181,15 @@ class DeployValidator:
             The report — ``ok`` is False if any check failed.
         """
         findings: list[Finding] = []
+        warnings: list[Finding] = []
 
         for topology in topologies:
             findings.extend(self._check_agent_refs(topology))
             findings.extend(self._check_connections(topology))
             findings.extend(self._check_mode_rules(topology))
             findings.extend(self._check_node_templates(topology))
+            findings.extend(self._check_state_compaction(topology))
+            warnings.extend(self._warn_unbounded_state(topology))
 
         findings.extend(self._check_module_refs())
         findings.extend(self._check_groups())
@@ -163,7 +198,13 @@ class DeployValidator:
         findings.extend(self._check_quotas())
         findings.extend(self._check_model_providers(topologies))
 
-        report = ValidationReport(findings=tuple(findings))
+        report = ValidationReport(findings=tuple(findings), warnings=tuple(warnings))
+        if warnings:
+            log.warning(
+                "deployment validation raised warnings",
+                graphs=len(topologies),
+                warnings=len(warnings),
+            )
         if report.ok:
             # 이 단계 (그래프 · 에이전트 대조) 의 범위만 말한다 — 호출자가 카탈로그 문제를 더해
             # 최종 판정을 내리므로, 여기서 "validation passed" 라고 찍으면 실패한 실행에도 남는다
@@ -309,6 +350,147 @@ class DeployValidator:
                     )
                 )
         return findings
+
+    # --- 11. state 압축 선언 ------------------------------------------------
+
+    def _check_state_compaction(self, topology: GraphTopology) -> list[Finding]:
+        """압축 선언이 state 스키마와 맞고, 요약을 쓸 에이전트와 템플릿이 실재하는지 (#371).
+
+        어긋난 선언은 run 시작에서 거절되거나 경계마다 조용히 실패한다 — 그것을 배포로 앞당긴다.
+        """
+        policies = topology.spec.state.compaction
+        if not policies:
+            return []
+        graph = topology.metadata.name
+        try:
+            schema = resolve_graph_state(topology.spec.state, graph=graph)
+        except AaestroError as err:
+            return [
+                Finding(
+                    check="state_compaction",
+                    code=ErrorCode(err.code),
+                    message=err.message,
+                    details={"graph": graph, **err.details},
+                )
+            ]
+        findings = [
+            Finding(
+                check="state_compaction",
+                code=ErrorCode.GRAPH_001,
+                message=problem,
+                details={"graph": graph},
+            )
+            for problem in compaction_problems(policies, schema)
+        ]
+        summarized = sorted(n for n, p in policies.items() if isinstance(p, SummarizePolicy))
+        if summarized and not self.state_artifacts:
+            findings.append(
+                Finding(
+                    check="state_compaction",
+                    code=ErrorCode.GRAPH_001,
+                    message=(
+                        "summarize compaction needs somewhere to keep the replaced originals — "
+                        f"set {STATE_ARTIFACT_SETTING}"
+                    ),
+                    details={"graph": graph, "fields": summarized},
+                )
+            )
+        for name, policy in policies.items():
+            if isinstance(policy, SummarizePolicy):
+                findings.extend(self._check_compactor(topology, name, policy))
+        return findings
+
+    def _check_compactor(
+        self, topology: GraphTopology, state_field: str, policy: SummarizePolicy
+    ) -> list[Finding]:
+        """요약 에이전트가 이 그래프와 함께 뜨고, 그 promptset 이 요약 템플릿 계약을 갖는지."""
+        details = {
+            "graph": topology.metadata.name,
+            "field": state_field,
+            "module_ref": policy.compactor,
+        }
+
+        def finding(code: ErrorCode, message: str) -> list[Finding]:
+            return [Finding(check="state_compaction", code=code, message=message, details=details)]
+
+        name, version = agent_ref_parts(policy.compactor)
+        manifest = self.manifests.get(name)
+        if manifest is None:
+            return finding(
+                ErrorCode.MOD_001,
+                f"state compactor references an unknown agent: {policy.compactor}",
+            )
+        if version != manifest.metadata.version:
+            return finding(
+                ErrorCode.MOD_002,
+                f"state compactor references agent version {version!r} but the manifest "
+                f"declares {manifest.metadata.version!r}: {policy.compactor}",
+            )
+        # 버전은 노드 · compactor 각각 manifest 와 대조했다 — 남는 것은 이름 (런타임 조회와 같은 키)
+        node_agents = {agent_name(n.agent) for n in topology.spec.nodes if n.agent is not None}
+        if name not in node_agents:
+            # 배포는 노드의 에이전트만 띄운다 — 노드가 아닌 에이전트는 요약할 때 떠 있지 않다
+            return finding(
+                ErrorCode.GRAPH_001,
+                f"state compactor must be the agent of a node in this graph: {policy.compactor}",
+            )
+        promptset = self.promptsets.get(manifest.spec.promptset.ref)
+        if promptset is None:
+            return []  # module_refs 가 해석 실패를, Author 가 로드 실패를 보고한다
+        template = promptset.spec.templates.get(policy.template)
+        if template is None:
+            # 노드 템플릿 검사가 같은 부류를 MOD_002 로 낸다 — 코드를 맞춘다
+            return finding(
+                ErrorCode.MOD_002,
+                f"promptset does not declare the compaction template: {policy.template}",
+            )
+        required = {variable for variable, spec in template.variables.items() if spec.required}
+        if (
+            SUMMARIZE_INPUT_KEY not in template.variables
+            or required - {SUMMARIZE_INPUT_KEY}
+            or SUMMARIZE_OUTPUT_KEY not in template.output_keys
+        ):
+            return finding(
+                ErrorCode.MOD_004,
+                f"compaction template {policy.template!r} must take the variable "
+                f"{SUMMARIZE_INPUT_KEY!r} (array) as its only required variable and declare "
+                f"the output key {SUMMARIZE_OUTPUT_KEY!r}",
+            )
+        return []
+
+    def _warn_unbounded_state(self, topology: GraphTopology) -> list[Finding]:
+        """상주 그래프에서 자랄 수 있는 리스트 필드에 압축 선언이 없으면 경고한다 — 거절은 아니다.
+
+        "자랄 수 있다" 는 **같은 노드가 읽고 쓰는** 리스트 필드다: 노드는 이전 값을 입력으로
+        받아야 거기에 덧붙여 돌려줄 수 있다. 아무 노드도 쓰지 않는 필드 (run 입력) 와, 쓰는
+        노드가 이전 값을 받지 않는 필드 (매 iteration 새로 만드는 값) 는 iteration 을 넘어
+        쌓이지 않는다. 누적하는 필드에 선언이 없으면 state 가 프롬프트와 checkpoint 를 끝없이
+        키운다.
+        """
+        if topology.spec.mode is not GraphMode.SERVICE:
+            return []
+        graph = topology.metadata.name
+        try:
+            schema = resolve_graph_state(topology.spec.state, graph=graph)
+        except AaestroError:
+            return []  # 스키마를 읽지 못하는 문제는 경고가 아니라 다른 검사의 실패다
+        unbounded = sorted(
+            (list_fields(schema) & _accumulating_fields(topology))
+            - set(topology.spec.state.compaction)
+        )
+        if not unbounded:
+            return []
+        return [
+            Finding(
+                check="state_compaction",
+                code=ErrorCode.GRAPH_001,
+                message=(
+                    "service graph accumulates list state fields without a compaction policy: "
+                    f"{', '.join(unbounded)}"
+                ),
+                details={"graph": graph, "fields": unbounded},
+            )
+        ]
 
     # --- 2. 모듈 ref 해석 -------------------------------------------------
 
@@ -623,6 +805,7 @@ def validate_deployment(
     host_memory_bytes: int | None = None,
     a2a_port_range: tuple[int, int] | None = None,
     providers: frozenset[str] | None = None,
+    state_artifacts: bool = False,
 ) -> ValidationReport:
     """Validate a deployment against every contract check.
 
@@ -640,6 +823,8 @@ def validate_deployment(
         host_memory_bytes: Host memory ceiling.
         a2a_port_range: The runtime's allocatable A2A port range.
         providers: Egress proxy upstream names — None when there is no proxy.
+        state_artifacts: Whether ``orchestrator.state_artifact_root`` is configured —
+            없으면 ``summarize`` 압축을 선언한 그래프를 거절합니다.
 
     Returns:
         The validation report.
@@ -655,6 +840,7 @@ def validate_deployment(
         host_memory_bytes=host_memory_bytes,
         a2a_port_range=a2a_port_range,
         providers=providers,
+        state_artifacts=state_artifacts,
     )
     return validator.validate(list(topologies))
 
