@@ -1,6 +1,6 @@
 // 페이지 글루 — DOM 만 다룬다. REST 는 client.js 가, 선언 문서의 모양도 client.js 가 안다.
-import { agentsOfGraph, ApiError, bumpPatch, createClient, emptyGraph, formatPairs,
-  materialPathProblem, moduleRef, parsePairs, patchAgent, pruneEmpty, revocationsFor, ruleState, suggestInputMap,
+import { agentsOfGraph, ApiError, bumpPatch, createClient, formatPairs,
+  materialPathProblem, moduleRef, normalizeGraph, parsePairs, patchAgent, patchGraph, revocationsFor, ruleState, suggestInputMap,
   unbuiltAgents, UNLISTED_SUFFIX, withSelected } from "./client.js";
 
 const $ = (selector) => document.querySelector(selector);
@@ -138,9 +138,13 @@ function addRow(kind, values = []) {
   const cells = rowFactories[kind]();
   cells.forEach((cell, i) => {
     if (cell.tagName === "SELECT") {
-      cell.replaceChildren(...catalog.agents.map((a) => el("option", { value: `agents/${a.name}@${a.version}`, textContent: `${a.name}@${a.version}` })));
+      const pairs = catalog.agents.map((a) => [`agents/${a.name}@${a.version}`, `${a.name}@${a.version}`]);
+      // 카탈로그에 없는 에이전트도 옵션으로 올린다 — 안 그러면 첫 옵션이 저장 본문에 조용히 실린다 (#385)
+      cell.replaceChildren(...withSelected(pairs, [values[i]]).map(([value, text]) => el("option", { value, textContent: text })));
     }
     if (values[i] !== undefined && values[i] !== null) cell.value = values[i];
+    // 서브그래프 노드는 에이전트가 없다 — 첫 옵션을 고르지 않는다
+    if (cell.tagName === "SELECT" && values[i] === "") cell.selectedIndex = -1;
   });
   const remove = el("button", { type: "button", textContent: "✕", onclick: (e) => e.target.closest("tr").remove() });
   const row = el("tr", {}, [...cells.map((c) => el("td", {}, [c])), el("td", {}, [remove])]);
@@ -212,32 +216,46 @@ function stateDeclaration(f) {
   return state;
 }
 
-function graphDocument() {
+// 불러온 그래프 — 폼이 모르는 선언을 저장 때 보존하는 기준이다 (#385). 새 그래프면 null
+let loadedGraph = null;
+
+function graphDocument(base) {
   const f = graphForm;
-  const doc = emptyGraph(f.name.value.trim());
-  doc.metadata.version = f.version.value.trim();
-  doc.metadata.description = f.description.value.trim();
-  doc.spec.mode = f.mode.value;
-  doc.spec.goal = f.goal.value.trim();
-  doc.spec.state = stateDeclaration(f);
-  doc.spec.nodes = rows("node").map(([id, agent, input, output]) => {
-    const node = pruneEmpty({ id, agent });
-    const inputMap = parsePairs(input);
-    const outputMap = parsePairs(output);
-    if (Object.keys(inputMap).length) node.input_map = inputMap;
-    if (Object.keys(outputMap).length) node.output_map = outputMap;
-    return node;
+  const optional = (input) => (input ? Number(input) : "");
+  return patchGraph(base, {
+    name: f.name.value.trim(),
+    version: f.version.value.trim(),
+    description: f.description.value.trim(),
+    mode: f.mode.value,
+    goal: f.goal.value.trim(),
+    state: stateDeclaration(f),
+    nodes: rows("node").map(([id, agent, input, output]) => ({
+      id, agent, inputMap: parsePairs(input), outputMap: parsePairs(output),
+    })),
+    edges: rows("edge").map(([from, to, condition, max]) => ({ from, to, condition, maxIterations: optional(max) })),
+    connections: rows("connection").map(([caller, callee]) => ({ caller, callee })),
+    service: { minDelay: Number(f.idle_min.value), maxDelay: Number(f.idle_max.value), failureStreak: Number(f.failure_streak.value) },
   });
-  doc.spec.edges = rows("edge").map(([from, to, condition, max]) => pruneEmpty({ from, to, condition, max_iterations: max ? Number(max) : "" }));
-  doc.spec.connections = rows("connection").map(([caller, callee]) => ({ caller, callee }));
-  if (f.mode.value === "service") {
-    doc.spec.service = { idle: { min_delay_s: Number(f.idle_min.value), max_delay_s: Number(f.idle_max.value) }, max_failure_streak: Number(f.failure_streak.value) };
+}
+
+// 저장 대상 이름의 서버 선언이 원본이다 (에이전트의 agentBase 와 같은 규칙) — 없는 이름(404)은 새 그래프
+async function graphBase(name) {
+  if (!name) return null;
+  if (loadedGraph?.metadata?.name === name) return loadedGraph;
+  try { return normalizeGraph(await api.graph(name)); }
+  catch (err) {
+    if (err instanceof ApiError && err.status === 404) return null;
+    throw err;
   }
-  return pruneEmpty(doc);
+}
+
+async function currentGraphDocument() {
+  return graphDocument(await graphBase(graphForm.name.value.trim()));
 }
 
 function showGraph(doc) {
   const f = graphForm;
+  loadedGraph = structuredClone(doc);
   f.name.value = doc.metadata.name; f.version.value = doc.metadata.version; f.description.value = doc.metadata.description || "";
   f.mode.value = doc.spec.mode; f.goal.value = doc.spec.goal || ""; f.state_schema.value = doc.spec.state?.schema || "";
   f.state_fields.value = doc.spec.state?.fields ? JSON.stringify(doc.spec.state.fields, null, 2) : "";
@@ -245,7 +263,7 @@ function showGraph(doc) {
   if (doc.spec.service) { f.idle_min.value = doc.spec.service.idle.min_delay_s; f.idle_max.value = doc.spec.service.idle.max_delay_s; f.failure_streak.value = doc.spec.service.max_failure_streak ?? 5; }
   for (const kind of Object.keys(tables)) $(`${tables[kind]} tbody`).replaceChildren();
   (doc.spec.nodes || []).forEach((n) =>
-    addRow("node", [n.id, n.agent, formatPairs(n.input_map), formatPairs(n.output_map)]));
+    addRow("node", [n.id, n.agent ?? "", formatPairs(n.input_map), formatPairs(n.output_map)]));
   (doc.spec.edges || []).forEach((e) => addRow("edge", [e.from, e.to, e.condition || "", e.max_iterations || ""]));
   (doc.spec.connections || []).forEach((c) => addRow("connection", [c.caller, c.callee]));
 }
@@ -257,8 +275,8 @@ function showFindings(selector, result) {
   return false;
 }
 
-async function validateGraph() {
-  try { return showFindings("#graph-findings", await api.validate({ graphs: [graphDocument()] })); }
+async function validateGraph(doc) {
+  try { return showFindings("#graph-findings", await api.validate({ graphs: [doc || await currentGraphDocument()] })); }
   catch (err) { showApiFindings("#graph-findings", err); return false; }
 }
 function showApiFindings(selector, err) {
@@ -266,19 +284,24 @@ function showApiFindings(selector, err) {
   $(selector).replaceChildren(...errors.map((text) => el("li", { textContent: text })));
 }
 
-$("#graph-validate").addEventListener("click", validateGraph);
+$("#graph-validate").addEventListener("click", () => validateGraph());
 $("#graph-load").addEventListener("click", async () => {
   const name = prompt("불러올 그래프 이름", catalog.graphs[0]?.name || "");
   if (!name) return;
-  try { const doc = await api.graph(name); doc.metadata.version = bumpPatch(doc.metadata.version); showGraph(doc); status(`${name} 불러옴 — 저장하려면 버전이 올라가야 하므로 patch 를 올려 두었습니다`); }
+  try { const doc = normalizeGraph(await api.graph(name)); doc.metadata.version = bumpPatch(doc.metadata.version); showGraph(doc); status(`${name} 불러옴 — 저장하려면 버전이 올라가야 하므로 patch 를 올려 두었습니다`); }
   catch (err) { report(err); }
 });
 graphForm.addEventListener("submit", async (event) => {
   event.preventDefault();
-  if (!(await validateGraph())) return; // 저장 전에 검증 실패가 화면에 보인다
+  // 검증한 문서와 저장하는 문서가 같아야 한다 — 한 번만 조립한다
+  let doc;
+  try { doc = await currentGraphDocument(); }
+  catch (err) { showApiFindings("#graph-findings", err); report(err); return; }
+  if (!(await validateGraph(doc))) return; // 저장 전에 검증 실패가 화면에 보인다
   try {
-    const doc = graphDocument();
     const saved = await api.saveGraph(doc.metadata.name, doc);
+    // 저장한 선언이 다음 저장의 원본이다 — 지운 노드의 숨은 선언이 되살아나지 않게 (에이전트와 같다)
+    loadedGraph = structuredClone(doc);
     status(`저장됨: ${saved.path}`);
     await loadCatalog();
   } catch (err) { showApiFindings("#graph-findings", err); report(err); }
@@ -286,7 +309,7 @@ graphForm.addEventListener("submit", async (event) => {
 $("#graph-delete").addEventListener("click", async () => {
   const name = graphForm.name.value.trim();
   if (!name || !confirm(`${name} 을 삭제할까요?`)) return;
-  try { await api.deleteGraph(name); status(`삭제됨: ${name}`); await loadCatalog(); } catch (err) { report(err); }
+  try { await api.deleteGraph(name); if (loadedGraph?.metadata?.name === name) loadedGraph = null; status(`삭제됨: ${name}`); await loadCatalog(); } catch (err) { report(err); }
 });
 
 // --- 에이전트 편집기 (#242) ------------------------------------------------------
