@@ -426,7 +426,9 @@ class DeployValidator:
                 f"state compactor references agent version {version!r} but the manifest "
                 f"declares {manifest.metadata.version!r}: {policy.compactor}",
             )
-        if policy.compactor not in {node.agent for node in topology.spec.nodes}:
+        # 버전은 노드 · compactor 각각 manifest 와 대조했다 — 남는 것은 이름 (런타임 조회와 같은 키)
+        node_agents = {agent_name(n.agent) for n in topology.spec.nodes if n.agent is not None}
+        if name not in node_agents:
             # 배포는 노드의 에이전트만 띄운다 — 노드가 아닌 에이전트는 요약할 때 떠 있지 않다
             return finding(
                 ErrorCode.GRAPH_001,
