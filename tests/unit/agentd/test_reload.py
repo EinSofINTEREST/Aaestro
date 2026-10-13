@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import shutil
 from pathlib import Path
 
@@ -126,6 +127,10 @@ def declare_fresh_template(root: Path) -> None:
 
 
 FRESH = {"node_id": "fresh", "input": {"query": "q"}}
+FRESH_BODY = re.compile(
+    r"\n\nFRESH <<untrusted-input (?P<id>[0-9a-f]{24})>>q<<end-untrusted-input (?P=id)>>\n\Z"
+)
+"""새 템플릿의 렌더 — 태스크 입력은 경계 안에 놓인다 (04 Promptset Rules 2)."""
 
 
 async def test_reload_picks_up_a_changed_declaration(root):
@@ -139,7 +144,7 @@ async def test_reload_picks_up_a_changed_declaration(root):
 
     card = await reload()
 
-    assert executor.binding.render(make_task(**FRESH)).startswith("FRESH q")
+    assert FRESH_BODY.search(executor.binding.render(make_task(**FRESH)))
     assert card["name"] == "planner"
 
 
@@ -206,7 +211,7 @@ def test_the_served_app_reloads_the_standard_executor(root, tmp_path, monkeypatc
     )
 
     assert response.json()["status"] == "reloaded"
-    assert served["executor"].binding.render(make_task(**FRESH)).startswith("FRESH q")
+    assert FRESH_BODY.search(served["executor"].binding.render(make_task(**FRESH)))
 
 
 # --- #274 리뷰: 스킬 코드 리로드, 커스텀 entrypoint -------------------------------------

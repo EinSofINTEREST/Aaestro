@@ -71,3 +71,22 @@ def test_a_prompt_without_a_contract_gets_plain_text():
     import server as fake
 
     assert not fake._content_for("just answer", "digest").startswith("{")
+
+
+@pytest.mark.parametrize("name", ["mcp__tools__echo", "mcp__fs.v2__read", "mcp__docs/search__run"])
+def test_tool_name_is_found_with_or_without_the_boundary(name: str):
+    """태스크 입력은 경계 표기 안에 놓인다 — 닫는 표기가 이름에 붙어 잡히면 도구를 부르지 못한다.
+
+    반대쪽도 본다: ``.`` · ``/`` 가 든 MCP 도구 이름을 잃어서도 안 된다.
+    """
+    import server as fake
+
+    boundary = "37495270bcf3b2323c037cd8"
+    payload = {"tools": [{"name": name}], "messages": []}
+    fenced = f"<<untrusted-input {boundary}>>use tool {name}<<end-untrusted-input {boundary}>>"
+
+    for prompt in (fenced, f"use tool {name}", f'use tool {name} with {{"text": "hi"}}'):
+        response = fake.tool_use_for(payload, prompt)
+
+        assert response is not None, prompt
+        assert name in json.dumps(response), prompt
