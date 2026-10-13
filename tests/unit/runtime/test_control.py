@@ -583,12 +583,13 @@ async def test_the_agent_does_not_choose_the_words_the_operator_reads(status, ca
             await client.steer("task-9", "go", by="alice")
 
     err = exc_info.value
-    assert err.code == code
-    assert err.message in {
-        "task is not running on the agent",
-        "agent refused the steer: over a limit",
-    }
     assert "evil.example" not in str(err)
+    if code == "VAL_002":
+        # 닫힌 집합 밖의 VAL_002 는 알려진 거절이 아니다 — 일반 변환(RT_002)으로 간다 (#448)
+        assert err.code != "VAL_002"
+        return
+    assert err.code == code
+    assert err.message == "task is not running on the agent"
 
 
 def test_every_reason_the_executor_refuses_with_is_one_the_runtime_passes_on():
@@ -611,7 +612,7 @@ async def test_a_known_refusal_is_sanitised_before_it_goes_up():
             json={
                 "category": "forbidden",
                 "code": "VAL_002",
-                "message": "x" * 5000,
+                "message": "steer text is too long",
                 "agent": "someone-else",
                 "task_id": "another-task",
                 "retryable": True,
@@ -634,7 +635,23 @@ async def test_a_known_refusal_is_sanitised_before_it_goes_up():
     assert err.retryable is False
     assert (err.agent, err.task_id) == ("researcher", "task-9")
     assert err.details == {"max_chars": 4000}
-    assert err.message == "agent refused the steer: over a limit"
+    assert err.message == "steer text is too long"
+
+
+async def test_a_malformed_steer_body_answer_is_not_read_as_an_over_limit_refusal():
+    """agentd 의 본문 검증 거절(VAL_002/VAL_001, 사유는 필드 경로)은 상한 초과가 아니다 (#448)."""
+    from fastapi.testclient import TestClient
+
+    from aaestro.agentd.server import AgentRuntime, create_app
+    from aaestro.runtime.control import _steer_refusal
+    from tests.unit.agentd.test_server import TOKEN, FakeExecutor
+
+    server = TestClient(create_app(AgentRuntime(agent="a", executor=FakeExecutor()), token=TOKEN))
+    for body in ({"text": 5, "by": "op"}, {"text": "go", "by": "op", "extra": 1}, {}):
+        reply = server.post("/v1/steer/t1", json=body, headers={"Authorization": f"Bearer {TOKEN}"})
+        response = httpx.Response(reply.status_code, json=reply.json())
+
+        assert _steer_refusal(response, agent="a", task_id="t1") is None
 
 
 @pytest.mark.parametrize(

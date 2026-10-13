@@ -452,6 +452,9 @@ def _steer_refusal(response: httpx.Response, *, agent: str, task_id: str) -> Aae
         return None
 
     message, details = body.get("message"), body.get("details")
+    # 본문 형식 검증 실패도 400+VAL_002 로 온다 — 닫힌 사유 집합의 문구일 때만 "상한 초과" 로 읽는다
+    if code == ErrorCode.VAL_002 and not _is_steer_problem(message):
+        return None
     known = details if isinstance(details, dict) else {}
     return AaestroError(
         category=expected[1],
@@ -462,6 +465,11 @@ def _steer_refusal(response: httpx.Response, *, agent: str, task_id: str) -> Aae
         # bool 은 int 의 하위 타입이다 — 숫자만 남긴다
         details={k: known[k] for k in STEER_REFUSAL_DETAILS if type(known.get(k)) is int},
     )
+
+
+def _is_steer_problem(claimed: object) -> bool:
+    """에이전트가 보낸 문구가 ``SteerProblem`` 의 원소와 정확히 같은가."""
+    return isinstance(claimed, str) and any(claimed == problem.value for problem in SteerProblem)
 
 
 def _refusal_message(code: str, claimed: object, *, fallback: str) -> str:

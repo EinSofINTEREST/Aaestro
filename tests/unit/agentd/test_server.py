@@ -165,7 +165,9 @@ def test_malformed_task_is_rejected():
 
     response = client.post("/v1/invoke", json={"task_id": "only"}, headers=AUTH)
 
-    assert response.status_code == 422
+    # 422 가 아니라 typed 에러 — 기본 422 는 받은 값을 되비춘다 (#448)
+    assert response.status_code == 400
+    assert response.json()["code"] == "VAL_001"
 
 
 # --- 에러 변환 -------------------------------------------------------------
@@ -322,7 +324,8 @@ def test_a_malformed_steer_body_is_rejected(body):
 
     response = client.post("/v1/steer/t1", json=body, headers=AUTH)
 
-    assert response.status_code == 422
+    assert response.status_code == 400
+    assert response.json()["code"] in {"VAL_001", "VAL_002"}
     assert executor.steers == []
 
 

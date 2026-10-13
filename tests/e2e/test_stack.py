@@ -217,7 +217,7 @@ def test_untraceable_task_is_rejected(stack):
     with pytest.raises(urllib.error.HTTPError) as exc_info:
         fetch(f"{ECHO_URL}/v1/invoke", payload)
 
-    assert exc_info.value.code == 422
+    assert exc_info.value.code == 400  # 본문 검증 실패 — VAL_001, 값은 싣지 않는다 (#448)
 
 
 @requires_docker

@@ -20,12 +20,12 @@ from __future__ import annotations
 from http import HTTPStatus
 from typing import TYPE_CHECKING
 
-from aaestro.core.errors import ErrorCategory, ErrorCode
+from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode, field_problems
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from aaestro.core.errors import AaestroError
+    from fastapi.exceptions import RequestValidationError
 
 CODE_STATUS: Mapping[str, int] = {
     # 없는 리소스를 400 으로 답하면 호출자가 "요청이 틀렸나" 를 먼저 의심한다
@@ -96,10 +96,35 @@ def status_for(err: AaestroError, *, overrides: Mapping[str, int] | None = None)
     return CATEGORY_STATUS.get(err.category, DEFAULT_STATUS)
 
 
+def request_validation_error(
+    err: RequestValidationError, *, distinguish_missing: bool = True
+) -> AaestroError:
+    """Turn FastAPI's request validation failure into a typed error without the input.
+
+    FastAPI 기본 422 는 ``detail[].input`` 에 받은 값을 되비춘다 — 본문이 비밀이거나 큰 문자열이면
+    그대로 나간다 (쿼리 · 경로 파라미터 실패도 같다). 필드 경로와 사유만 싣는 ``VAL_00x`` 로
+    바꾼다 (03 Client Rules 8). 필수 누락만 있으면 ``VAL_001``, 하나라도 형식 오류면 ``VAL_002``
+    이고, 오류 목록이 비어 있으면 형식 오류로 본다.
+    ``distinguish_missing=False`` 는 항상 ``VAL_002`` 다.
+    """
+    errors = err.errors()
+    # 빈 목록은 all() 이 참이므로 따로 거른다
+    missing = (
+        distinguish_missing and bool(errors) and all(e.get("type") == "missing" for e in errors)
+    )
+    return AaestroError(
+        category=ErrorCategory.VALIDATION,
+        code=ErrorCode.VAL_001 if missing else ErrorCode.VAL_002,
+        message="request failed validation",
+        details={"errors": field_problems(err)},
+    )
+
+
 __all__ = [
     "CATEGORY_STATUS",
     "CODE_STATUS",
     "DEFAULT_STATUS",
     "RETRYABLE_STATUS",
+    "request_validation_error",
     "status_for",
 ]

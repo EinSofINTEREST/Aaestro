@@ -279,6 +279,9 @@ async def test_an_agent_cannot_put_its_own_words_in_a_known_refusal(store, categ
     finally:
         await stack.aclose()
 
+    if code == ErrorCode.VAL_002:
+        # 닫힌 사유 집합 밖의 VAL_002 는 알려진 거절이 아니다 — 일반 변환으로 간다 (#448)
+        status, code = 500, "RT_002"
     assert (response.status_code, response.json()["error"]["code"]) == (status, code)
     assert "evil.example" not in response.text and "re-authenticate" not in response.text
 
