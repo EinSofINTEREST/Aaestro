@@ -515,3 +515,31 @@ async def test_unknown_and_foreign_correction_targets_get_the_same_response(org_
     assert missing.status_code == foreign.status_code == 400
     assert missing.json() == foreign.json()
     assert missing.json()["code"] == "VAL_002"
+
+
+# --- 검색 k 상한 -------------------------------------------------------------
+
+
+def test_search_request_bounds_k():
+    from pydantic import ValidationError
+
+    from aaestro.memory.http import MAX_SEARCH_K, SearchRequest
+
+    assert SearchRequest(query="q", k=MAX_SEARCH_K).k == MAX_SEARCH_K
+    for bad in (0, MAX_SEARCH_K + 1):
+        with pytest.raises(ValidationError):
+            SearchRequest(query="q", k=bad)
+
+
+async def test_http_search_rejects_an_oversized_k_as_422(served):
+    from aaestro.memory.http import MAX_SEARCH_K
+
+    access, *_ = served
+    response = await access.client.post(
+        f"{BASE_URL}/v1/search",
+        headers={"authorization": f"Bearer {access.token}"},
+        json={"query": "sidecar", "k": MAX_SEARCH_K + 1},
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"][0]["loc"] == ["body", "k"]

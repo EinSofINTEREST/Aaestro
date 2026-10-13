@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from aaestro.core.errors import AaestroError, ErrorCode
 from aaestro.core.manifest import MemoryMode
@@ -79,6 +79,11 @@ class TokenRegistry:
         self._tokens.pop(secret, None)
 
 
+# 융합은 space 당 vector k + lexical k 개 후보를 만든다 — 상한이 없으면 요청 하나가
+# 저장소 질의와 색인 작업량을 임의로 키운다
+MAX_SEARCH_K = 200
+
+
 class SearchRequest(BaseModel):
     """검색 요청."""
 
@@ -86,7 +91,7 @@ class SearchRequest(BaseModel):
 
     query: str
     spaces: tuple[str, ...] | None = None
-    k: int = 6
+    k: int = Field(default=6, ge=1, le=MAX_SEARCH_K)
 
 
 class AppendRequest(BaseModel):
