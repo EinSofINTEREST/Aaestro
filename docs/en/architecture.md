@@ -108,6 +108,10 @@ controlled container, on every request**:
   widens them, only within the expansion ceiling the registry enforces.
 - **Next request, no restart.** Enforcement points cache decisions briefly and drop them when the
   registry's version moves.
+- **An agent's A2A server only takes new tasks.** Reading, listing, subscribing to or cancelling a
+  task, push-notification settings, the extended card, and messages addressed to an existing task
+  are refused with the same answer whoever asks — a peer cannot see or cancel work another caller
+  delegated, nor learn whether a task exists.
 - **When the registry is unreachable**, anything not already cached is denied, and cached allows
   keep working until they expire — so a revocation made during an outage may not apply until the
   registry is back.
