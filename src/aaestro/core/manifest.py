@@ -81,7 +81,7 @@ NAME_PATTERN = _NAME_PATTERN
 들어갈 수 없다는 것이 이 규칙의 보안상 의미다 (#273)."""
 _SEMVER_PATTERN = re.compile(r"^\d+\.\d+\.\d+$")
 _MODULE_REF_PATTERN = re.compile(
-    r"^(?P<type>skillsets|promptsets|memorysets|agents|graphs)/"
+    r"^(?P<type>skillsets|promptsets|memorysets|skillpacks|agents|graphs)/"
     r"(?P<name>[a-z0-9]+(?:-[a-z0-9]+)*)@(?P<version>\d+\.\d+\.\d+)$"
 )
 _RESOURCE_CPU_PATTERN = re.compile(r"^\d+(?:\.\d+)?$")
@@ -749,6 +749,7 @@ class AgentSpec(BaseModel):
     model: ModelConfig
     promptset: ModuleRef
     skillsets: tuple[ModuleRef, ...] = ()
+    skillpacks: tuple[ModuleRef, ...] = ()
     memory: MemorySpec = Field(default_factory=MemorySpec)
     mcp: McpSpec = Field(default_factory=McpSpec)
     a2a: A2ASpec = Field(default_factory=A2ASpec)
@@ -770,6 +771,21 @@ class AgentSpec(BaseModel):
         for item in value:
             if not item.ref.startswith("skillsets/"):
                 raise ValueError("skillset ref must be of type 'skillsets'")
+        return value
+
+    @field_validator("skillpacks")
+    @classmethod
+    def _skillpack_types(cls, value: tuple[ModuleRef, ...]) -> tuple[ModuleRef, ...]:
+        """skillpacks 필드는 skillpacks 타입 ref 만 받는다."""
+        for item in value:
+            if not item.ref.startswith("skillpacks/"):
+                raise ValueError("skillpack ref must be of type 'skillpacks'")
+        # 같은 팩을 두 번 (같은 버전이든 다른 버전이든) 싣지 않는다 — 같은 이름의 skill 이
+        # 두 벌 생기고, 어느 쪽이 쓰이는지 선언에서 읽히지 않는다
+        names = [item.ref.partition("/")[2].partition("@")[0] for item in value]
+        duplicates = {n for n in names if names.count(n) > 1}
+        if duplicates:
+            raise ValueError(f"duplicate skillpack: {sorted(duplicates)}")
         return value
 
 

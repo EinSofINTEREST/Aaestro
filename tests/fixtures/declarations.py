@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from aaestro.core.manifest import AgentManifest, GroupManifest
 from aaestro.modules.memoryset import MemorysetManifest
 from aaestro.modules.promptset import PromptsetManifest
+from aaestro.modules.skillpack import SkillpackManifest
 from aaestro.modules.skillset import SkillsetManifest
 from aaestro.orchestrator.topology import GraphTopology
 from tests.fixtures.builders import manifest_dict
@@ -66,6 +67,7 @@ KIND_MODELS: dict[str, type[BaseModel]] = {
     "Skillset": SkillsetManifest,
     "Promptset": PromptsetManifest,
     "Memoryset": MemorysetManifest,
+    "Skillpack": SkillpackManifest,
 }
 
 

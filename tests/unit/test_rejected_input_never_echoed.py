@@ -45,6 +45,7 @@ from aaestro.core.manifest import AgentManifest, GroupManifest
 from aaestro.modules.memoryset import MemorysetLoader, MemorysetManifest
 from aaestro.modules.promptset import PromptsetLoader, PromptsetManifest
 from aaestro.modules.registry import ModuleRegistry
+from aaestro.modules.skillpack import SkillpackLoader, SkillpackManifest
 from aaestro.modules.skillset import SkillsetLoader, SkillsetManifest
 from aaestro.orchestrator.topology import GraphTopology
 from tests.fixtures.declarations import MARKER, REPO_ROOT, _declaration_documents
@@ -500,6 +501,7 @@ MODULE_KINDS: dict[type[BaseModel], tuple[str, Any]] = {
     SkillsetManifest: ("skillsets", SkillsetLoader),
     PromptsetManifest: ("promptsets", PromptsetLoader),
     MemorysetManifest: ("memorysets", MemorysetLoader),
+    SkillpackManifest: ("skillpacks", SkillpackLoader),
 }
 
 Entry = Callable[[], Any]

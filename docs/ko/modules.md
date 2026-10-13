@@ -44,6 +44,7 @@ v0.1 스키마가 아직 받지 않는 선언(`spec.decision`, 그래프 노드 
 | **Skillset** | Python tool (능력) | `modules/skillsets/{name}/{version}/` |
 | **Promptset** | Jinja2 템플릿 + 변수 스키마 | `modules/promptsets/{name}/{version}/` |
 | **Memoryset** | 메모리 정책 — scope, 인덱스, 보존, recall | `modules/memorysets/{name}/{version}/` |
+| **Skillpack** | Agent Skills 디렉토리 (`SKILL.md` + 파일), 수정 없이 | `modules/skillpacks/{name}/{version}/` |
 | **Agent** | 계약 — 모델, 모듈, 프로토콜, 리소스 | `agents/{name}/manifest.yaml` |
 | **Graph** | Goal — nodes, edges, connections, mode | `graphs/{name}.yaml` |
 | **Group** | 리소스 스코프 경계 — quota, secrets, 메모리 | `groups/{name}.yaml` |
@@ -209,6 +210,134 @@ Memoryset 은 memory space 의 정책을 고정합니다: scope (`run | local | 
 임베딩 모델(버전 고정), 청킹, 하이브리드 검색 가중치, 보존/compaction, recall 기본값
 (k, 최소 점수, 토큰 예산). 부착 위치는 scope 와 일치해야 합니다: manifest(local),
 그래프(run), `groups/<name>.yaml`(group), `groups/global.yaml`(global).
+
+## 스킬팩
+
+스킬팩은 [Agent Skills](https://agentskills.io/specification) 표준 디렉토리를 **수정 없이**
+담습니다: skill 하나는 `SKILL.md` (YAML frontmatter + Markdown 지시문) 와 선택적인
+`scripts/`, `references/`, `assets/` 를 가진 디렉토리입니다. 스킬팩은 스킬셋을 대체하지
+않습니다 — 서로 다른 것입니다:
+
+| | 스킬셋 | 스킬팩 |
+|---|---|---|
+| 무엇인가 | 프레임워크가 import 해 등록하는 Python tool | 모델이 읽는 지시문과 그것이 가리키는 파일 |
+| 형식 | Aaestro 전용 (`skillset.yaml` + `@skill` 함수) | 공개된 Agent Skills 표준 그대로 |
+| 로드 | 소유 에이전트의 컨테이너 안에서 코드를 import | 파일을 읽고 검증 — **아무것도 import 하거나 실행하지 않음** |
+| 모델이 보는 것 | 시그니처에서 생성된 tool 스키마 | 먼저 `name` + `description`, 활성화되면 본문 (#374) |
+| Manifest 필드 | `spec.skillsets` | `spec.skillpacks` |
+
+```
+modules/skillpacks/docs/
+└── 1.0.0/
+    ├── skillpack.yaml            # apiVersion / kind: Skillpack / metadata — skill 목록 없음
+    └── skills/
+        ├── changelog-entry/      # 디렉토리 이름 == frontmatter 의 `name`
+        │   ├── SKILL.md
+        │   ├── scripts/
+        │   └── references/
+        └── doc-review/
+            ├── SKILL.md
+            ├── references/
+            └── assets/
+```
+
+`skillpack.yaml` 은 skill 을 나열하지 않습니다: `skills/` 아래의 디렉토리가 곧 목록입니다.
+표준 skill 디렉토리를 넣으면 그대로 팩의 일부가 됩니다.
+
+```yaml
+# agents/<name>/manifest.yaml
+spec:
+  skillpacks:
+    - ref: skillpacks/docs@1.0.0
+```
+
+에이전트는 같은 팩을 한 번만 선언합니다: 같은 ref 를 두 번 적거나 같은 팩의 두 버전을 적으면
+manifest 검증에서 거절됩니다.
+
+### 검증
+
+아래 규칙을 하나라도 어긴 팩은 게시되지 않습니다: `GET /v1/modules/skillpacks` 의
+`problems` 에 나오고, 단건 조회도 같은 에러를 돌려주며, `aaestro validate` 가 실패하고,
+그것을 참조한 에이전트는 배포 검증에서 실패합니다. 위반은 `MOD_003` 이고 어느 skill 의
+어느 필드인지 말합니다
+(`invalid skill 'doc-review' in skillpacks/docs@1.0.0: name: does not match its directory name`).
+
+| 필드 | 규칙 |
+|---|---|
+| `name` | 필수 문자열; 1–64자; `a-z`, `0-9`, `-` 만; 앞 · 뒤 · 연속 하이픈 금지; **디렉토리 이름과 같아야 함** |
+| `description` | 필수 문자열; 1–1024자; 공백만으로는 안 됨 |
+| `license` | 선택, 문자열 |
+| `compatibility` | 선택, 문자열; 1–500자; 공백만으로는 안 됨 |
+| `metadata` | 선택; 문자열 키 → 값의 맵, 최대 64개. 스칼라 값은 **적힌 그대로** 받습니다 — `version: 1.0` 은 `"1.0"`, `1.10` 은 `"1.10"` 그대로, `true` 는 `"true"`. 리스트 · 맵 · 빈 값은 거절 |
+| `allowed-tools` | 선택, 문자열 — 표준의 실험 필드라 타입만 확인하고 해석하지 않음 |
+
+- `SKILL.md` 는 (링크가 아닌) 일반 파일이어야 하고 `---` 줄로 시작해야 합니다. frontmatter 는
+  그 뒤 **첫 번째** `---` 줄에서 끝나며 최대 16 KiB 입니다 — 더 크면 파싱하기 전에 거절합니다.
+  BOM 과 CRLF 줄바꿈은 받고, 본문이 비어 있어도 됩니다.
+- 에러 메시지는 필드 이름과 사유만 싣습니다. frontmatter 값이나 본문은 싣지 않습니다.
+
+**경고** 는 팩을 거절하지 않습니다. 팩은 게시되고, 경고는 `warnings` (API) 와
+`aaestro validate` / `aaestro deploy` 출력에 나옵니다:
+
+- 500줄을 넘는 `SKILL.md` (표준의 권고)
+- 표준이 정의하지 않은 최상위 frontmatter 키 (`version`, `argument-hint` …) — 공개된 skill
+  상당수가 씁니다. 그 키는 읽지 않고 경고에 이름을 적습니다
+- `skills/` 바로 아래의 일반 파일 (`README.md`, `.DS_Store`, `.gitkeep`) — 건너뜁니다
+
+**받지 않는 것** — 의도된 거절입니다. 이런 skill 은 담기 전에 고쳐야 합니다:
+
+| 거절 | 이유 |
+|---|---|
+| `name: 123`, `description: 123` (문자열 아님) | 문자열로 바꿔 받는 것은 `metadata` 값뿐입니다. YAML 이 숫자로 읽는 이름은 실수이고, 디렉토리 이름도 거기에 맞아야 합니다 |
+| 비ASCII `name` (`démo`) | 표준의 예시와 문자 목록이 `a-z`, `0-9`, `-` 입니다. 이름은 디렉토리 이름이자 ref 의 일부이기도 합니다 |
+| YAML 리스트로 적은 `allowed-tools` | 표준은 공백으로 구분한 문자열로 정의합니다 |
+| `---` 로 시작하지 않는 `SKILL.md` | 표준은 frontmatter 를 요구합니다. `name` 과 `description` 이 없으면 skill 을 고를 근거가 없습니다 |
+| 심볼릭 링크인 `SKILL.md` | 검사한 것과 읽는 것이 같도록 파일 디스크립터로 읽습니다 (아래) |
+| 하드링크된 파일 | 그것이 다른 무엇의 이름인지 알 방법이 없습니다 |
+| 어느 에이전트도 참조하지 않는 깨진 팩 | 게시된 팩은 다른 모듈 타입과 같이 통째로 검증합니다 — 아니면 누군가 참조하는 날 드러납니다 |
+
+### 경로 격리와 상한
+
+skill 디렉토리는 밖에서 온 것일 수 있으므로 파일 이름과 링크 대상은 신뢰하지 않는
+입력입니다. skill 안의 어떤 것도 그 skill 디렉토리 밖을 가리킬 수 없습니다:
+
+- **심볼릭 링크** 는 상대 경로여야 하고 매 단계에서 skill 루트 안에 머물러야 합니다. 절대
+  경로이거나 (루트 안을 가리켜도), 루트 밖으로 나갔다가 돌아오거나, 밖으로 나가는 링크나
+  디렉토리가 아닌 것을 거치거나, 대상이 없거나, 순환하거나, 특수 파일을 가리키면 거절합니다.
+- **자기에게 되돌아오는 디렉토리 링크** 는 루트 안에 머물러도 거절합니다: 자기 조상을
+  가리키는 링크 (`self -> .`, `up -> ..`), 또는 서로를 거쳐 순환하는 디렉토리 링크. 링크를
+  따라가며 트리를 복사 · 마운트하면 끝나지 않습니다.
+- `SKILL.md` 는 링크일 수 없습니다. `skills/` 와 각 skill 디렉토리는 링크가 아닌 실제
+  디렉토리여야 합니다.
+- **하드링크된 파일** 은 거절합니다 — 그것이 다른 무엇의 이름인지 알 방법이 없습니다.
+- **특수 파일** (FIFO, 소켓, 디바이스) 은 거절합니다.
+- 제어 · 서식 문자, 백슬래시, 디코딩되지 않는 바이트가 든 **파일 이름** 은 거절합니다.
+- skill 당 **상한**: 항목 200개, 파일 하나 1 MiB, 총 8 MiB, 디렉토리 8단계, frontmatter
+  16 KiB, `metadata` 64개. `skills/` 아래 항목은 최대 50개. 상한은 비싼 일보다 먼저 검사합니다:
+  디렉토리는 상한보다 하나 더까지만 읽고 (전부 읽지 않음), frontmatter 는 파싱하기 전에 잽니다.
+
+**정확히 무엇을 보장하는가.** 검증은 **로드한 시점의 트리** 에 대한 것입니다. 내용을 읽는
+유일한 파일인 `SKILL.md` 는 링크를 따라가지 않는 디렉토리 디스크립터를 거쳐 엽니다 — 검사와
+읽기 사이에 파일이 링크로 바뀌면 따라가지 않고 거절합니다. 나머지는 `lstat` 만 합니다. 검증
+**뒤에** 모듈 트리를 고칠 수 있는 주체로부터는 지키지 않습니다. 게시된 버전 디렉토리의 불변성은
+규칙이지 강제가 아닙니다. 나중에 팩을 컨테이너로 복사 · 마운트하는 쪽 (#374) 은 실제로 복사하는
+트리를 다시 검증해야 합니다.
+
+### `scripts/` 는 신뢰 경계 안의 코드가 아니다
+
+스킬팩을 로드하는 어떤 경로도 — 레지스트리, 카탈로그, `aaestro validate`, 배포 검증 —
+skill 디렉토리 안의 것을 **실행하거나 import 하지 않습니다**. 로더가 여는 파일은 skill 당
+`SKILL.md` 하나뿐이고 나머지는 `lstat` 만 합니다. `scripts/` 는 지시문에 딸려 온 코드로
+취급하세요: 실행된다면 프레임워크가 아니라 에이전트가, 자기 컨테이너 안에서, 그 에이전트의
+권한으로 실행합니다.
+
+### 상태 — 선언과 검증까지
+
+이번 릴리스는 선언까지입니다: 모듈 타입, 레지스트리, 카탈로그, manifest 필드, 배포 검증.
+**agentd 는 아직 스킬팩을 로드하지 않습니다** — `spec.skillpacks` 를 선언한 에이전트는
+배포되고 기동되지만 skill 이 모델에 노출되지 않고, 선언이 조용히 무시되지 않도록 agentd 가
+기동 시 `skillpacks declared but not loaded by this executor` 를 WARN 으로 남깁니다. 모델
+노출과 컨테이너 마운트는 #374 에서 다룹니다.
 
 ## 그래프
 
@@ -439,4 +568,6 @@ finding 이 `details.findings` 로 실립니다. 하나라도 걸리면 아무�
   (예: skillset `requires.env` ⊆ agent `env_allowlist`)
 - Breaking change 기준 (semver): tool 이름/시그니처 변경·삭제, 필수 프롬프트 변수
   변경 → **major**; 하위 호환 추가 → minor; 그래프 state schema 변경 → major;
-  임베딩 모델 변경 → minor 이상 + 전체 재인덱싱
+  임베딩 모델 변경 → minor 이상 + 전체 재인덱싱;
+  스킬팩: skill 삭제 · 이름 변경 → **major**, skill 추가 · `description` 변경 → minor,
+  본문 · 참조 · 스크립트 수정 → patch

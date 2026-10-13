@@ -416,6 +416,7 @@ def _mount_catalog(api: APIRouter, catalog: Catalog) -> None:
                 {"name": name, "versions": list(versions)} for name, versions in found.items.items()
             ],
             "problems": [asdict(problem) for problem in found.problems],
+            "warnings": list(found.warnings),
         }
 
     @api.get("/v1/modules/{module_type}/{name}/{version}")

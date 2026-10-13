@@ -26,6 +26,7 @@ MODULE_FILENAMES: dict[str, str] = {
     "skillsets": "skillset.yaml",
     "promptsets": "promptset.yaml",
     "memorysets": "memoryset.yaml",
+    "skillpacks": "skillpack.yaml",
 }
 """모듈 타입별 선언 파일 이름. agents/graphs 는 별도 규칙을 따른다."""
 
@@ -33,6 +34,7 @@ MODULE_KINDS: dict[str, str] = {
     "skillsets": "Skillset",
     "promptsets": "Promptset",
     "memorysets": "Memoryset",
+    "skillpacks": "Skillpack",
     "agents": "Agent",
     "graphs": "Graph",
 }
@@ -80,6 +82,9 @@ class RegistryRoots:
     agents: Path
     graphs: Path
     groups: Path
+    # 기본값을 둔다 — 필드를 필수로 늘리면 루트를 직접 조립하는 기존 호출이 전부 깨진다.
+    # None 이면 for_type 이 MOD_001 로 답한다 (조용히 다른 루트를 쓰지 않는다)
+    skillpacks: Path | None = None
 
     @classmethod
     def under(cls, base: Path) -> RegistryRoots:
@@ -91,6 +96,7 @@ class RegistryRoots:
             skillsets=base / "modules" / "skillsets",
             promptsets=base / "modules" / "promptsets",
             memorysets=base / "modules" / "memorysets",
+            skillpacks=base / "modules" / "skillpacks",
             agents=base / "agents",
             graphs=base / "graphs",
             groups=base / "groups",

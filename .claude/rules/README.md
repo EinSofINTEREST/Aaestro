@@ -85,13 +85,14 @@ Key for:
 - Keeping protocol resources from leaking across agent boundaries
 
 ### [04-module-system.md](04-module-system.md)
-**Skillsets, Promptsets, Decisionsets, and Graph Modules**
+**Skillsets, Promptsets, Decisionsets, Skillpacks, and Graph Modules**
 
 Covers:
 - Module types and directory specifications
 - Skillset interface and loading isolation
 - Promptset templates, variables, locale support
 - Decisionset questions, bands, and locale contract
+- Skillpacks — Agent Skills directories carried unmodified, validation and containment rules
 - Graph topology modules (nodes, edges, connections, decision nodes)
 - Registry, versioning, and compatibility rules
 

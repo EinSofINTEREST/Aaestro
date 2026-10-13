@@ -150,6 +150,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         root, [topology], a2a_port_range=args.a2a_port_range, providers=args.providers
     )
 
+    warnings = list(catalog.modules("skillpacks").warnings)
     emit(
         {
             "graph": topology.metadata.name,
@@ -157,6 +158,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
             "status": "ok" if report.ok else "failed",
             "failures": [_finding_line(f) for f in report.findings],
             "models": models_entry(catalog, [topology], as_json=args.json),
+            **({"warnings": warnings} if warnings else {}),
         },
         as_json=args.json,
     )
@@ -208,6 +210,8 @@ def cmd_validate(args: argparse.Namespace) -> int:
     )
     ok = report.ok and not graphs.problems
 
+    # 경고는 실패가 아니다 — 판정(status · 종료 코드)을 바꾸지 않고, 있을 때만 싣는다
+    warnings = list(catalog.modules("skillpacks").warnings)
     emit(
         {
             "graphs": len(topologies),
@@ -218,6 +222,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
                 *(_finding_line(f) for f in report.findings),
             ],
             "models": models_entry(catalog, topologies, as_json=args.json),
+            **({"warnings": warnings} if warnings else {}),
         },
         as_json=args.json,
     )

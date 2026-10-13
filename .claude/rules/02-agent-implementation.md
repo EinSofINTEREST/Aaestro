@@ -137,6 +137,9 @@ spec:
     - ref: skillsets/web-search@0.2.0
     - ref: skillsets/summarize@0.1.0
 
+  skillpacks:                   # Agent Skills 표준 디렉토리 묶음 — 04 Skillpack Modules. 선택.
+    - ref: skillpacks/docs@1.0.0  # 선언·배포 검증까지 — agentd 는 아직 쓰지 않고 기동 시 WARN 을 남긴다 (#374)
+
   memory:                       # 컨텍스트 메모리 space — 09 참조
     spaces:
       - ref: memorysets/agent-longterm@0.1.0

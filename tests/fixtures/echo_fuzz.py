@@ -52,6 +52,7 @@ RICH_AGENT: dict[str, Any] = {
         },
         "promptset": {"ref": "promptsets/researcher@0.1.0"},
         "skillsets": [{"ref": "skillsets/web-search@0.2.0"}],
+        "skillpacks": [{"ref": "skillpacks/docs@1.0.0"}],
         "memory": {
             "spaces": [{"ref": "memorysets/agent-longterm@0.1.0", "as": "longterm", "mode": "rw"}]
         },
