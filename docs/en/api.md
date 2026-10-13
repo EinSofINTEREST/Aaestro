@@ -99,6 +99,14 @@ what parsed, and `problems` for what did not. **A broken file never hides the re
 unparseable manifest would otherwise turn the whole catalog into a `500` with no clue which
 file to fix.
 
+Each problem is `{path, code, message, errors, reason}`: `path` is the file (or module version
+directory), `errors` lists the offending keys as `{field, problem}` for a schema violation, and
+`reason` says where a file could not be read — a repeated key (`duplicate key 'k' at line N`),
+a parse failure (`ScannerError at line N, column M`), or a file that is not text
+(`not valid UTF-8`). Neither carries the rejected value or a piece of the input; key names are
+reported (cut to 64 characters, non-printable characters replaced). A name mismatch carries the
+expected name (`located`), not the declared one.
+
 ### `GET /v1/agents`, `GET /v1/graphs`, `GET /v1/groups`
 
 ```json
@@ -837,11 +845,29 @@ to anything outside. It hosts no tools; it decides and forwards.
 | Listener | What agents send | Decided as |
 |---|---|---|
 | CONNECT (`8080`) | HTTPS through `HTTPS_PROXY`, identity as proxy credentials | `egress` on `host[:port]` — `:443` is left out |
-| Provider (`8081`) | model API calls to `ANTHROPIC_BASE_URL`, identity in place of the key | `egress` on the provider host (`api.anthropic.com`) |
+| Provider (`8081`) | model API calls to `ANTHROPIC_BASE_URL` / `OPENAI_COMPAT_BASE_URL`, identity in place of the key | `egress` on the provider's logical host (`api.anthropic.com`, `openai-compat.invalid`) |
 
 The proxy never looks inside TLS. For model calls it removes the agent's identity, adds the key it
 holds, and streams the provider's answer back, so **the agent's environment never has the model key**
 and revoking model access needs no redeploy.
+
+Each provider opens only the paths a model call needs — `POST v1/messages`,
+`POST v1/messages/count_tokens`, `GET v1/models` for `anthropic`; `POST v1/chat/completions` for
+`openai-compat`. Anything else is refused with `403 ACC_001` before the key is attached, and the
+path that was matched is the path that is forwarded. For `openai-compat` the key goes out as
+`Authorization: Bearer <key>`; the `Authorization` the agent sent is its identity and is always
+removed first.
+
+Request headers are an allowlist per provider: `content-type`, `accept`, `accept-encoding`,
+`user-agent`, plus `anthropic-version` and `anthropic-beta` for `anthropic`. Everything else the
+agent sets is dropped — a header chosen inside the container must not ride along with the
+operator's key. Cookies cross in neither direction, and the proxy keeps none between calls: one
+agent's upstream session is never attached to another agent's request.
+
+`openai-compat` is decided under `openai-compat.invalid`, not under the upstream's address: what an
+operator revokes is "the model API", wherever this deployment points it. The name is synthetic —
+`.invalid` is reserved, and the CONNECT listener refuses any `.invalid` destination with
+`403 ACC_001` before asking the registry, so declaring the provider never opens a tunnel.
 
 Turn it on in the control plane:
 
@@ -851,14 +877,16 @@ runtime:
     connect_url: http://aaestro-egress:8080
     providers_url: http://aaestro-egress:8081
     container: aaestro-egress   # needed only for MCP sidecars — see below
-    providers: [anthropic]      # providers the proxy terminates; match the real upstream setup (default [anthropic])
+    providers: [anthropic]      # providers the proxy terminates — add openai-compat when its upstream is set (default [anthropic])
 ```
 
 Deployment validation refuses a model provider (primary or fallback) that is not in `providers`
 (`400 VAL_001`, finding `model_providers`).
 
 Deployments then give each agent `HTTPS_PROXY` (its own identity as credentials),
-`ANTHROPIC_BASE_URL` pointing at the proxy, and its identity where `ANTHROPIC_API_KEY` was. Plain
+`ANTHROPIC_BASE_URL` and `OPENAI_COMPAT_BASE_URL` pointing at the proxy, and its identity where
+`ANTHROPIC_API_KEY` / `OPENAI_COMPAT_API_KEY` were — the real keys stay with the proxy even if a
+manifest lists them in `env_allowlist`. Plain
 `http` is not proxied — framework services on the agent network stay direct. `runtime.egress_proxy`
 without `orchestrator.access_store` refuses to start (`CFG_001`).
 
@@ -912,6 +940,8 @@ The proxy process takes:
 | `AAESTRO_ACCESS_URL`, `AAESTRO_ACCESS_ENFORCER_TOKEN` | the registry — both required, or it refuses to start |
 | `ANTHROPIC_API_KEY` | the key the proxy adds to model calls |
 | `AAESTRO_EGRESS_ANTHROPIC_UPSTREAM` | where model calls go (default `https://api.anthropic.com`) |
+| `OPENAI_COMPAT_API_KEY` | the key the proxy adds to `openai-compat` calls as `Authorization: Bearer`. A keyless local server still needs a placeholder. A provider key that is set but blank refuses to start (`CFG_001`) — this applies to `ANTHROPIC_API_KEY` too |
+| `AAESTRO_EGRESS_OPENAI_COMPAT_UPSTREAM` | where `openai-compat` calls go — **up to, not including, `/v1`**: `https://api.openai.com`, `http://vllm:8000`, `https://gateway.example.com/llm`. No default. Set together with the key or not at all; one without the other, or a value ending in `/v1`, refuses to start (`CFG_001`). The plain-`http` rule below applies |
 | `AAESTRO_EGRESS_ALLOW_PLAINTEXT_UPSTREAM` | `true` to accept plain `http` to a destination **also listed** in `AAESTRO_EGRESS_PRIVATE_DESTINATIONS` — for a test double on a private network. Each request resolves the name and connects only to a private address; a listed name that resolves publicly is refused (`502`). A public address is never reached over plain `http`, whatever the settings |
 | `AAESTRO_EGRESS_PORT`, `AAESTRO_EGRESS_PROVIDER_PORT` | the CONNECT and provider listeners (default `8080`, `8081`) |
 | `AAESTRO_EGRESS_MODE` | `enforce` (default) or `record` |
@@ -963,7 +993,7 @@ The proxy needs two more settings for this:
 
 **Only listed credential names are sent.** A declaration that names another secret as
 `auth.token_env` gets `502` (`CFG_002`) instead of that value. The list itself may not name secrets the
-proxy holds for other purposes — `ANTHROPIC_API_KEY` or any `AAESTRO_*` name refuses to start
+proxy holds for other purposes — `ANTHROPIC_API_KEY`, `OPENAI_COMPAT_API_KEY` or any `AAESTRO_*` name refuses to start
 (`CFG_001`). A remote MCP server must use `https`: plain `http` is refused (`502`) unless
 `AAESTRO_EGRESS_ALLOW_PLAINTEXT_UPSTREAM=true` **and** the server is listed in
 `AAESTRO_EGRESS_PRIVATE_DESTINATIONS` — the switch alone opens nothing, so a switch left on in a
@@ -1063,6 +1093,23 @@ What this gives you:
 
 The caller still checks the declared connections first — it spares a round trip and gives a clear
 `A2A_004` locally — but that check is a convenience, not the boundary.
+
+With or without a registry, an agent's A2A port answers two things only: the agent card
+(`GET /.well-known/agent-card.json`, readable without a credential) and JSON-RPC on `POST /`.
+
+- **Only new tasks are taken.** `SendMessage` and `SendStreamingMessage` are the only requests
+  served, and the caller is checked before a task is created — a request without a valid token or
+  ticket costs the callee no task and never reaches the agent.
+- **Tasks cannot be read back or cancelled.** `GetTask`, `ListTasks`, `SubscribeToTask`,
+  `CancelTask`, the push-notification config requests and `GetExtendedAgentCard` are refused with
+  "This operation is not supported" (`-32004`). The answer is the same for every caller and for
+  any task id, so it does not tell whether a task exists.
+- **A message cannot be addressed to an existing task.** A send that names a `taskId` is refused
+  the same way; every delegation is a new task.
+- **The task store keeps no finished task.** It holds a task only while it runs; once the task
+  completes, fails or is refused, the store drops it — the result travels in the response and
+  nowhere else. Known limit: a task whose agent run ends by cancellation can stay in the SDK's
+  internal registry of active tasks (SDK behaviour, tracked separately).
 
 ### `POST /v1/access/a2a/tickets` — any agent
 

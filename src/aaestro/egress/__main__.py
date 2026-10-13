@@ -35,7 +35,11 @@ PLAINTEXT_UPSTREAM_ENV = "AAESTRO_EGRESS_ALLOW_PLAINTEXT_UPSTREAM"
 프록시가 키를 실어 보내는 곳이므로 평문은 사설망의 테스트 대역에만 쓴다. 스위치 하나로 모든
 목적지를 열면, 운영 설정에 실수로 들어갔을 때 공인 호스트로 자격이 평문으로 나간다 (#302)."""
 ANTHROPIC_KEY_ENV = "ANTHROPIC_API_KEY"  # noqa: S105 — 키 이름이지 값이 아니다
-PROXY_HELD_SECRETS = frozenset({ANTHROPIC_KEY_ENV})
+OPENAI_COMPAT_UPSTREAM_ENV = "AAESTRO_EGRESS_OPENAI_COMPAT_UPSTREAM"
+"""OpenAI 호환 provider 의 주소 — ``/v1`` **앞까지** (``https://api.openai.com``). 기본값이 없다:
+어느 서버를 가리키는지는 배치가 정한다."""
+OPENAI_COMPAT_KEY_ENV = "OPENAI_COMPAT_API_KEY"  # noqa: S105 — 키 이름이지 값이 아니다
+PROXY_HELD_SECRETS = frozenset({ANTHROPIC_KEY_ENV, OPENAI_COMPAT_KEY_ENV})
 """프록시가 provider 호출에만 쓰는 비밀 — 원격 MCP 자격 목록에 올릴 수 없다."""
 MCP_TOKENS_ENV = "AAESTRO_EGRESS_MCP_TOKENS"
 """원격 MCP 서버에 붙여도 되는 자격 이름 — 쉼표로. 선언의 ``auth.token_env`` 가 이 목록에 있을 때만
@@ -79,8 +83,14 @@ def settings(environ: Mapping[str, str]) -> dict[str, Any]:
         "private_destinations": private,
         "connect_port": port_setting(environ, CONNECT_PORT_ENV, DEFAULT_CONNECT_PORT),
         "provider_port": port_setting(environ, PROVIDER_PORT_ENV, DEFAULT_PROVIDER_PORT),
-        "anthropic_upstream": _upstream(environ, private),
-        "anthropic_key": environ.get(ANTHROPIC_KEY_ENV, ""),
+        "anthropic_upstream": _upstream(
+            environ.get(ANTHROPIC_UPSTREAM_ENV, DEFAULT_ANTHROPIC_UPSTREAM),
+            ANTHROPIC_UPSTREAM_ENV,
+            environ,
+            private,
+        ),
+        "anthropic_key": _key(environ, ANTHROPIC_KEY_ENV),
+        **_openai_compat(environ, private),
         "allow_plaintext": environ.get(PLAINTEXT_UPSTREAM_ENV, "").lower() == "true",
         "repo_root": environ.get(REPO_ROOT_ENV, ""),
         "mcp_tokens": _mcp_tokens(environ),
@@ -117,14 +127,50 @@ def port_setting(environ: Mapping[str, str], key: str, default: int) -> int:
     return port
 
 
-def _upstream(environ: Mapping[str, str], private: frozenset[str]) -> str:
+def _openai_compat(environ: Mapping[str, str], private: frozenset[str]) -> dict[str, str]:
+    """OpenAI 호환 upstream 설정 — 주소와 키는 **함께** 있어야 한다.
+
+    하나만 있으면 provider 가 조용히 등록되지 않고, 에이전트는 호출할 때에야 404 를 본다.
+    키가 필요 없는 로컬 서버도 자리를 채운다 — 프록시는 에이전트 신원을 떼고 이 값을 싣는다.
+    """
+    raw = environ.get(OPENAI_COMPAT_UPSTREAM_ENV, "").strip()
+    key = _key(environ, OPENAI_COMPAT_KEY_ENV)
+    if not raw and not key:
+        return {"openai_compat_upstream": "", "openai_compat_key": ""}
+    if not raw or not key:
+        raise _config(
+            "openai-compat upstream and key must be set together",
+            [OPENAI_COMPAT_UPSTREAM_ENV, OPENAI_COMPAT_KEY_ENV],
+        )
+    upstream = _upstream(raw, OPENAI_COMPAT_UPSTREAM_ENV, environ, private)
+    if urlsplit(upstream).path.rstrip("/").endswith("/v1"):
+        # 프록시가 여는 경로가 v1/chat/completions 다 — /v1 을 넣으면 /v1/v1/... 로 나가 404 가 된다
+        raise _config(
+            "openai-compat upstream must not end with /v1 — remove /v1, the proxy appends "
+            "v1/chat/completions itself",
+            [OPENAI_COMPAT_UPSTREAM_ENV],
+        )
+    return {"openai_compat_upstream": upstream, "openai_compat_key": key}
+
+
+def _key(environ: Mapping[str, str], setting: str) -> str:
+    """프록시가 쥐는 provider 키 — 없으면 빈 문자열(그 provider 를 종단하지 않는다).
+
+    공백뿐인 값은 "없음" 이 아니라 오설정이다: 빈 자격을 실어 보내다 upstream 의 401 로 드러난다.
+    """
+    raw = environ.get(setting, "")
+    if raw and not raw.strip():
+        raise _config("provider key is set but blank", [setting])
+    return raw.strip()
+
+
+def _upstream(raw: str, setting: str, environ: Mapping[str, str], private: frozenset[str]) -> str:
     """provider upstream — 프록시가 여기에 API 키를 실어 보내므로 평문 전송을 기본으로 막는다."""
-    raw = environ.get(ANTHROPIC_UPSTREAM_ENV, DEFAULT_ANTHROPIC_UPSTREAM)
     parts = urlsplit(raw)
     try:
         port = parts.port
     except ValueError as err:
-        raise _config(f"invalid provider upstream port: {raw!r}", [ANTHROPIC_UPSTREAM_ENV]) from err
+        raise _config(f"invalid provider upstream port: {raw!r}", [setting]) from err
     malformed = (
         parts.scheme not in ("http", "https")
         or not parts.hostname
@@ -138,7 +184,7 @@ def _upstream(environ: Mapping[str, str], private: frozenset[str]) -> str:
         raise _config(
             "provider upstream must be an http(s) URL with a host and no credentials, query or "
             "fragment",
-            [ANTHROPIC_UPSTREAM_ENV],
+            [setting],
         )
     allowed = plaintext_allowed(
         environ.get(PLAINTEXT_UPSTREAM_ENV, "").lower() == "true", url_target(raw), private
@@ -147,7 +193,7 @@ def _upstream(environ: Mapping[str, str], private: frozenset[str]) -> str:
         raise _config(
             "provider upstream must use https — the proxy sends the provider key to it; plain "
             "http is accepted only for a destination listed as private",
-            [ANTHROPIC_UPSTREAM_ENV, PLAINTEXT_UPSTREAM_ENV, PRIVATE_DESTINATIONS_ENV],
+            [setting, PLAINTEXT_UPSTREAM_ENV, PRIVATE_DESTINATIONS_ENV],
         )
     return raw
 
@@ -186,10 +232,9 @@ def main() -> None:
 
 async def run(config: dict[str, Any], *, metrics: Metrics | None = None) -> None:
     """Serve both listeners and follow the registry's change feed until cancelled."""
-    from aaestro.access.baselines import PROVIDER_HOSTS
     from aaestro.access.client import AccessClient
     from aaestro.egress.connect import ConnectProxy
-    from aaestro.egress.providers import ANTHROPIC_ENDPOINTS, Upstream, create_provider_app
+    from aaestro.egress.providers import create_provider_app
 
     access = AccessClient(
         base_url=config["access_url"],
@@ -197,14 +242,7 @@ async def run(config: dict[str, Any], *, metrics: Metrics | None = None) -> None
         component="egress",
         metrics=metrics,
     )
-    upstreams = {}
-    if config["anthropic_key"]:
-        upstreams["anthropic"] = Upstream(
-            base_url=config["anthropic_upstream"],
-            logical_host=PROVIDER_HOSTS["anthropic"],
-            api_key=config["anthropic_key"],
-            endpoints=ANTHROPIC_ENDPOINTS,
-        )
+    upstreams = provider_upstreams(config)
     proxy = ConnectProxy(
         access=access, mode=config["mode"], private_destinations=config["private_destinations"]
     )
@@ -230,6 +268,42 @@ async def run(config: dict[str, Any], *, metrics: Metrics | None = None) -> None
             await supervise(access.watch(), connect.serve_forever(), provider.serve())
     finally:
         await access.aclose()
+
+
+def provider_upstreams(config: Mapping[str, Any]) -> dict[str, Any]:
+    """The providers this proxy terminates — 키가 설정된 것만.
+
+    판정 대상은 upstream 주소가 아니라 논리 호스트다 (access/baselines.py ``PROVIDER_HOSTS``).
+    """
+    from aaestro.access.baselines import PROVIDER_HOSTS
+    from aaestro.egress.providers import (
+        ANTHROPIC_ENDPOINTS,
+        ANTHROPIC_REQUEST_HEADERS,
+        OPENAI_COMPAT_ENDPOINTS,
+        OPENAI_COMPAT_KEY_HEADER,
+        OPENAI_COMPAT_KEY_SCHEME,
+        Upstream,
+    )
+
+    upstreams: dict[str, Any] = {}
+    if config["anthropic_key"]:
+        upstreams["anthropic"] = Upstream(
+            base_url=config["anthropic_upstream"],
+            logical_host=PROVIDER_HOSTS["anthropic"],
+            api_key=config["anthropic_key"],
+            endpoints=ANTHROPIC_ENDPOINTS,
+            request_headers=ANTHROPIC_REQUEST_HEADERS,
+        )
+    if config["openai_compat_key"]:
+        upstreams["openai-compat"] = Upstream(
+            base_url=config["openai_compat_upstream"],
+            logical_host=PROVIDER_HOSTS["openai-compat"],
+            api_key=config["openai_compat_key"],
+            key_header=OPENAI_COMPAT_KEY_HEADER,
+            key_scheme=OPENAI_COMPAT_KEY_SCHEME,
+            endpoints=OPENAI_COMPAT_ENDPOINTS,
+        )
+    return upstreams
 
 
 def _mcp_routers(config: Mapping[str, Any], access: Any) -> list[Any]:

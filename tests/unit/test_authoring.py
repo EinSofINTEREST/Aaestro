@@ -683,14 +683,6 @@ def test_symlinks_are_reported_not_followed_or_removed(author, workspace, tmp_pa
 # --- fallback provider 와 프록시 upstream (#358) ------------------------------------------
 
 
-@pytest.fixture
-def openai_known(monkeypatch):
-    """논리 호스트가 알려진 두 번째 provider — 지금 저장소에는 anthropic 뿐이다."""
-    from aaestro.access import baselines
-
-    monkeypatch.setitem(baselines.PROVIDER_HOSTS, "openai-compat", "api.openai.com")
-
-
 def _agent_with_openai_fallback(name: str) -> AgentManifest:
     document = agent(name).model_dump(mode="json", by_alias=True, exclude_none=True)
     document["spec"]["model"]["fallbacks"] = [
@@ -699,7 +691,6 @@ def _agent_with_openai_fallback(name: str) -> AgentManifest:
     return AgentManifest.model_validate(document)
 
 
-@pytest.mark.usefixtures("openai_known")
 def test_validate_reports_a_fallback_provider_the_proxy_does_not_terminate(workspace):
     """providers 가 Author 에서 validate_deployment 까지 닿는지 — 끊기면 프록시에서야 거절된다."""
     draft = _agent_with_openai_fallback("alpha")
@@ -711,7 +702,6 @@ def test_validate_reports_a_fallback_provider_the_proxy_does_not_terminate(works
     assert "openai-compat" in str(finding)
 
 
-@pytest.mark.usefixtures("openai_known")
 def test_validate_accepts_the_same_fallback_without_a_proxy_or_when_it_is_terminated(workspace):
     draft = _agent_with_openai_fallback("alpha")
     catalog = Catalog.under(workspace)

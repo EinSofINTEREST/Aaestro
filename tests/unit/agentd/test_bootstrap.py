@@ -9,12 +9,15 @@ from __future__ import annotations
 import pytest
 
 from aaestro.agentd.bootstrap import (
+    MODEL_ADAPTERS,
     Bootstrap,
     BootstrapResult,
     build_tool_registry,
+    model_factory,
 )
 from aaestro.core.agent import HealthState
-from aaestro.core.errors import AaestroError, ErrorCategory
+from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.core.manifest import ModelConfig
 from aaestro.core.skill import SkillSpec
 from aaestro.core.tools import namespaced
 from tests.fixtures.builders import make_manifest
@@ -321,3 +324,99 @@ async def test_startup_omits_memory_search_without_declared_spaces():
     result = await bootstrap(manifest_with()).run()
 
     assert MEMORY_SEARCH_TOOL not in result.tools
+
+
+# --- provider 이름 → 어댑터 (#361) -------------------------------------------
+
+COMPAT_ENV = {
+    "OPENAI_COMPAT_BASE_URL": "http://egress:8081/openai-compat",
+    "OPENAI_COMPAT_API_KEY": "cred-researcher",
+}
+
+
+def test_model_adapters_and_logical_hosts_name_the_same_providers():
+    """어댑터만 있으면 배포 검증이 거절하고, 논리 호스트만 있으면 기동에서 CFG_001 이다."""
+    from aaestro.access.baselines import PROVIDER_HOSTS
+
+    assert set(MODEL_ADAPTERS) == set(PROVIDER_HOSTS)
+
+
+def test_the_proxy_terminates_only_providers_that_have_an_adapter():
+    from aaestro.egress.__main__ import provider_upstreams, settings
+
+    everything = settings(
+        {
+            "AAESTRO_ACCESS_URL": "http://control-plane:8700",
+            "AAESTRO_ACCESS_ENFORCER_TOKEN": "e",
+            "ANTHROPIC_API_KEY": "sk-ant",
+            "AAESTRO_EGRESS_OPENAI_COMPAT_UPSTREAM": "https://api.openai.com",
+            "OPENAI_COMPAT_API_KEY": "sk-compat",
+        }
+    )
+
+    terminated = set(provider_upstreams(everything))
+
+    assert terminated and terminated <= set(MODEL_ADAPTERS)
+
+
+def test_model_factory_anthropic_builds_the_anthropic_adapter(monkeypatch):
+    from aaestro.agentd.providers.anthropic import AnthropicModel
+
+    # SDK 는 키가 없으면 생성부터 실패한다 — 테스트는 실 키를 쓰지 않는다
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-not-a-key")
+    config = ModelConfig(provider="anthropic", name="claude-sonnet-5")
+
+    model = model_factory("researcher", {})(config)
+
+    assert isinstance(model, AnthropicModel) and model.config is config
+
+
+def test_model_factory_openai_compat_reads_its_endpoint_from_settings():
+    from aaestro.agentd.providers.openai_compat import OpenAICompatModel
+
+    config = ModelConfig(provider="openai-compat", name="gpt-compatible")
+
+    model = model_factory("researcher", COMPAT_ENV)(config)
+
+    assert isinstance(model, OpenAICompatModel)
+    assert (model.base_url, model.credential) == (
+        "http://egress:8081/openai-compat",
+        "cred-researcher",
+    )
+    assert (model.agent, model.config) == ("researcher", config)
+
+
+@pytest.mark.parametrize(
+    ("environ", "missing"),
+    [
+        ({}, ["OPENAI_COMPAT_BASE_URL", "OPENAI_COMPAT_API_KEY"]),
+        ({"OPENAI_COMPAT_BASE_URL": "http://egress:8081/x"}, ["OPENAI_COMPAT_API_KEY"]),
+        ({"OPENAI_COMPAT_API_KEY": "cred"}, ["OPENAI_COMPAT_BASE_URL"]),
+        ({**COMPAT_ENV, "OPENAI_COMPAT_BASE_URL": "  "}, ["OPENAI_COMPAT_BASE_URL"]),
+    ],
+)
+def test_model_factory_openai_compat_without_settings_raises_cfg_001(environ, missing):
+    """기본 주소로 떨어지지 않는다 — 선언하지 않은 곳으로 프롬프트가 나가면 안 된다."""
+    config = ModelConfig(provider="openai-compat", name="gpt-compatible")
+
+    with pytest.raises(AaestroError) as exc_info:
+        model_factory("researcher", environ)(config)
+
+    error = exc_info.value
+    assert (error.category, error.code) == (ErrorCategory.CONFIG, ErrorCode.CFG_001)
+    assert error.details == {"provider": "openai-compat", "settings": missing}
+    # 설정 이름만 싣는다 — 값은 싣지 않는다
+    assert "cred" not in str(error.details)
+
+
+@pytest.mark.parametrize("provider", ["openai", "OpenAI-Compat", "anthropic ", ""])
+def test_model_factory_unknown_provider_raises_cfg_001_instead_of_a_default(provider):
+    """모르는 provider 가 조용히 anthropic 으로 떨어지면 다른 모델이 답한다."""
+    config = ModelConfig(provider=provider, name="some-model")
+
+    with pytest.raises(AaestroError) as exc_info:
+        model_factory("researcher", COMPAT_ENV)(config)
+
+    error = exc_info.value
+    assert (error.category, error.code) == (ErrorCategory.CONFIG, ErrorCode.CFG_001)
+    assert error.details == {"provider": provider} and error.agent == "researcher"

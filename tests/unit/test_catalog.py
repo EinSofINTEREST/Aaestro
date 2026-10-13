@@ -223,9 +223,10 @@ def test_a_single_lookup_rejects_a_name_mismatch_too(workspace):
 
     assert excinfo.value.details == {
         "path": str(workspace / "agents" / "foo" / "manifest.yaml"),
-        "declared": "bar",
         "located": "foo",
     }
+    # 선언에 적힌 이름은 싣지 않는다 — 기대 값 (위치) 만 말한다 (#386)
+    assert "bar" not in str(excinfo.value.details)
 
 
 def test_two_files_cannot_silently_overwrite_each_other(workspace):

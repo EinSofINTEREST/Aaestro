@@ -281,3 +281,17 @@ async def test_a_graph_read_back_carries_only_the_model_keys_it_set(api):
     returned = body["spec"]["nodes"][0]["model"]
     assert returned == {"max_tokens": 1024, "circuit": None}
     assert ModelOverride.model_validate(returned).model_fields_set == {"max_tokens", "circuit"}
+
+
+async def test_validate_with_a_misspelled_drafts_key_is_400_not_ok(api):
+    """``graph`` 오타가 초안을 보지도 않고 ``ok`` 로 답하지 않는다."""
+    response = await api.post("/v1/validate", json={"graph": [graph_doc("draft", agent="nobody")]})
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == ErrorCode.VAL_002
+
+
+async def test_declarations_with_a_misspelled_key_is_400(api):
+    response = await api.put("/v1/declarations", json={"graph": {"x": graph_doc("x")}})
+
+    assert response.status_code == 400

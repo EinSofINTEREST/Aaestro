@@ -34,6 +34,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 DOCKER_DIR = REPO_ROOT / "deployments" / "docker"
 ECHO_MANIFEST = REPO_ROOT / "agents" / "echo" / "manifest.yaml"
 TEST_NETWORK = "aaestro-net-lifecycle"
+TOKEN = "integration-token"  # noqa: S105
 DOCKER_BIN = shutil.which("docker")
 
 
@@ -192,7 +193,9 @@ def fetch(url: str, body: dict | None = None, *, timeout: float = 10.0) -> dict:
     """루프백 Control API 호출 — blocking 이므로 async 경로에서는 to_thread 로 감싼다."""
     data = json.dumps(body).encode() if body is not None else None
     request = urllib.request.Request(  # noqa: S310 — 루프백 고정 URL
-        url, data=data, headers={"content-type": "application/json"}
+        url,
+        data=data,
+        headers={"content-type": "application/json", "authorization": f"Bearer {TOKEN}"},
     )
     with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
         result: dict = json.loads(response.read())
@@ -262,7 +265,7 @@ def echo_spec(*, image: str | None = None, **overrides: Any):
 
     manifest = AgentManifest.model_validate(document)
     kwargs: dict[str, Any] = {
-        "env": {"AAESTRO_EXECUTOR": "echo"},
+        "env": {"AAESTRO_EXECUTOR": "echo", "AAESTRO_AGENT_TOKEN": TOKEN},
         "network": TEST_NETWORK,
     }
     kwargs.update(overrides)

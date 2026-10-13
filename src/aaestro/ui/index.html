@@ -40,7 +40,7 @@
       <form id="graph-form">
         <fieldset>
           <legend>메타</legend>
-          <label>이름 <input name="name" required pattern="[a-z0-9-]+" /></label>
+          <label>이름 <input name="name" required pattern="[a-z0-9]+(-[a-z0-9]+)*" /></label>
           <label>버전 <input name="version" required /></label>
           <label>설명 <input name="description" /></label>
           <label>모드
@@ -84,7 +84,7 @@
       <form id="agent-form">
         <fieldset>
           <legend>메타</legend>
-          <label>이름 <input name="name" required pattern="[a-z0-9-]+" /></label>
+          <label>이름 <input name="name" required pattern="[a-z0-9]+(-[a-z0-9]+)*" /></label>
           <label>버전 <input name="version" required /></label>
           <label>설명 <input name="description" /></label>
           <label>그룹 <select name="group"><option value="">(없음)</option></select></label>

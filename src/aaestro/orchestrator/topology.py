@@ -17,7 +17,13 @@ import structlog
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from aaestro.core.conditions import Predicate, is_import_ref, parse_condition
-from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.core.errors import (
+    AaestroError,
+    ErrorCategory,
+    ErrorCode,
+    printable_label,
+    repeated_positions,
+)
 from aaestro.core.manifest import AgentName, MemorySpec, ModelOverride, SemVer
 
 if TYPE_CHECKING:
@@ -64,7 +70,7 @@ class NodeSpec(BaseModel):
     그래프 노드. 에이전트 또는 서브그래프 중 정확히 하나를 참조한다.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     id: str
     agent: str | None = None
@@ -97,7 +103,7 @@ class NodeSpec(BaseModel):
     def _reject_reserved_ids(cls, value: str) -> str:
         """START/END 는 예약어이므로 노드 id 로 쓸 수 없다."""
         if value in RESERVED_NODE_IDS:
-            raise ValueError(f"node id '{value}' is reserved")
+            raise ValueError("node id is reserved")
         if not value:
             raise ValueError("node id must not be empty")
         return value
@@ -130,7 +136,7 @@ class EdgeSpec(BaseModel):
     deprecated 인 조건 함수 import ref(``aaestro.graphs.conditions:draft_approved``) 다.
     """
 
-    model_config = ConfigDict(frozen=True, populate_by_name=True)
+    model_config = ConfigDict(frozen=True, extra="forbid", populate_by_name=True)
 
     source: str = Field(alias="from")
     target: str = Field(alias="to")
@@ -164,7 +170,7 @@ class ConnectionSpec(BaseModel):
     역방향이 필요하면 별도로 선언한다.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     caller: str
     callee: str
@@ -184,7 +190,7 @@ class IdlePolicy(BaseModel):
     작업이 없으면 지수 백오프한다.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     min_delay_s: float = DEFAULT_IDLE_MIN_DELAY_S
     max_delay_s: float = DEFAULT_IDLE_MAX_DELAY_S
@@ -219,7 +225,7 @@ class ServiceSpec(BaseModel):
     상주형 실행 설정. idle 정책은 필수이며, 연속 실패 임계를 넘으면 정지한다.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     idle: IdlePolicy
     max_failure_streak: int = DEFAULT_MAX_FAILURE_STREAK
@@ -242,7 +248,7 @@ class StateField(BaseModel):
     그래프 YAML 안에 선언한 state 필드 하나 — promptset 변수 선언과 같은 어휘다.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     type: StateFieldType
     required: bool = False
@@ -266,7 +272,7 @@ class StateSpec(BaseModel):
     - ``schema``: ``aaestro.graphs`` 의 pydantic 모델 import ref (deprecated — 한 버전 유지)
     """
 
-    model_config = ConfigDict(frozen=True, populate_by_name=True)
+    model_config = ConfigDict(frozen=True, extra="forbid", populate_by_name=True)
 
     schema_ref: str | None = Field(default=None, alias="schema")
     declared_fields: dict[str, StateField] | None = Field(default=None, alias="fields")
@@ -279,8 +285,10 @@ class StateSpec(BaseModel):
         for name in self.declared_fields or {}:
             # _run_id / _iterations 같은 예약 채널과 겹치면 프레임워크 값이 덮인다
             if not name.isidentifier() or name.startswith("_"):
+                # 필드 이름은 매핑의 키다 — 키는 구조라 내보낸다 (길이 · 문자는 정제한다)
                 raise ValueError(
-                    f"state field name must be an identifier not starting with '_': {name}"
+                    f"state field name '{printable_label(name)}' must be an identifier "
+                    "not starting with '_'"
                 )
         return self
 
@@ -291,7 +299,7 @@ class GraphMetadata(BaseModel):
     그래프 식별 정보. 토폴로지 변경 시 version 을 bump 한다.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     name: AgentName
     version: SemVer
@@ -304,7 +312,7 @@ class GraphSpec(BaseModel):
     그래프 배선 본문. 노드 추가/제거와 edge 연결/분리가 전부 여기서 이루어진다.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     mode: GraphMode = GraphMode.MISSION
     goal: str
@@ -321,14 +329,9 @@ class GraphSpec(BaseModel):
         """노드 id 중복 금지 — 라우팅이 모호해진다."""
         if not value:
             raise ValueError("graph must declare at least one node")
-        seen: set[str] = set()
-        duplicates: set[str] = set()
-        for node in value:
-            if node.id in seen:
-                duplicates.add(node.id)
-            seen.add(node.id)
-        if duplicates:
-            raise ValueError(f"duplicate node id: {sorted(duplicates)}")
+        repeated = repeated_positions([node.id for node in value])
+        if repeated:
+            raise ValueError(f"duplicate node id at index {repeated}")
         return value
 
     @model_validator(mode="after")
@@ -348,7 +351,7 @@ class GraphTopology(BaseModel):
     컨테이너가 기동된다.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     api_version: Literal["aaestro/v1"] = Field(alias="apiVersion")
     kind: Literal["Graph"]

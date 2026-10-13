@@ -9,12 +9,20 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
-from urllib.parse import urlsplit
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
-from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.core.errors import (
+    AaestroError,
+    ErrorCategory,
+    ErrorCode,
+    field_problems,
+    raise_detached,
+    repeated_positions,
+)
+from aaestro.core.manifest import split_url
+from aaestro.core.yamlio import YamlReadError, load_yaml_file
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -111,8 +119,9 @@ class EgressProxyConfig(BaseModel):
         # 빈 목록이면 어떤 모델도 부를 수 없다 — 프록시를 켠 의미가 없는 오설정이다
         if not value:
             raise ValueError("runtime.egress_proxy.providers must not be empty")
-        if len(set(value)) != len(value):
-            raise ValueError("runtime.egress_proxy.providers has duplicates")
+        repeated = repeated_positions(value)
+        if repeated:
+            raise ValueError(f"runtime.egress_proxy.providers has duplicates at index {repeated}")
         return value
 
     @model_validator(mode="after")
@@ -121,14 +130,15 @@ class EgressProxyConfig(BaseModel):
             ("connect_url", self.connect_url),
             ("providers_url", self.providers_url),
         ):
-            parts = urlsplit(value)
+            parts = split_url(value)
             try:
-                port = parts.port
+                port = parts.port if parts is not None else None
             except ValueError:
                 port = None
             # 포트가 없으면 80 으로 가서 8080·8081 창구에 닿지 않는다
             if (
-                parts.scheme != "http"
+                parts is None
+                or parts.scheme != "http"
                 or not parts.hostname
                 or not port
                 or parts.username
@@ -278,9 +288,10 @@ class OrchestratorConfig(BaseModel):
         """
         if self.access_agent_url is None:
             return self
-        parts = urlsplit(self.access_agent_url)
+        parts = split_url(self.access_agent_url)
         if (
-            parts.scheme not in ("http", "https")
+            parts is None
+            or parts.scheme not in ("http", "https")
             or not parts.hostname
             or parts.username
             or parts.password
@@ -554,13 +565,19 @@ def load_config(
     path = Path(config_dir) / f"{environment}.yaml"
 
     try:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except FileNotFoundError as err:
-        raise config_error(
-            "configuration file not found", path=str(path), environment=environment
-        ) from err
-    except (OSError, yaml.YAMLError) as err:
-        raise config_error("configuration file could not be parsed", path=str(path)) from err
+        raw = load_yaml_file(path)
+    except YamlReadError as err:
+        if err.missing:
+            raise_detached(
+                config_error(
+                    "configuration file not found", path=str(path), environment=environment
+                )
+            )
+        raise_detached(
+            config_error(
+                "configuration file could not be parsed", path=str(path), reason=err.reason
+            )
+        )
 
     if raw is None:
         raw = {}
@@ -572,14 +589,13 @@ def load_config(
     try:
         return AaestroConfig.model_validate(merged)
     except ValidationError as err:
-        raise config_error(
-            "configuration failed validation",
-            path=str(path),
-            errors=[
-                {"field": ".".join(str(p) for p in e["loc"]), "problem": e["msg"]}
-                for e in err.errors()
-            ],
-        ) from err
+        raise_detached(
+            config_error(
+                "configuration failed validation",
+                path=str(path),
+                errors=field_problems(err),
+            )
+        )
 
 
 __all__ = [

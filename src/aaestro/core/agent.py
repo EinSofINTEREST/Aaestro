@@ -11,7 +11,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, NamedTuple, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -129,6 +129,34 @@ class ModelUsage(BaseModel):
         )
 
 
+class TaskKey(NamedTuple):
+    """Who sent a task, and the id they chose — the key for per-task state in an agent process.
+
+    에이전트 프로세스가 태스크별 상태(멱등 캐시, 진행 중 태스크 표)를 쥘 때 쓰는 키.
+    ``task_id`` 는 **보낸 쪽이 고른다.** 프레임워크는 그 값이 다른 호출자에게 추측 불가능하다고
+    가정하지 않는다 — id 하나로 키를 잡으면 같은 id 를 보낸 쪽이 남의 결과를 받거나 남의 상태를
+    덮는다 (#400).
+
+    보장은 ``caller`` 가 얼마나 확인됐느냐만큼이다:
+
+    - 두 수신 모드 공통: peer 는 Control API 공간(``caller=None``)의 결과 · 상태에 닿지 못한다.
+      A2A 수신 입구는 ``caller`` 를 비워 두지 않고, Control API 는 본문의 ``caller`` 를 지운다.
+    - peer 와 peer 사이: 레지스트리 모드에서만. 토큰 모드의 ``caller`` 는 배포가 공유하는 서명
+      키로 확인한 헤더 주장이라 그 키를 쥔 peer 가 다른 peer 의 이름을 댈 수 있다 (#415).
+
+    밖으로 나가는 id (로그 · 메트릭 · 응답) 는 ``task_id`` 그대로다. 갈라지는 것은 이 키뿐이다.
+    """
+
+    caller: str | None
+    """A2A 수신 입구가 실은 호출자. Control API 로 온 태스크(그래프 노드 · direct)는 ``None``."""
+    task_id: str
+
+    @classmethod
+    def from_control(cls, task_id: str) -> TaskKey:
+        """Control API 가 id 만으로 가리키는 태스크 (취소 등) — peer 의 동명 태스크는 아니다."""
+        return cls(caller=None, task_id=task_id)
+
+
 class TaskRequest(BaseModel):
     """A unit of work handed to an agent.
 
@@ -150,6 +178,11 @@ class TaskRequest(BaseModel):
     그래프·direct 태스크는 ``None``. Control API 본문이나 A2A 본문에 실려 온 값은 버린다: 확인하지
     않은 이름으로 권한 에이전트가 부여 대상을 정하면 다른 에이전트 행세가 된다.
     """
+
+    @property
+    def key(self) -> TaskKey:
+        """태스크별 상태의 키 — ``caller`` 는 본문이 아니라 수신 입구가 싣는다 (``TaskKey``)."""
+        return TaskKey(caller=self.caller, task_id=self.task_id)
 
     @property
     def is_direct(self) -> bool:
