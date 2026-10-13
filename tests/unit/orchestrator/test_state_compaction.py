@@ -19,6 +19,7 @@ from structlog.testing import capture_logs
 from aaestro.artifacts.store import storage_error
 from aaestro.core.agent import TaskResult
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.core.topology import GraphMode
 from aaestro.observability.metrics import Metrics
 from aaestro.orchestrator import compaction_ledger as ledger_module
 from aaestro.orchestrator.builder import build_graph
@@ -40,7 +41,6 @@ from aaestro.orchestrator.state_artifacts import (
 )
 from aaestro.orchestrator.submit import RunSubmitter
 from aaestro.orchestrator.summarizer import SUMMARY_TIMEOUT_S
-from aaestro.orchestrator.topology import GraphMode
 from tests.fixtures.topologies import make_mission, make_service
 
 COMPACTOR = "agents/writer@0.4.0"

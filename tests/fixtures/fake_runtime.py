@@ -10,7 +10,7 @@ from typing import Any
 
 from aaestro.core.agent import TaskRequest, TaskResult
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
-from aaestro.orchestrator.topology import NodeSpec
+from aaestro.core.topology import NodeSpec
 
 
 class FakeRuntime:

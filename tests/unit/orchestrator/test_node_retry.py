@@ -16,8 +16,8 @@ import pytest
 
 from aaestro.core.agent import TaskResult
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.core.topology import GraphTopology
 from aaestro.orchestrator.builder import build_graph
-from aaestro.orchestrator.topology import GraphTopology
 from tests.fixtures.topologies import mission_dict
 
 

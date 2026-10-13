@@ -10,10 +10,10 @@ import pytest
 
 from aaestro.core.agent import TaskResult
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.core.topology import GraphMode
 from aaestro.orchestrator.checkpoint import build_checkpointer
 from aaestro.orchestrator.run import RunStatus
 from aaestro.orchestrator.submit import RunSubmitter, seed_state
-from aaestro.orchestrator.topology import GraphMode
 from tests.fixtures.topologies import make_mission, make_service
 
 
@@ -368,7 +368,7 @@ async def test_mode_violation_wins_over_state_problems():
 
     운영자는 "state 를 채우면 되겠구나" 로 오해하고 시간을 버린다.
     """
-    from aaestro.orchestrator.topology import GraphTopology
+    from aaestro.core.topology import GraphTopology
     from tests.fixtures.topologies import service_dict
 
     topology = GraphTopology.model_validate(

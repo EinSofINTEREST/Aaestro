@@ -14,11 +14,11 @@ import yaml
 from pydantic import ValidationError
 
 from aaestro.core.errors import AaestroError
+from aaestro.core.topology import GraphTopology, StateSpec, validate_topology
 from aaestro.graphs.schemas import ResearchState
 from aaestro.orchestrator.builder import build_graph
 from aaestro.orchestrator.state import resolve_graph_state, state_fields
 from aaestro.orchestrator.submit import RunSubmitter
-from aaestro.orchestrator.topology import GraphTopology, StateSpec, validate_topology
 from tests.fixtures.fake_runtime import FakeRuntime
 
 REPO_ROOT = Path(__file__).resolve().parents[3]

@@ -10,6 +10,7 @@ import pytest
 from pydantic import BaseModel, ValidationError
 
 from aaestro.artifacts.store import validate_key
+from aaestro.core.topology import GraphTopology, StateSpec
 from aaestro.memory.recall import CHARS_PER_TOKEN
 from aaestro.orchestrator.compaction import (
     SUMMARY_ITEM_MAX_CHARS,
@@ -35,7 +36,6 @@ from aaestro.orchestrator.state_artifacts import (
     field_key_prefix,
     is_own_reference,
 )
-from aaestro.orchestrator.topology import GraphTopology, StateSpec
 from tests.fixtures.topologies import service_dict
 
 SUMMARIZE = {
@@ -463,9 +463,7 @@ def test_reading_a_topology_does_not_pull_in_the_memory_layer():
     import subprocess
     import sys
 
-    probe = (
-        "import sys, aaestro.orchestrator.topology; print('aaestro.memory.recall' in sys.modules)"
-    )
+    probe = "import sys, aaestro.core.topology; print('aaestro.memory.recall' in sys.modules)"
 
     done = subprocess.run(  # noqa: S603 — 고정된 인자로 자기 인터프리터를 부른다
         [sys.executable, "-c", probe], capture_output=True, text=True, check=True

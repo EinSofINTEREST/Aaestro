@@ -18,6 +18,7 @@ from pydantic import ValidationError
 from aaestro.access.baselines import PROVIDER_HOSTS, EgressBaseline
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode, field_problems
 from aaestro.core.manifest import RESERVED_GLOBAL_GROUP, agent_name, agent_ref_parts
+from aaestro.core.topology import GraphMode, validate_topology
 from aaestro.modules.compatibility import check_promptset_templates
 from aaestro.modules.promptset import LoadedPromptset
 from aaestro.orchestrator.compaction import (
@@ -28,15 +29,14 @@ from aaestro.orchestrator.compaction import (
 from aaestro.orchestrator.compaction_schema import compaction_problems, list_fields
 from aaestro.orchestrator.state import resolve_graph_state
 from aaestro.orchestrator.state_artifacts import STATE_ARTIFACT_SETTING
-from aaestro.orchestrator.topology import GraphMode, validate_topology
 from aaestro.runtime.quota import check_group_quota, check_host_capacity
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
 
     from aaestro.core.manifest import AgentManifest, GroupManifest
+    from aaestro.core.topology import GraphTopology, NodeSpec
     from aaestro.modules.promptset import PromptsetManifest
-    from aaestro.orchestrator.topology import GraphTopology, NodeSpec
 
 log = structlog.get_logger(__name__)
 

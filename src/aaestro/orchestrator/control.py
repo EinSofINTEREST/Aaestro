@@ -24,11 +24,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 from aaestro.core.manifest import AgentManifest, ModelOverride
+from aaestro.core.topology import GraphTopology
 from aaestro.http_auth import require_token
 from aaestro.http_errors import request_validation_error, status_for
 from aaestro.materials import Materials
 from aaestro.orchestrator.bodies import parsed as _parsed
-from aaestro.orchestrator.topology import GraphTopology
 from aaestro.runtime.images import BuildRecord, image_tag
 from aaestro.ui import UI_ROOT
 

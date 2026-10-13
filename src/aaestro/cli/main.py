@@ -27,10 +27,10 @@ from aaestro.cli.integrity import (
 )
 from aaestro.config import DEFAULT_CONFIG_DIR, ENVIRONMENT_ENV, load_config, resolve_environment
 from aaestro.core.errors import AaestroError
+from aaestro.core.topology import GraphTopology
 from aaestro.deploy import ValidationReport
 from aaestro.observability.logging import configure
 from aaestro.orchestrator.models import CatalogModels, resolve_node_model
-from aaestro.orchestrator.topology import GraphTopology
 
 if TYPE_CHECKING:
     from collections.abc import Sequence

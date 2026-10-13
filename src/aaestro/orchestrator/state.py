@@ -20,7 +20,7 @@ from aaestro.core.errors import (
     field_problems,
     raise_detached,
 )
-from aaestro.orchestrator.topology import NodeSpec, StateField, StateSpec, resolve_import_ref
+from aaestro.core.topology import NodeSpec, StateField, StateSpec, resolve_import_ref
 
 _STATE_PREFIX = "state."
 _OUTPUT_PREFIX = "output."

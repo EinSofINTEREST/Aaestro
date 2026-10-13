@@ -18,12 +18,12 @@ from aaestro.agentd.server import AgentRuntime
 from aaestro.agentd.server import create_app as create_agent_app
 from aaestro.core.agent import TaskStatus
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.core.topology import NodeSpec
 from aaestro.orchestrator import control as control_module
 from aaestro.orchestrator.control import create_app
 from aaestro.orchestrator.runs import RunService
 from aaestro.orchestrator.runstore import InMemoryRunStore, RunRecord
 from aaestro.orchestrator.submit import RunSubmitter
-from aaestro.orchestrator.topology import NodeSpec
 from aaestro.runtime.control import ControlClient
 from aaestro.runtime.nodes import ControlNodeRuntime, InflightTask, SteerReceipt
 from tests.fixtures.builders import make_task

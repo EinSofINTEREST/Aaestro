@@ -12,13 +12,13 @@ import pytest
 
 from aaestro.core.agent import TaskRequest, TaskResult
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.core.topology import GraphMode, NodeSpec
 from aaestro.orchestrator.builder import build_graph
 from aaestro.orchestrator.run import (
     RunManager,
     RunStatus,
     ServiceRunner,
 )
-from aaestro.orchestrator.topology import GraphMode, NodeSpec
 from tests.fixtures.topologies import make_mission, make_service
 
 

@@ -42,12 +42,12 @@ from aaestro.core.errors import (
     repeated_positions,
 )
 from aaestro.core.manifest import AgentManifest, GroupManifest
+from aaestro.core.topology import GraphTopology
 from aaestro.modules.memoryset import MemorysetLoader, MemorysetManifest
 from aaestro.modules.promptset import PromptsetLoader, PromptsetManifest
 from aaestro.modules.registry import ModuleRegistry
 from aaestro.modules.skillpack import SkillpackLoader, SkillpackManifest
 from aaestro.modules.skillset import SkillsetLoader, SkillsetManifest
-from aaestro.orchestrator.topology import GraphTopology
 from tests.fixtures.declarations import MARKER, REPO_ROOT, _declaration_documents
 from tests.fixtures.echo_fuzz import (
     FULLWIDTH,

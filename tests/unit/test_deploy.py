@@ -12,9 +12,9 @@ from pathlib import Path
 import pytest
 
 from aaestro.core.errors import AaestroError, ErrorCode
+from aaestro.core.topology import GraphTopology
 from aaestro.deploy import validate_deployment
 from aaestro.modules.promptset import PromptsetManifest
-from aaestro.orchestrator.topology import GraphTopology
 from tests.fixtures.builders import make_manifest
 from tests.fixtures.topologies import mission_dict
 
