@@ -117,6 +117,17 @@ controlled container, on every request**:
   registry is back.
 - **The proxy is the only way out.** With it on, agents run on an internal Docker network; the
   proxy holds the model key and remote MCP credentials, so agents never have them.
+- **A task id belongs to whoever sent it.** The sender chooses the `task_id`, and the framework
+  does not assume it is unguessable. So an agent keys its per-task state (the idempotency cache,
+  the in-flight table behind `/v1/cancel`) by the caller together with the id, and tasks from the
+  Control API form their own space: a peer never reaches the results or state of a graph or direct
+  task. Separation between two peers holds in registry mode only — in token mode the caller is a
+  header checked with the deployment's shared signing key, so one peer can name another — and the
+  SDK's task lookup and cancel methods are not covered yet. Retrying the same id is idempotent only
+  for the same caller. A peer's message body is checked before the agent runs: a missing required
+  field is refused with `VAL_001`, and a malformed body or identifier (empty, over 128 characters,
+  unprintable characters, surrounding whitespace) with `VAL_002`; the refusal never repeats the
+  value. Logs and responses keep the id exactly as the caller sent it.
 
 Not reached at run time: effects that stay inside the container, data an agent already read, and
 secrets injected as environment variables (those need a redeploy). See the

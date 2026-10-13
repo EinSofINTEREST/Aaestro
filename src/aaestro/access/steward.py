@@ -37,7 +37,7 @@ from aaestro.core.events import DoneEvent, ErrorEvent
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
-    from aaestro.core.agent import TaskRequest
+    from aaestro.core.agent import TaskKey, TaskRequest
     from aaestro.core.events import TaskEvent
     from aaestro.core.manifest import AgentManifest
 
@@ -94,13 +94,13 @@ class PermissionAgent:
                 details={"settings": [ACCESS_URL_ENV, ACCESS_CREDENTIAL_ENV]},
             )
         self._http = http or httpx.AsyncClient(base_url=self._base_url, timeout=REQUEST_TIMEOUT_S)
-        self._completed: OrderedDict[tuple[str | None, str], TaskResult] = OrderedDict()
-        self._inflight: dict[tuple[str | None, str], asyncio.Future[TaskResult]] = {}
+        self._completed: OrderedDict[TaskKey, TaskResult] = OrderedDict()
+        self._inflight: dict[TaskKey, asyncio.Future[TaskResult]] = {}
         """진행 중인 요청 — 키가 끝날 때까지 이 표가 태스크를 쥔다 (완료 콜백이 뺀다)."""
 
     async def execute(self, task: TaskRequest) -> TaskResult:
         # 호출자까지 키에 넣는다 — task id 는 호출자가 고르므로, 남의 id 로 남의 답을 받으면 안 된다
-        key = (task.caller, task.task_id)
+        key = task.key
         cached = self._completed.get(key)
         if cached is not None:
             # 같은 요청의 재시도가 부여를 두 번 기록하지 않게 (02 Rule 3)
@@ -115,7 +115,7 @@ class PermissionAgent:
         # 기다리던 쪽이 취소돼도 부여 요청은 끝까지 간다 — 반쯤 기록된 부여를 남기지 않는다
         return await asyncio.shield(running)
 
-    async def _answer(self, task: TaskRequest, key: tuple[str | None, str]) -> TaskResult:
+    async def _answer(self, task: TaskRequest, key: TaskKey) -> TaskResult:
         try:
             result = TaskResult.completed(task, output=await self._grant(task))
         except AaestroError as err:
@@ -125,7 +125,7 @@ class PermissionAgent:
         self._remember(key, result)
         return result
 
-    def _remember(self, key: tuple[str | None, str], result: TaskResult) -> None:
+    def _remember(self, key: TaskKey, result: TaskResult) -> None:
         self._completed[key] = result
         while len(self._completed) > REMEMBERED_ANSWERS:
             self._completed.popitem(last=False)
