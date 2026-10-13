@@ -244,3 +244,29 @@ def test_required_with_default_promptset_load_raises_mod_003_without_value(tmp_p
         loader.load("promptsets/custom@0.1.0")
     assert exc_info.value.code == "MOD_003"
     assert secret not in repr(exc_info.value) + str(exc_info.value.details)
+
+
+def test_required_with_explicit_null_default_is_rejected():
+    with pytest.raises(ValidationError, match="required variable must not declare a default"):
+        VariableSpec(type="string", required=True, default=None)
+
+
+def test_optional_with_explicit_null_default_is_accepted():
+    assert VariableSpec(type="string", required=False, default=None).default is None
+
+
+@pytest.mark.parametrize("required", [True, False])
+def test_required_with_null_default_promptset_load(tmp_path, required):
+    loader = _write_promptset(
+        tmp_path,
+        yaml_body=HEADER
+        + "    t:\n      file: templates/t.j2\n      variables:\n"
+        + f"        q: {{type: string, required: {str(required).lower()}, default: null}}\n",
+        files={"t.j2": "hi {{ q }}"},
+    )
+    if not required:
+        loader.load("promptsets/custom@0.1.0")
+        return
+    with pytest.raises(AaestroError) as exc_info:
+        loader.load("promptsets/custom@0.1.0")
+    assert exc_info.value.code == "MOD_003"

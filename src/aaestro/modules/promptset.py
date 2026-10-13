@@ -96,7 +96,8 @@ class VariableSpec(BaseModel):
         렌더가 default 를 적용하면 required 가 뜻을 잃고, 적용하지 않으면 default 가
         죽은 선언이 된다 — 렌더 시점의 누락 오류로 늦게 드러나기 전에 막는다.
         """
-        if self.required and self.default is not None:
+        # default: null 도 선언이다 — 값이 아니라 선언 여부로 본다
+        if self.required and "default" in self.model_fields_set:
             raise ValueError("required variable must not declare a default")
         return self
 
