@@ -580,7 +580,8 @@ declaration and its enforcement cannot drift apart. Until then, a declaration co
 nothing for that kind, and a request with no grant is `deny` with `decided_by: "default"`.
 
 Declarations are read on every decision, so a change takes effect without a restart. The
-registry watches the agent manifests and group files and moves its version when one changes,
+registry watches the agent manifests, group files and graph files (a graph's `connections` are
+the A2A declarations, so revoking a connection is seen at once) and moves its version when one changes,
 which makes enforcement points drop cached decisions. It also moves the version once when it
 starts, because it cannot know what changed while it was down.
 

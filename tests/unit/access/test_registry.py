@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import sqlite3
 from pathlib import Path
 
@@ -529,3 +530,40 @@ def test_recent_denials_are_newest_first_and_bounded(tmp_path, monkeypatch):
 
     assert [d.target for d in access.recent_denials("worker")] == ["c.example", "b.example"]
     assert access.recent_denials("peer") == []
+
+
+# --- 그래프 선언도 선언 버전을 올린다 (#332) -----------------------------------
+
+
+def test_the_fingerprint_survives_a_root_without_graphs(tmp_path):
+    from aaestro.access.registry import declaration_fingerprint
+
+    write(tmp_path / "agents" / "worker" / "manifest.yaml", agent("worker"))
+
+    assert len(declaration_fingerprint(Catalog.under(tmp_path))) == 1
+
+
+def test_the_fingerprint_follows_a_graph_file_through_its_life(workspace):
+    from aaestro.access.registry import declaration_fingerprint
+
+    catalog = Catalog.under(workspace)
+    path = workspace / "graphs" / "g.yaml"
+    empty = declaration_fingerprint(catalog)
+
+    path.write_text("a: 1\n", encoding="utf-8")  # 추가
+    added = declaration_fingerprint(catalog)
+    assert added != empty
+
+    path.write_text("a: 22\n", encoding="utf-8")  # 수정 — 크기가 다르다
+    modified = declaration_fingerprint(catalog)
+    assert modified != added
+
+    replacement = workspace / "graphs" / "g.tmp"  # 원자적 교체 — 내용 · 크기가 같고 inode 만 다르다
+    replacement.write_text("a: 22\n", encoding="utf-8")
+    os.utime(replacement, ns=(0, path.stat().st_mtime_ns))  # mtime 도 같게 — inode 만 남긴다
+    replacement.replace(path)
+    replaced = declaration_fingerprint(catalog)
+    assert replaced != modified
+
+    path.unlink()  # 삭제
+    assert declaration_fingerprint(catalog) == empty
