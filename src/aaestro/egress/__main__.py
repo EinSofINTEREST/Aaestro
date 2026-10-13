@@ -19,6 +19,7 @@ import uvicorn
 
 from aaestro.access.baselines import url_target
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.core.startup import startup_guard
 from aaestro.observability.metrics import DEFAULT_METRICS_PORT, Metrics, start_metrics_server
 
 log = structlog.get_logger(__name__)
@@ -223,7 +224,9 @@ def main() -> None:
         json_output=os.environ.get(LOG_FORMAT_ENV, "json") == "json",
     )
     metrics = Metrics()
-    config = settings(os.environ)
+    # 레지스트리 설정 누락 (CFG_001) 도 다른 진입점과 같이 critical 한 줄 + exit 1 — traceback 금지
+    with startup_guard(log, "egress proxy startup rejected"):
+        config = settings(os.environ)
     start_metrics_server(
         port_setting(os.environ, METRICS_PORT_ENV, DEFAULT_METRICS_PORT), registry=metrics.registry
     )

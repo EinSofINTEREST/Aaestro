@@ -299,6 +299,42 @@ def test_control_plane_reports_a_failure_after_the_config_load_in_the_same_shape
     assert "Traceback" not in result.stdout + result.stderr
 
 
+# --- 토큰 · 필수 설정 누락도 같은 한 줄 (#438) --------------------------------------------------
+
+BAD_TOKEN = "  leaked-token-value  "  # noqa: S105 — 공백이 끼어 거절되는 값, 비밀이 아니다
+
+
+@pytest.mark.parametrize("name", ["agentd", "egress"])
+def test_missing_token_is_one_critical_line_without_a_traceback(name: str, tmp_path: Path):
+    """토큰 판정 (CFG_001) 이 가드 밖이면 traceback 이 나오고 ``details.setting`` 이 사라진다."""
+    if name == "agentd":
+        result = _entrypoint(name, **{TOKEN_ENV: ""})
+    else:
+        result = _run(["-c", "from aaestro.egress.__main__ import main; main()"])
+
+    line = _critical_line(result)
+    assert result.returncode == 1
+    assert "Traceback" not in result.stdout + result.stderr
+    assert line["error_code"] == "CFG_001"
+    if name == "agentd":
+        assert line["event"] == "agent startup rejected"
+        assert line["details"]["setting"] == TOKEN_ENV
+    else:
+        assert line["event"] == "egress proxy startup rejected"
+        assert line["details"]["settings"]
+
+
+def test_agentd_malformed_token_is_rejected_without_logging_its_value():
+    result = _entrypoint("agentd", **{TOKEN_ENV: BAD_TOKEN})
+
+    line = _critical_line(result)
+    assert result.returncode == 1
+    assert line["error_code"] == "CFG_001"
+    assert line["details"]["setting"] == TOKEN_ENV
+    assert "leaked-token-value" not in result.stdout + result.stderr
+    assert "Traceback" not in result.stdout + result.stderr
+
+
 # --- 기동 실패의 형식: 세 진입점이 같은 한 줄 --------------------------------------------------
 
 

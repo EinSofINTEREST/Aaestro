@@ -681,8 +681,10 @@ def main() -> None:
     # 마스킹 processor 도 거치지 않는다 (control plane · Memory Service 와 같은 순서).
     # 메트릭 포트는 거절된 뒤에 연다
     _configure_logging()
-    # 토큰 판정 (CFG_001) 은 가드 밖 — #417 의 계약대로 예외가 그대로 올라온다
-    serving = _serving_from_env()
+    # 토큰 판정 (CFG_001) 도 기동 실패다 — 가드 밖이면 traceback 만 남고 어느 설정인지
+    # (``details.setting``) 가 사라진다. 값은 메시지 · details 어디에도 싣지 않는다
+    with startup_guard(log, "agent startup rejected"):
+        serving = _serving_from_env()
     with startup_guard(log, "agent manifest rejected"):
         manifest = load_manifest(Path(os.environ.get(MANIFEST_ENV, DEFAULT_MANIFEST_PATH)))
     metrics = _setup_observability()
