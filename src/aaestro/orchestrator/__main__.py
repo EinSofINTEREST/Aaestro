@@ -32,7 +32,7 @@ from aaestro.config import (
 from aaestro.core.startup import startup_guard
 from aaestro.http_auth import is_loopback
 from aaestro.memory.client import MEMORY_URL_ENV
-from aaestro.observability.metrics import DEFAULT_METRICS_PORT, Metrics, start_metrics_server
+from aaestro.observability.metrics import Metrics, metrics_port_from_env, start_metrics_server
 from aaestro.orchestrator.control import create_app
 from aaestro.orchestrator.inuse import any_of, run_backed
 from aaestro.orchestrator.runstore import SqliteRunStore
@@ -70,7 +70,7 @@ def _setup_observability() -> Metrics:
     )
     metrics = Metrics()
     start_metrics_server(
-        int(os.environ.get(METRICS_PORT_ENV, DEFAULT_METRICS_PORT)),
+        metrics_port_from_env(METRICS_PORT_ENV),
         registry=metrics.registry,
     )
     return metrics
@@ -79,10 +79,11 @@ def _setup_observability() -> Metrics:
 def main() -> None:
     """Serve the Control Plane over the configured run store."""
     # 계측기는 **노출되는 것 하나**를 모두가 쓴다 — 저마다 새로 만들면 기록은 되는데 아무도 못 본다
-    metrics = _setup_observability()
     # 설정 로드 뒤의 기동 실패 (빠진 저장소 · 토큰, 깨진 선언) 도 같은 한 줄로 — 가드 밖이면
     # traceback 만 남고 details 가 사라진다
     with startup_guard(log, "control plane startup failed"):
+        # 포트 설정 읽기 (CFG_001) 도 가드 안 — 로깅 설정이 그보다 먼저라 한 줄은 JSON 이다
+        metrics = _setup_observability()
         _start(metrics)
 
 

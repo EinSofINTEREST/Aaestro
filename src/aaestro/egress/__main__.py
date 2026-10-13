@@ -227,9 +227,8 @@ def main() -> None:
     # 레지스트리 설정 누락 (CFG_001) 도 다른 진입점과 같이 critical 한 줄 + exit 1 — traceback 금지
     with startup_guard(log, "egress proxy startup rejected"):
         config = settings(os.environ)
-    start_metrics_server(
-        port_setting(os.environ, METRICS_PORT_ENV, DEFAULT_METRICS_PORT), registry=metrics.registry
-    )
+        metrics_port = port_setting(os.environ, METRICS_PORT_ENV, DEFAULT_METRICS_PORT)
+    start_metrics_server(metrics_port, registry=metrics.registry)
     asyncio.run(run(config, metrics=metrics))
 
 

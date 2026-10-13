@@ -42,7 +42,7 @@ from aaestro.core.yamlio import YamlReadError, load_yaml_file
 from aaestro.http_auth import resolve_required_token
 from aaestro.memory.client import MEMORY_TOKEN_ENV, MEMORY_URL_ENV
 from aaestro.memory.tool import MEMORY_SEARCH_TOOL
-from aaestro.observability.metrics import DEFAULT_METRICS_PORT, Metrics
+from aaestro.observability.metrics import Metrics
 from aaestro.protocols.a2a.card import build_card
 from aaestro.protocols.a2a.tool import ASK_PEER_TOOL
 
@@ -660,13 +660,13 @@ def _setup_observability() -> Metrics:
     Returns:
         The process-wide metric registry.
     """
-    from aaestro.observability.metrics import Metrics, start_metrics_server
+    from aaestro.observability.metrics import Metrics, metrics_port_from_env, start_metrics_server
 
     metrics = Metrics()
     # registry 를 함께 넘겨야 한다 — 빠뜨리면 prometheus 기본 registry 를
     # 노출하게 되고, 우리가 채우는 것과 **다른 곳**이라 endpoint 가 늘 비어 있다
     start_metrics_server(
-        int(os.environ.get(METRICS_PORT_ENV, DEFAULT_METRICS_PORT)),
+        metrics_port_from_env(METRICS_PORT_ENV),
         registry=metrics.registry,
     )
     return metrics
@@ -687,7 +687,8 @@ def main() -> None:
         serving = _serving_from_env()
     with startup_guard(log, "agent manifest rejected"):
         manifest = load_manifest(Path(os.environ.get(MANIFEST_ENV, DEFAULT_MANIFEST_PATH)))
-    metrics = _setup_observability()
+    with startup_guard(log, "agent startup rejected"):
+        metrics = _setup_observability()
     # 가드는 manifest 로드에서 끝나지 않는다 — 모듈 선언 위반 (MOD_003) 은 실행기 조립에서
     # 올라온다. 가드 밖이면 traceback 만 남고 ``details.errors`` (어느 키인지) 가 사라진다
     with startup_guard(log, "agent startup failed"):
