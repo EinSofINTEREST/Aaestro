@@ -113,7 +113,7 @@ def test_the_depth_limit_is_injectable(monkeypatch, injected):
 def registry_mode(monkeypatch):
     """공유 서명 키 없이 레지스트리 주소와 에이전트 신원만 주입된 컨테이너."""
     from aaestro.access.client import ACCESS_URL_ENV
-    from aaestro.access.registry import ACCESS_CREDENTIAL_ENV
+    from aaestro.access.model import ACCESS_CREDENTIAL_ENV
 
     monkeypatch.delenv(SECRET_ENV, raising=False)
     monkeypatch.setenv(PORT_ENV, "9100")

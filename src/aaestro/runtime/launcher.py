@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from aaestro.core.errors import NETWORK_RETRY, AaestroError, ErrorCategory, ErrorCode
-from aaestro.memory.http import MEMORY_TOKEN_ENV, MEMORY_URL_ENV
+from aaestro.memory.client import MEMORY_TOKEN_ENV, MEMORY_URL_ENV
 from aaestro.runtime.control import ControlClient
 from aaestro.runtime.docker.engine import DEFAULT_DRAIN_TIMEOUT_S, ContainerHandle
 from aaestro.runtime.health import DEFAULT_STARTUP_GRACE_S

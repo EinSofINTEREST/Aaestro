@@ -48,9 +48,6 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
-ACCESS_CREDENTIAL_ENV = "AAESTRO_ACCESS_CREDENTIAL"  # noqa: S105 — 키 이름이지 값이 아니다
-"""에이전트 컨테이너에 주입되는 신원 자격의 env 이름."""
-
 DEFAULT_OUTCOME_SOURCE = "default"
 """어느 규칙에도 해당하지 않아 거부된 판정의 출처."""
 
@@ -637,7 +634,6 @@ def _ceiling_covers(
 __all__ = [
     "INVALID_TICKET",
     "TICKET_TTL_S",
-    "ACCESS_CREDENTIAL_ENV",
     "AccessRegistry",
     "Baseline",
     "credential_hash",
