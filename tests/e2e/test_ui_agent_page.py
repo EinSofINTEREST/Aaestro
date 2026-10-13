@@ -352,10 +352,7 @@ def ui(browser):  # noqa: F811
     yield ui
     ui.close()
     # 404/400 은 새 이름 조회 · 강제 실패 시나리오의 정상 응답이다.
-    # `pattern="[a-z0-9-]+"` 은 Chromium 에서 무효라 콘솔 오류가 난다 — 별도 이슈 (index.html)
-    assert not [
-        e for e in ui.errors if "Pattern attribute" not in e and "Failed to load resource" not in e
-    ], ui.errors
+    assert not [e for e in ui.errors if "Failed to load resource" not in e], ui.errors
 
 
 def norm(doc):
