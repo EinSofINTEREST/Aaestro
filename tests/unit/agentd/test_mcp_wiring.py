@@ -123,7 +123,9 @@ def test_the_daemon_builds_and_serves_on_one_loop_and_closes_sessions(
         encoding="utf-8",
     )
     monkeypatch.setenv(agentd.MANIFEST_ENV, str(manifest_path))
+    monkeypatch.setenv(agentd.TOKEN_ENV, "agent-token")
     monkeypatch.setattr(agentd, "_setup_observability", Metrics)
+    monkeypatch.setattr(agentd, "_configure_logging", lambda: None)
     loops = {}
     original = agentd.build_executor
 
@@ -131,7 +133,7 @@ def test_the_daemon_builds_and_serves_on_one_loop_and_closes_sessions(
         loops["built"] = asyncio.get_running_loop()
         return await original(manifest, **kwargs)
 
-    async def serve(app, manifest, executor):
+    async def serve(app, manifest, executor, bind_host):
         loops["served"] = asyncio.get_running_loop()
         loops["live_while_serving"] = executor.binding.tools.mcp.sessions["fs"].connected
 
@@ -191,7 +193,9 @@ def test_a_failure_while_assembling_the_app_closes_the_sessions(
         encoding="utf-8",
     )
     monkeypatch.setenv(agentd.MANIFEST_ENV, str(manifest_path))
+    monkeypatch.setenv(agentd.TOKEN_ENV, "agent-token")
     monkeypatch.setattr(agentd, "_setup_observability", Metrics)
+    monkeypatch.setattr(agentd, "_configure_logging", lambda: None)
 
     def broken(*args, **kwargs):
         raise RuntimeError("app assembly failed")

@@ -30,6 +30,7 @@ from aaestro.core.agent import (
     DEFAULT_MAX_TURNS,
     DEFAULT_TOOL_TIMEOUT_S,
     ModelUsage,
+    TaskKey,
     TaskRequest,
     TaskResult,
 )
@@ -323,8 +324,10 @@ class Executor:
             output_keys=self._services.output_keys,
             system=system,
         )
-        # 멱등성: 완료된 태스크는 같은 결과를 돌려준다 (재시도/재개 시나리오)
-        self._completed: OrderedDict[str, TaskResult] = OrderedDict()
+        # 멱등성: 완료된 태스크는 같은 결과를 돌려준다 (재시도/재개 시나리오).
+        # 키는 id 만이 아니라 보낸 쪽까지다 — id 는 보낸 쪽이 고르므로, peer 가 남의 id 로
+        # 남의 결과를 받거나 남의 재시도가 받을 결과를 먼저 심으면 안 된다 (#400)
+        self._completed: OrderedDict[TaskKey, TaskResult] = OrderedDict()
 
     @property
     def binding(self) -> ModuleBinding:
@@ -356,7 +359,7 @@ class Executor:
         Returns:
             The task result, successful or failed.
         """
-        cached = self._completed.get(task.task_id)
+        cached = self._completed.get(task.key)
         if cached is not None:
             return cached
 
@@ -410,11 +413,11 @@ class Executor:
         # 재시도 가능한 실패를 캐싱하면 이 계층이 유일한 재시도 계층인데도
         # 재시도가 영원히 무효화된다 — 성공과 영구 실패만 기억한다
         if result.error is None or not result.error.retryable:
-            self._remember(task.task_id, result)
+            self._remember(task.key, result)
         return result
 
-    def _remember(self, task_id: str, result: TaskResult) -> None:
-        self._completed[task_id] = result
+    def _remember(self, key: TaskKey, result: TaskResult) -> None:
+        self._completed[key] = result
         while len(self._completed) > REMEMBERED_RESULTS:
             self._completed.popitem(last=False)
 

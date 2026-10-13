@@ -13,6 +13,7 @@ import inspect
 import itertools
 import json
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -38,6 +39,7 @@ from aaestro.core.skill import SkillSpec
 from aaestro.core.startup import startup_guard
 from aaestro.core.tools import is_mcp_tool
 from aaestro.core.yamlio import YamlReadError, load_yaml_file
+from aaestro.http_auth import resolve_required_token
 from aaestro.memory.http import MEMORY_TOKEN_ENV, MEMORY_URL_ENV
 from aaestro.memory.tool import MEMORY_SEARCH_TOOL
 from aaestro.observability.metrics import DEFAULT_METRICS_PORT, Metrics
@@ -59,6 +61,8 @@ DEFAULT_MANIFEST_PATH = "/app/manifest.yaml"
 MANIFEST_ENV = "AAESTRO_MANIFEST"
 TOKEN_ENV = "AAESTRO_AGENT_TOKEN"  # noqa: S105 — 값이 아니라 키 이름이다
 EXECUTOR_ENV = "AAESTRO_EXECUTOR"
+BIND_HOST_ENV = "AAESTRO_AGENT_BIND_HOST"
+DEFAULT_BIND_HOST = "0.0.0.0"  # noqa: S104 — 컨테이너 안에서는 runtime 이 닿아야 한다
 
 ECHO_EXECUTOR = "echo"
 
@@ -651,22 +655,26 @@ def _render(result: Any, task: Any) -> str:
     return rendered
 
 
-def _setup_observability() -> Metrics:
-    """Configure logging and expose metrics for this process.
-
-    로깅을 설정하고 메트릭을 노출합니다. 계측 로직이 있어도 여기서 registry 를
-    만들어 주입하지 않으면 **런타임에서는 아무 것도 흐르지 않습니다** (#95).
-
-    Returns:
-        The process-wide metric registry.
-    """
+def _configure_logging() -> None:
+    """Configure structured logging — 기동 판정보다 먼저 불려야 한다."""
     from aaestro.observability.logging import configure
-    from aaestro.observability.metrics import Metrics, start_metrics_server
 
     configure(
         level=os.environ.get(LOG_LEVEL_ENV, "INFO"),
         json_output=os.environ.get(LOG_FORMAT_ENV, "json") == "json",
     )
+
+
+def _setup_observability() -> Metrics:
+    """Expose metrics for this process (logging is configured by ``_configure_logging``).
+
+    메트릭을 노출합니다. 계측 로직이 있어도 여기서 registry 를
+    만들어 주입하지 않으면 **런타임에서는 아무 것도 흐르지 않습니다** (#95).
+
+    Returns:
+        The process-wide metric registry.
+    """
+    from aaestro.observability.metrics import Metrics, start_metrics_server
 
     metrics = Metrics()
     # registry 를 함께 넘겨야 한다 — 빠뜨리면 prometheus 기본 registry 를
@@ -683,18 +691,39 @@ def main() -> None:
 
     에이전트 데몬을 실행합니다 — manifest 로드 → 실행기 선택 → Control API 서빙.
     """
-    # 로깅 설정이 manifest 로드보다 먼저다 — 뒤에 두면 기동 실패 한 줄이 JSON 이 아니고 마스킹
-    # processor 도 거치지 않는다 (control plane · Memory Service 와 같은 순서)
-    metrics = _setup_observability()
+    # 로깅 설정이 기동 판정 · manifest 로드보다 먼저다 — 뒤에 두면 거절 한 줄이 JSON 이 아니고
+    # 마스킹 processor 도 거치지 않는다 (control plane · Memory Service 와 같은 순서).
+    # 메트릭 포트는 거절된 뒤에 연다
+    _configure_logging()
+    # 토큰 판정 (CFG_001) 은 가드 밖 — #417 의 계약대로 예외가 그대로 올라온다
+    serving = _serving_from_env()
     with startup_guard(log, "agent manifest rejected"):
         manifest = load_manifest(Path(os.environ.get(MANIFEST_ENV, DEFAULT_MANIFEST_PATH)))
+    metrics = _setup_observability()
     # 가드는 manifest 로드에서 끝나지 않는다 — 모듈 선언 위반 (MOD_003) 은 실행기 조립에서
     # 올라온다. 가드 밖이면 traceback 만 남고 ``details.errors`` (어느 키인지) 가 사라진다
     with startup_guard(log, "agent startup failed"):
-        asyncio.run(_run(manifest, metrics))
+        asyncio.run(_run(manifest, metrics, serving))
 
 
-async def _run(manifest: AgentManifest, metrics: Metrics) -> None:
+@dataclass(frozen=True)
+class Serving:
+    """기동 판정의 결과 — 판정에 쓴 바인드 주소와 토큰을 **그대로** 서빙까지 나른다."""
+
+    token: str | None
+    bind_host: str
+
+
+def _serving_from_env() -> Serving:
+    # env 는 여기서 한 번만 읽는다 — 판정과 바인드가 다른 값을 보면 검사가 무의미하다
+    bind_host = os.environ.get(BIND_HOST_ENV, DEFAULT_BIND_HOST)
+    token = resolve_required_token(
+        os.environ, token_env=TOKEN_ENV, bind_host=bind_host, component="agentd"
+    )
+    return Serving(token=token, bind_host=bind_host)
+
+
+async def _run(manifest: AgentManifest, metrics: Metrics, serving: Serving) -> None:
     """조립과 서빙을 **한 이벤트 루프**에서 — MCP 세션(자식 프로세스·HTTP 스트림)은 연 루프에 산다.
 
     조립을 따로 ``asyncio.run`` 하면 그 루프가 닫히며 세션이 죽은 채 서빙이 시작된다.
@@ -707,7 +736,7 @@ async def _run(manifest: AgentManifest, metrics: Metrics) -> None:
         app = build_app(
             manifest,
             executor,
-            token=os.environ.get(TOKEN_ENV),
+            token=serving.token,
             # 광고와 실행이 같은 목록을 봐야 peer 가 부를 수 없는 skill 을 보지 않는다
             tools=getattr(executor, "tool_schemas", ()),
             # 모듈에서 도구를 만드는 표준 실행기만 리로드할 것이 있다. 커스텀 entrypoint 가
@@ -724,7 +753,7 @@ async def _run(manifest: AgentManifest, metrics: Metrics) -> None:
             agent_version=manifest.metadata.version,
             port=CONTROL_PORT,
         )
-        await _serve(app, manifest, executor)
+        await _serve(app, manifest, executor, serving.bind_host)
     finally:
         await _close_wiring(executor)
 
@@ -744,7 +773,7 @@ async def _close_wiring(executor: Any) -> None:
         await close_memory()
 
 
-async def _serve(app: Any, manifest: AgentManifest, executor: Any) -> None:
+async def _serve(app: Any, manifest: AgentManifest, executor: Any, bind_host: str) -> None:
     """Control API 를 서빙하고, 선언되어 있으면 A2A 도 함께 띄운다.
 
     03 기동 순서 5단계 — 두 포트는 **별개 서버**다: Control 은 runtime 만,
@@ -755,22 +784,18 @@ async def _serve(app: Any, manifest: AgentManifest, executor: Any) -> None:
     peer_app = build_a2a_app(manifest, executor.execute)
     port = a2a_port()
     if peer_app is None or port is None:
-        config = uvicorn.Config(app, host="0.0.0.0", port=CONTROL_PORT, log_config=None)  # noqa: S104
+        config = uvicorn.Config(app, host=bind_host, port=CONTROL_PORT, log_config=None)
         await uvicorn.Server(config).serve()
         return
 
-    await _serve_both(app, peer_app, port)
+    await _serve_both(app, peer_app, port, bind_host)
 
 
-async def _serve_both(control: Any, peer: Any, peer_port: int) -> None:
+async def _serve_both(control: Any, peer: Any, peer_port: int, bind_host: str) -> None:
     """두 서버를 함께 돌린다 — 하나가 끝나면 다른 하나도 정리한다."""
     servers = [
-        uvicorn.Server(
-            uvicorn.Config(control, host="0.0.0.0", port=CONTROL_PORT, log_config=None)  # noqa: S104
-        ),
-        uvicorn.Server(
-            uvicorn.Config(peer, host="0.0.0.0", port=peer_port, log_config=None)  # noqa: S104
-        ),
+        uvicorn.Server(uvicorn.Config(control, host=bind_host, port=CONTROL_PORT, log_config=None)),
+        uvicorn.Server(uvicorn.Config(peer, host=bind_host, port=peer_port, log_config=None)),
     ]
     async with asyncio.TaskGroup() as group:
         for server in servers:

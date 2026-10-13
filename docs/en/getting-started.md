@@ -164,6 +164,13 @@ endpoint (Docker's healthcheck calls it directly). In production the runtime min
 random token per agent and injects it — the dev stack uses a fixed placeholder so the
 same code path stays exercised.
 
+agentd refuses to start without `AAESTRO_AGENT_TOKEN` (missing, empty or whitespace-only):
+it exits with `CFG_001` naming the variable, so a forgotten env never leaves the Control API
+open. Running without a token is an explicit opt-in — `AAESTRO_ALLOW_UNAUTHENTICATED=1` —
+and is valid only when the bind address is loopback (`AAESTRO_AGENT_BIND_HOST=127.0.0.1`;
+the container default `0.0.0.0` is rejected). It logs a warning on start. The token value
+never appears in a message or log.
+
 The placeholder differs per stack: `make e2e-up` (`compose.e2e.yaml`) defaults to
 `e2e-token`, while the plain dev stack (`compose.yaml`) defaults to `dev-local-token`.
 Pass the one matching the stack you started, or export `AAESTRO_AGENT_TOKEN` before

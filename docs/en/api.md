@@ -1072,6 +1072,23 @@ What this gives you:
 The caller still checks the declared connections first — it spares a round trip and gives a clear
 `A2A_004` locally — but that check is a convenience, not the boundary.
 
+With or without a registry, an agent's A2A port answers two things only: the agent card
+(`GET /.well-known/agent-card.json`, readable without a credential) and JSON-RPC on `POST /`.
+
+- **Only new tasks are taken.** `SendMessage` and `SendStreamingMessage` are the only requests
+  served, and the caller is checked before a task is created — a request without a valid token or
+  ticket costs the callee no task and never reaches the agent.
+- **Tasks cannot be read back or cancelled.** `GetTask`, `ListTasks`, `SubscribeToTask`,
+  `CancelTask`, the push-notification config requests and `GetExtendedAgentCard` are refused with
+  "This operation is not supported" (`-32004`). The answer is the same for every caller and for
+  any task id, so it does not tell whether a task exists.
+- **A message cannot be addressed to an existing task.** A send that names a `taskId` is refused
+  the same way; every delegation is a new task.
+- **The task store keeps no finished task.** It holds a task only while it runs; once the task
+  completes, fails or is refused, the store drops it — the result travels in the response and
+  nowhere else. Known limit: a task whose agent run ends by cancellation can stay in the SDK's
+  internal registry of active tasks (SDK behaviour, tracked separately).
+
 ### `POST /v1/access/a2a/tickets` — any agent
 
 ```json

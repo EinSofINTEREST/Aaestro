@@ -11,7 +11,6 @@ import pytest
 from a2a.server.routes.agent_card_routes import create_agent_card_routes
 from a2a.server.routes.fastapi_routes import add_a2a_routes_to_fastapi
 from a2a.server.routes.jsonrpc_routes import create_jsonrpc_routes
-from a2a.server.tasks import InMemoryTaskStore
 from a2a.types import a2a_pb2 as pb
 from a2a.utils.constants import TransportProtocol
 from fastapi import FastAPI
@@ -74,7 +73,6 @@ def serve(guard: InboundGuard, handler) -> FastAPI:
     request_handler = GuardedRequestHandler(
         guard=guard,
         agent_executor=GuardedExecutor(guard, handler),
-        task_store=InMemoryTaskStore(),
         agent_card=card,
     )
     app = FastAPI()

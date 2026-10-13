@@ -19,7 +19,7 @@ from typing import Any
 
 import pytest
 
-from aaestro.agentd.__main__ import MANIFEST_ENV, load_manifest
+from aaestro.agentd.__main__ import MANIFEST_ENV, TOKEN_ENV, load_manifest
 from aaestro.authoring import Author
 from aaestro.catalog import Catalog, load_yaml
 from aaestro.config import load_config
@@ -43,8 +43,15 @@ PROCESS_TIMEOUT_S = 60
 def _run(args: list[str], **env: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(  # noqa: S603
         [sys.executable, *args],
-        # 메트릭 서버는 고정 포트 대신 임시 포트 (0) — 다른 테스트 · 프로세스와 부딪히지 않게
-        env={**os.environ, "AAESTRO_METRICS_PORT": "0", "AAESTRO_LOG_FORMAT": "json", **env},
+        # 메트릭 서버는 고정 포트 대신 임시 포트 (0) — 다른 테스트 · 프로세스와 부딪히지 않게.
+        # agentd 는 토큰 판정 (#394) 이 선언 로드보다 먼저다 — 보려는 것은 선언 실패라 토큰은 준다
+        env={
+            **os.environ,
+            "AAESTRO_METRICS_PORT": "0",
+            "AAESTRO_LOG_FORMAT": "json",
+            TOKEN_ENV: "issued-token",
+            **env,
+        },
         capture_output=True,
         text=True,
         check=False,
