@@ -128,6 +128,17 @@ def test_an_uninterpretable_response_becomes_mem_003(body):
     assert exc_info.value.code == ErrorCode.MEM_003
 
 
+def capture_warnings(monkeypatch) -> list[tuple[str, dict]]:
+    """providers 의 WARN 로그를 모은다 — 전역 structlog 설정이 바뀌므로 직접 가로챈다."""
+    from aaestro.memory import providers as providers_module
+
+    warned: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        providers_module.log, "warning", lambda event, **fields: warned.append((event, fields))
+    )
+    return warned
+
+
 # --- 선언에서 고르기 -------------------------------------------------------------
 
 
@@ -154,11 +165,30 @@ def test_without_an_endpoint_the_offline_default_stays(monkeypatch):
     monkeypatch.delenv(BASE_URL_ENV, raising=False)
     spec = EmbeddingSpec(provider="openai-compatible", model="m", dimensions=DIMENSIONS)
 
+    warned = capture_warnings(monkeypatch)
     assert build_embedder(spec) is None
 
+    # 선언은 있는데 해시 벡터로 도는 것은 운영에서 조용한 결함이다 — 한 번 경고한다
+    assert [event for event, _ in warned] == ["semantic search is running on a hash embedder"]
+    assert warned[0][1]["provider"] == "openai-compatible"
 
-def test_no_declaration_keeps_the_default():
+
+def test_a_bound_endpoint_does_not_warn(monkeypatch):
+    monkeypatch.setenv(BASE_URL_ENV, "http://embeddings.test")
+    spec = EmbeddingSpec(provider="openai-compatible", model="m", dimensions=DIMENSIONS)
+    warned = capture_warnings(monkeypatch)
+
+    build_embedder(spec)
+
+    assert warned == []
+
+
+def test_no_declaration_keeps_the_default(monkeypatch):
+    """아무것도 선언하지 않은 것은 명시적 선택이다 — 경고하지 않는다."""
+    warned = capture_warnings(monkeypatch)
+
     assert build_embedder(None) is None
+    assert warned == []
 
 
 # --- 레지스트리 조립 -------------------------------------------------------------

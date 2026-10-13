@@ -58,7 +58,7 @@ log = structlog.get_logger(__name__)
 def registry_identity() -> tuple[str, str] | None:
     """(레지스트리 주소, 이 에이전트의 신원) — 둘 다 주입됐을 때만 레지스트리 모드다 (#281)."""
     from aaestro.access.client import ACCESS_URL_ENV
-    from aaestro.access.registry import ACCESS_CREDENTIAL_ENV
+    from aaestro.access.model import ACCESS_CREDENTIAL_ENV
 
     url = os.environ.get(ACCESS_URL_ENV, "").strip()
     credential = os.environ.get(ACCESS_CREDENTIAL_ENV, "").strip()

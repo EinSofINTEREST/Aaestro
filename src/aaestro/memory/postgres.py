@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS memory_entries (
     supersedes TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_memory_space ON memory_entries(space, created_at);
+CREATE INDEX IF NOT EXISTS memory_entries_supersedes ON memory_entries(supersedes, space);
 
 -- append-only 를 저장소가 강제한다. retention 삭제는 이 트리거를 우회하는
 -- 전용 경로(purge)로만 수행한다 — SQLite 의 BEFORE UPDATE RAISE 와 동등하다
@@ -114,6 +115,31 @@ class PostgresMemoryStore:
             cursor.execute("SELECT * FROM memory_entries WHERE entry_id = %s", (entry_id,))
             row = cursor.fetchone()
         return MemoryEntry.from_row(row) if row else None
+
+    def get_many(self, entry_ids: Sequence[str]) -> dict[str, MemoryEntry]:
+        """id 들의 항목을 쿼리 한 번으로 조회한다 — 없는 id 는 결과에 빠진다."""
+        if not entry_ids:
+            return {}
+        with self._conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT * FROM memory_entries WHERE entry_id = ANY(%s)", (list(entry_ids),)
+            )
+            rows = cursor.fetchall()
+        found = (MemoryEntry.from_row(row) for row in rows)
+        return {entry.entry_id: entry for entry in found}
+
+    def superseded(self, space: str, entry_ids: Sequence[str]) -> set[str]:
+        """같은 space 안에서 다른 항목이 ``supersedes`` 로 가리키는 id — 쿼리 한 번."""
+        if not entry_ids:
+            return set()
+        with self._conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT DISTINCT supersedes FROM memory_entries "
+                "WHERE space = %s AND supersedes = ANY(%s)",
+                (space, list(entry_ids)),
+            )
+            rows = cursor.fetchall()
+        return {str(row["supersedes"]) for row in rows}
 
     def list_space(
         self, space: str, *, kinds: Sequence[MemoryKind] | None = None, limit: int | None = 100

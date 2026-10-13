@@ -16,10 +16,11 @@ import structlog
 from aaestro.memory.telemetry import OP_RECALL, OP_SEARCH, IndexTelemetry
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Sequence
+    from collections.abc import Sequence
 
     from aaestro.memory.entry import MemoryEntry
     from aaestro.memory.index import Hit, SpaceIndex
+    from aaestro.memory.store import MemoryStore
     from aaestro.modules.memoryset import HybridSpec, MemoryKind, RecallSpec
     from aaestro.observability.metrics import Metrics
 
@@ -117,10 +118,10 @@ class Recall:
     """
 
     indexes: dict[str, SpaceIndex]
+    store: MemoryStore
+    """hit 의 id 를 항목으로 바꾸는 저장소 — 점조회라서 space 가 커져도 지평선이 없다 (#324)."""
     hybrid: HybridSpec | None = None
     metrics: Metrics | None = None
-    latest_resolver: object | None = None
-    """``supersedes`` 체인의 최신 항목을 찾는 store — 없으면 정정을 반영하지 않는다."""
 
     def search(
         self,
@@ -130,7 +131,6 @@ class Recall:
         k: int = 6,
         kinds: Sequence[MemoryKind] | None = None,
         tags: Sequence[str] | None = None,
-        entries: dict[str, MemoryEntry] | None = None,
     ) -> tuple[ScoredEntry, ...]:
         """Search the named spaces and merge the results.
 
@@ -142,12 +142,10 @@ class Recall:
             k: Maximum results per index layer.
             kinds: Optional kind filter.
             tags: Optional tag filter.
-            entries: Entry id to entry, for materialising results.
 
         Returns:
             Scored entries, best-first.
         """
-        lookup = entries or {}
         vector_weight = self.hybrid.vector_weight if self.hybrid else 0.6
         lexical_weight = self.hybrid.lexical_weight if self.hybrid else 0.4
 
@@ -167,13 +165,53 @@ class Recall:
             )
             self._record_search(space, duration_s=time.perf_counter() - started)
 
-            for entry_id, score in normalize_scores(fused).items():
-                entry = lookup.get(entry_id)
-                if entry is not None:
-                    results.append(ScoredEntry(entry=entry, score=score, space=space))
+            results.extend(self._materialise(space, normalize_scores(fused)))
 
         results.sort(key=lambda r: (-r.score, r.entry.entry_id))
         return tuple(results[:k])
+
+    def _materialise(self, space: str, scores: dict[str, float]) -> list[ScoredEntry]:
+        """hit id 를 id 점조회 한 번으로 항목으로 바꾼다.
+
+        scan 결과 맵을 쓰면 상한 밖의 기억은 인덱스에 있어도 조용히 사라진다.
+        저장소에 없는 id (TTL 삭제 뒤 인덱스 지연) 와 다른 space 의 항목은 그 hit 만 탈락시킨다.
+        """
+        if not scores:
+            return []
+        stored = self.store.get_many(list(scores))
+        # 정정으로 대체된 항목은 여기서 거른다 — 서비스·HTTP·tool 세 경로가 같은 규칙을 쓰고,
+        # 원본과 정정이 모두 최근 scan 밖이어도 대체된 기억이 주입되지 않는다 (09 Context 4)
+        replaced = self.store.superseded(space, list(stored))
+        found: list[ScoredEntry] = []
+        for entry_id, score in scores.items():
+            entry = stored.get(entry_id)
+            if entry is None:
+                log.debug(
+                    "memory index hit has no stored entry",
+                    memory_space=space,
+                    op="search",
+                    entry_id=entry_id,
+                )
+                continue
+            if entry_id in replaced:
+                log.debug(
+                    "memory hit dropped, superseded by a correction",
+                    memory_space=space,
+                    op="search",
+                    entry_id=entry_id,
+                )
+                continue
+            if entry.space != space:
+                # 인덱스는 space 별이라 일어나선 안 된다 — 일어나면 ACL 경계를 넘은 것이므로 버린다
+                log.debug(
+                    "memory index hit belongs to another space",
+                    memory_space=space,
+                    op="search",
+                    entry_id=entry_id,
+                )
+                continue
+            found.append(ScoredEntry(entry=entry, score=score, space=space))
+        return found
 
     def _record_search(self, space: str, *, duration_s: float) -> None:
         """검색 지연과 연산 카운터를 남긴다 — 메트릭 미주입 시 무동작."""
@@ -182,38 +220,6 @@ class Recall:
         telemetry = IndexTelemetry(self.metrics)
         telemetry.search_finished(space=space, duration_s=duration_s)
         telemetry.operation(space=space, op=OP_SEARCH)
-
-
-def superseded_ids(entries: Iterable[MemoryEntry]) -> frozenset[str]:
-    """Collect the ids that some other entry supersedes.
-
-    정정으로 대체된 항목의 id 를 모읍니다 — ``resolve_corrections`` 의 입력입니다.
-
-    Args:
-        entries: The candidate entries.
-
-    Returns:
-        Ids that at least one entry claims to supersede.
-    """
-    return frozenset(entry.supersedes for entry in entries if entry.supersedes)
-
-
-def resolve_corrections(
-    results: Sequence[ScoredEntry], superseded: frozenset[str]
-) -> tuple[ScoredEntry, ...]:
-    """Drop entries that a later correction replaced.
-
-    정정으로 대체된 항목을 제외합니다 — 대체된 기억을 주입하면 모델이 이미
-    틀린 것으로 정정된 사실을 다시 믿습니다.
-
-    Args:
-        results: Scored results, best-first.
-        superseded: Entry ids that some other entry supersedes.
-
-    Returns:
-        The surviving results in their original order.
-    """
-    return tuple(r for r in results if r.entry.entry_id not in superseded)
 
 
 def apply_budget(
@@ -290,8 +296,6 @@ class AutoRecall:
         query: str,
         *,
         spaces: Sequence[str],
-        entries: dict[str, MemoryEntry],
-        superseded: frozenset[str] = frozenset(),
     ) -> tuple[ScoredEntry, ...]:
         """Recall once for a task entry.
 
@@ -306,10 +310,9 @@ class AutoRecall:
 
         self.invocations += 1
         self._record_recall(spaces)
-        found = self.recall.search(query, spaces=spaces, k=self.policy.k, entries=entries)
-        current = resolve_corrections(found, superseded)
+        found = self.recall.search(query, spaces=spaces, k=self.policy.k)
         selected = apply_budget(
-            current,
+            found,
             min_score=self.policy.min_score,
             budget_tokens=self.policy.budget_tokens,
         )
@@ -344,5 +347,4 @@ __all__ = [
     "normalize_scores",
     "reciprocal_rank_fusion",
     "render_context",
-    "resolve_corrections",
 ]

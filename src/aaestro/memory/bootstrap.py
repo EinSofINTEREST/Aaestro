@@ -150,7 +150,7 @@ def build_deployment(
     service = MemoryService(store=create_store(config.memory), metrics=metrics)
     # 인덱스는 프로세스 메모리다 — 되읽지 않으면 재시작 전의 기억이 검색되지 않는다 (#312)
     indexer.warm(_stored_entries(service.store), chunk)
-    recall = Recall(indexes=indexer.indexes, metrics=metrics, latest_resolver=service.store)
+    recall = Recall(indexes=indexer.indexes, store=service.store, metrics=metrics)
     tokens = TokenRegistry()
 
     if access is not None:

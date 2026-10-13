@@ -28,7 +28,7 @@ from urllib.parse import quote, urlsplit
 import structlog
 
 from aaestro.access.client import ACCESS_URL_ENV
-from aaestro.access.registry import ACCESS_CREDENTIAL_ENV
+from aaestro.access.model import ACCESS_CREDENTIAL_ENV
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 from aaestro.core.manifest import agent_name
 from aaestro.protocols.mcp.transport import MCP_PROXY_URL_ENV

@@ -207,7 +207,16 @@ Memory Space ──┬── Vector index    (embedding — 의미 검색)
    (cross-space 검색은 호출 측이 space 목록을 명시할 때만, 각각 검색 후 병합)
 3. **Chunking**: `chunk.max_tokens` 초과 content 는 분할 임베딩 — 검색 결과는
    entry 단위로 dedup 하여 반환
-4. **식별자 정확 검색**: 에러 코드/함수명/URL 같은 식별자는 lexical index 가 담당 —
+4. **Materialize 는 id 점조회**: 검색 hit 의 항목은 저장소에서 **hit id 로 조회**한다
+   (`MemoryStore.get_many`, space 당 한 쿼리). 최근 N건 scan 결과 맵으로 hit 을 항목으로 바꾸지
+   않는다 — scan 상한이 곧 기억의 지평선이 되어, 인덱스에 있어도 상한보다 오래된 기억이 조용히
+   버려진다. 저장소에 없는 hit (TTL 삭제 뒤 인덱스 지연) 은 DEBUG 로그와 함께 그 hit 만 탈락한다.
+   **정정 해석도 같은 점조회다**: `Recall.search` 가 hit id 들 중 다른 항목이 `supersedes` 로 가리키는 것
+   (`MemoryStore.superseded`, 쿼리 한 번) 을 거른다 — 서비스·HTTP·`memory_search` tool 이 같은 규칙을 쓰고,
+   원본과 정정이 모두 최근 N건 밖이어도 대체된 기억이 주입되지 않는다
+   (정정은 **같은 space 안에서만** 대체한다 — `superseded(space, ids)` 가 space 로 좁히고,
+   `MemoryService.append` 는 다른 space 의 항목을 가리키는 `supersedes` 를 `VAL_002` 로 거절한다)
+5. **식별자 정확 검색**: 에러 코드/함수명/URL 같은 식별자는 lexical index 가 담당 —
    vector 만으로 매칭 실패하는 케이스의 보완 (하이브리드가 기본인 이유)
 
 ### Write Path — 비동기 인덱싱

@@ -140,8 +140,13 @@ Agents accumulate searchable context in declared memory spaces
 
 - Hybrid index per space: vector (embeddings) + lexical (BM25) + metadata filters,
   merged with reciprocal rank fusion
+- Search hits are materialised by id lookup in the store, so a space's size never hides an
+  older memory that the index still holds (there is no scan horizon); corrections are resolved
+  the same way, so a superseded memory is dropped from every search path
 - Token-budgeted auto-recall at task start; further searches via an explicit tool
 - Append-only entries with provenance; retention and compaction declared per memoryset
+- The agent-side client (`memory/client.py`) never imports server code (store, service, index),
+  so the agent daemon stays free of storage dependencies
 
 See [09-memory-context.md](../../.claude/rules/09-memory-context.md).
 

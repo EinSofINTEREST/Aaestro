@@ -9,8 +9,8 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from aaestro.runtime import memory_http
-from aaestro.runtime.memory_http import HttpMemoryAccess
+from aaestro.memory import client as memory_client
+from aaestro.memory.client import HttpMemoryAccess
 
 
 @pytest.fixture
@@ -25,7 +25,7 @@ def created(monkeypatch) -> list[httpx.AsyncClient]:
         clients.append(client)
         return client
 
-    monkeypatch.setattr(memory_http.httpx, "AsyncClient", factory)
+    monkeypatch.setattr(memory_client.httpx, "AsyncClient", factory)
     return clients
 
 

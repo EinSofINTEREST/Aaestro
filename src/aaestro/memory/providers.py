@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import httpx
+import structlog
 
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 
@@ -31,6 +32,8 @@ BASE_URL_ENV = "AAESTRO_EMBEDDING_BASE_URL"
 API_KEY_ENV = "AAESTRO_EMBEDDING_API_KEY"  # noqa: S105 — 키 이름이지 값이 아니다
 
 DEFAULT_TIMEOUT_S = 30.0
+
+log = structlog.get_logger(__name__)
 
 
 def embedding_error(code: ErrorCode, message: str, **details: str) -> AaestroError:
@@ -171,7 +174,14 @@ def build_embedder(spec: EmbeddingSpec | None) -> Embedder | None:
     base_url = os.environ.get(BASE_URL_ENV, "").strip()
     if not base_url:
         # 주소가 없으면 오프라인 기본값을 유지한다 — 실패시키면 endpoint 없이
-        # 돌던 개발/테스트가 전부 막힌다
+        # 돌던 개발/테스트가 전부 막힌다. 다만 선언이 있는데 해시 벡터로 도는 것은
+        # 운영에서 조용히 의미 검색이 망가진 상태이므로 눈에 띄게 남긴다
+        log.warning(
+            "semantic search is running on a hash embedder",
+            provider=spec.provider,
+            model=spec.model,
+            reason=f"{BASE_URL_ENV} is not set",
+        )
         return None
 
     return OpenAICompatibleEmbedder(

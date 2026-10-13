@@ -133,8 +133,13 @@ secrets (재배포가 필요합니다). [API 레퍼런스](api.md#권한-레지�
 가능한 컨텍스트를 축적합니다:
 
 - Space 별 하이브리드 인덱스: vector(임베딩) + lexical(BM25) + 메타데이터 필터, RRF 병합
+- 검색 hit 은 저장소 id 점조회로 항목이 됩니다 — space 가 커져도 인덱스에 남은 오래된
+  기억이 가려지지 않습니다 (scan 지평선 없음). 정정 해석도 같은 방식이라 대체된 기억은 모든
+  검색 경로에서 빠집니다
 - 태스크 진입 시 토큰 예산 기반 auto-recall, 이후는 명시적 tool 로 검색
 - Append-only + 출처(provenance) 필수, memoryset 별 보존/compaction 선언
+- 에이전트 쪽 클라이언트(`memory/client.py`)는 서버 코드(store, service, index)를 import 하지
+  않으므로 agent 데몬은 저장소 의존성을 갖지 않음
 
 상세: [09-memory-context.md](../../.claude/rules/09-memory-context.md).
 

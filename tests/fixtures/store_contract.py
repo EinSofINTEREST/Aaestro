@@ -56,6 +56,55 @@ def test_missing_entry_returns_none(store):
 # --- append-only --------------------------------------------------------------
 
 
+def test_get_many_returns_the_stored_entries_keyed_by_id(store):
+    first = store.append(make_entry(content="첫 번째"))
+    second = store.append(make_entry(content="두 번째", space="local:writer:longterm"))
+    store.append(make_entry(content="요청하지 않은 항목"))
+
+    found = store.get_many([first.entry_id, second.entry_id])
+
+    assert found == {first.entry_id: first, second.entry_id: second}
+
+
+def test_get_many_leaves_out_unknown_ids(store):
+    """없는 id 는 오류가 아니라 빠진 결과다 — TTL 삭제 뒤 인덱스가 늦는 경우다."""
+    kept = store.append(make_entry())
+
+    assert store.get_many([kept.entry_id, "no-such-id"]) == {kept.entry_id: kept}
+
+
+def test_get_many_of_nothing_is_empty(store):
+    assert store.get_many([]) == {}
+
+
+def test_superseded_reports_the_ids_a_correction_points_at(store):
+    old = store.append(make_entry(content="포트는 9000"))
+    untouched = store.append(make_entry(content="무관한 항목"))
+    store.append(make_entry(content="포트는 9100", supersedes=old.entry_id))
+
+    assert store.superseded(old.space, [old.entry_id, untouched.entry_id]) == {old.entry_id}
+
+
+def test_superseded_ignores_a_correction_from_another_space(store):
+    """정정은 같은 space 의 항목만 대체한다 — 다른 space 의 정정이 기억을 숨기면 안 된다."""
+    target = store.append(make_entry(content="org policy approved", space="global:global:org"))
+    store.append(
+        make_entry(content="hide it", space="local:attacker:longterm", supersedes=target.entry_id)
+    )
+
+    assert store.superseded("global:global:org", [target.entry_id]) == set()
+
+
+def test_superseded_ignores_ids_nobody_corrects(store):
+    kept = store.append(make_entry())
+
+    assert store.superseded(kept.space, [kept.entry_id, "no-such-id"]) == set()
+
+
+def test_superseded_of_nothing_is_empty(store):
+    assert store.superseded("local:researcher:longterm", []) == set()
+
+
 def test_correction_is_a_new_entry(store):
     """정정은 수정이 아니라 supersedes 를 단 새 항목이다."""
     original = make_entry(content="포트는 9000 이다")

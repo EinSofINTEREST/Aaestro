@@ -28,8 +28,7 @@ import structlog
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from aaestro.access.client import ACCESS_URL_ENV
-from aaestro.access.model import Mode, ResourceKind, mode_problem
-from aaestro.access.registry import ACCESS_CREDENTIAL_ENV
+from aaestro.access.model import ACCESS_CREDENTIAL_ENV, Mode, ResourceKind, mode_problem
 from aaestro.core.agent import TaskResult
 from aaestro.core.errors import (
     AaestroError,

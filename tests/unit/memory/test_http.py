@@ -10,6 +10,7 @@ import httpx
 import pytest
 
 from aaestro.core.errors import AaestroError, ErrorCode
+from aaestro.memory.client import HttpMemoryAccess
 from aaestro.memory.entry import MemoryEntry, MemorySource
 from aaestro.memory.http import TokenRegistry, create_app
 from aaestro.memory.index import IndexRegistry
@@ -17,7 +18,6 @@ from aaestro.memory.recall import Recall
 from aaestro.memory.service import MemoryService, build_token
 from aaestro.memory.store import SqliteMemoryStore
 from aaestro.modules.memoryset import MemoryKind
-from aaestro.runtime.memory_http import HttpMemoryAccess
 
 BASE_URL = "http://memory.test"
 
@@ -33,7 +33,7 @@ def served():
     indexer = IndexRegistry()
     tokens = TokenRegistry()
     secret = tokens.issue(token)
-    app = create_app(service, Recall(indexes=indexer.indexes), tokens, indexer=indexer)
+    app = create_app(service, Recall(indexes=indexer.indexes, store=store), tokens, indexer=indexer)
 
     client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=BASE_URL)
     access = HttpMemoryAccess(base_url=BASE_URL, token=secret, client=client)
@@ -253,7 +253,10 @@ def advertise(agent: str, *, group: str | None = None, **declarations) -> list[d
     store = SqliteMemoryStore()
     try:
         app = create_app(
-            MemoryService(store=store), Recall(indexes=indexer.indexes), tokens, indexer=indexer
+            MemoryService(store=store),
+            Recall(indexes=indexer.indexes, store=store),
+            tokens,
+            indexer=indexer,
         )
         with TestClient(app) as client:
             return client.get(  # type: ignore[no-any-return]
@@ -307,7 +310,10 @@ def test_the_advertised_mode_matches_what_append_actually_does():
     store = SqliteMemoryStore()
     try:
         app = create_app(
-            MemoryService(store=store), Recall(indexes=indexer.indexes), tokens, indexer=indexer
+            MemoryService(store=store),
+            Recall(indexes=indexer.indexes, store=store),
+            tokens,
+            indexer=indexer,
         )
         headers = {"Authorization": f"Bearer {secret}"}
         with TestClient(app) as client:
@@ -322,3 +328,218 @@ def test_the_advertised_mode_matches_what_append_actually_does():
 
     assert advertised == "ro"
     assert written.status_code == 401
+
+
+# --- 검색 경계 (#324) -----------------------------------------------------------
+# get_many 는 service.read 를 거치지 않는다 — 별칭 해석이 유일한 경계이므로 부류로 지킨다
+
+
+OTHER_SPACE = "local:writer:longterm"
+
+
+async def _index_foreign_memory(served):
+    """다른 에이전트의 space 에 기억을 저장하고 색인한다 — 새면 검색에 나온다."""
+    from aaestro.modules.memoryset import ChunkSpec
+
+    _access, service, _token, _space_id, indexer, _tokens = served
+    secret = service.store.append(entry(OTHER_SPACE, "another agent private sidecar secret"))
+    indexer.submit(secret, ChunkSpec())
+    indexer.drain()
+    return secret
+
+
+@pytest.mark.parametrize("target", [OTHER_SPACE, "secret", "group:research:knowledge"])
+async def test_search_refuses_spaces_this_token_does_not_declare(served, target):
+    """다른 에이전트의 space id, 미선언 별칭, 선언 밖 id 는 모두 MEM_001 — 새면 기억이 샌다."""
+    access, *_ = served
+    await _index_foreign_memory(served)
+
+    with pytest.raises(AaestroError) as exc_info:
+        await access.search("sidecar secret", spaces=[target])
+
+    assert exc_info.value.code == ErrorCode.MEM_001
+
+
+# --- 정정 반영은 검색이 한다 (#324) ------------------------------------------------
+
+
+async def _fill_with_a_correction(served):
+    """원본과 정정 뒤에 filler 를 쌓는다 — 둘 다 어떤 최근 N건 창에도 들지 않는다."""
+    access, service, token, space_id, indexer, _tokens = served
+    old = entry(space_id, "the port is 9000 for the sidecar")
+    new = entry(space_id, "the port is 9100 for the sidecar").model_copy(
+        update={"supersedes": old.entry_id}
+    )
+    for item in (old, new):
+        await access.append("longterm", entry=item)
+    for i in range(30):
+        await access.append("longterm", entry=entry(space_id, f"filler record {i} about nothing"))
+    indexer.drain()
+    return old, new
+
+
+async def test_http_search_returns_only_the_correction(served):
+    access, *_ = served
+    old, new = await _fill_with_a_correction(served)
+
+    found = await access.search("sidecar port", k=5)
+
+    ids = [scored.entry.entry_id for scored in found]
+    assert new.entry_id in ids
+    assert old.entry_id not in ids
+
+
+async def test_memory_search_tool_returns_only_the_correction(served):
+    from aaestro.memory.tool import run_memory_search
+
+    access, *_ = served
+    await _fill_with_a_correction(served)
+
+    results = await run_memory_search(access, {"query": "sidecar port", "k": 5})
+
+    contents = [r["content"] for r in results]
+    assert "the port is 9100 for the sidecar" in contents
+    assert "the port is 9000 for the sidecar" not in contents
+
+
+async def test_http_auto_recall_injects_only_the_correction(served):
+    from aaestro.modules.memoryset import RecallSpec
+
+    access, *_ = served
+    await _fill_with_a_correction(served)
+
+    context = await access.recall_for_task(
+        "sidecar port", policy=RecallSpec(auto=True, k=5, min_score=0.0)
+    )
+
+    assert "9100" in context
+    assert "9000" not in context
+
+
+# --- 성공한 검색도 감사에 남는다 (#324) --------------------------------------------
+
+
+async def test_a_successful_search_is_audited_per_space(served):
+    access, service, *_ = served
+    await access.append("longterm", entry=entry(served[3], "mcp sidecar 는 태그 고정이 필요하다"))
+    served[4].drain()
+
+    await access.search("sidecar")
+
+    record = service.audit_log[-1]
+    assert record["op"] == "search"
+    assert record["status"] == "ok"
+    assert record["memory_space"] == "longterm"
+    assert record["agent"] == "researcher"
+
+
+# --- 다른 space 의 정정은 기억을 숨기지 못한다 (#324) ---------------------------------
+
+
+@pytest.fixture
+def org_stack(served):
+    """org 를 읽기만 하는 공격자와 피해자, org 에 쓰는 사서를 같은 서비스에 붙인다."""
+    access, service, _token, _space_id, indexer, tokens = served
+    client = access.client
+
+    def agent(name: str, *, writers: tuple[str, ...] = ()) -> HttpMemoryAccess:
+        token = build_token(
+            agent=name,
+            group=None,
+            local=[("longterm", name)],
+            global_spaces=[("org", writers)],
+        )
+        return HttpMemoryAccess(base_url=BASE_URL, token=tokens.issue(token), client=client)
+
+    return agent("librarian", writers=("librarian",)), agent("attacker"), agent("victim"), indexer
+
+
+async def test_a_read_only_agent_cannot_hide_a_shared_memory_with_a_correction(org_stack):
+    librarian, attacker, victim, indexer = org_stack
+    org = await librarian.append("org", entry=entry("global:global:org", "qqorg policy approved"))
+    indexer.drain()
+    seen = await attacker.search("qqorg policy", spaces=["org"])
+    assert [s.entry.entry_id for s in seen] == [org.entry_id], "공격자는 id 를 읽을 수 있다"
+
+    # 클라이언트는 4xx 를 MEM_004 로 옮기므로 서비스의 응답을 직접 본다
+    forged = entry("local:attacker:longterm", "hide it").model_copy(
+        update={"supersedes": org.entry_id}
+    )
+    response = await attacker.client.post(
+        f"{BASE_URL}/v1/append",
+        json={"space": "longterm", "entry": forged.model_dump(mode="json")},
+        headers={"authorization": f"Bearer {attacker.token}"},
+    )
+
+    assert response.status_code < 500
+    assert response.status_code >= 400
+    body = response.json()
+    assert body["code"] == "VAL_002"
+    assert org.entry_id not in response.text
+    found = await victim.search("qqorg policy", spaces=["org"])
+    assert [s.entry.entry_id for s in found] == [org.entry_id]
+
+
+async def test_a_correction_stored_out_of_band_is_ignored_by_search(org_stack, served):
+    """append 검사를 우회해 저장소에 들어간 교차 space 정정도 검색은 무시한다."""
+    librarian, _attacker, victim, indexer = org_stack
+    _access, service, *_ = served
+    org = await librarian.append("org", entry=entry("global:global:org", "qqorg policy approved"))
+    indexer.drain()
+    service.store.append(
+        entry("local:attacker:longterm", "hide it").model_copy(update={"supersedes": org.entry_id})
+    )
+
+    found = await victim.search("qqorg policy", spaces=["org"])
+
+    assert [s.entry.entry_id for s in found] == [org.entry_id]
+
+
+async def test_unknown_and_foreign_correction_targets_get_the_same_response(org_stack):
+    """없는 id 와 다른 space 의 id 에 같은 응답을 줘야 다른 space 의 id 존재 여부가 새지 않는다."""
+    librarian, attacker, _victim, _indexer = org_stack
+    org = await librarian.append("org", entry=entry("global:global:org", "qqorg policy approved"))
+
+    async def probe(target: str) -> httpx.Response:
+        forged = entry("local:attacker:longterm", "hide it").model_copy(
+            update={"supersedes": target}
+        )
+        return await attacker.client.post(
+            f"{BASE_URL}/v1/append",
+            json={"space": "longterm", "entry": forged.model_dump(mode="json")},
+            headers={"authorization": f"Bearer {attacker.token}"},
+        )
+
+    missing, foreign = await probe("no-such-entry"), await probe(org.entry_id)
+
+    assert missing.status_code == foreign.status_code == 400
+    assert missing.json() == foreign.json()
+    assert missing.json()["code"] == "VAL_002"
+
+
+# --- 검색 k 상한 -------------------------------------------------------------
+
+
+def test_search_request_bounds_k():
+    from pydantic import ValidationError
+
+    from aaestro.memory.http import MAX_SEARCH_K, SearchRequest
+
+    assert SearchRequest(query="q", k=MAX_SEARCH_K).k == MAX_SEARCH_K
+    for bad in (0, MAX_SEARCH_K + 1):
+        with pytest.raises(ValidationError):
+            SearchRequest(query="q", k=bad)
+
+
+async def test_http_search_rejects_an_oversized_k_as_422(served):
+    from aaestro.memory.http import MAX_SEARCH_K
+
+    access, *_ = served
+    response = await access.client.post(
+        f"{BASE_URL}/v1/search",
+        headers={"authorization": f"Bearer {access.token}"},
+        json={"query": "sidecar", "k": MAX_SEARCH_K + 1},
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"][0]["loc"] == ["body", "k"]

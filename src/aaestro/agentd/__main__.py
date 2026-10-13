@@ -40,7 +40,7 @@ from aaestro.core.startup import startup_guard
 from aaestro.core.tools import is_mcp_tool
 from aaestro.core.yamlio import YamlReadError, load_yaml_file
 from aaestro.http_auth import resolve_required_token
-from aaestro.memory.http import MEMORY_TOKEN_ENV, MEMORY_URL_ENV
+from aaestro.memory.client import MEMORY_TOKEN_ENV, MEMORY_URL_ENV
 from aaestro.memory.tool import MEMORY_SEARCH_TOOL
 from aaestro.observability.metrics import DEFAULT_METRICS_PORT, Metrics
 from aaestro.protocols.a2a.card import build_card
@@ -64,6 +64,7 @@ BIND_HOST_ENV = "AAESTRO_AGENT_BIND_HOST"
 DEFAULT_BIND_HOST = "0.0.0.0"  # noqa: S104 — 컨테이너 안에서는 runtime 이 닿아야 한다
 
 ECHO_EXECUTOR = "echo"
+"""테스트 이미지가 선택하는 대역 — base 이미지의 기본값이 되어서는 안 된다."""
 
 ARTIFACT_ROOT_ENV = "AAESTRO_ARTIFACT_ROOT"
 """Artifact 저장 루트 — runtime 이 주입한다. 미주입 시 저장소 없음."""
@@ -82,8 +83,6 @@ LOG_LEVEL_ENV = "AAESTRO_LOG_LEVEL"
 LOG_FORMAT_ENV = "AAESTRO_LOG_FORMAT"
 METRICS_PORT_ENV = "AAESTRO_METRICS_PORT"
 """관측 설정 — 컨테이너 안이라 env 로 받는다 (01 Multi-Environment Support)."""
-"""테스트 이미지가 선택하는 대역 — base 이미지의 기본값이 되어서는 안 된다."""
-
 log = structlog.get_logger(__name__)
 
 
@@ -551,7 +550,7 @@ def _memory_access(agent: str) -> Any:
     if not url or not token:
         return None
 
-    from aaestro.runtime.memory_http import HttpMemoryAccess
+    from aaestro.memory.client import HttpMemoryAccess
 
     return HttpMemoryAccess(base_url=url, token=token)
 

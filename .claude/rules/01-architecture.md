@@ -526,6 +526,7 @@ aaestro/
 │       │   └── providers/       # jev.py (첫 provider), fake.py (테스트 대역)
 │       │
 │       ├── memory/              # Memory Service (컨텍스트 메모리 + 인덱스)
+│       │   ├── client.py        # 에이전트 쪽 클라이언트 — 서버 코드를 import 하지 않는다 (agentd 가 쓴다)
 │       │   ├── service.py       # space 관리 + access 토큰 검증 API
 │       │   ├── store.py         # MemoryStore 추상 + sqlite/postgres 구현
 │       │   ├── tokens.py        # 선언 → 접근 토큰 조립 (control plane 과 Memory Service 공용 — runtime 에 의존하지 않는다)
