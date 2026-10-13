@@ -1,8 +1,10 @@
-"""HTTP-backed memory access for agents.
+"""HTTP-backed memory access for agents — the client side of the Memory Service.
 
 에이전트 컨테이너는 이 클라이언트로만 메모리에 닿는다 — **DB 자격증명은
 컨테이너에 들어가지 않는다** (09 Access Enforcement 1). 접근 범위는 runtime 이
 발급한 불투명 토큰이 정하므로, 클라이언트는 자기 권한을 알 필요가 없다.
+
+이 모듈은 agentd 가 import 한다 — 서버 코드(store · service · gate …)를 끌어오지 않는다.
 """
 
 from __future__ import annotations
@@ -24,6 +26,10 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from aaestro.modules.memoryset import RecallSpec
+
+MEMORY_TOKEN_ENV = "AAESTRO_MEMORY_TOKEN"  # noqa: S105 — env 키 이름이지 값이 아니다
+MEMORY_URL_ENV = "AAESTRO_MEMORY_URL"
+"""agentd 가 서비스에 닿기 위해 받는 값 — secrets 와 같은 주입 경로다."""
 
 DEFAULT_TIMEOUT_S = 30.0
 
@@ -211,4 +217,4 @@ def _detail(response: httpx.Response) -> str:
     return ""
 
 
-__all__ = ["DEFAULT_TIMEOUT_S", "HttpMemoryAccess"]
+__all__ = ["DEFAULT_TIMEOUT_S", "MEMORY_TOKEN_ENV", "MEMORY_URL_ENV", "HttpMemoryAccess"]

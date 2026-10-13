@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from aaestro.core.errors import AaestroError, ErrorCode
 from aaestro.core.manifest import MemoryMode
 from aaestro.http_errors import status_for
+from aaestro.memory.client import MEMORY_TOKEN_ENV, MEMORY_URL_ENV
 from aaestro.memory.entry import MemoryEntry
 from aaestro.memory.gate import Gate, TokenGate, unauthorized
 from aaestro.modules.memoryset import ChunkSpec, MemoryKind
@@ -30,9 +31,6 @@ if TYPE_CHECKING:
     from aaestro.memory.recall import Recall
     from aaestro.memory.service import AccessToken, MemoryService
 
-MEMORY_TOKEN_ENV = "AAESTRO_MEMORY_TOKEN"  # noqa: S105 — env 키 이름이지 값이 아니다
-MEMORY_URL_ENV = "AAESTRO_MEMORY_URL"
-"""agentd 가 서비스에 닿기 위해 받는 값 — secrets 와 같은 주입 경로다."""
 
 ACCESS_DENIED: dict[str, int] = {ErrorCode.MEM_001: status.HTTP_401_UNAUTHORIZED}
 """이 서비스만의 매핑 — 토큰이 안 통한 것과 서버 장애를 클라이언트가 갈라야 한다."""

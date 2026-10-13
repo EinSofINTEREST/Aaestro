@@ -29,7 +29,7 @@ def build_mcp_client(
     """The client owning this agent's MCP sessions — None when nothing is declared."""
     if not manifest.spec.mcp.servers:
         return None
-    from aaestro.access.registry import ACCESS_CREDENTIAL_ENV
+    from aaestro.access.model import ACCESS_CREDENTIAL_ENV
     from aaestro.protocols.mcp.client import McpClient
     from aaestro.protocols.mcp.sdk import SdkHttpClient, SdkStdioClient
     from aaestro.protocols.mcp.transport import (

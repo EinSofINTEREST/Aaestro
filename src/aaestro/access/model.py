@@ -12,6 +12,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
+ACCESS_CREDENTIAL_ENV = "AAESTRO_ACCESS_CREDENTIAL"  # noqa: S105 — 키 이름이지 값이 아니다
+"""에이전트 컨테이너에 주입되는 신원 자격의 env 이름 — 클라이언트도 읽으므로 모델에 둔다."""
+
 
 class ResourceKind(StrEnum):
     """What a permission is about."""
@@ -127,6 +130,7 @@ class Decision:
 
 
 __all__ = [
+    "ACCESS_CREDENTIAL_ENV",
     "DECLARATION",
     "mode_problem",
     "OPERATOR",

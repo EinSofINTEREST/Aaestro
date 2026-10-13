@@ -145,6 +145,8 @@ Agents accumulate searchable context in declared memory spaces
   the same way, so a superseded memory is dropped from every search path
 - Token-budgeted auto-recall at task start; further searches via an explicit tool
 - Append-only entries with provenance; retention and compaction declared per memoryset
+- The agent-side client (`memory/client.py`) never imports server code (store, service, index),
+  so the agent daemon stays free of storage dependencies
 
 See [09-memory-context.md](../../.claude/rules/09-memory-context.md).
 

@@ -93,8 +93,7 @@ async def test_recorded_metrics_reach_the_exposed_registry():
 
 async def test_injected_endpoint_becomes_memory_access(monkeypatch):
     """runtime 이 주입한 주소·토큰으로만 메모리에 닿는다 (09 Access Enforcement 1)."""
-    from aaestro.memory.http import MEMORY_TOKEN_ENV, MEMORY_URL_ENV
-    from aaestro.runtime.memory_http import HttpMemoryAccess
+    from aaestro.memory.client import MEMORY_TOKEN_ENV, MEMORY_URL_ENV, HttpMemoryAccess
 
     monkeypatch.setenv(MEMORY_URL_ENV, "http://memory:8080")
     monkeypatch.setenv(MEMORY_TOKEN_ENV, "opaque")
@@ -107,7 +106,7 @@ async def test_injected_endpoint_becomes_memory_access(monkeypatch):
 
 async def test_without_an_endpoint_there_is_no_memory_access(monkeypatch):
     """주입되지 않았는데 만들면 컨테이너가 저장소를 직접 열려 든다."""
-    from aaestro.memory.http import MEMORY_TOKEN_ENV, MEMORY_URL_ENV
+    from aaestro.memory.client import MEMORY_TOKEN_ENV, MEMORY_URL_ENV
 
     monkeypatch.delenv(MEMORY_URL_ENV, raising=False)
     monkeypatch.delenv(MEMORY_TOKEN_ENV, raising=False)
@@ -122,7 +121,7 @@ async def test_memory_search_is_advertised_once_access_exists(monkeypatch):
     import yaml
 
     from aaestro.core.manifest import AgentManifest
-    from aaestro.memory.http import MEMORY_TOKEN_ENV, MEMORY_URL_ENV
+    from aaestro.memory.client import MEMORY_TOKEN_ENV, MEMORY_URL_ENV
     from aaestro.memory.tool import MEMORY_SEARCH_TOOL
 
     monkeypatch.setenv(MEMORY_URL_ENV, "http://memory:8080")

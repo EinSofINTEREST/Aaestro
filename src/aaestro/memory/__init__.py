@@ -1,86 +1,26 @@
 """Memory Service — context memory spaces and access control.
 
 컨텍스트 메모리 space 와 접근 제어. 저장소 자격증명은 서비스만 보유한다.
+
+여기서 re-export 하는 것은 **에이전트 쪽(클라이언트) 심볼뿐**이다 — agentd 가 이 패키지를
+import 해도 store · service · index 같은 서버 코드가 올라오지 않아야 한다 (09 Access Enforcement 1).
+서버 심볼은 하위 모듈에서 직접 import 한다 (``from aaestro.memory.service import MemoryService``).
 """
 
-from aaestro.memory.backend import create_store
-from aaestro.memory.compaction import (
-    CompactionPlan,
-    Summarizer,
-    build_summary,
-    expired_entries,
-    plan_compaction,
+from aaestro.memory.client import (
+    DEFAULT_TIMEOUT_S,
+    MEMORY_TOKEN_ENV,
+    MEMORY_URL_ENV,
+    HttpMemoryAccess,
 )
-from aaestro.memory.embedding import Embedder, HashEmbedder, cosine, normalize, tokenize
 from aaestro.memory.entry import MAX_CONTENT_BYTES, MemoryEntry, MemorySource
-from aaestro.memory.index import (
-    Chunk,
-    Hit,
-    IndexQueue,
-    IndexRegistry,
-    SpaceIndex,
-    index_error,
-    split_chunks,
-)
-from aaestro.memory.recall import (
-    AutoRecall,
-    Recall,
-    ScoredEntry,
-    apply_budget,
-    reciprocal_rank_fusion,
-    render_context,
-)
-from aaestro.memory.service import (
-    SCOPE_PRECEDENCE,
-    AccessToken,
-    MemoryService,
-    MemorySpace,
-    access_denied,
-    build_token,
-)
-from aaestro.memory.store import (
-    MemoryStore,
-    SqliteMemoryStore,
-    storage_error,
-    validate_entry,
-)
 
 __all__ = [
+    "DEFAULT_TIMEOUT_S",
     "MAX_CONTENT_BYTES",
-    "SCOPE_PRECEDENCE",
-    "AccessToken",
-    "AutoRecall",
-    "Chunk",
-    "CompactionPlan",
-    "Embedder",
-    "HashEmbedder",
-    "Hit",
-    "IndexQueue",
-    "IndexRegistry",
+    "MEMORY_TOKEN_ENV",
+    "MEMORY_URL_ENV",
+    "HttpMemoryAccess",
     "MemoryEntry",
-    "MemoryService",
     "MemorySource",
-    "MemorySpace",
-    "MemoryStore",
-    "Recall",
-    "ScoredEntry",
-    "SpaceIndex",
-    "SqliteMemoryStore",
-    "Summarizer",
-    "access_denied",
-    "apply_budget",
-    "build_summary",
-    "build_token",
-    "cosine",
-    "create_store",
-    "expired_entries",
-    "index_error",
-    "normalize",
-    "plan_compaction",
-    "reciprocal_rank_fusion",
-    "render_context",
-    "split_chunks",
-    "storage_error",
-    "tokenize",
-    "validate_entry",
 ]

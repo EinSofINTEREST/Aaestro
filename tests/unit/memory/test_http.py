@@ -10,6 +10,7 @@ import httpx
 import pytest
 
 from aaestro.core.errors import AaestroError, ErrorCode
+from aaestro.memory.client import HttpMemoryAccess
 from aaestro.memory.entry import MemoryEntry, MemorySource
 from aaestro.memory.http import TokenRegistry, create_app
 from aaestro.memory.index import IndexRegistry
@@ -17,7 +18,6 @@ from aaestro.memory.recall import Recall
 from aaestro.memory.service import MemoryService, build_token
 from aaestro.memory.store import SqliteMemoryStore
 from aaestro.modules.memoryset import MemoryKind
-from aaestro.runtime.memory_http import HttpMemoryAccess
 
 BASE_URL = "http://memory.test"
 
