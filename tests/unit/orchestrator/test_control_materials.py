@@ -130,3 +130,26 @@ async def test_without_a_store_the_routes_report_a_config_problem(workspace):
 
     assert response.status_code == 400
     assert response.json()["error"]["code"] == ErrorCode.CFG_001
+
+
+async def test_a_misspelled_files_key_is_400_and_stores_nothing(api):
+    """``file`` 오타가 빈 재료를 그 버전에 저장해 이후의 올바른 PUT 을 막지 않는다."""
+    typo = await api.put("/v1/agents/custom/materials", json={"file": {"src/a.py": "one"}})
+    right = await api.put("/v1/agents/custom/materials", json={"files": {"src/a.py": "one"}})
+
+    assert typo.status_code == 400
+    assert typo.json()["error"]["code"] == ErrorCode.VAL_002
+    assert right.status_code == 200
+
+
+async def test_an_empty_files_map_is_stored_and_locks_the_version(api):
+    """알려진 한계 (재료 스토어는 #386 범위 밖): 빈 ``files`` 도 저장되어 그 버전을 잠근다.
+
+    빈 맵을 거절하는 검증이 생기면 이 테스트를 뒤집는다.
+    """
+    empty = await api.put("/v1/agents/custom/materials", json={"files": {}})
+    then = await api.put("/v1/agents/custom/materials", json={"files": {"src/a.py": "one"}})
+
+    assert empty.status_code == 200
+    assert then.status_code == 400
+    assert then.json()["error"]["code"] == ErrorCode.MOD_002

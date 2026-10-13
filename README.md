@@ -186,6 +186,8 @@ python -m aaestro.orchestrator  # Control Plane — REST API + Web UI on /ui
 `agentd` is what the runtime layer starts inside every agent container; it reads
 `AAESTRO_MANIFEST`, `AAESTRO_AGENT_TOKEN`, `AAESTRO_ROOT`, and — when memory is wired —
 `AAESTRO_MEMORY_URL` with `AAESTRO_MEMORY_TOKEN` or `AAESTRO_MEMORY_TOKEN_FILE`.
+`AAESTRO_AGENT_TOKEN` is required: without it agentd exits with `CFG_001`. Running unauthenticated
+needs `AAESTRO_ALLOW_UNAUTHENTICATED=1` and a loopback `AAESTRO_AGENT_BIND_HOST` (default `0.0.0.0`).
 
 The Memory Service reads `AAESTRO_REPO_ROOT`, `AAESTRO_MEMORY_PORT`, and
 `AAESTRO_MEMORY_TOKENS_PATH`. It must run as its own process: appends commit immediately

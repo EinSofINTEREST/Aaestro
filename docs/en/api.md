@@ -99,6 +99,14 @@ what parsed, and `problems` for what did not. **A broken file never hides the re
 unparseable manifest would otherwise turn the whole catalog into a `500` with no clue which
 file to fix.
 
+Each problem is `{path, code, message, errors, reason}`: `path` is the file (or module version
+directory), `errors` lists the offending keys as `{field, problem}` for a schema violation, and
+`reason` says where a file could not be read — a repeated key (`duplicate key 'k' at line N`),
+a parse failure (`ScannerError at line N, column M`), or a file that is not text
+(`not valid UTF-8`). Neither carries the rejected value or a piece of the input; key names are
+reported (cut to 64 characters, non-printable characters replaced). A name mismatch carries the
+expected name (`located`), not the declared one.
+
 ### `GET /v1/agents`, `GET /v1/graphs`, `GET /v1/groups`
 
 ```json
@@ -1063,6 +1071,23 @@ What this gives you:
 
 The caller still checks the declared connections first — it spares a round trip and gives a clear
 `A2A_004` locally — but that check is a convenience, not the boundary.
+
+With or without a registry, an agent's A2A port answers two things only: the agent card
+(`GET /.well-known/agent-card.json`, readable without a credential) and JSON-RPC on `POST /`.
+
+- **Only new tasks are taken.** `SendMessage` and `SendStreamingMessage` are the only requests
+  served, and the caller is checked before a task is created — a request without a valid token or
+  ticket costs the callee no task and never reaches the agent.
+- **Tasks cannot be read back or cancelled.** `GetTask`, `ListTasks`, `SubscribeToTask`,
+  `CancelTask`, the push-notification config requests and `GetExtendedAgentCard` are refused with
+  "This operation is not supported" (`-32004`). The answer is the same for every caller and for
+  any task id, so it does not tell whether a task exists.
+- **A message cannot be addressed to an existing task.** A send that names a `taskId` is refused
+  the same way; every delegation is a new task.
+- **The task store keeps no finished task.** It holds a task only while it runs; once the task
+  completes, fails or is refused, the store drops it — the result travels in the response and
+  nowhere else. Known limit: a task whose agent run ends by cancellation can stay in the SDK's
+  internal registry of active tasks (SDK behaviour, tracked separately).
 
 ### `POST /v1/access/a2a/tickets` — any agent
 

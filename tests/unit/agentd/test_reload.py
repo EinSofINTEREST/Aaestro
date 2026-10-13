@@ -195,9 +195,10 @@ def test_the_served_app_reloads_the_standard_executor(root, tmp_path, monkeypatc
     monkeypatch.setenv(agentd.MANIFEST_ENV, str(manifest_path))
     monkeypatch.setenv(agentd.TOKEN_ENV, "agent-token")
     monkeypatch.setattr(agentd, "_setup_observability", Metrics)
+    monkeypatch.setattr(agentd, "_configure_logging", lambda: None)
     served = {}
 
-    async def serve(app, manifest, executor):
+    async def serve(app, manifest, executor, bind_host):
         served.update(app=app, executor=executor)
 
     monkeypatch.setattr(agentd, "_serve", serve)
@@ -267,6 +268,7 @@ def test_a_custom_entrypoint_is_not_given_the_standard_reload(root, tmp_path, mo
     monkeypatch.setenv(agentd.MANIFEST_ENV, str(manifest_path))
     monkeypatch.setenv(agentd.TOKEN_ENV, "agent-token")
     monkeypatch.setattr(agentd, "_setup_observability", Metrics)
+    monkeypatch.setattr(agentd, "_configure_logging", lambda: None)
     custom = Executor(agent="planner", model=FakeModel([text("x")]), tools=FakeTools(), render=str)
 
     async def build(manifest, **kwargs):
@@ -275,7 +277,7 @@ def test_a_custom_entrypoint_is_not_given_the_standard_reload(root, tmp_path, mo
     monkeypatch.setattr(agentd, "build_executor", build)
     served = {}
 
-    async def serve(app, manifest, executor):
+    async def serve(app, manifest, executor, bind_host):
         served.update(app=app)
 
     monkeypatch.setattr(agentd, "_serve", serve)

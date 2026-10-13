@@ -97,6 +97,13 @@ control plane 의 `501` (더 납작한 레거시 모양).
 `items`, 실패한 것은 `problems`. **하나가 깨져도 나머지를 가리지 않는다** — 그러지 않으면
 매니페스트 하나가 깨졌을 때 카탈로그 전체가 `500` 이 되고, 어느 파일인지 알 수 없다.
 
+problem 하나는 `{path, code, message, errors, reason}` 이다. `path` 는 파일(또는 모듈 버전
+디렉토리), `errors` 는 스키마 위반이면 문제의 키를 `{field, problem}` 으로, `reason` 은 파일을
+읽지 못한 위치를 말한다 — 중복 키(`duplicate key 'k' at line N`), 파싱 실패
+(`ScannerError at line N, column M`), 텍스트가 아닌 파일(`not valid UTF-8`). 어느 쪽도 거절된
+값이나 입력 조각을 싣지 않는다. 키 이름은 나간다 (64자로 자르고 인쇄할 수 없는 문자는 바꾼다).
+이름 불일치는 기대 이름(`located`)만 싣고 선언에 적힌 이름은 싣지 않는다.
+
 ### `GET /v1/agents`, `GET /v1/graphs`, `GET /v1/groups`
 
 ```json
@@ -1009,6 +1016,21 @@ runtime 이 에이전트보다 먼저 `aaestro-<agent>--mcp-<server>` 라는 이
 
 호출자도 선언된 연결을 먼저 확인한다 — 왕복을 아끼고 로컬에서 분명한 `A2A_004` 를 주지만, 그 검사는
 편의이지 경계가 아니다.
+
+레지스트리가 있든 없든 에이전트의 A2A 포트가 답하는 것은 둘뿐이다: 에이전트 카드
+(`GET /.well-known/agent-card.json`, 자격 없이 읽는다) 와 `POST /` 의 JSON-RPC.
+
+- **새 태스크만 받는다.** 처리하는 요청은 `SendMessage` 와 `SendStreamingMessage` 뿐이고, 태스크를
+  만들기 전에 호출자를 확인한다 — 유효한 토큰이나 표가 없는 요청은 피호출자에 태스크를 만들지 못하고
+  에이전트에 닿지 않는다.
+- **태스크를 다시 읽거나 취소할 수 없다.** `GetTask`, `ListTasks`, `SubscribeToTask`, `CancelTask`,
+  push 알림 설정 요청, `GetExtendedAgentCard` 는 "This operation is not supported" (`-32004`) 로
+  거절한다. 응답은 누가 묻든, 어떤 task id 든 같으므로 태스크가 있는지 알려 주지 않는다.
+- **기존 태스크에 메시지를 이을 수 없다.** `taskId` 를 지정한 send 도 같은 응답으로 거절한다. 위임은
+  늘 새 태스크다.
+- **태스크 store 는 끝난 태스크를 쥐지 않는다.** 태스크를 실행 중에만 들고, 완료·실패·거부되면
+  store 에서 버린다 — 결과는 응답으로만 간다. 알려진 한계: 에이전트 실행이 취소로 끝난 태스크는
+  SDK 내부의 활성 태스크 레지스트리에 남을 수 있다 (SDK 동작, 별도 이슈).
 
 ### `POST /v1/access/a2a/tickets` — 모든 에이전트
 

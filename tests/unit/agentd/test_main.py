@@ -23,6 +23,7 @@ from aaestro.agentd.echo import EchoExecutor
 from aaestro.core.agent import TaskStatus
 from aaestro.core.errors import AaestroError
 from aaestro.core.manifest import AgentManifest
+from aaestro.observability.metrics import Metrics
 from tests.fixtures.builders import make_task
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -334,3 +335,152 @@ def test_mcp_tools_are_hidden_without_a_session():
     schemas = _executable_schemas(Result(), AgentToolRegistry(agent="researcher"))
 
     assert [spec.name for spec in schemas] == ["search"]
+
+
+# --- 진입점 배선: 판정한 토큰 · 바인드 주소가 그대로 서빙까지 간다 (#394) ----------------
+
+
+@pytest.fixture
+def entry(monkeypatch):
+    """`main()` 을 실제 서버 없이 돌린다 — 판정과 서빙 인자만 가로채 본다."""
+    import aaestro.agentd.__main__ as agentd
+
+    for key in (
+        agentd.TOKEN_ENV,
+        agentd.BIND_HOST_ENV,
+        "AAESTRO_ALLOW_UNAUTHENTICATED",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv(agentd.MANIFEST_ENV, str(ECHO_MANIFEST))
+    monkeypatch.setenv(EXECUTOR_ENV, ECHO_EXECUTOR)
+    monkeypatch.setattr(agentd, "_configure_logging", lambda: None)
+    monkeypatch.setattr(agentd, "_setup_observability", Metrics)
+    seen: dict[str, object] = {}
+    real_build_app = agentd.build_app
+
+    def spy_build_app(*args, **kwargs):
+        seen["token"] = kwargs.get("token")
+        return real_build_app(*args, **kwargs)
+
+    async def fake_serve(app, manifest, executor, bind_host):
+        seen["bind_host"] = bind_host
+
+    monkeypatch.setattr(agentd, "build_app", spy_build_app)
+    monkeypatch.setattr(agentd, "_serve", fake_serve)
+    return agentd, monkeypatch, seen
+
+
+def test_main_without_a_token_refuses_to_start(entry):
+    agentd, _, seen = entry
+
+    with pytest.raises(AaestroError) as exc:
+        agentd.main()
+
+    assert exc.value.code == "CFG_001"
+    assert exc.value.details["setting"] == agentd.TOKEN_ENV
+    assert agentd.TOKEN_ENV in exc.value.message
+    assert seen == {}, "거절됐는데 앱 조립까지 갔다"
+
+
+def test_main_opt_in_with_a_wildcard_bind_refuses_to_start(entry):
+    agentd, monkeypatch, seen = entry
+    monkeypatch.setenv("AAESTRO_ALLOW_UNAUTHENTICATED", "1")
+    monkeypatch.setenv(agentd.BIND_HOST_ENV, "0.0.0.0")  # noqa: S104
+
+    with pytest.raises(AaestroError) as exc:
+        agentd.main()
+
+    assert exc.value.code == "CFG_001"
+    assert exc.value.details["setting"] == "AAESTRO_ALLOW_UNAUTHENTICATED"
+    assert "loopback" in exc.value.message
+    assert seen == {}
+
+
+def test_main_opt_in_on_loopback_serves_without_a_token(entry):
+    agentd, monkeypatch, seen = entry
+    monkeypatch.setenv("AAESTRO_ALLOW_UNAUTHENTICATED", "1")
+    monkeypatch.setenv(agentd.BIND_HOST_ENV, "127.0.0.1")
+
+    agentd.main()
+
+    assert seen == {"token": None, "bind_host": "127.0.0.1"}
+
+
+def test_main_passes_the_judged_token_and_bind_host_to_the_server(entry):
+    agentd, monkeypatch, seen = entry
+    monkeypatch.setenv(agentd.TOKEN_ENV, "issued-token")
+    monkeypatch.setenv(agentd.BIND_HOST_ENV, "10.1.2.3")
+
+    agentd.main()
+
+    assert seen == {"token": "issued-token", "bind_host": "10.1.2.3"}
+
+
+def test_main_without_bind_override_binds_the_container_default(entry):
+    agentd, monkeypatch, seen = entry
+    monkeypatch.setenv(agentd.TOKEN_ENV, "issued-token")
+
+    agentd.main()
+
+    assert seen["bind_host"] == agentd.DEFAULT_BIND_HOST
+
+
+def test_main_configures_logging_before_judging_the_token(entry):
+    agentd, monkeypatch, _ = entry
+    order: list[str] = []
+    monkeypatch.setattr(agentd, "_configure_logging", lambda: order.append("logging"))
+    real = agentd.resolve_required_token
+
+    def spy(*args, **kwargs):
+        order.append("judge")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(agentd, "resolve_required_token", spy)
+    monkeypatch.setenv(agentd.TOKEN_ENV, "issued-token")
+
+    agentd.main()
+
+    assert order == ["logging", "judge"]
+
+
+@pytest.fixture
+def uvicorn_spy(monkeypatch):
+    """uvicorn 을 띄우지 않고 Config 인자만 기록한다."""
+    import aaestro.agentd.__main__ as agentd
+
+    configs: list[tuple[object, dict]] = []
+
+    class FakeConfig:
+        def __init__(self, app, **kwargs):
+            configs.append((app, kwargs))
+
+    class FakeServer:
+        def __init__(self, config):
+            self.config = config
+
+        async def serve(self):
+            return None
+
+    monkeypatch.setattr(agentd.uvicorn, "Config", FakeConfig)
+    monkeypatch.setattr(agentd.uvicorn, "Server", FakeServer)
+    return agentd, configs
+
+
+async def test_serve_binds_the_control_server_to_the_given_host(uvicorn_spy, monkeypatch):
+    agentd, configs = uvicorn_spy
+    monkeypatch.delenv("AAESTRO_A2A_PORT", raising=False)
+
+    await agentd._serve("app", load_manifest(ECHO_MANIFEST), EchoExecutor(), "127.0.0.1")
+
+    assert [(app, kw["host"]) for app, kw in configs] == [("app", "127.0.0.1")]
+
+
+async def test_serve_both_binds_control_and_peer_to_the_given_host(uvicorn_spy):
+    agentd, configs = uvicorn_spy
+
+    await agentd._serve_both("control", "peer", 19100, "127.0.0.1")
+
+    assert {app: kw["host"] for app, kw in configs} == {
+        "control": "127.0.0.1",
+        "peer": "127.0.0.1",
+    }

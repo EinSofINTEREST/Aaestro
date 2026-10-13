@@ -433,6 +433,9 @@ TypeSafe 의 Jev 이지만, 시스템은 Jev 가 아니라 **`DecisionModel` 계
 ## Current Implementation Status
 
 ### 📋 Planned (v0.1.0 — bootstrap)
+
+> **구현 상태**: 아래 "Decision Models" 항목의 선언 (`spec.decision`, 그래프 노드 `decision`, memoryset `compaction.importance`) 은 스키마가 아직 받지 않아 모르는 키로 거절된다 (`VAL_002` / `MOD_003`). decisionset 모듈은 ref 해석 자체가 되지 않는다.
+
 - **Core Framework**
   - Agent interface + manifest schema (pydantic)
   - Graph topology schema + validation (mission/service 모드 포함)
@@ -756,6 +759,8 @@ observability:
   log_format: pretty          # pretty (dev) | json (prod)
   metrics_port: 9090
 ```
+
+> **구현 상태**: 위 설정 예시의 `registry.roots.decisionsets` 와 `decision:` 은 v0.1 설정 모델이 아직 받지 않는다 — 모르는 키로 `CFG_001` 거절된다.
 
 ### Contract Validation at Deploy Time
 

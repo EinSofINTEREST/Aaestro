@@ -7,6 +7,41 @@ modules, never by editing framework code. Normative rules:
 [04-module-system.md](../../.claude/rules/04-module-system.md) and
 [09-memory-context.md](../../.claude/rules/09-memory-context.md).
 
+**Unknown keys are rejected.** Every declaration (agent manifest, group, graph, skillset,
+promptset, memoryset) is validated strictly: a key the schema does not know fails the load,
+deploy validation (`aaestro validate`, `POST /v1/validate`, deployment) or `PUT`, and the error
+lists each offending key as `{field, problem}` — the path and the reason, never the value
+(a misplaced `env: {KEY: secret}` must not echo the secret: a validator message that quotes the
+rejected input — the whole value or a piece of it eight characters or longer — is redacted as
+`<redacted>`, and the original exception is not chained, so tracebacks and `exc_info` logs
+don't echo it either). The scope of that guarantee, precisely: a value the schema **rejected**
+never comes back. **Identifiers** of a declaration that passed the schema — module refs, agent,
+group, node and provider names — do appear in the findings of semantic validation
+(`aaestro validate`, deployment), because the operator needs them to fix the declaration.
+**Env key names do not**: findings point at the position instead
+(`spec.runtime.env_allowlist[2]`, a skillset's `requires.env[0]`), since writing the secret
+itself where its key name belongs is a common mistake. Messages that reject a duplicate name
+the position (`duplicate node id at index 1 and 3`), not the value. **Key names are reported** — an unknown key, a mapping key and a
+repeated key appear in `field` / `reason`, cut to 64 characters with non-printable characters
+replaced — so never put a value where a key goes. Checks that compare a declaration with where
+it lives (module `kind` / name / version against the ref, a declared name against its file
+location) name the expected value only, not the one written in the declaration. A key repeated in one YAML mapping is
+rejected too (with the key and line number; YAML merge keys `<<` keep working), so a narrowing
+line can't be silently overridden by a later wider one. YAML syntax errors report the line and
+column, never the line's content; a file that is not UTF-8 is reported as `not valid UTF-8`,
+and a value YAML cannot construct (`!!int abc`, `2024-02-30`) as
+`YAML value could not be constructed at line N`. `aaestro validate` and the process entry points (agentd,
+control plane, Memory Service) print the file and the offending keys on one line and exit
+non-zero. A misspelled narrowing declaration (`allowed_tool`, `egres`,
+`mod`) therefore cannot fall back to a wider default. Declarations in the rules that the v0.1
+schema does not accept yet (e.g. `spec.decision`, graph node `decision`, memoryset
+`compaction.importance`) are rejected the same way.
+
+The agent daemon inside the container validates its manifest with the same strictness as the
+control plane, so "a validated declaration" means the same thing in every process. The cost: a
+declaration that uses a field added to the schema later only starts on images that know that
+field.
+
 ## Module Types
 
 | Type | Declares | Location |

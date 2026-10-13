@@ -196,7 +196,6 @@ def build_a2a_app(
     from a2a.server.routes.agent_card_routes import create_agent_card_routes
     from a2a.server.routes.fastapi_routes import add_a2a_routes_to_fastapi
     from a2a.server.routes.jsonrpc_routes import create_jsonrpc_routes
-    from a2a.server.tasks import InMemoryTaskStore
     from fastapi import FastAPI
 
     from aaestro.protocols.a2a.client import A2AServer
@@ -227,12 +226,13 @@ def build_a2a_app(
     handler = GuardedRequestHandler(
         guard=guard,
         agent_executor=GuardedExecutor(guard, invoke),
-        task_store=InMemoryTaskStore(),
         agent_card=card,
     )
-    app = FastAPI(lifespan=_following(verifier))
+    # 이 포트에는 카드와 JSON-RPC 만 연다 — FastAPI 의 문서 라우트는 자격 없이 닿는 창구다
+    app = FastAPI(lifespan=_following(verifier), docs_url=None, redoc_url=None, openapi_url=None)
     # 조립 결과를 드러낸다 — 어느 검사가 물렸는지는 진단과 테스트가 봐야 할 사실이다
     app.state.guard = guard
+    app.state.task_store = handler.task_store
     add_a2a_routes_to_fastapi(
         app,
         agent_card_routes=create_agent_card_routes(card),
