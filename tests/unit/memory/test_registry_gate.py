@@ -22,11 +22,11 @@ from aaestro.catalog import Catalog
 from aaestro.config import load_config
 from aaestro.core.errors import AaestroError, ErrorCode
 from aaestro.memory.bootstrap import build_deployment
+from aaestro.memory.client import HttpMemoryAccess
 from aaestro.memory.entry import MemoryEntry, MemorySource
 from aaestro.modules.memoryset import MemoryKind
 from aaestro.orchestrator.control import create_app as control_app
 from aaestro.orchestrator.runstore import InMemoryRunStore
-from aaestro.runtime.memory_http import HttpMemoryAccess
 from tests.fixtures.waiting import until
 
 REPO_ROOT = Path(__file__).resolve().parents[3]

@@ -31,6 +31,7 @@ from aaestro.config import (
 )
 from aaestro.core.startup import startup_guard
 from aaestro.http_auth import is_loopback
+from aaestro.memory.client import MEMORY_URL_ENV
 from aaestro.observability.metrics import DEFAULT_METRICS_PORT, Metrics, start_metrics_server
 from aaestro.orchestrator.control import create_app
 from aaestro.orchestrator.inuse import any_of, run_backed
@@ -48,7 +49,6 @@ log = structlog.get_logger(__name__)
 
 CONFIG_DIR_ENV = "AAESTRO_CONFIG_DIR"
 ROOT_ENV = "AAESTRO_REPO_ROOT"
-MEMORY_URL_ENV = "AAESTRO_MEMORY_URL"
 MEMORY_TOKENS_ENV = "AAESTRO_MEMORY_TOKENS_PATH"
 """카탈로그가 읽는 레포 루트 — memory 서비스와 같은 이름을 쓴다."""
 LOG_LEVEL_ENV = "AAESTRO_LOG_LEVEL"

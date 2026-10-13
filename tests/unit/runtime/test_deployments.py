@@ -8,7 +8,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from aaestro.access.registry import ACCESS_CREDENTIAL_ENV, AccessRegistry
+from aaestro.access.model import ACCESS_CREDENTIAL_ENV
+from aaestro.access.registry import AccessRegistry
 from aaestro.authoring import Author
 from aaestro.catalog import Catalog
 from aaestro.core.agent import HealthState, HealthStatus
@@ -1307,7 +1308,7 @@ def test_the_manifest_env_names_what_agentd_reads():
 
 async def test_with_a_registry_the_memory_token_is_the_agent_identity(workspace, docker, healthy):
     """정적 메모리 토큰으로 되돌아가면 레지스트리 회수가 닿지 않는 뒷문이 된다."""
-    from aaestro.memory.http import MEMORY_TOKEN_ENV
+    from aaestro.memory.client import MEMORY_TOKEN_ENV
 
     wired_workspace(workspace)
     store = InMemoryDeploymentStore()

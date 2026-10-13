@@ -211,7 +211,7 @@ async def test_stop_all_cleans_every_agent_before_reporting_failure():
 
 async def test_memory_endpoint_reaches_the_container():
     """주소와 불투명 토큰만 넣는다 — DB 자격증명은 컨테이너에 들어가지 않는다."""
-    from aaestro.memory.http import MEMORY_TOKEN_ENV, MEMORY_URL_ENV
+    from aaestro.memory.client import MEMORY_TOKEN_ENV, MEMORY_URL_ENV
     from aaestro.runtime.launcher import MemoryEndpoint
 
     client = FakeDockerClient()
@@ -227,7 +227,7 @@ async def test_memory_endpoint_reaches_the_container():
 
 async def test_no_memory_endpoint_leaves_the_environment_alone():
     """메모리를 쓰지 않는 에이전트에게 빈 값을 넣으면 기동이 헷갈린다."""
-    from aaestro.memory.http import MEMORY_TOKEN_ENV, MEMORY_URL_ENV
+    from aaestro.memory.client import MEMORY_TOKEN_ENV, MEMORY_URL_ENV
 
     client = FakeDockerClient()
 
