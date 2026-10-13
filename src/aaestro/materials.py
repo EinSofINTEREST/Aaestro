@@ -21,7 +21,7 @@ from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
-from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode, printable_label
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -76,7 +76,11 @@ def _invalid(message: str, **details: object) -> AaestroError:
         category=ErrorCategory.VALIDATION,
         code=ErrorCode.VAL_002,
         message=message,
-        details=dict(details),
+        # 재료 경로는 요청 본문의 **키** 다 — 다른 키 출력과 같이 길이 · 문자를 정제해 싣는다 (#386)
+        details={
+            key: printable_label(value) if key == "path" and isinstance(value, str) else value
+            for key, value in details.items()
+        },
     )
 
 

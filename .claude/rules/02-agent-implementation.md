@@ -34,7 +34,7 @@ class BaseAgent(ABC):
 
         호출자는 `async for event in agent.stream(task)` 로 소비한다 (별도 await 없음).
         07 의 async-first 규칙을 async generator 형태로 적용한 계약이다.
-        이벤트 단위: token / tool_call / tool_result / done / error.
+        이벤트 단위: token / tool_call / tool_result / steer / done / error.
         """
 
     @abstractmethod
@@ -82,7 +82,9 @@ class TaskResult(BaseModel):
    - 캐시는 허용하되 correctness 에 영향을 주지 않아야 함 (컨테이너 재시작 시 소실 전제)
 
 3. **Idempotency**
-   - 동일 `task_id` 재호출은 안전해야 함 (재시도/재개 시나리오)
+   - **같은 호출자의** 동일 `task_id` 재호출은 안전해야 함 (재시도/재개 시나리오). `task_id` 는
+     보낸 쪽이 고르므로 멱등 키는 (호출자, `task_id`) 다 — 다른 호출자의 같은 id 는 다른 태스크다
+     ([03-protocol-integration.md](03-protocol-integration.md) A2A Client Rules 8)
    - 외부 부수효과가 있는 tool 은 task_id 기반 중복 방지 적용
 
 4. **Error Handling**
@@ -177,6 +179,8 @@ spec:
       - ANTHROPIC_API_KEY
     volumes: []                 # 기본 없음 — 필요 시 명시 선언 (아래 격리 규칙 참조)
 ```
+
+> **구현 상태**: 위 예시의 `spec.decision` 은 v0.1 스키마가 아직 받지 않는다. 지금은 모르는 키로 `VAL_002` 거절된다 (`extra="forbid"`). 아래 Manifest Rules 8 의 `MOD_001` / `MOD_003` 은 구현 뒤의 계약이다.
 
 ### Manifest Rules
 
@@ -285,7 +289,8 @@ Runtime layer →  env_allowlist 각 키를 local > group > global 순으로 해
               → (기동 시) docker env 주입 → 컨테이너
 ```
 
-- **프록시가 종단하는 서비스의 자격증명은 env 로 넣지 않는다**: 모델 API 키, 결정 모델 API 키,
+- **프록시가 종단하는 서비스의 자격증명은 env 로 넣지 않는다**: 모델 API 키(`ANTHROPIC_API_KEY`,
+  `OPENAI_COMPAT_API_KEY` — 그 자리에는 에이전트 신원이 들어간다), 결정 모델 API 키,
   원격 MCP 서버 자격증명은 egress proxy 가 요청에 주입한다. 에이전트 컨테이너는 그 값을 갖지 않으므로
   회수가 재배포 없이 반영된다
 - 그 밖의 secrets 는 runtime 이 기동 시점에 env 로 주입 — `env_allowlist` 에 있는 키만.
@@ -356,6 +361,7 @@ POST /v1/stream          # TaskRequest → SSE(TaskEvent 스트림)
 GET  /v1/health          # HealthStatus (모델/MCP/모듈 종합)
 GET  /v1/card            # A2A AgentCard
 POST /v1/cancel/{task_id}# 진행 중 태스크 취소
+POST /v1/steer/{task_id} # 진행 중 태스크의 다음 턴 경계에 운영자 지시 대기 ({"text", "by"})
 POST /v1/reload          # promptset/skillset hot reload
 POST /v1/drain           # graceful drain 개시
 ```
@@ -365,8 +371,14 @@ POST /v1/drain           # graceful drain 개시
 1. 모든 응답은 pydantic 모델의 JSON 직렬화 — ad-hoc dict 금지
 2. `/invoke` 는 202 + polling 이 아닌 동기 응답 (LangGraph node 실행 모델과 일치).
    장시간 태스크는 `/stream` 사용
-3. 인증: runtime 이 발급한 per-agent token 을 `Authorization` 헤더로 요구
+3. 인증: runtime 이 발급한 per-agent token 을 `Authorization` 헤더로 요구.
+   토큰 없이는 기동하지 않는다 (`CFG_001`) — 무인증은 `AAESTRO_ALLOW_UNAUTHENTICATED=1` opt-in
+   이면서 loopback 바인드일 때만 (`http_auth.resolve_required_token`)
 4. `/health` 는 무인증 — Docker healthcheck 가 직접 호출
+5. `/steer` 의 `queued` 는 **접수이지 반영이 아니다** (Execution Loop — Steering). 진행 중이
+   아닌(끝났거나 모르는) 태스크는 `NF_001` (404), 상한 초과는 `VAL_002` (400). steer 를
+   구현하지 않은 실행기(커스텀 entrypoint, echo)는 `/reload` 와 같은 `unsupported` 본문을
+   **501** 로 답한다 — 200 으로 삼키지 않는다
 
 ## Execution Loop (agentd internals)
 
@@ -397,10 +409,56 @@ async def execute(self, task: TaskRequest) -> TaskResult:
 2. **Tool Timeout**: 개별 tool 호출 timeout (기본 60s)
 3. **Parallel Tools**: 독립 tool call 은 `asyncio.gather` 로 병렬 실행
 4. **Usage Tracking**: 매 모델 호출의 토큰 사용량 누적 → TaskResult.usage
-5. **Event Emission**: 스트리밍 모드에서 turn 별 tool_call/tool_result 이벤트 발행
+5. **Event Emission**: 스트리밍 모드에서 turn 별 tool_call/tool_result 이벤트 발행 —
+   운영자 지시가 대화에 들어간 턴 경계에서는 steer 이벤트 (Steering)
 6. **Model Failover**: 모델 호출의 재시도가 소진되면 `spec.model.fallbacks` 중 실패 부류가
    `on` 에 든 다음 모델로 같은 턴을 보낸다 — 전환 주체는 agentd (05 Retry Layering).
    circuit open 인 모델은 건너뛴다
+
+### Steering — 턴 경계의 운영자 지시
+
+진행 중인 태스크의 방향을 **지금까지의 작업을 버리지 않고** 바꾼다. 취소(`/cancel`)는 처음부터
+다시 돌게 한다 — steer 는 대화에 지시 하나를 더한다.
+
+```python
+messages.append(AssistantTurn(response.content, response.tool_calls, raw=response.raw))
+messages.append(ToolTurn(outcomes))
+if pending_steers:                                   # 턴 경계 — tool 결과가 붙은 직후
+    messages.append(UserTurn(parts=[f"[operator steer]\n{s.text}" for s in pending_steers]))
+    emit(SteerEvent(...) for each)                   # 반영 시점 — 접수 시점이 아니다
+```
+
+1. **턴 경계에서만**: `assistant(tool_calls) → tool → user(steer)`. 모델 호출 도중에 끼어들지
+   않고, 이미 보낸 메시지를 고쳐 쓰지 않는다. 즉시 중단이 필요하면 취소 후 재제출한다
+2. **user 턴이다, system 이 아니다**: 운영자 지시지만 system 을 바꾸면 그 태스크의 프롬프트
+   캐시 prefix 가 깨진다. 머리말 `[operator steer]` 로 태스크 입력·도구 결과와 구분한다 —
+   untrusted 경계 표시는 붙이지 않는다 (운영자 입력이다)
+3. **한 경계의 여러 건은 user 턴 하나**: parts 로 합친다. wire 의 역할 교대는 **provider 어댑터가
+   맞춘다** — 도구 결과를 `user` 역할로 보내는 provider 에서는 steer 가 연속된 `user` 메시지가
+   되므로 어댑터가 한 메시지로 합친다 (`tool_result` 블록 먼저, steer 의 text 가 그 뒤). 연속된
+   같은 역할을 받아 주는 것에 기대지 않는다
+4. **steer 가 없으면 아무것도 바뀌지 않는다**: 모델에 가는 `messages` 가 바이트 단위로 같다
+5. **접수는 반영 보장이 아니다**: 마지막 모델 호출(tool 호출 없음) 도중에 온 지시, tool 실패·
+   turn 상한·취소·timeout 으로 끝난 태스크의 지시는 반영되지 않는다. 그때는 `agent`, `task_id`
+   를 실은 WARN 을 남긴다 — 접수해 놓고 조용히 버리지 않는다. 종료 이벤트는 대기열을 닫은
+   **뒤에** 낸다: `done` 을 본 뒤의 steer 는 404 다
+6. **대기열은 태스크 수명**: 루프 진입 때 생기고 종료(완료·실패·취소·timeout) 때 지워진다 —
+   invoke 간 상태가 아니다 (Statelessness). 태스크당 대기 건수와 본문 길이에 상한을 두고 넘으면
+   `VAL_002`. 완료 캐시로 답하는 재호출은 루프를 돌지 않으므로 steer 를 받지 않는다.
+   같은 `task_id` 가 겹쳐 돌면 **먼저 시작한 실행이 접수 창구를 유지한다** — 나중 실행은 steer 를
+   받지 못하고, 끝나면서 먼저 것의 창구를 지우지도 않는다
+7. **본문은 로그에 남기지 않는다**: 길이(`text_chars`)와 누가 냈는지(`steered_by` — 한 건의
+   문자열. 여러 건을 묶은 줄은 `issuers` 목록)만. `SteerEvent` 에는 본문이 실린다 — 스트림
+   소비자가 무엇이 대화에 들어갔는지 본다. `by` 는 **호출자의 주장이지 인증된 신원이 아니다** —
+   감사 단서로만 쓰고, 로그 줄을 위조하지 못하게 제어문자·개행은 `VAL_002` 로 거절한다.
+   거절된 steer 도 control plane 이 남긴다
+8. **경로**: 운영자 → control plane `POST /v1/runs/{run_id}/steer` → runtime 이 그 태스크를
+   **받은** 레플리카의 Control API 로 전달한다. Control API 는 runtime 만 닿는다 (Network) —
+   A2A 포트에는 steer 가 없다. peer 가 진행 중인 `task_id` 로 태스크를 보내도 접수 창구는
+   먼저 시작한 실행의 것이라(6) 운영자 지시를 가로채지 못한다. runtime 은 에이전트가 쓴 거절
+   본문을 그대로 올리지 않는다 — `NF_001` · `VAL_002` 만 구분하고 나머지 필드는 runtime 이
+   정한다. 운영자에게 보이는 문구도 그렇다: `VAL_002` 의 구체 사유는 닫힌 집합
+   (`SteerProblem`) 의 원소와 정확히 같을 때만 옮기고, 아니면 코드별 고정 문구다
 
 ### Decision Hooks — 루프 안의 결정 모델
 

@@ -103,6 +103,7 @@ uv run aaestro <command>          # venv 를 활성화했다면 그냥 `aaestro`
 | `aaestro run <graph.yaml>` | 주소를 직접 적어 mission/service run 제출 |
 | `aaestro run --deployment <id>` | 배포에 run 제출 — 주소는 control plane 이 해석 |
 | `aaestro run-list` / `run-drain <id>` / `run-resume <id>` | control plane 을 통한 run 조작 |
+| `aaestro run-steer <id> "<text>"` | run 이 실행 중인 태스크에 지시 추가 — 다음 턴 경계에서 반영되고, 태스크가 먼저 끝나면 반영되지 않는다 |
 
 `--json` (서브커맨드 앞에) 은 기계 판독 출력으로, `--root` 는 작업 디렉토리가 아닌 다른
 저장소를 가리킬 때 씁니다.
@@ -143,7 +144,7 @@ AAESTRO_ORCHESTRATOR__CHECKPOINTER_URL=postgresql://user:pass@host:5432/aaestro 
 영속 백엔드에서는 같은 `--run-id` 로 다시 실행하면 마지막 checkpoint 에서 이어집니다 —
 다른 프로세스에서도 됩니다. 기본값 `memory` 는 프로세스와 함께 사라지므로 재개할 수 없습니다.
 
-`run-list` / `run-drain` / `run-resume` 는 `--control-url` 로 control plane 에 붙고,
+`run-list` / `run-drain` / `run-resume` / `run-steer` 는 `--control-url` 로 control plane 에 붙고,
 **기록된 run 만** 봅니다 — `orchestrator.run_store` 를 설정해 run 과 control plane 이 같은
 저장소를 보게 하세요. `run-drain` 은 요청만 남기고 즉시 반환하며, 실제 정지는 run 을 구동하는
 프로세스가 다음 iteration 경계에서 수행합니다.
@@ -174,7 +175,9 @@ python -m aaestro.orchestrator  # Control Plane — REST API + /ui 의 Web UI
 `agentd` 는 runtime layer 가 모든 에이전트 컨테이너 안에서 띄우는 프로세스입니다.
 `AAESTRO_MANIFEST`, `AAESTRO_AGENT_TOKEN`, `AAESTRO_ROOT` 를 읽고, 메모리가 배선된
 경우 `AAESTRO_MEMORY_URL` 과 `AAESTRO_MEMORY_TOKEN` 또는 `AAESTRO_MEMORY_TOKEN_FILE` 을
-읽습니다.
+읽습니다. `AAESTRO_AGENT_TOKEN` 은 필수입니다 — 없으면 agentd 가 `CFG_001` 로 종료합니다.
+무인증 기동은 `AAESTRO_ALLOW_UNAUTHENTICATED=1` 과 loopback 인 `AAESTRO_AGENT_BIND_HOST`
+(기본 `0.0.0.0`) 가 함께 있어야 합니다.
 
 Memory Service 는 `AAESTRO_REPO_ROOT`, `AAESTRO_MEMORY_PORT`,
 `AAESTRO_MEMORY_TOKENS_PATH` 를 읽습니다. 별도 프로세스로 떠 있어야 합니다 — append 는

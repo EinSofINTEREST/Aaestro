@@ -325,11 +325,8 @@ def test_repository_validates_end_to_end(capsys):
 
 
 @pytest.fixture
-def with_openai_fallback(workspace: Path, monkeypatch) -> Path:
+def with_openai_fallback(workspace: Path) -> Path:
     """프록시 upstream 이 아닐 수 있는 provider 로 넘어가는 fallback 을 가진 저장소."""
-    from aaestro.access import baselines
-
-    monkeypatch.setitem(baselines.PROVIDER_HOSTS, "openai-compat", "api.openai.com")
     manifest = workspace / "agents" / "solo" / "manifest.yaml"
     document = yaml.safe_load(manifest.read_text())
     document["spec"]["model"]["fallbacks"] = [
@@ -813,3 +810,21 @@ def test_the_three_commands_resolve_the_artifact_root_the_same_way(tmp_path):
 
 def from_config_args(command: list[str], configured: str) -> list[str]:
     return [*command, "--config-dir", configured, "--state-artifact-root"]
+
+
+def test_validate_reports_every_broken_graph_and_still_checks_the_rest(workspace, capsys):
+    """깨진 그래프가 둘이면 둘 다 말하고, 멀쩡한 그래프의 검증도 끝까지 간다."""
+    graphs = workspace / "graphs"
+    (graphs / "broken-a.yaml").write_text("kind: Graph\nspec: {unknown_key: 1}\n", encoding="utf-8")
+    (graphs / "broken-b.yaml").write_text("a: 1\na: 2\n", encoding="utf-8")
+    manifest = workspace / "agents" / "solo" / "manifest.yaml"
+    document = yaml.safe_load(manifest.read_text())
+    document["spec"]["promptset"]["ref"] = "promptsets/absent@9.9.9"
+    manifest.write_text(yaml.safe_dump(document), encoding="utf-8")
+
+    assert run_cli(["--root", str(workspace), "validate"]) == EXIT_FAILED
+
+    out = capsys.readouterr().out
+    assert "broken-a.yaml" in out
+    assert "broken-b.yaml" in out
+    assert "module_refs" in out

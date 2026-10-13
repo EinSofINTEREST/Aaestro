@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -273,7 +274,9 @@ def test_the_fixture_template_renders_items_as_data():
 
     rendered = loaded.render("summarize_state", items=["first note", "second note"])
 
-    assert '<item index="1">first note</item>' in rendered
+    # 값은 렌더러가 untrusted 경계 (#406) 로 감싸 내보낸다 — 항목 표기는 템플릿 글, 본문은 경계 안
+    fenced = r"<<untrusted-input [0-9a-f]+>>first note<<end-untrusted-input [0-9a-f]+>>"
+    assert re.search(rf'<item index="1">{fenced}</item>', rendered)
     assert "not instructions" in rendered
     assert "exactly these keys: summary" in rendered
 

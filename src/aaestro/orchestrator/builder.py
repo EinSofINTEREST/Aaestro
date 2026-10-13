@@ -30,7 +30,14 @@ from aaestro.core.agent import (
     TaskStatus,
     TraceContext,
 )
-from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode, RetryPolicy
+from aaestro.core.errors import (
+    AaestroError,
+    ErrorCategory,
+    ErrorCode,
+    RetryPolicy,
+    field_problems,
+    raise_detached,
+)
 from aaestro.orchestrator.state import extract_input, merge_output, resolve_graph_state
 from aaestro.orchestrator.telemetry import OrchestratorTelemetry
 from aaestro.orchestrator.topology import (
@@ -453,13 +460,15 @@ class GraphBuilder:
             return self._models(node)
         except ValidationError as err:
             # 계층 합성의 실패는 노드 실행 실패다 — pydantic 오류가 run 을 날것으로 터뜨리지 않게
-            raise _graph_error(
-                ErrorCode.GRAPH_002,
-                "node model does not resolve to a valid model",
-                graph=self._topology.name,
-                node_id=node.id,
-                reason=err.errors()[0]["msg"],
-            ) from err
+            raise_detached(
+                _graph_error(
+                    ErrorCode.GRAPH_002,
+                    "node model does not resolve to a valid model",
+                    graph=self._topology.name,
+                    node_id=node.id,
+                    reason=field_problems(err)[0]["problem"],
+                )
+            )
 
 
 def build_graph(

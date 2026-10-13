@@ -46,7 +46,10 @@ def test_missing_env_raises_mod_002(skillset):
         check_skillset_env(_manifest(env_allowlist=[]), skillset)
 
     assert exc_info.value.code == "MOD_002"
-    assert exc_info.value.details["missing_env"] == ["SEARCH_API_KEY"]
+    # 키 이름이 아니라 스킬셋 선언 안의 위치로 가리킨다 (#386)
+    assert exc_info.value.details["missing_env_index"] == [0]
+    assert "requires.env[0]" in exc_info.value.message
+    assert "SEARCH_API_KEY" not in exc_info.value.message + str(exc_info.value.details)
 
 
 def test_templates_cover_wired_nodes(promptset):

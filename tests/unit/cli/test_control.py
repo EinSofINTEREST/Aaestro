@@ -6,15 +6,19 @@ CLI 가 자기가 띄우지 않은 run 을 다루는 경로를 검증한다.
 
 from __future__ import annotations
 
+import contextlib
 import time
 
 import pytest
 
 from aaestro.cli.control import DEFAULT_CONTROL_URL, ControlClient
 from aaestro.cli.main import main
-from aaestro.core.errors import AaestroError, ErrorCode
+from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 from aaestro.orchestrator.control import create_app
+from aaestro.orchestrator.runs import RunService
 from aaestro.orchestrator.runstore import InMemoryRunStore, RunRecord
+from aaestro.orchestrator.submit import RunSubmitter
+from aaestro.runtime.nodes import SteerReceipt
 
 
 def record(run_id: str = "run-1", **overrides) -> RunRecord:
@@ -27,9 +31,9 @@ def record(run_id: str = "run-1", **overrides) -> RunRecord:
     return RunRecord(**{**base, **overrides})
 
 
-@pytest.fixture
-def served():
-    """실제 Control Plane 을 loopback 에 띄운다.
+@contextlib.contextmanager
+def serving(app):
+    """Control Plane 앱을 loopback 에 띄운다.
 
     CLI 의 클라이언트는 **동기** httpx 를 쓴다 (CLI 는 async 가 아니다) —
     ASGITransport 는 async 전용이므로, 진짜 서버를 띄워 동기 HTTP 경로를
@@ -39,8 +43,7 @@ def served():
 
     import uvicorn
 
-    store = InMemoryRunStore()
-    config = uvicorn.Config(create_app(store), host="127.0.0.1", port=0, log_level="warning")
+    config = uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning")
     server = uvicorn.Server(config)
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
@@ -50,10 +53,48 @@ def served():
             time.sleep(0.02)
         assert server.started, "control plane did not start"
         port = server.servers[0].sockets[0].getsockname()[1]
-        yield store, f"http://127.0.0.1:{port}"
+        yield f"http://127.0.0.1:{port}"
     finally:
         server.should_exit = True
         thread.join(timeout=10)
+
+
+@pytest.fixture
+def served():
+    """run 을 읽기만 하는 Control Plane — 구동하지 않는다."""
+    store = InMemoryRunStore()
+    with serving(create_app(store)) as url:
+        yield store, url
+
+
+class FakeSteerer:
+    """노드 런타임 대역 — 전달된 지시를 기록하고, 스크립트된 거절을 낸다."""
+
+    def __init__(self) -> None:
+        self.steers: list[tuple[str, str, str, str | None]] = []
+        self.refusal: AaestroError | None = None
+
+    async def steer(self, run_id, text, *, by, node=None) -> SteerReceipt:
+        if self.refusal is not None:
+            raise self.refusal
+        self.steers.append((run_id, text, by, node))
+        return SteerReceipt(
+            node_id=node or "planner", task_id="t-1", agent="planner", supported=True
+        )
+
+
+@pytest.fixture
+def driven():
+    """run 을 구동하는 Control Plane — 실제 `RunService` 에 노드 런타임만 대역이다."""
+    store, steerer = InMemoryRunStore(), FakeSteerer()
+    runs = RunService(
+        catalog=None,  # type: ignore[arg-type]
+        deployments=None,  # type: ignore[arg-type]
+        submitter=RunSubmitter(runtime=steerer),
+        store=store,
+    )
+    with serving(create_app(store, runs=runs)) as url:
+        yield store, steerer, url
 
 
 # --- 클라이언트 계약 --------------------------------------------------------------
@@ -407,3 +448,112 @@ async def test_a_cli_resume_continues_from_the_next_iteration(tmp_path):
         if item.config.get("configurable", {}).get("thread_id", "").startswith(resumed_id)
     }
     assert threads == {f"{resumed_id}:{halted.iteration}"}
+
+
+# --- steer (#364) ---------------------------------------------------------------
+
+
+def test_run_steer_forwards_the_instruction_and_says_it_is_only_queued(driven, capsys):
+    """반영으로 오해하면 운영자가 결과를 기다리지 않고 떠난다."""
+    store, steerer, url = driven
+    store.upsert(record(mode="mission"))
+
+    code = main(["run-steer", "run-1", "look at 2024", "--control-url", url])
+
+    assert code == 0
+    assert steerer.steers == [("run-1", "look at 2024", "operator", None)]
+    printed = capsys.readouterr().out
+    assert "queued" in printed and "next turn boundary" in printed
+
+
+def test_run_steer_passes_the_node_and_the_issuer(driven):
+    store, steerer, url = driven
+    store.upsert(record(mode="mission"))
+
+    code = main(
+        ["run-steer", "run-1", "go", "--node", "writer", "--by", "alice", "--control-url", url]
+    )
+
+    assert code == 0
+    assert steerer.steers == [("run-1", "go", "alice", "writer")]
+
+
+def test_run_steer_on_an_unknown_run_exits_nonzero(driven, capsys):
+    _store, steerer, url = driven
+
+    code = main(["run-steer", "never-existed", "go", "--control-url", url])
+
+    assert code == 1
+    assert "NF_001" in capsys.readouterr().out
+    assert steerer.steers == []
+
+
+def test_run_steer_against_a_control_plane_that_drives_nothing_exits_nonzero(served, capsys):
+    """501 을 성공으로 읽으면 운영 스크립트가 지시가 들어간 줄 안다."""
+    store, url = served
+    store.upsert(record(mode="mission"))
+
+    code = main(["run-steer", "run-1", "go", "--control-url", url])
+
+    assert code == 1
+    assert "does not drive the run" in capsys.readouterr().out
+
+
+def test_run_steer_on_a_run_with_nothing_in_flight_does_not_call_it_unknown(driven, capsys):
+    """steer 의 404 는 셋이다 — 가장 흔한 것은 "run 은 있는데 지금 도는 태스크가 없다" 다."""
+    store, steerer, url = driven
+    store.upsert(record(mode="mission"))
+    steerer.refusal = AaestroError(
+        category=ErrorCategory.NOT_FOUND,
+        code=ErrorCode.NF_001,
+        message="run has no in-flight task to steer",
+        details={"run_id": "run-1", "node_id": "writer"},
+    )
+
+    code = main(["--json", "run-steer", "run-1", "go", "--node", "writer", "--control-url", url])
+
+    assert code == 1
+    printed = capsys.readouterr().out
+    assert "run has no in-flight task to steer" in printed
+    assert "unknown run" not in printed
+    assert '"node_id": "writer"' in printed and "NF_001" in printed
+
+
+def test_run_steer_shows_which_nodes_are_running_when_it_has_to_choose(driven, capsys):
+    """사유가 details 에 있다 — 옮기지 않으면 운영자가 어느 노드를 지목할지 모른다."""
+    store, steerer, url = driven
+    store.upsert(record(mode="mission"))
+    steerer.refusal = AaestroError(
+        category=ErrorCategory.VALIDATION,
+        code=ErrorCode.VAL_002,
+        message="several nodes are running, name the node to steer",
+        details={"run_id": "run-1", "running": ["planner", "writer"]},
+    )
+
+    code = main(["--json", "run-steer", "run-1", "go", "--control-url", url])
+
+    assert code == 1
+    printed = capsys.readouterr().out
+    assert "planner" in printed and "writer" in printed and "VAL_002" in printed
+
+
+@pytest.mark.parametrize("command", ["run-drain", "run-resume", "run-steer"])
+def test_only_run_list_takes_a_mode(command, capsys):
+    """조용히 무시되는 인자를 받으면 운영자는 좁혀졌다고 믿는다 — argparse 가 거절한다."""
+    arguments = [command, "run-1", *(["go"] if command == "run-steer" else []), "--mode", "service"]
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(arguments)
+
+    assert exc_info.value.code == 2
+    assert "--mode" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("command", ["run-list", "run-drain", "run-resume"])
+def test_only_run_steer_takes_a_node_and_an_issuer(command):
+    arguments = [command, *([] if command == "run-list" else ["run-1"]), "--by", "alice"]
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(arguments)
+
+    assert exc_info.value.code == 2

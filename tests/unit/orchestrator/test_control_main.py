@@ -43,7 +43,7 @@ def test_serving_without_a_store_is_refused(tmp_path, monkeypatch):
     monkeypatch.setattr(entrypoint.uvicorn, "run", lambda app, **_kwargs: served.append(app))
 
     with pytest.raises(AaestroError) as excinfo:
-        entrypoint.main()
+        entrypoint._start(None)
 
     assert excinfo.value.code == ErrorCode.CFG_001
     assert "run_store" in excinfo.value.message
@@ -464,7 +464,7 @@ def test_an_exposed_registry_without_an_enforcer_token_is_refused(tmp_path, monk
     monkeypatch.setattr(entrypoint, "_setup_observability", lambda: None)
 
     with pytest.raises(AaestroError) as exc_info:
-        entrypoint.main()
+        entrypoint._start(None)
 
     assert exc_info.value.code == ErrorCode.CFG_001
     assert exc_info.value.details["setting"] == "orchestrator.access_enforcer_token"
@@ -485,7 +485,7 @@ def test_a_registry_without_an_agent_url_is_refused(tmp_path, monkeypatch):
     monkeypatch.setattr(entrypoint, "_setup_observability", lambda: None)
 
     with pytest.raises(AaestroError) as exc_info:
-        entrypoint.main()
+        entrypoint._start(None)
 
     assert exc_info.value.code == ErrorCode.CFG_001
     assert exc_info.value.details["setting"] == "orchestrator.access_agent_url"
@@ -553,7 +553,7 @@ def test_an_egress_proxy_without_the_registry_is_refused(tmp_path, monkeypatch):
     monkeypatch.setattr(entrypoint, "_setup_observability", lambda: None)
 
     with pytest.raises(AaestroError) as exc_info:
-        entrypoint.main()
+        entrypoint._start(None)
 
     assert exc_info.value.details["setting"] == "runtime.egress_proxy"
 

@@ -56,7 +56,9 @@ def prompt_of(payload: dict[str, Any]) -> str:
 
 
 _ASKS_FOR = re.compile(r"exactly these keys: (.+)")
-_USE_TOOL = re.compile(r"use tool (\S+)")
+# 공백과 ``<`` 앞까지 잡는다 — 태스크 입력은 경계 표기 안에 놓이므로 (04 Promptset Rules 2)
+# 이름 바로 뒤에 닫는 표기 (``<<end-…``) 가 붙을 수 있다. ``.`` · ``/`` 가 든 이름도 잡혀야 한다
+_USE_TOOL = re.compile(r"use tool ([^\s<]+)")
 _WITH = re.compile(r"\s+with\s+")
 
 
@@ -114,6 +116,72 @@ def _answered(payload: dict[str, Any]) -> bool:
         ):
             return True
     return False
+
+
+def chat_completion(payload: dict[str, Any]) -> dict[str, Any]:
+    """Answer an OpenAI Chat Completions request — the same rules as the Messages path.
+
+    Chat Completions 호환 요청에 답합니다 (#361). 결정 방식은 Messages 경로와 같습니다:
+    프롬프트가 ``use tool <name> [with {json}]`` 을 담고 그 도구가 광고됐으면 **한 번** 부르고,
+    대화에 ``role: tool`` 결과가 있으면 텍스트로 끝냅니다. 응답 모양만 Chat Completions 입니다.
+    """
+    prompt = chat_prompt_of(payload)
+    digest = hashlib.blake2b(prompt.encode("utf-8"), digest_size=6).hexdigest()
+    call = _chat_tool_call(payload, prompt, digest)
+    if call is None:
+        message: dict[str, Any] = {"role": "assistant", "content": _content_for(prompt, digest)}
+    else:
+        message = {"role": "assistant", "content": None, "tool_calls": [call]}
+    return {
+        "id": f"chatcmpl-{digest}",
+        "object": "chat.completion",
+        "model": "fake-model",
+        "choices": [
+            {
+                "index": 0,
+                "message": message,
+                "finish_reason": "stop" if call is None else "tool_calls",
+            }
+        ],
+        "usage": {"prompt_tokens": max(len(prompt) // 4, 1), "completion_tokens": 8},
+    }
+
+
+def chat_prompt_of(payload: dict[str, Any]) -> str:
+    """Chat Completions 요청의 프롬프트 — 사용자 턴만 본다.
+
+    system 과 도구 결과를 섞으면 운영자 지시나 도구가 돌려준 문구가 ``use tool`` 로 읽힌다.
+    """
+    parts: list[str] = []
+    for message in payload.get("messages") or []:
+        if message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            parts.append(content)
+        elif isinstance(content, list):
+            parts.extend(part.get("text", "") for part in content if isinstance(part, dict))
+    return "\n".join(parts)
+
+
+def _chat_tool_call(payload: dict[str, Any], prompt: str, digest: str) -> dict[str, Any] | None:
+    wanted = _USE_TOOL.search(prompt)
+    answered = any(m.get("role") == "tool" for m in payload.get("messages") or [])
+    if wanted is None or answered:
+        return None
+    name = wanted.group(1)
+    advertised = {(tool.get("function") or {}).get("name") for tool in payload.get("tools") or []}
+    if name not in advertised:
+        return None
+    arguments = _arguments_after(prompt, wanted.end())
+    if arguments is None:
+        return None
+    return {
+        "id": f"call_{digest}",
+        "type": "function",
+        # 인자는 JSON **문자열**이다 — 객체로 내면 실제 API 와 다른 모양을 어댑터가 통과시킨다
+        "function": {"name": name, "arguments": json.dumps(arguments)},
+    }
 
 
 def _content_for(prompt: str, digest: str) -> str:
@@ -231,6 +299,22 @@ _MODELS: list[str] = []
 """받은 요청의 ``model`` 필드 — **E2E 전용.** 모델 override 가 실제 호출에 닿았는지 본다."""
 
 
+_CHATS: list[dict[str, Any]] = []
+"""받은 Chat Completions 요청의 요지 — **E2E 전용.** 프록시가 Bearer 자리에 무엇을 실었는지,
+도구 결과가 ``role: tool`` 로 돌아왔는지 본다. 본문은 남기지 않는다."""
+
+
+def _remember_chat(authorization: str, payload: dict[str, Any]) -> None:
+    _CHATS.append(
+        {
+            "authorization": authorization,
+            "model": str(payload.get("model", "")),
+            "roles": [str(m.get("role", "")) for m in payload.get("messages") or []],
+        }
+    )
+    del _CHATS[:-MAX_SEEN]
+
+
 def _remember_model(model: object) -> None:
     _MODELS.append(str(model))
     del _MODELS[:-MAX_SEEN]
@@ -264,6 +348,11 @@ class Handler(BaseHTTPRequestHandler):
         # 경로로 갈라야 한다 — 모델과 embedding 은 응답 모양이 다르다
         if self.path.rstrip("/").endswith("/embeddings"):
             answer = embed(payload)
+        elif self.path.rstrip("/").endswith("/chat/completions"):
+            _remember_chat(self.headers.get("authorization", ""), payload)
+            _remember(chat_prompt_of(payload))
+            _remember_model(payload.get("model", ""))
+            answer = chat_completion(payload)
         else:
             prompt = prompt_of(payload)
             _remember(prompt)
@@ -288,6 +377,8 @@ class Handler(BaseHTTPRequestHandler):
             body = json.dumps(_KEYS).encode()
         elif self.path.rstrip("/").endswith("/models"):
             body = json.dumps(_MODELS).encode()
+        elif self.path.rstrip("/").endswith("/chats"):
+            body = json.dumps(_CHATS).encode()
         else:
             body = b'{"status":"healthy"}'
         self.send_response(200)

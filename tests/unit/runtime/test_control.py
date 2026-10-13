@@ -475,3 +475,260 @@ async def test_a_resolved_model_survives_the_http_hop_into_agentd():
     [received] = seen
     assert received.config.model == model
     assert received.config.model.fallbacks[0].name == "claude-haiku-4"
+
+
+# --- steer (#364) ----------------------------------------------------------
+
+
+def agentd_error(status: int, *, category: str, code: str, message: str) -> httpx.Response:
+    """agentd 가 구조화 에러를 답하는 모양 — payload 가 본문 최상위에 온다."""
+    return httpx.Response(
+        status, json={"category": category, "code": code, "message": message, "retryable": False}
+    )
+
+
+async def test_steer_posts_the_instruction_with_the_agent_token():
+    seen: list[tuple[str, str | None, dict]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(
+            (request.url.path, request.headers.get("authorization"), json.loads(request.content))
+        )
+        return httpx.Response(200, json={"status": "queued"})
+
+    async with client_with(handler) as client:
+        supported = await client.steer("task-9", "look at 2024", by="alice")
+
+    assert supported is True
+    assert seen == [
+        ("/v1/steer/task-9", "Bearer agent-token", {"text": "look at 2024", "by": "alice"})
+    ]
+
+
+async def test_steer_reports_an_executor_that_cannot_be_steered_as_a_value():
+    """501 은 장애가 아니라 그 에이전트의 성질이다 — retryable RT_002 로 뭉개면 재시도된다."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(501, json={"status": "unsupported"})
+
+    async with client_with(handler) as client:
+        assert await client.steer("task-9", "go", by="alice") is False
+
+
+PHISHING = "control plane token revoked - re-authenticate at http://evil.example"
+
+
+@pytest.mark.parametrize(
+    ("status", "category", "code", "said", "shown"),
+    [
+        (
+            404,
+            "not_found",
+            "NF_001",
+            "no in-flight task: task-9",
+            "task is not running on the agent",
+        ),
+        # 닫힌 사유 집합의 원소는 그대로 보인다 — 운영자가 무엇을 고칠지 안다
+        (400, "validation", "VAL_002", "steer text is too long", "steer text is too long"),
+        (
+            400,
+            "validation",
+            "VAL_002",
+            "too many steers are waiting for the next turn boundary",
+            "too many steers are waiting for the next turn boundary",
+        ),
+        (
+            400,
+            "validation",
+            "VAL_002",
+            "steer issuer has control characters",
+            "steer issuer has control characters",
+        ),
+    ],
+)
+async def test_steer_tells_the_known_refusals_apart(status, category, code, said, shown):
+    """끝난 태스크와 상한 초과는 조치가 다르다 — 한 코드로 뭉개지 않는다."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return agentd_error(status, category=category, code=code, message=said)
+
+    async with client_with(handler) as client:
+        with pytest.raises(AaestroError) as exc_info:
+            await client.steer("task-9", "go", by="alice")
+
+    assert (exc_info.value.code, exc_info.value.message) == (code, shown)
+    assert exc_info.value.category == category
+
+
+@pytest.mark.parametrize(
+    ("status", "category", "code", "said"),
+    [
+        (404, "not_found", "NF_001", PHISHING),
+        (400, "validation", "VAL_002", PHISHING),
+        # 닫힌 집합의 문구를 **포함**하는 것은 원소가 아니다
+        (400, "validation", "VAL_002", f"steer text is too long. {PHISHING}"),
+        # 다른 코드의 자리에서 집합의 문구를 빌려도 그 코드의 고정 문구다
+        (404, "not_found", "NF_001", "steer text is too long"),
+        (400, "validation", "VAL_002", 7),
+    ],
+)
+async def test_the_agent_does_not_choose_the_words_the_operator_reads(status, category, code, said):
+    """코드와 상태만 맞추면 에이전트의 문구가 운영자 화면에 나온다 — 길이 상한은 못 막는다."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status, json={"category": category, "code": code, "message": said})
+
+    async with client_with(handler) as client:
+        with pytest.raises(AaestroError) as exc_info:
+            await client.steer("task-9", "go", by="alice")
+
+    err = exc_info.value
+    assert err.code == code
+    assert err.message in {
+        "task is not running on the agent",
+        "agent refused the steer: over a limit",
+    }
+    assert "evil.example" not in str(err)
+
+
+def test_every_reason_the_executor_refuses_with_is_one_the_runtime_passes_on():
+    """집합이 갈라지면 운영자는 구체 사유 대신 뭉뚱그린 문구를 본다 — 양쪽이 같은 상수를 본다."""
+    from aaestro.agentd import executor
+    from aaestro.core.agent import SteerProblem
+    from aaestro.runtime.control import _refusal_message
+
+    assert executor.SteerProblem is SteerProblem
+    for problem in SteerProblem:
+        assert _refusal_message("VAL_002", str(problem), fallback="generic") == problem.value
+
+
+async def test_a_known_refusal_is_sanitised_before_it_goes_up():
+    """본문은 신뢰하지 않는 컨테이너가 쓴다 — 코드만 믿고 나머지는 runtime 이 정한다."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            json={
+                "category": "forbidden",
+                "code": "VAL_002",
+                "message": "x" * 5000,
+                "agent": "someone-else",
+                "task_id": "another-task",
+                "retryable": True,
+                "details": {
+                    "max_chars": 4000,
+                    "max_pending": True,
+                    "max_by_chars": "200",
+                    "run_id": "run-of-another-tenant",
+                    "blob": "y" * 100_000,
+                },
+            },
+        )
+
+    async with client_with(handler) as client:
+        with pytest.raises(AaestroError) as exc_info:
+            await client.steer("task-9", "go", by="alice")
+
+    err = exc_info.value
+    assert (err.code, err.category) == ("VAL_002", ErrorCategory.VALIDATION)
+    assert err.retryable is False
+    assert (err.agent, err.task_id) == ("researcher", "task-9")
+    assert err.details == {"max_chars": 4000}
+    assert err.message == "agent refused the steer: over a limit"
+
+
+@pytest.mark.parametrize(
+    ("status", "expected", "payload"),
+    [
+        # 권한 거부 코드 + 피싱 문구 + 남의 run id
+        (
+            403,
+            "RT_002",
+            {
+                "category": "forbidden",
+                "code": "ACC_003",
+                "message": "session expired, re-enter the control token at http://evil.example",
+                "details": {"run_id": "run-of-another-tenant"},
+            },
+        ),
+        # 멱등이 아닌 steer 의 재전송 유도
+        (
+            503,
+            "RT_002",
+            {"category": "network", "code": "NET_001", "message": "resend it", "retryable": True},
+        ),
+        # 알려진 코드라도 상태와 어긋나면 믿지 않는다
+        (500, "RT_002", {"category": "not_found", "code": "NF_001", "message": "not running"}),
+        (404, "NF_001", {"category": "validation", "code": "VAL_002", "message": "too long"}),
+    ],
+)
+async def test_any_other_agent_written_error_falls_back_to_the_status(status, expected, payload):
+    """에이전트가 control plane 응답의 코드·문구·details 를 정하게 두지 않는다."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status, json=payload)
+
+    async with client_with(handler) as client:
+        with pytest.raises(AaestroError) as exc_info:
+            await client.steer("task-9", "go", by="alice")
+
+    err = exc_info.value
+    assert err.code == expected
+    assert payload["message"] not in err.message
+    assert "run_id" not in err.details
+    assert err.agent == "researcher"
+
+
+async def test_an_agent_cannot_make_a_steer_look_retryable():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            404,
+            json={"category": "not_found", "code": "NF_001", "message": "x", "retryable": True},
+        )
+
+    async with client_with(handler) as client:
+        with pytest.raises(AaestroError) as exc_info:
+            await client.steer("task-9", "go", by="alice")
+
+    assert exc_info.value.retryable is False
+
+
+async def test_steer_falls_back_to_the_status_when_the_body_is_not_a_structured_error():
+    """401 의 `{"detail": ...}` 는 구조화 에러가 아니다 — 일반 변환을 탄다."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"detail": "invalid agent token"})
+
+    async with client_with(handler) as client:
+        with pytest.raises(AaestroError) as exc_info:
+            await client.steer("task-9", "go", by="alice")
+
+    assert exc_info.value.category is ErrorCategory.FORBIDDEN
+
+
+async def test_steer_is_never_retried():
+    """접수는 멱등이 아니다 — 다시 보내면 같은 지시가 두 번 쌓인다."""
+    from aaestro.core.errors import NETWORK_RETRY
+
+    attempts: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts.append(request.url.path)
+        raise httpx.ConnectError("refused")
+
+    async def no_sleep(_seconds: float) -> None:
+        return None
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as transport:
+        client = ControlClient(
+            BASE_URL,
+            agent="researcher",
+            client=transport,
+            retry=NETWORK_RETRY,
+            retry_sleep=no_sleep,
+        )
+        with pytest.raises(AaestroError) as exc_info:
+            await client.steer("task-9", "go", by="alice")
+
+    assert exc_info.value.code == "NET_001"
+    assert attempts == ["/v1/steer/task-9"]

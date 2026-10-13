@@ -19,6 +19,7 @@ import structlog
 import uvicorn
 
 from aaestro.config import load_config
+from aaestro.core.startup import startup_guard
 from aaestro.memory.bootstrap import MemoryDeployment, build_deployment
 from aaestro.observability.metrics import DEFAULT_METRICS_PORT, Metrics, start_metrics_server
 
@@ -97,10 +98,18 @@ def _access(metrics: Metrics) -> Any:
 def main() -> None:
     """Run the Memory Service."""
     metrics = _setup_observability()
-    config = load_config(
-        os.environ.get(ENVIRONMENT_ENV, "dev"),
-        config_dir=os.environ.get(CONFIG_DIR_ENV, "configs"),
-    )
+    # 설정 로드 뒤의 기동 실패 (깨진 memoryset 선언 등) 도 같은 한 줄로
+    with startup_guard(log, "memory service startup failed"):
+        _start(metrics)
+
+
+def _start(metrics: Metrics) -> None:
+    """설정을 읽고 조립해 서빙한다 — 여기서 올라온 ``AaestroError`` 는 ``main`` 의 가드가 받는다."""
+    with startup_guard(log, "configuration rejected"):
+        config = load_config(
+            os.environ.get(ENVIRONMENT_ENV, "dev"),
+            config_dir=os.environ.get(CONFIG_DIR_ENV, "configs"),
+        )
     root = Path(os.environ.get(ROOT_ENV, DEFAULT_ROOT))
 
     deployment = build_deployment(config, root=root, metrics=metrics, access=_access(metrics))

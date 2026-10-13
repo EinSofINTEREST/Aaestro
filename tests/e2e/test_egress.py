@@ -250,8 +250,11 @@ def fake_mcp_ready() -> bool:
     return docker("exec", MEMORY, "python", "-c", script, check=False) == "401"
 
 
-def start_proxy(root: Path, mode: str = "enforce") -> None:
+def start_proxy(
+    root: Path, mode: str = "enforce", *, extra_env: dict[str, str] | None = None
+) -> None:
     docker("rm", "-f", PROXY, check=False)
+    extra = [arg for key, value in (extra_env or {}).items() for arg in ("-e", f"{key}={value}")]
     docker(
         "run", "-d", "--name", PROXY,
         "--network", NETWORK,
@@ -268,6 +271,7 @@ def start_proxy(root: Path, mode: str = "enforce") -> None:
         "-e", "AAESTRO_EGRESS_ANTHROPIC_UPSTREAM=http://fake-provider:8000",
         "-e", "AAESTRO_EGRESS_ALLOW_PLAINTEXT_UPSTREAM=true",  # 대역 provider 는 평문이다
         "-e", f"ANTHROPIC_API_KEY={PROXY_KEY}",
+        *extra,
         "aaestro/egress-proxy:0.1.0",
     )  # fmt: skip
     docker("network", "connect", "--alias", "aaestro-egress", AGENTS, PROXY)

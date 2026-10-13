@@ -114,6 +114,7 @@ uv run aaestro <command>          # or `aaestro` inside an activated venv
 | `aaestro run <graph.yaml>` | submit a mission or service run against agents you address yourself |
 | `aaestro run --deployment <id>` | submit a run to a deployment — the control plane resolves the addresses |
 | `aaestro run-list` / `run-drain <id>` / `run-resume <id>` | operate runs through a control plane |
+| `aaestro run-steer <id> "<text>"` | add an instruction to the task a run is executing — applied at its next turn boundary, or not at all if the task ends first |
 
 `--json` (before the subcommand) switches to machine-readable output; `--root` points at a
 repository other than the working directory.
@@ -155,7 +156,7 @@ With a durable backend, re-running the same `--run-id` resumes that run from its
 checkpoint — including from a different process. The default `memory` backend disappears
 with the process, so runs on it cannot be resumed.
 
-`run-list` / `run-drain` / `run-resume` talk to a control plane over `--control-url`, and
+`run-list` / `run-drain` / `run-resume` / `run-steer` talk to a control plane over `--control-url`, and
 they only see runs that were recorded — set `orchestrator.run_store` so the run and the
 control plane share one store. `run-drain` leaves a request and returns immediately; the
 process driving the run stops at its next iteration boundary.
@@ -186,6 +187,8 @@ python -m aaestro.orchestrator  # Control Plane — REST API + Web UI on /ui
 `agentd` is what the runtime layer starts inside every agent container; it reads
 `AAESTRO_MANIFEST`, `AAESTRO_AGENT_TOKEN`, `AAESTRO_ROOT`, and — when memory is wired —
 `AAESTRO_MEMORY_URL` with `AAESTRO_MEMORY_TOKEN` or `AAESTRO_MEMORY_TOKEN_FILE`.
+`AAESTRO_AGENT_TOKEN` is required: without it agentd exits with `CFG_001`. Running unauthenticated
+needs `AAESTRO_ALLOW_UNAUTHENTICATED=1` and a loopback `AAESTRO_AGENT_BIND_HOST` (default `0.0.0.0`).
 
 The Memory Service reads `AAESTRO_REPO_ROOT`, `AAESTRO_MEMORY_PORT`, and
 `AAESTRO_MEMORY_TOKENS_PATH`. It must run as its own process: appends commit immediately
