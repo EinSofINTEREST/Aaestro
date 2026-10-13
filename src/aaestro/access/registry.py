@@ -94,9 +94,17 @@ INVALID_TICKET = "invalid-ticket"
 
 
 def declaration_fingerprint(catalog: Catalog) -> tuple[tuple[str, int, int, int], ...]:
-    """선언 판정과 상한이 읽는 파일의 (경로, inode, 크기, mtime) — 원자적 교체는 inode 가 바뀐다."""
+    """선언 판정과 상한이 읽는 파일의 (경로, inode, 크기, mtime) — 원자적 교체는 inode 가 바뀐다.
+
+    그래프를 포함하는 이유: A2A 연결(``connections``)의 회수도 보안 조작이라 다른 선언과 같은
+    즉시성(변경 알림)을 가져야 한다 — 빠지면 피호출자 캐시는 재확인 주기로만 갱신된다.
+    """
     paths = sorted(
-        [*catalog.roots.agents.glob("*/manifest.yaml"), *catalog.roots.groups.glob("*.yaml")]
+        [
+            *catalog.roots.agents.glob("*/manifest.yaml"),
+            *catalog.roots.groups.glob("*.yaml"),
+            *catalog.roots.graphs.glob("*.yaml"),
+        ]
     )
     found = []
     for path in paths:

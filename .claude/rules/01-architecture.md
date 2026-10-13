@@ -331,7 +331,8 @@ A2A 에서 피호출자는 통제받는 쪽이 아니라 **보호받는 쪽**이
 ### 판정 캐시와 장애 시 동작
 
 1. **캐시 + 변경 알림**: 강제 지점은 판정을 짧게 캐시하고, 레지스트리의 변경 알림을 받으면
-   즉시 버린다. 알림이 끊겼지만 레지스트리에 닿는 동안에는 짧은 주기(기본 2초)로 재확인한다
+   즉시 버린다. 알림이 끊겼지만 레지스트리에 닿는 동안에는 짧은 주기(기본 2초)로 재확인한다.
+   선언 변경 알림은 매니페스트·그룹·**그래프** 파일을 본다 — 그래프의 `connections` 회수도 같은 즉시성이다
 2. **레지스트리에 닿지 않으면**: 캐시에 없는 판정은 **거부**한다. 이미 허용되어 캐시된 판정은
    만료나 무효화를 강제하지 않고 그대로 쓴다 — 그것을 제어하는 비용이 이득보다 크다.
    결과적으로 레지스트리 장애 중에는 회수가 반영되지 않을 수 있고, 이는 감수한다
@@ -433,6 +434,9 @@ TypeSafe 의 Jev 이지만, 시스템은 Jev 가 아니라 **`DecisionModel` 계
 ## Current Implementation Status
 
 ### 📋 Planned (v0.1.0 — bootstrap)
+
+> **구현 상태**: 아래 "Decision Models" 항목의 선언 (`spec.decision`, 그래프 노드 `decision`, memoryset `compaction.importance`) 은 스키마가 아직 받지 않아 모르는 키로 거절된다 (`VAL_002` / `MOD_003`). decisionset 모듈은 ref 해석 자체가 되지 않는다.
+
 - **Core Framework**
   - Agent interface + manifest schema (pydantic)
   - Graph topology schema + validation (mission/service 모드 포함)
@@ -614,7 +618,10 @@ aaestro/
 - **MCP**: `mcp` (official Model Context Protocol Python SDK)
 
 ### Models
-- **Generation**: Anthropic Messages API (`anthropic` SDK) — provider 재시도는 끄고 agentd 가 재시도
+- **Generation**: provider 어댑터 뒤의 모델 API — Anthropic Messages API (`anthropic` SDK, provider
+  재시도는 끄고 agentd 가 재시도) 와 OpenAI Chat Completions 호환 API (`openai-compat`, SDK 없이
+  HTTP 로 — 프록시가 종단하는 base URL 하나면 충분하고 어댑터 안에 재시도가 없다). provider 이름 →
+  어댑터는 `agentd/bootstrap.py` 의 테이블 하나다. fallback 은 provider 를 넘을 수 있다
 - **Decision**: `DecisionModel` 계약 뒤의 provider — v0.1 은 TypeSafe Jev (호스팅 API, 가중치
   비공개). SDK 가 아니라 HTTP 로 부른다 — 프록시가 종단하는 base URL 하나면 충분하고, provider
   SDK 의 자체 재시도·전송이 끼지 않는다
@@ -756,6 +763,8 @@ observability:
   log_format: pretty          # pretty (dev) | json (prod)
   metrics_port: 9090
 ```
+
+> **구현 상태**: 위 설정 예시의 `registry.roots.decisionsets` 와 `decision:` 은 v0.1 설정 모델이 아직 받지 않는다 — 모르는 키로 `CFG_001` 거절된다.
 
 ### Contract Validation at Deploy Time
 

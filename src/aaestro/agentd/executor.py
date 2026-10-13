@@ -32,6 +32,7 @@ from aaestro.core.agent import (
     DEFAULT_TOOL_TIMEOUT_S,
     ModelUsage,
     SteerProblem,
+    TaskKey,
     TaskRequest,
     TaskResult,
 )
@@ -373,12 +374,16 @@ class Executor:
             output_keys=self._services.output_keys,
             system=system,
         )
-        # 멱등성: 완료된 태스크는 같은 결과를 돌려준다 (재시도/재개 시나리오)
-        self._completed: OrderedDict[str, TaskResult] = OrderedDict()
+        # 멱등성: 완료된 태스크는 같은 결과를 돌려준다 (재시도/재개 시나리오).
+        # 키는 id 만이 아니라 보낸 쪽까지다 — id 는 보낸 쪽이 고르므로, peer 가 남의 id 로
+        # 남의 결과를 받거나 남의 재시도가 받을 결과를 먼저 심으면 안 된다 (#400)
+        self._completed: OrderedDict[TaskKey, TaskResult] = OrderedDict()
         # 진행 중 태스크의 steer 대기열. 키는 루프 진입 때 생기고 종료(완료·실패·취소·timeout) 때
         # 지워진다 — invoke 를 넘어 남는 상태가 아니다 (02 Statelessness). 락은 없다: 넣기와
-        # 꺼내기 모두 await 없이 끝나므로 이벤트 루프 안에서 원자적이다
-        self._steers: dict[str, _SteerQueue] = {}
+        # 꺼내기 모두 await 없이 끝나므로 이벤트 루프 안에서 원자적이다.
+        # 키는 _completed 와 같은 (호출자, task_id) — 운영자 steer 는 Control API 공간의 태스크에만
+        # 닿고, peer 가 같은 id 로 보낸 태스크의 대기열과 섞이지 않는다 (03 A2A Client Rules 8)
+        self._steers: dict[TaskKey, _SteerQueue] = {}
 
     @property
     def binding(self) -> ModuleBinding:
@@ -417,7 +422,7 @@ class Executor:
                 모르는 태스크), VALIDATION/``VAL_002`` if the text or ``by`` is empty or too
                 long, or too many instructions are already waiting.
         """
-        queue = self._steers.get(task_id)
+        queue = self._steers.get(TaskKey.from_control(task_id))
         if queue is None:
             raise AaestroError(
                 category=ErrorCategory.NOT_FOUND,
@@ -464,7 +469,7 @@ class Executor:
         Returns:
             The task result, successful or failed.
         """
-        cached = self._completed.get(task.task_id)
+        cached = self._completed.get(task.key)
         if cached is not None:
             return cached
 
@@ -518,11 +523,11 @@ class Executor:
         # 재시도 가능한 실패를 캐싱하면 이 계층이 유일한 재시도 계층인데도
         # 재시도가 영원히 무효화된다 — 성공과 영구 실패만 기억한다
         if result.error is None or not result.error.retryable:
-            self._remember(task.task_id, result)
+            self._remember(task.key, result)
         return result
 
-    def _remember(self, task_id: str, result: TaskResult) -> None:
-        self._completed[task_id] = result
+    def _remember(self, key: TaskKey, result: TaskResult) -> None:
+        self._completed[key] = result
         while len(self._completed) > REMEMBERED_RESULTS:
             self._completed.popitem(last=False)
 
@@ -886,7 +891,7 @@ class Executor:
         재시도도 먼저 끝나면서 아직 도는 실행의 창구를 지운다.
         """
         queue = _SteerQueue(run_id=task.run_id)
-        self._steers.setdefault(task.task_id, queue)
+        self._steers.setdefault(task.key, queue)
         return queue
 
     def _close_steers(self, task: TaskRequest, queue: _SteerQueue) -> None:
@@ -896,8 +901,8 @@ class Executor:
         안전하다 (종료 이벤트 직전과 ``finally``). 창구가 자기 것일 때만 지운다 — 겹쳐 돈
         다른 실행의 창구를 건드리지 않는다.
         """
-        if self._steers.get(task.task_id) is queue:
-            del self._steers[task.task_id]
+        if self._steers.get(task.key) is queue:
+            del self._steers[task.key]
         if not queue.pending:
             return
         log.warning(

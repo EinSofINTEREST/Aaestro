@@ -262,7 +262,8 @@ def to_message_param(message: Message) -> dict[str, Any]:
 
 def _assistant_content(turn: AssistantTurn) -> list[Any]:
     """provider 가 준 블록이 있으면 그대로 — 없으면(다른 모델이 만든 턴) 텍스트와 호출로 짓는다."""
-    if turn.raw is not None:
+    # 이 어댑터의 원본은 블록 리스트다 — 다른 provider 의 원본(fallback 으로 온 턴)은 다시 짓는다
+    if isinstance(turn.raw, list):
         return list(turn.raw)
     content: list[Any] = [{"type": "text", "text": turn.content}] if turn.content else []
     content += [

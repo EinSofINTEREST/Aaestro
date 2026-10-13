@@ -124,7 +124,7 @@ def test_binding_outside_loopback_without_a_token_is_refused(monkeypatch, tmp_pa
     served = _serve(monkeypatch, tmp_path, host="0.0.0.0", token=None)  # noqa: S104
 
     with pytest.raises(AaestroError) as excinfo:
-        entrypoint.main()
+        entrypoint._start(None)
 
     assert excinfo.value.code == ErrorCode.CFG_001
     assert "control_token" in excinfo.value.message

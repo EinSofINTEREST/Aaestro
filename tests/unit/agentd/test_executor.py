@@ -643,3 +643,66 @@ async def test_the_system_instruction_is_sent_apart_from_the_task():
 )
 def test_tool_outcome_serializes_results_for_the_model(result, expected):
     assert tool_outcome(ToolCall(id="c0", name="search"), result) == expected
+
+
+# --- 태스크 키: task_id 는 보낸 쪽이 고른다 (#400) -------------------------------------------
+
+SHARED_ID = "task-shared"
+PEER = "researcher"
+
+
+def sent_by(caller: str | None, query: str):
+    """같은 task_id 를 쓰는 태스크 — ``caller`` 는 입구가 확인한 값이다 (Control API 는 None)."""
+    return make_task(task_id=SHARED_ID, input={"query": query}, caller=caller)
+
+
+@pytest.mark.parametrize("victim", [None, "writer"], ids=["control", "another-peer"])
+async def test_a_peer_reusing_another_callers_task_id_runs_its_own_task(victim):
+    """task_id 는 보낸 쪽이 고른다 — 같은 id 를 보냈다고 남의 결과를 받으면 안 된다."""
+    executor, model, _ = make_executor([text("for the victim"), text("for the peer")])
+    await executor.execute(sent_by(victim, "victim input"))
+
+    result = await executor.execute(sent_by(PEER, "peer input"))
+
+    assert result.output == {"content": "for the peer"}
+    assert model.turns == 2, "peer 가 다른 호출자의 캐시된 결과를 받았다"
+    assert result.task_id == SHARED_ID, "밖으로 나가는 id 는 peer 가 준 그대로여야 한다"
+
+
+async def test_a_task_id_a_peer_finished_first_does_not_answer_the_control_task():
+    """peer 가 먼저 심은 결과가 오케스트레이터의 태스크와 그 재시도에 돌아가면 state 가 오염된다."""
+    executor, model, _ = make_executor([text("planted by the peer"), text("the node's own")])
+    await executor.execute(sent_by(PEER, "peer input"))
+
+    first = await executor.execute(sent_by(None, "node input"))
+    retried = await executor.execute(sent_by(None, "node input"))
+
+    assert first.output == {"content": "the node's own"}
+    assert retried.output == {"content": "the node's own"}
+    assert model.turns == 2
+
+
+@pytest.mark.parametrize("caller", [None, PEER], ids=["control", "peer"])
+async def test_the_same_caller_retrying_a_task_id_still_gets_the_cached_result(caller):
+    """분리는 호출자 사이에만 선다 — 같은 호출자의 재시도는 지금처럼 멱등이다 (02 Rule 3)."""
+    executor, model, _ = make_executor([text("once"), text("twice")])
+    task = sent_by(caller, "input")
+
+    first = await executor.execute(task)
+    retried = await executor.execute(task)
+
+    assert retried == first
+    assert model.turns == 1
+
+
+async def test_a_peer_task_is_logged_under_the_id_the_peer_chose():
+    """내부 키만 갈린다 — 운영자는 호출자 쪽 로그와 같은 id 로 대조할 수 있어야 한다."""
+    from structlog.testing import capture_logs
+
+    executor, _, _ = make_executor([text("done")])
+
+    with capture_logs() as logs:
+        await executor.execute(sent_by(PEER, "peer input"))
+
+    [entry] = outcome_logs(logs)
+    assert entry["task_id"] == SHARED_ID

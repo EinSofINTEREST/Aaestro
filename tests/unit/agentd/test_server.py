@@ -516,7 +516,7 @@ async def test_cancel_stops_an_inflight_task():
     runtime = AgentRuntime(agent="researcher", executor=FakeExecutor(delay=5))
     task = make_task(task_id="t-cancel")
     running = asyncio.create_task(runtime.executor.execute(task))
-    runtime.track(task.task_id, running)
+    runtime.track(task.key, running)
 
     assert runtime.cancel("t-cancel") is True
 
@@ -536,7 +536,7 @@ async def test_drain_waits_for_inflight_tasks():
     runtime = AgentRuntime(agent="researcher", executor=executor)
     task = make_task(task_id="t-drain")
     running = asyncio.create_task(runtime.executor.execute(task))
-    runtime.track(task.task_id, running)
+    runtime.track(task.key, running)
     await executor.running.wait()
 
     await runtime.drain()
@@ -550,7 +550,7 @@ async def test_completed_tasks_are_untracked():
     runtime = AgentRuntime(agent="researcher", executor=FakeExecutor())
     task = make_task(task_id="t-done")
     running = asyncio.create_task(runtime.executor.execute(task))
-    runtime.track(task.task_id, running)
+    runtime.track(task.key, running)
 
     await running
     await asyncio.sleep(0)  # done callback 이 돌 기회를 준다
@@ -581,3 +581,60 @@ def test_a_caller_claimed_through_the_control_api_is_dropped(path):
     client.post(path, json={**task_payload(), "caller": "permission-agent"}, headers=AUTH)
 
     assert seen == [None]
+
+
+# --- 진행 중 태스크의 키 (#400) -----------------------------------------------------------
+
+
+async def test_cancel_does_not_reach_a_peer_task_with_the_same_id():
+    """취소는 Control API 의 것이다 — peer 가 고른 id 가 같다고 그 태스크가 대상이 되면 안 된다."""
+    runtime = AgentRuntime(agent="researcher", executor=FakeExecutor(delay=5))
+    peer_task = make_task(task_id="t-shared", caller="writer")
+    running = asyncio.create_task(runtime.executor.execute(peer_task))
+    runtime.track(peer_task.key, running)
+
+    assert runtime.cancel("t-shared") is False
+
+    await asyncio.sleep(0)
+    assert not running.cancelled()
+    running.cancel()
+
+
+async def test_a_peer_task_does_not_take_the_place_of_an_inflight_node_task():
+    """id 만으로 키를 잡으면 peer 의 동명 태스크가 노드 태스크 자리를 덮어 취소가 빗나간다."""
+    runtime = AgentRuntime(agent="researcher", executor=FakeExecutor(delay=5))
+    node_task = make_task(task_id="t-shared")
+    peer_task = make_task(task_id="t-shared", caller="writer")
+    node_running = asyncio.create_task(runtime.executor.execute(node_task))
+    peer_running = asyncio.create_task(runtime.executor.execute(peer_task))
+    runtime.track(node_task.key, node_running)
+    runtime.track(peer_task.key, peer_running)
+
+    assert runtime.cancel("t-shared") is True
+
+    with pytest.raises(asyncio.CancelledError):
+        await node_running
+    assert not peer_running.cancelled()
+    peer_running.cancel()
+
+
+async def test_the_cancel_endpoint_stops_the_task_the_invoke_endpoint_is_running():
+    """엔드포인트 둘이 같은 키를 써야 한다 — 한쪽만 바꾸면 취소가 조용히 아무것도 못 찾는다."""
+    import httpx
+
+    executor = FakeExecutor(delay=5)
+    runtime = AgentRuntime(agent="researcher", executor=executor)
+    app = create_app(runtime, token=TOKEN)
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://agent.test") as client:
+        # 본문의 호출자 주장은 버려진다 — 취소가 찾는 것은 Control API 의 태스크다
+        body = {**task_payload(task_id="t-http"), "caller": "writer"}
+        invoking = asyncio.create_task(client.post("/v1/invoke", json=body, headers=AUTH))
+        await executor.running.wait()
+
+        canceled = await client.post("/v1/cancel/t-http", headers=AUTH)
+        response = await invoking
+
+    assert canceled.status_code == 200
+    assert response.json()["status"] == TaskStatus.CANCELED

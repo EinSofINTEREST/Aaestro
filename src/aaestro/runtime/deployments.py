@@ -842,7 +842,8 @@ class DeploymentManager:
 
         Raises:
             AaestroError: VALIDATION/``VAL_002`` 매니페스트가 다른 이미지를 선언,
-                RUNTIME/``RT_012`` 그 버전이 아직 `built` 가 아님 (HTTP 409).
+                RUNTIME/``RT_012`` 그 버전이 아직 `built` 가 아니거나, 기록의 태그가
+                띄울 태그와 다름 (HTTP 409).
         """
         for manifest in manifests:
             tag = self._baked_image(manifest)
@@ -870,6 +871,23 @@ class DeploymentManager:
                         "version": manifest.metadata.version,
                         "build_status": None if record is None else record.status,
                         "build_error": None if record is None else record.error,
+                    },
+                )
+            if record.image != tag:
+                # 태그 규칙이 코드에서 바뀌면 (예: 이미지 접두사 변경) 이전에 구운 기록은
+                # 옛 태그를 가리킨 채 `built` 로 남는다 — 상태만 믿으면 런타임이 새 태그를
+                # 띄우다 기동 단계에서 터진다
+                raise AaestroError(
+                    category=ErrorCategory.RUNTIME,
+                    code=ErrorCode.RT_012,
+                    message="agent image was built under another tag — rebuild it before deploying",
+                    agent=manifest.name,
+                    details={
+                        "image": tag,
+                        "recorded_image": record.image,
+                        "version": manifest.metadata.version,
+                        "build_status": record.status,
+                        "build_error": record.error,
                     },
                 )
 
@@ -1039,7 +1057,7 @@ def _relaunched(agent: DeployedAgent, launched: LaunchedAgent) -> DeployedAgent:
     )
 
 
-PROXY_TERMINATED_SECRETS = frozenset({"ANTHROPIC_API_KEY"})
+PROXY_TERMINATED_SECRETS = frozenset({"ANTHROPIC_API_KEY", "OPENAI_COMPAT_API_KEY"})
 """이그레스 프록시가 종단해 스스로 주입하는 자격 — 에이전트 env 로 나가지 않는다."""
 
 
@@ -1076,6 +1094,9 @@ class EgressEndpoints:
             MCP_PROXY_URL_ENV: f"{self.providers_url.rstrip('/')}/mcp",
             # 키 자리에 신원을 싣는다 — 프록시가 떼고 진짜 키를 붙인다
             "ANTHROPIC_API_KEY": credential,
+            # OpenAI 호환 provider 도 같은 방식이다 — 주소는 프록시 종단 창구, 키 자리는 신원
+            "OPENAI_COMPAT_BASE_URL": f"{self.providers_url.rstrip('/')}/openai-compat",
+            "OPENAI_COMPAT_API_KEY": credential,
         }
 
 

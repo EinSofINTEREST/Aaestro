@@ -27,7 +27,7 @@ from aaestro.agentd.executor import (
     ToolTurn,
     UserTurn,
 )
-from aaestro.core.agent import TaskConfig, TaskStatus
+from aaestro.core.agent import TaskConfig, TaskKey, TaskStatus
 from aaestro.core.errors import AaestroError, ErrorCode
 from aaestro.core.events import (
     DoneEvent,
@@ -435,9 +435,33 @@ async def test_the_queue_is_gone_when_the_stream_consumer_walks_away():
 
     stream = executor.stream(make_task())
     await anext(stream)
-    assert TASK_ID in executor._steers
+    assert TaskKey.from_control(TASK_ID) in executor._steers
     await stream.aclose()
 
+    assert executor._steers == {}
+
+
+async def test_a_peer_task_with_the_same_id_is_not_reachable_by_an_operator_steer():
+    """steer 는 Control API 공간의 태스크에만 닿는다 — 대기열 키는 (호출자, task_id) 다 (#400)."""
+    executor, _model, tools = make_executor([calls("search"), text("done")])
+    started = asyncio.Event()
+
+    async def block() -> None:
+        started.set()
+        await asyncio.Event().wait()
+
+    tools.during["search"] = block
+    peer_task = make_task().model_copy(update={"caller": "peer"})
+    running = asyncio.create_task(executor.execute(peer_task))
+    await started.wait()
+
+    with pytest.raises(AaestroError) as exc_info:
+        await executor.steer(TASK_ID, "meant for someone else", by="alice")
+
+    assert exc_info.value.code == ErrorCode.NF_001
+    running.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await running
     assert executor._steers == {}
 
 

@@ -1029,6 +1029,28 @@ async def test_an_unbuilt_custom_agent_is_refused_before_anything_starts(
     assert manager.deployments() == [], "거절은 실패한 배포가 아니라 시작되지 않은 배포다"
 
 
+async def test_a_built_record_under_another_tag_is_refused_before_anything_starts(manager, docker):
+    """상태가 `built` 여도 기록의 태그가 띄울 태그와 다르면 기동 전에 거절한다 (#383)."""
+    stale = BuildRecord(
+        agent="alpha",
+        version="0.1.0",
+        status=BuildStatus.BUILT,
+        image="old-prefix/agent-alpha:0.1.0",
+    )
+    manager.images = FakeImages({"alpha"}, {"alpha": stale})
+
+    with pytest.raises(AaestroError) as excinfo:
+        await manager.deploy("two")
+
+    assert excinfo.value.code == ErrorCode.RT_012
+    assert excinfo.value.agent == "alpha"
+    assert excinfo.value.details["image"] == "aaestro/agent-alpha:0.1.0"
+    assert excinfo.value.details["recorded_image"] == "old-prefix/agent-alpha:0.1.0"
+    assert excinfo.value.details["build_status"] == BuildStatus.BUILT
+    assert docker.created == [], "거절된 배포가 컨테이너를 띄웠다"
+    assert manager.deployments() == [], "거절은 실패한 배포가 아니라 시작되지 않은 배포다"
+
+
 async def test_a_built_custom_agent_runs_its_baked_image(manager, docker):
     """빌드 후에는 배포되고, 매니페스트가 아니라 **구운 태그**로 돈다."""
     manager.images = FakeImages({"alpha"}, {"alpha": built("alpha")})
@@ -1454,6 +1476,40 @@ def test_a_proxy_terminated_key_never_leaves_even_without_an_identity_override(m
     env = manager._env_for(manifest, Provision(env={}, mounts=(), a2a_port=None, image=None))  # noqa: SLF001
 
     assert "ANTHROPIC_API_KEY" not in env
+
+
+def test_the_openai_compat_key_never_reaches_the_container_through_the_allowlist(manager):
+    """실 키는 프록시만 쥔다 — manifest 가 allowlist 에 올려도 컨테이너로 가지 않는다 (#361)."""
+    from aaestro.core.manifest import AgentManifest
+    from aaestro.runtime.deployments import EgressEndpoints, Provision
+
+    doc = agent_doc("alpha")
+    doc["spec"]["runtime"] = {"env_allowlist": ["ANTHROPIC_API_KEY", "OPENAI_COMPAT_API_KEY"]}
+    manifest = AgentManifest.model_validate(doc)
+    manager.secrets_env = {"ANTHROPIC_API_KEY": "k", "OPENAI_COMPAT_API_KEY": "sk-real-compat"}
+    provision = Provision(env={}, mounts=(), a2a_port=None, image=None)
+
+    plain = manager._env_for(manifest, provision)  # noqa: SLF001
+    manager.egress = EgressEndpoints(
+        connect_url="http://aaestro-egress:8080", providers_url="http://aaestro-egress:8081"
+    )
+    proxied = manager._env_for(manifest, provision)  # noqa: SLF001
+
+    assert plain["OPENAI_COMPAT_API_KEY"] == "sk-real-compat", "프록시가 없으면 직접 붙는다"
+    assert "OPENAI_COMPAT_API_KEY" not in proxied
+    assert "sk-real-compat" not in proxied.values()
+
+
+def test_the_proxy_wiring_puts_the_identity_in_the_openai_compat_key_slot():
+    """anthropic 과 같은 방식 — 주소는 프록시 종단 창구, 키 자리는 에이전트 신원."""
+    from aaestro.runtime.deployments import EgressEndpoints
+
+    env = EgressEndpoints(
+        connect_url="http://aaestro-egress:8080", providers_url="http://aaestro-egress:8081/"
+    ).env_for("alpha", "cred")
+
+    assert env["OPENAI_COMPAT_BASE_URL"] == "http://aaestro-egress:8081/openai-compat"
+    assert env["OPENAI_COMPAT_API_KEY"] == "cred" == env["ANTHROPIC_API_KEY"]
 
 
 def test_a_remote_mcp_credential_stays_with_the_proxy(manager):

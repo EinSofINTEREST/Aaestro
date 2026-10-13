@@ -82,7 +82,9 @@ class TaskResult(BaseModel):
    - 캐시는 허용하되 correctness 에 영향을 주지 않아야 함 (컨테이너 재시작 시 소실 전제)
 
 3. **Idempotency**
-   - 동일 `task_id` 재호출은 안전해야 함 (재시도/재개 시나리오)
+   - **같은 호출자의** 동일 `task_id` 재호출은 안전해야 함 (재시도/재개 시나리오). `task_id` 는
+     보낸 쪽이 고르므로 멱등 키는 (호출자, `task_id`) 다 — 다른 호출자의 같은 id 는 다른 태스크다
+     ([03-protocol-integration.md](03-protocol-integration.md) A2A Client Rules 8)
    - 외부 부수효과가 있는 tool 은 task_id 기반 중복 방지 적용
 
 4. **Error Handling**
@@ -177,6 +179,8 @@ spec:
       - ANTHROPIC_API_KEY
     volumes: []                 # 기본 없음 — 필요 시 명시 선언 (아래 격리 규칙 참조)
 ```
+
+> **구현 상태**: 위 예시의 `spec.decision` 은 v0.1 스키마가 아직 받지 않는다. 지금은 모르는 키로 `VAL_002` 거절된다 (`extra="forbid"`). 아래 Manifest Rules 8 의 `MOD_001` / `MOD_003` 은 구현 뒤의 계약이다.
 
 ### Manifest Rules
 
@@ -285,7 +289,8 @@ Runtime layer →  env_allowlist 각 키를 local > group > global 순으로 해
               → (기동 시) docker env 주입 → 컨테이너
 ```
 
-- **프록시가 종단하는 서비스의 자격증명은 env 로 넣지 않는다**: 모델 API 키, 결정 모델 API 키,
+- **프록시가 종단하는 서비스의 자격증명은 env 로 넣지 않는다**: 모델 API 키(`ANTHROPIC_API_KEY`,
+  `OPENAI_COMPAT_API_KEY` — 그 자리에는 에이전트 신원이 들어간다), 결정 모델 API 키,
   원격 MCP 서버 자격증명은 egress proxy 가 요청에 주입한다. 에이전트 컨테이너는 그 값을 갖지 않으므로
   회수가 재배포 없이 반영된다
 - 그 밖의 secrets 는 runtime 이 기동 시점에 env 로 주입 — `env_allowlist` 에 있는 키만.
@@ -324,7 +329,7 @@ Runtime layer →  env_allowlist 각 키를 local > group > global 순으로 해
 
 1. **Build**: 이미지 빌드는 **명시적 빌드 단계**에서 — 런타임 중 빌드 금지.
    빌드 재료가 있는 에이전트는 그 버전이 `built` 여야 배포된다 — 굽지 않았거나 실패했거나
-   굽는 중이면 배포가 기동 전에 거절한다 (`RT_012`, HTTP 409). 배포가 대신 굽지 않는다.
+   굽는 중이거나 기록의 태그가 띄울 태그와 다르면 배포가 기동 전에 거절한다 (`RT_012`, HTTP 409). 배포가 대신 굽지 않는다.
    재료가 없는 declarative agent 는 빌드 단계가 없다 (base 이미지 + 선언 마운트)
 2. **Start**: 기동 → `initialize()` → health OK 가 되어야 그래프에 attach
 3. **Ready**: health check 주기 실행 (기본 10s 간격, 3회 연속 실패 시 Unhealthy)
@@ -366,7 +371,9 @@ POST /v1/drain           # graceful drain 개시
 1. 모든 응답은 pydantic 모델의 JSON 직렬화 — ad-hoc dict 금지
 2. `/invoke` 는 202 + polling 이 아닌 동기 응답 (LangGraph node 실행 모델과 일치).
    장시간 태스크는 `/stream` 사용
-3. 인증: runtime 이 발급한 per-agent token 을 `Authorization` 헤더로 요구
+3. 인증: runtime 이 발급한 per-agent token 을 `Authorization` 헤더로 요구.
+   토큰 없이는 기동하지 않는다 (`CFG_001`) — 무인증은 `AAESTRO_ALLOW_UNAUTHENTICATED=1` opt-in
+   이면서 loopback 바인드일 때만 (`http_auth.resolve_required_token`)
 4. `/health` 는 무인증 — Docker healthcheck 가 직접 호출
 5. `/steer` 의 `queued` 는 **접수이지 반영이 아니다** (Execution Loop — Steering). 진행 중이
    아닌(끝났거나 모르는) 태스크는 `NF_001` (404), 상한 초과는 `VAL_002` (400). steer 를

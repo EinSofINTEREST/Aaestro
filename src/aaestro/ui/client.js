@@ -125,6 +125,80 @@ export function emptyAgent(name = "") {
   };
 }
 
+// 폼 값 하나를 선언에 넣는다 — 빈 문자열은 "없는 값" 이므로 키를 지운다 (원본 값이 되살아나지 않는다)
+function put(target, key, value) {
+  if (value === "" || value === null || value === undefined) delete target[key];
+  else target[key] = value;
+}
+
+// 불러온 원본 선언 위에 **폼이 다루는 키만** 덮어쓴 새 문서를 만든다 (#377).
+// 폼이 모르는 블록(model.fallbacks · max_tokens · mcp · runtime.resources …)을 새로 조립하면
+// 저장할 때 조용히 사라진다. 원본은 변형하지 않는다.
+// 원본은 폼의 이름이 원본과 같을 때만 쓴다 — 이름을 바꿔 저장하면 새 에이전트이고, 폼에 보이지
+// 않는 선언(mcp · egress · volumes 는 곧 권한이다)이 다른 에이전트로 복제되면 안 된다.
+// 폼이 고른 ref 집합에 맞춰 원본 항목을 거른다. 남은 ref 의 원본 항목은 (같은 ref 의 중복
+// 별칭 포함) 원래 순서와 폼 밖 키 그대로 두고, 새 ref 만 뒤에 붙인다.
+function mergeByRef(originals, chosen, make) {
+  const current = originals || [];
+  const wanted = new Set(chosen);
+  const have = new Set(current.map((item) => item.ref));
+  return [...current.filter((item) => wanted.has(item.ref)), ...chosen.filter((ref) => !have.has(ref)).map(make)];
+}
+
+export function patchAgent(original, form) {
+  const base = original && original.metadata?.name === form.name ? original : null;
+  const doc = structuredClone(base || emptyAgent());
+  // GET 응답은 필드명(`api_version`)으로 나오지만 manifest 는 별칭(`apiVersion`)만 받는다
+  const { apiVersion, kind } = emptyAgent();
+  doc.apiVersion = apiVersion;
+  doc.kind = kind;
+  delete doc.api_version;
+  doc.metadata ||= {};
+  doc.spec ||= {};
+  const { metadata, spec } = doc;
+  put(metadata, "name", form.name);
+  put(metadata, "version", form.version);
+  put(metadata, "description", form.description);
+  put(metadata, "group", form.group);
+
+  spec.model = { ...spec.model };
+  put(spec.model, "provider", form.provider);
+  put(spec.model, "name", form.model);
+  spec.promptset = { ...spec.promptset };
+  put(spec.promptset, "ref", form.promptset);
+  spec.skillsets = mergeByRef(spec.skillsets, form.skillsets, (ref) => ({ ref }));
+
+  // 이미 선언된 space 는 별칭(as)·mode 를 그대로 둔다 — 폼은 ref 만 안다
+  const spaces = mergeByRef(spec.memory?.spaces, form.memorysets,
+    (ref) => ({ ref, as: ref.split("/")[1].split("@")[0] }));
+  if (spaces.length) spec.memory = { ...spec.memory, spaces };
+  else if (spec.memory) {
+    delete spec.memory.spaces;
+    if (!Object.keys(spec.memory).length) delete spec.memory;
+  }
+
+  spec.runtime = { ...spec.runtime };
+  put(spec.runtime, "image", form.image);
+  spec.runtime.env_allowlist = form.envAllowlist;
+  put(spec, "entrypoint", form.entrypoint);
+
+  if (form.a2a) spec.a2a = { ...spec.a2a, enabled: true };
+  else if (spec.a2a) spec.a2a.enabled = false;
+  return doc;
+}
+
+// select 옵션 목록에 카탈로그에 없는 선택 값을 덧붙인다. 옵션에 없는 값은 select 에 올라가지
+// 못해 폼 값이 비어 읽히고, 저장이 그 선언을 조용히 지우기 때문이다 (#377).
+export const UNLISTED_SUFFIX = " (카탈로그에 없음)";
+
+export function withSelected(pairs, selectedValues) {
+  const listed = new Set(pairs.map(([value]) => value));
+  const extra = [...new Set(selectedValues)]
+    .filter((value) => value && !listed.has(value))
+    .map((value) => [value, `${value}${UNLISTED_SUFFIX}`]);
+  return [...pairs, ...extra];
+}
+
 // 편집기 폼의 텍스트 필드는 빈 문자열을 남긴다 — 선언에서는 없는 값이어야 한다
 export function pruneEmpty(value) {
   if (Array.isArray(value)) return value.map(pruneEmpty);
@@ -198,9 +272,17 @@ export function agentsOfGraph(graph) {
 }
 
 // 배포 전에 보여 줄 빌드 문제 — 재료가 있는데 그 버전이 `built` 가 아닌 에이전트.
-// 서버의 배포 게이트(#266)와 같은 판정이다. 빌드 표면이 꺼져 조회가 안 되면 경고하지 않는다
+// 서버의 배포 게이트(#266, #383)와 같은 판정이다: 상태가 `built` 가 아니거나 기록의 태그가
+// 기대 태그와 다르면 미빌드. 빌드 표면이 꺼져 조회가 안 되면 경고하지 않고, 옛 서버처럼
+// expected_image 가 없으면 상태만 본다
 export function unbuiltAgents(images) {
-  return images.filter((image) => image && image.needs_build && image.status !== "built");
+  return images.filter(
+    (image) =>
+      image &&
+      image.needs_build &&
+      (image.status !== "built" ||
+        (image.expected_image != null && image.image !== image.expected_image)),
+  );
 }
 
 export function moduleRef(type, name, version) {

@@ -138,3 +138,14 @@ def test_the_dockerfile_is_named_when_present(store):
     store.put(Materials(agent="custom", version="0.1.0", files={"src/a.py": ""}))
 
     assert store.get("custom", "0.1.0").dockerfile is None
+
+
+def test_a_rejected_path_is_reported_bounded_and_printable():
+    """재료 경로는 요청 본문의 키다 — 다른 키 출력과 같이 길이 · 문자를 정제해 싣는다 (#386)."""
+    with pytest.raises(AaestroError) as long_info:
+        check_path("/" + "k" * 10_000)
+    with pytest.raises(AaestroError) as control_info:
+        check_path("/bad\x1b[31mpath\x07")
+
+    assert long_info.value.details["path"] == "/" + "k" * 63 + "…"
+    assert control_info.value.details["path"] == "/bad?[31mpath?"

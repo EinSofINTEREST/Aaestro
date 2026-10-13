@@ -65,65 +65,81 @@ def parse_condition(expression: str) -> Predicate:
     Raises:
         AaestroError: GRAPH/``GRAPH_001`` if the expression is outside the grammar.
     """
-    try:
-        tree = ast.parse(expression.strip(), mode="eval")
-    except SyntaxError as err:
-        raise _invalid(expression, "not a valid expression") from err
-    _check(tree.body, expression)
+    tree = _syntax_tree(expression)
+    if tree is None:
+        # except 블록 밖에서 던진다 — SyntaxError 는 식 전체를 ``text`` 로 쥐고 있어, 체인이나
+        # 문맥으로 이어 두면 traceback 과 예외 수집기로 식이 나간다
+        raise _invalid("not a valid expression")
+    _check(tree.body)
 
     def predicate(state: dict[str, Any]) -> bool:
         try:
             return bool(_evaluate(tree.body, state))
         except TypeError as err:
             # 비교할 수 없는 값(null < 3 등) — 조용히 거짓으로 두면 다른 가지로 새어 나간다
+            # 식은 싣지 않는다 — 그래프 선언에 있고, 여기 실으면 선언의 값이 에러로 나간다 (#386).
+            # reason 은 파이썬이 쓴 문구다 (연산자와 타입 이름) — state 의 값은 들어가지 않는다
             raise AaestroError(
                 category=ErrorCategory.GRAPH,
                 code=ErrorCode.GRAPH_003,
-                message=f"condition could not be evaluated: {expression}",
-                details={"condition": expression, "reason": str(err)},
+                message="condition could not be evaluated",
+                details={"reason": str(err)},
             ) from err
 
     return predicate
 
 
-def _invalid(expression: str, reason: str) -> AaestroError:
+def _syntax_tree(expression: str) -> ast.Expression | None:
+    """식의 구문 트리 — 문법 오류면 ``None``."""
+    try:
+        return ast.parse(expression.strip(), mode="eval")
+    except SyntaxError:
+        return None
+
+
+def _invalid(reason: str) -> AaestroError:
+    """문법 밖의 식 — 사유는 **고정 문구** 다. 식이나 그 안의 이름은 싣지 않는다 (#386).
+
+    식은 선언의 값이다. 파이썬은 식별자를 NFKC 로 정규화하므로 (전각 ``ｓｋ`` 가 ``sk`` 로) 이름을
+    메시지에 실으면 입력과 글자가 달라 가림도 비껴간다. 어느 edge 인지는 필드 경로가 말한다.
+    """
     return AaestroError(
         category=ErrorCategory.GRAPH,
         code=ErrorCode.GRAPH_001,
         message=f"invalid condition: {reason}",
-        details={"condition": expression},
     )
 
 
-def _check(node: ast.expr, expression: str) -> None:
+def _check(node: ast.expr) -> None:
     """허용한 노드만 남았는지 — 평가 전에 한 번 전부 본다."""
     if isinstance(node, ast.BoolOp):
         for value in node.values:
-            _check(value, expression)
+            _check(value)
     elif isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
-        _check(node.operand, expression)
+        _check(node.operand)
     elif isinstance(node, ast.Compare):
         if not all(type(op) in _COMPARE for op in node.ops):
-            raise _invalid(expression, "unsupported comparison")
+            raise _invalid("unsupported comparison")
         for operand in (node.left, *node.comparators):
-            _check(operand, expression)
+            _check(operand)
     elif isinstance(node, ast.Attribute):
-        _state_path(node, expression)
+        _state_path(node)
     elif isinstance(node, ast.Name):
         if node.id not in _LITERAL_NAMES:
-            raise _invalid(expression, f"unknown name '{node.id}' — read fields as state.<field>")
+            raise _invalid("unknown name — read fields as state.<field>")
     elif isinstance(node, ast.List | ast.Tuple):
         for element in node.elts:
-            _check(element, expression)
+            _check(element)
     elif not (isinstance(node, ast.Constant) and _is_literal(node.value)):
-        raise _invalid(expression, f"'{type(node).__name__}' is not allowed")
+        # 노드 종류 이름 (``BinOp``, ``Call``) 은 파이썬 문법의 이름이지 입력이 아니다
+        raise _invalid(f"'{type(node).__name__}' is not allowed")
 
 
 def _is_literal(value: Any) -> bool:
     return value is None or isinstance(value, bool | int | float | str)
 
 
-def _state_path(node: ast.Attribute, expression: str) -> tuple[str, ...]:
+def _state_path(node: ast.Attribute) -> tuple[str, ...]:
     """``state.a.b`` → ``("a", "b")`` — ``state`` 로 시작하지 않는 속성 접근은 거부한다."""
     path: list[str] = []
     current: ast.expr = node
@@ -131,7 +147,7 @@ def _state_path(node: ast.Attribute, expression: str) -> tuple[str, ...]:
         path.append(current.attr)
         current = current.value
     if not (isinstance(current, ast.Name) and current.id == STATE):
-        raise _invalid(expression, "fields are read as state.<field>")
+        raise _invalid("fields are read as state.<field>")
     return tuple(reversed(path))
 
 
@@ -144,7 +160,7 @@ def _evaluate(node: ast.expr, state: dict[str, Any]) -> Any:
     if isinstance(node, ast.Compare):
         return _compare(node, state)
     if isinstance(node, ast.Attribute):
-        return _lookup(state, _state_path(node, ""))
+        return _lookup(state, _state_path(node))
     if isinstance(node, ast.Name):
         return _LITERAL_NAMES[node.id]
     if isinstance(node, ast.List | ast.Tuple):

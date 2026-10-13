@@ -6,7 +6,13 @@ from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
-from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.core.errors import (
+    AaestroError,
+    ErrorCategory,
+    ErrorCode,
+    field_problems,
+    raise_detached,
+)
 
 
 def parsed[T: BaseModel](body: Any, model: type[T]) -> T:
@@ -19,17 +25,14 @@ def parsed[T: BaseModel](body: Any, model: type[T]) -> T:
     try:
         return model.model_validate(body)
     except ValidationError as err:
-        raise AaestroError(
-            category=ErrorCategory.VALIDATION,
-            code=ErrorCode.VAL_002,
-            message="request body failed schema validation",
-            details={
-                "errors": [
-                    {"field": ".".join(str(loc) for loc in e["loc"]), "problem": e["msg"]}
-                    for e in err.errors()
-                ]
-            },
-        ) from err
+        raise_detached(
+            AaestroError(
+                category=ErrorCategory.VALIDATION,
+                code=ErrorCode.VAL_002,
+                message="request body failed schema validation",
+                details={"errors": field_problems(err)},
+            )
+        )
 
 
 __all__ = ["parsed"]

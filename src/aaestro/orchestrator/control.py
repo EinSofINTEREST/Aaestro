@@ -22,7 +22,7 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
-from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode, field_problems
 from aaestro.core.manifest import AgentManifest, ModelOverride
 from aaestro.http_auth import require_token
 from aaestro.http_errors import status_for
@@ -185,15 +185,7 @@ def create_app(
             category=ErrorCategory.VALIDATION,
             code=ErrorCode.VAL_002,
             message="request failed validation",
-            details={
-                "errors": [
-                    {
-                        "field": ".".join(str(loc) for loc in e.get("loc", ())),
-                        "problem": e.get("msg", ""),
-                    }
-                    for e in err.errors()
-                ]
-            },
+            details={"errors": field_problems(err)},
         )
         return JSONResponse(
             status_code=status_for(problem), content={"error": problem.payload().model_dump()}
@@ -444,12 +436,18 @@ def _report(report: ValidationReport) -> dict[str, Any]:
 class Declarations(BaseModel):
     """`/v1/declarations` 본문 — 이름 → 문서. 이름이 곧 경로다."""
 
+    # 오타 난 키가 조용히 빠지면 빈 본문으로 처리된다 (초안을 안 보고 ok, 빈 재료 저장)
+    model_config = ConfigDict(extra="forbid")
+
     graphs: dict[str, Any] = {}
     agents: dict[str, Any] = {}
 
 
 class MaterialUpload(BaseModel):
     """`/v1/agents/{name}/materials` 본문 — 컨텍스트 상대 경로 → 내용."""
+
+    # 오타 난 키가 조용히 빠지면 빈 본문으로 처리된다 (초안을 안 보고 ok, 빈 재료 저장)
+    model_config = ConfigDict(extra="forbid")
 
     files: dict[str, str] = Field(default_factory=dict)
 
@@ -475,6 +473,9 @@ class Draft(BaseModel):
     annotation 을 문자열로 해석한다 — 함수 안의 클래스는 못 찾고 본문을 쿼리
     파라미터로 오해한다 (#241 의 `Request` 와 같은 함정).
     """
+
+    # 오타 난 키가 조용히 빠지면 빈 본문으로 처리된다 (초안을 안 보고 ok, 빈 재료 저장)
+    model_config = ConfigDict(extra="forbid")
 
     graphs: list[dict[str, Any]] = []
     agents: list[dict[str, Any]] = []
@@ -648,6 +649,8 @@ def _build_view(record: BuildRecord) -> dict[str, Any]:
         "version": record.version,
         "status": record.status,
         "image": record.image,
+        # 게이트와 같은 함수 — UI 가 기록의 태그와 대조할 기준
+        "expected_image": image_tag(record.agent, record.version),
         "error": record.error,
         "log": record.log,
         "updated_at": record.updated_at,
@@ -681,6 +684,7 @@ def _mount_images(api: APIRouter, builder: ImageBuilder) -> None:
                 "version": version,
                 "status": None,
                 "image": image_tag(name, version),
+                "expected_image": image_tag(name, version),
                 "needs_build": builder.needs_build(name, version),
                 "error": None,
                 "log": "",

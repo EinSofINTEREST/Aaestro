@@ -97,6 +97,13 @@ control plane 이 내는 실패는 같은 봉투를 쓰고, 안정적인 부분�
 `items`, 실패한 것은 `problems`. **하나가 깨져도 나머지를 가리지 않는다** — 그러지 않으면
 매니페스트 하나가 깨졌을 때 카탈로그 전체가 `500` 이 되고, 어느 파일인지 알 수 없다.
 
+problem 하나는 `{path, code, message, errors, reason}` 이다. `path` 는 파일(또는 모듈 버전
+디렉토리), `errors` 는 스키마 위반이면 문제의 키를 `{field, problem}` 으로, `reason` 은 파일을
+읽지 못한 위치를 말한다 — 중복 키(`duplicate key 'k' at line N`), 파싱 실패
+(`ScannerError at line N, column M`), 텍스트가 아닌 파일(`not valid UTF-8`). 어느 쪽도 거절된
+값이나 입력 조각을 싣지 않는다. 키 이름은 나간다 (64자로 자르고 인쇄할 수 없는 문자는 바꾼다).
+이름 불일치는 기대 이름(`located`)만 싣고 선언에 적힌 이름은 싣지 않는다.
+
 ### `GET /v1/agents`, `GET /v1/graphs`, `GET /v1/groups`
 
 ```json
@@ -229,8 +236,8 @@ finding 은 에러 상태가 아니라 `200` 이다 — "아직 유효한가?" �
 declarative 에이전트는 재료가 없고 굽지도 않는다 — base 이미지에 선언을 마운트해 돈다.
 
 굽기는 명시적 단계다. 재료를 저장해도 굽지 않고, 배포도 굽지 않는다 — 그 버전의 이미지가
-`built` 가 아닌 커스텀 에이전트는 배포가 **거절한다** (`409`, `RT_012`) —
-[`POST /v1/deployments`](#post-v1deployments) 참조.
+`built` 가 아니거나 `built` 기록의 태그가 배포가 띄울 태그와 다른 커스텀 에이전트는 배포가
+**거절한다** (`409`, `RT_012`) — [`POST /v1/deployments`](#post-v1deployments) 참조.
 
 ### `GET /v1/agents/{name}/materials`
 
@@ -318,8 +325,8 @@ The command '/bin/sh -c exit 3' returned a non-zero code: 3
 
 ```json
 {"agent": "docs-custom", "version": "0.1.2", "status": "failed",
- "image": "aaestro/agent-docs-custom:0.1.2", "needs_build": true,
- "error": "image build failed: aaestro/agent-docs-custom:0.1.2",
+ "image": "aaestro/agent-docs-custom:0.1.2", "expected_image": "aaestro/agent-docs-custom:0.1.2",
+ "needs_build": true, "error": "image build failed: aaestro/agent-docs-custom:0.1.2",
  "log": "Step 1/2 : FROM aaestro/agent-base:0.1.0\n ... returned a non-zero code: 3",
  "updated_at": "..."}
 ```
@@ -331,7 +338,8 @@ The command '/bin/sh -c exit 3' returned a non-zero code: 3
 | `built` | 이미지가 있다 — 배포가 쓸 수 있다 |
 | `failed` | 마지막 빌드가 실패했다 — `error` 와 `log` 를 읽는다 |
 
-재료가 없는 에이전트는 `needs_build` 가 `false` 다. `log` 는 마지막 8000자를 보관한다. 기록은
+`image` 는 기록이 구워진 태그, `expected_image` 는 배포가 띄울 태그다. 둘이 다른 `built`
+기록은 배포가 거절한다. 재료가 없는 에이전트는 `needs_build` 가 `false` 다. `log` 는 마지막 8000자를 보관한다. 기록은
 control plane 재시작을 넘는다.
 
 ## 배포
@@ -402,8 +410,10 @@ primary 와 같은 fallback 은 거절됩니다.
 - `400` (`VAL_002`) — `model_overrides` 가 그래프에 없는 노드를 가리키거나 override 본문이 잘못됐다
   (provider 만 적음, 모르는 키). 아무것도 기동하지 않았다.
 - `409` (`RT_012`) — 빌드 재료가 있는 에이전트에 그 버전의 `built` 이미지가 없다: 굽힌 적이
-  없거나, 마지막 빌드가 실패했거나, 아직 굽는 중이다. `details` 에 `image`, `build_status`,
-  `build_error` 가 실린다. 구운 뒤 다시 배포한다 — 배포는 대신 굽지 않는다. 아무것도 기동하지
+  없거나, 마지막 빌드가 실패했거나, 아직 굽는 중이거나, 기록의 태그가 배포가 띄울 태그와 다르다.
+  `details` 에 `image` (기대 태그), `build_status`, `build_error` 가 실리고, 태그가 다르면
+  `recorded_image` 도 실린다. 구운 뒤 다시 배포한다 — 배포는 대신 굽지 않는다. 이미지 태그
+  규칙이 바뀐 뒤에는 이전에 구운 커스텀 에이전트를 다시 구워야 한다. 아무것도 기동하지
   않았고 배포 기록도 남지 않는다. 재료가 없는 에이전트는 base 이미지로 돌며 게이트를 거치지
   않는다.
 - `409` (`RT_010`) — 이 그래프의 에이전트가 다른 배포로 이미 돌고 있다. 그쪽을 먼저
@@ -603,8 +613,8 @@ SHA-256 해시만 저장하며, 값은 어떤 API 응답에도 실리지 않는�
 쓰는 강제 지점과 함께 연결되므로, 선언과 강제가 따로 놀 수 없다. 그 전까지는 해당 종류에서 선언이
 아무것도 허용하지 않고, 부여가 없는 요청은 `decided_by: "default"` 로 `deny` 된다.
 
-선언은 판정마다 읽으므로 바뀌면 재시작 없이 반영된다. 레지스트리는 에이전트 매니페스트와 그룹
-파일을 지켜보다가 바뀌면 버전을 올려 강제 지점이 캐시한 판정을 버리게 한다. 기동할 때도 한 번
+선언은 판정마다 읽으므로 바뀌면 재시작 없이 반영된다. 레지스트리는 에이전트 매니페스트·그룹
+파일·그래프 파일(그래프의 `connections` 가 A2A 선언이라 연결 회수도 즉시 보인다)을 지켜보다가 바뀌면 버전을 올려 강제 지점이 캐시한 판정을 버리게 한다. 기동할 때도 한 번
 올린다 — 멈춘 동안 무엇이 바뀌었는지 알 수 없기 때문이다.
 
 ### 확장 상한
@@ -850,10 +860,27 @@ Memory Service 는 환경에 아래 둘이 **모두** 있으면 **레지스트�
 | 창구 | 에이전트가 보내는 것 | 판정 |
 |---|---|---|
 | CONNECT (`8080`) | `HTTPS_PROXY` 를 통한 HTTPS, 프록시 자격으로 신원 | `host[:port]` 에 대한 `egress` — `:443` 은 생략 |
-| Provider (`8081`) | `ANTHROPIC_BASE_URL` 로 가는 모델 API 호출, 키 자리에 신원 | provider 호스트(`api.anthropic.com`) 에 대한 `egress` |
+| Provider (`8081`) | `ANTHROPIC_BASE_URL` / `OPENAI_COMPAT_BASE_URL` 로 가는 모델 API 호출, 키 자리에 신원 | provider 의 논리 호스트(`api.anthropic.com`, `openai-compat.invalid`) 에 대한 `egress` |
 
 프록시는 TLS 안을 보지 않는다. 모델 호출에서는 에이전트 신원을 떼고 자기가 쥔 키를 붙인 뒤 provider 의
 응답을 그대로 흘려보내므로, **에이전트 환경에는 모델 키가 없고** 모델 접근 회수에 재배포가 필요 없다.
+
+provider 마다 모델 호출에 필요한 경로만 연다 — `anthropic` 은 `POST v1/messages`,
+`POST v1/messages/count_tokens`, `GET v1/models`, `openai-compat` 은 `POST v1/chat/completions`.
+그 밖의 경로는 키를 붙이기 전에 `403 ACC_001` 로 거절하고, 맞춰 본 경로를 그대로 전달한다.
+`openai-compat` 의 키는 `Authorization: Bearer <key>` 로 나간다. 에이전트가 보낸 `Authorization` 은
+신원이라 항상 먼저 뗀다.
+
+요청 헤더는 provider 별 허용 목록이다: `content-type`, `accept`, `accept-encoding`, `user-agent`,
+그리고 `anthropic` 은 `anthropic-version` · `anthropic-beta`. 에이전트가 넣은 그 밖의 헤더는 떼어 낸다 —
+컨테이너 안에서 고른 헤더가 운영자의 키와 함께 나가면 안 된다. 쿠키는 어느 방향으로도 건너지 않고,
+프록시는 호출 사이에 쿠키를 기억하지 않는다: 한 에이전트의 upstream 세션이 다른 에이전트의 요청에
+실리지 않는다.
+
+`openai-compat` 의 판정 대상은 upstream 주소가 아니라 `openai-compat.invalid` 다: 운영자가 회수하는
+것은 이 배치가 어디를 가리키든 "모델 API" 다. 합성 이름이다 — `.invalid` 는 예약 TLD 이고, CONNECT
+창구는 `.invalid` 목적지를 레지스트리에 묻기 전에 `403 ACC_001` 로 거절하므로 provider 선언이 터널을
+열지 않는다.
 
 control plane 에서 켠다:
 
@@ -863,13 +890,14 @@ runtime:
     connect_url: http://aaestro-egress:8080
     providers_url: http://aaestro-egress:8081
     container: aaestro-egress   # MCP 사이드카를 쓸 때만 필요 — 아래 참조
-    providers: [anthropic]      # 프록시가 종단하는 provider — 실제 upstream 구성과 맞춘다 (기본값 [anthropic])
+    providers: [anthropic]      # 프록시가 종단하는 provider — upstream 을 설정했으면 openai-compat 을 더한다 (기본값 [anthropic])
 ```
 
 배포 검증은 `providers` 에 없는 모델 provider(primary·fallback)를 거절한다 (`400 VAL_001`, finding `model_providers`).
 
-그러면 배포가 에이전트마다 `HTTPS_PROXY`(자기 신원을 자격으로), 프록시를 가리키는 `ANTHROPIC_BASE_URL`,
-그리고 `ANTHROPIC_API_KEY` 자리에 신원을 넣는다. 평문 `http` 는 프록시로 보내지 않는다 — 에이전트
+그러면 배포가 에이전트마다 `HTTPS_PROXY`(자기 신원을 자격으로), 프록시를 가리키는 `ANTHROPIC_BASE_URL`
+과 `OPENAI_COMPAT_BASE_URL`, 그리고 `ANTHROPIC_API_KEY` / `OPENAI_COMPAT_API_KEY` 자리에 신원을 넣는다 —
+manifest 가 `env_allowlist` 에 올려도 실 키는 프록시에만 있다. 평문 `http` 는 프록시로 보내지 않는다 — 에이전트
 네트워크의 프레임워크 서비스는 그대로 직접 닿는다. `orchestrator.access_store` 없이
 `runtime.egress_proxy` 를 켜면 기동을 거부한다 (`CFG_001`).
 
@@ -918,6 +946,8 @@ spec:
 | `AAESTRO_ACCESS_URL`, `AAESTRO_ACCESS_ENFORCER_TOKEN` | 레지스트리 — 둘 다 필수, 없으면 기동 거부 |
 | `ANTHROPIC_API_KEY` | 프록시가 모델 호출에 붙이는 키 |
 | `AAESTRO_EGRESS_ANTHROPIC_UPSTREAM` | 모델 호출이 가는 곳 (기본 `https://api.anthropic.com`) |
+| `OPENAI_COMPAT_API_KEY` | 프록시가 `openai-compat` 호출에 `Authorization: Bearer` 로 붙이는 키. 키가 필요 없는 로컬 서버도 자리는 채운다. 설정했는데 공백뿐인 provider 키는 기동을 거부한다 (`CFG_001`) — `ANTHROPIC_API_KEY` 도 같다 |
+| `AAESTRO_EGRESS_OPENAI_COMPAT_UPSTREAM` | `openai-compat` 호출이 가는 곳 — **`/v1` 앞까지**: `https://api.openai.com`, `http://vllm:8000`, `https://gateway.example.com/llm`. 기본값이 없다. 키와 함께 두거나 둘 다 두지 않는다. 하나만 있거나 `/v1` 로 끝나면 기동을 거부한다 (`CFG_001`). 아래 평문 `http` 규칙이 적용된다 |
 | `AAESTRO_EGRESS_ALLOW_PLAINTEXT_UPSTREAM` | `true` 이고 목적지가 `AAESTRO_EGRESS_PRIVATE_DESTINATIONS` 에도 **있을 때만** 평문 `http` 를 받는다 — 사설망의 테스트 대역용. 요청마다 이름을 풀어 사설 주소로만 붙고, 목록의 이름이 공인 주소로 풀리면 거부한다(`502`). 공인 주소로는 설정을 어떻게 해도 평문이 나가지 않는다 |
 | `AAESTRO_EGRESS_PORT`, `AAESTRO_EGRESS_PROVIDER_PORT` | CONNECT 창구와 provider 창구 (기본 `8080`, `8081`) |
 | `AAESTRO_EGRESS_MODE` | `enforce`(기본) 또는 `record` |
@@ -966,7 +996,7 @@ spec:
 | `AAESTRO_EGRESS_MCP_TOKENS` | 프록시가 MCP 서버에 보내도 되는 자격 이름, 쉼표로. 각 값은 프록시 env 에 둔다 |
 
 **목록에 있는 자격 이름만 보낸다.** 선언이 다른 비밀을 `auth.token_env` 로 적으면 그 값 대신
-`502`(`CFG_002`) 로 답한다. 목록에도 프록시가 다른 용도로 쥔 비밀은 올리지 못한다 — `ANTHROPIC_API_KEY` 나
+`502`(`CFG_002`) 로 답한다. 목록에도 프록시가 다른 용도로 쥔 비밀은 올리지 못한다 — `ANTHROPIC_API_KEY`, `OPENAI_COMPAT_API_KEY` 나
 `AAESTRO_*` 이름이 있으면 기동을 거부한다(`CFG_001`). 원격 MCP 서버는 `https` 여야 한다: 평문 `http` 는
 `AAESTRO_EGRESS_ALLOW_PLAINTEXT_UPSTREAM=true` 이고 **동시에** 그 서버가 `AAESTRO_EGRESS_PRIVATE_DESTINATIONS`
 에 있을 때만 받고, 아니면 거부한다(`502`). 스위치 하나로는 아무것도 열리지 않으므로 운영 설정에 스위치가 남아
@@ -1058,6 +1088,21 @@ runtime 이 에이전트보다 먼저 `aaestro-<agent>--mcp-<server>` 라는 이
 
 호출자도 선언된 연결을 먼저 확인한다 — 왕복을 아끼고 로컬에서 분명한 `A2A_004` 를 주지만, 그 검사는
 편의이지 경계가 아니다.
+
+레지스트리가 있든 없든 에이전트의 A2A 포트가 답하는 것은 둘뿐이다: 에이전트 카드
+(`GET /.well-known/agent-card.json`, 자격 없이 읽는다) 와 `POST /` 의 JSON-RPC.
+
+- **새 태스크만 받는다.** 처리하는 요청은 `SendMessage` 와 `SendStreamingMessage` 뿐이고, 태스크를
+  만들기 전에 호출자를 확인한다 — 유효한 토큰이나 표가 없는 요청은 피호출자에 태스크를 만들지 못하고
+  에이전트에 닿지 않는다.
+- **태스크를 다시 읽거나 취소할 수 없다.** `GetTask`, `ListTasks`, `SubscribeToTask`, `CancelTask`,
+  push 알림 설정 요청, `GetExtendedAgentCard` 는 "This operation is not supported" (`-32004`) 로
+  거절한다. 응답은 누가 묻든, 어떤 task id 든 같으므로 태스크가 있는지 알려 주지 않는다.
+- **기존 태스크에 메시지를 이을 수 없다.** `taskId` 를 지정한 send 도 같은 응답으로 거절한다. 위임은
+  늘 새 태스크다.
+- **태스크 store 는 끝난 태스크를 쥐지 않는다.** 태스크를 실행 중에만 들고, 완료·실패·거부되면
+  store 에서 버린다 — 결과는 응답으로만 간다. 알려진 한계: 에이전트 실행이 취소로 끝난 태스크는
+  SDK 내부의 활성 태스크 레지스트리에 남을 수 있다 (SDK 동작, 별도 이슈).
 
 ### `POST /v1/access/a2a/tickets` — 모든 에이전트
 
