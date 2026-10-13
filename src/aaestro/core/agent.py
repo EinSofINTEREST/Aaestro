@@ -34,6 +34,24 @@ CONTROL_OVERHEAD_S = 5.0
 """
 
 
+class SteerProblem(StrEnum):
+    """Why an agent refuses a steer with ``VAL_002`` — the closed set of reasons.
+
+    에이전트가 steer 를 ``VAL_002`` 로 거절하는 사유의 **닫힌 집합**. 값이 곧 거절 문구다.
+
+    양쪽이 함께 본다: agentd 는 이 문구로 거절하고, runtime 은 에이전트 응답의 문구가 이 집합의
+    원소와 **정확히 같을 때만** 운영자에게 옮긴다. 에이전트 컨테이너는 신뢰하지 않으므로, 여기
+    없는 문구는 운영자 화면에 닿지 않는다 (#364).
+    """
+
+    TEXT_EMPTY = "steer text is empty"
+    TEXT_TOO_LONG = "steer text is too long"
+    ISSUER_MISSING = "steer needs who issued it"
+    ISSUER_TOO_LONG = "steer issuer is too long"
+    ISSUER_NOT_PRINTABLE = "steer issuer has control characters"
+    TOO_MANY_PENDING = "too many steers are waiting for the next turn boundary"
+
+
 class TaskStatus(StrEnum):
     """태스크 종료 상태."""
 

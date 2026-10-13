@@ -654,6 +654,30 @@ def cmd_run_resume(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def cmd_run_steer(args: argparse.Namespace) -> int:
+    """Queue an operator instruction for the task a run is executing right now.
+
+    진행 중인 run 의 현재 태스크에 지시를 넣습니다 — **접수만 하고 돌아옵니다.** 지시는
+    에이전트의 다음 턴 경계에서 반영되고, 태스크가 먼저 끝나면 반영되지 않습니다.
+    """
+    try:
+        result = _control_client(args).steer(args.run_id, args.text, node=args.node, by=args.by)
+    except AaestroError as err:
+        return _report_control_failure(err, as_json=args.json)
+
+    emit(
+        {
+            "run_id": result["run_id"],
+            "node": result["node"],
+            "task_id": result["task_id"],
+            "status": result["status"],
+            "note": "queued for the next turn boundary; not applied if the task ends first",
+        },
+        as_json=args.json,
+    )
+    return EXIT_OK
+
+
 def read_materials(directory: Path) -> dict[str, str]:
     """디렉토리를 재료 표현으로 — 컨텍스트 상대 경로 → 내용.
 
@@ -858,6 +882,7 @@ def build_parser() -> argparse.ArgumentParser:
         ("run-list", cmd_run_list, "list runs the control plane knows about"),
         ("run-drain", cmd_run_drain, "ask a run to stop after its current iteration"),
         ("run-resume", cmd_run_resume, "resume a halted run from its last iteration"),
+        ("run-steer", cmd_run_steer, "redirect the task a run is executing, at its next turn"),
     ):
         command = subcommands.add_parser(name, help=helptext)
         if name != "run-list":
@@ -865,6 +890,14 @@ def build_parser() -> argparse.ArgumentParser:
         else:
             command.add_argument(
                 "--mode", default=None, choices=["mission", "service"], help="narrow by run mode"
+            )
+        if name == "run-steer":
+            command.add_argument("text", help="the instruction to add to the conversation")
+            command.add_argument(
+                "--node", default=None, help="node to steer (default: the one running now)"
+            )
+            command.add_argument(
+                "--by", default=None, help="who issues it, for the audit trail (default: operator)"
             )
         command.add_argument(
             "--control-url",

@@ -33,6 +33,7 @@ def client(token: str | None = TOKEN) -> httpx.AsyncClient:
         ("GET", "/v1/runs/x"),
         ("POST", "/v1/runs/x/drain"),
         ("POST", "/v1/runs/x/resume"),
+        ("POST", "/v1/runs/x/steer"),
         ("GET", "/v1/agents"),
         ("GET", "/v1/agents/planner"),
         ("GET", "/v1/graphs"),

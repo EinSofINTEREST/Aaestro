@@ -68,6 +68,7 @@ NOT_FORBIDDEN = {
     "AaestroErrorPayload": "TaskResult / API 응답에 실린다",
     "DoneEvent": "스트리밍 이벤트",
     "ErrorEvent": "스트리밍 이벤트",
+    "SteerEvent": "스트리밍 이벤트",
     "TokenEvent": "스트리밍 이벤트",
     "ToolCallEvent": "스트리밍 이벤트",
     "ToolResultEvent": "스트리밍 이벤트",

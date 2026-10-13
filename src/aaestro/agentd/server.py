@@ -40,6 +40,19 @@ class Acknowledgement(BaseModel):
     status: str = "accepted"
 
 
+class SteerRequest(BaseModel):
+    """`/v1/steer/{task_id}` 본문.
+
+    길이·대기 수 상한은 대기열을 쥔 실행기가 ``VAL_002`` 로 판정한다 — 여기서 걸면 FastAPI 의
+    422 로 새어 다른 거절과 모양이 갈린다.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    text: str
+    by: str
+
+
 class AgentRuntime:
     """The agent state a Control API server exposes.
 
@@ -114,6 +127,18 @@ class AgentRuntime:
         if task is None:
             return False
         task.cancel()
+        return True
+
+    async def steer(self, task_id: str, text: str, *, by: str) -> bool:
+        """진행 중 태스크에 운영자 지시를 대기시킨다 — steer 를 모르는 실행기면 False.
+
+        진행 여부는 실행기가 안다: `/invoke` 뿐 아니라 `/stream` 과 A2A 로 받은 태스크도 같은
+        루프를 돌기 때문에, 서버의 취소 추적표(`/invoke` 만 등록)로 판정하면 그 둘이 빠진다.
+        """
+        steer = getattr(self.executor, "steer", None)
+        if not callable(steer):
+            return False
+        await steer(task_id, text, by=by)
         return True
 
     async def drain(self) -> None:
@@ -215,6 +240,33 @@ def create_app(runtime: AgentRuntime, *, token: str | None = None) -> FastAPI:
             )
         return Acknowledgement(status="canceled")
 
+    @router.post(
+        "/steer/{task_id}",
+        response_model=Acknowledgement,
+        dependencies=[guard],
+        responses={
+            status.HTTP_501_NOT_IMPLEMENTED: {
+                "model": Acknowledgement,
+                "description": "이 실행기는 steer 를 지원하지 않는다",
+            }
+        },
+    )
+    async def steer(task_id: str, body: SteerRequest) -> Acknowledgement | JSONResponse:
+        """진행 중 태스크의 다음 턴 경계에 운영자 지시를 대기시킨다.
+
+        ``queued`` 는 **접수**다 — 반영은 다음 턴 경계에서 일어나고(``SteerEvent``), 태스크가
+        먼저 끝나면 일어나지 않는다. 끝났거나 모르는 태스크는 404.
+
+        steer 를 모르는 실행기(커스텀 entrypoint, echo)는 501 로 답한다 — 200 으로 삼키면
+        운영자가 방향이 바뀐 줄 안다. 본문은 `/reload` 와 같은 ``unsupported`` 다.
+        """
+        if not await runtime.steer(task_id, body.text, by=body.by):
+            return JSONResponse(
+                status_code=status.HTTP_501_NOT_IMPLEMENTED,
+                content=Acknowledgement(status="unsupported").model_dump(),
+            )
+        return Acknowledgement(status="queued")
+
     @router.post("/reload", response_model=Acknowledgement, dependencies=[guard])
     async def reload() -> Acknowledgement:
         """promptset/skillset 을 리로드한다 (신규 태스크부터 적용).
@@ -266,6 +318,7 @@ __all__ = [
     "Acknowledgement",
     "AgentRuntime",
     "AaestroErrorPayload",
+    "SteerRequest",
     "create_app",
     "require_token",
 ]

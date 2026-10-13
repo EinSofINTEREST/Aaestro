@@ -118,7 +118,7 @@ class AnthropicModel:
         request: dict[str, Any] = {
             "model": self.config.name,
             "max_tokens": self.config.max_tokens or DEFAULT_MAX_TOKENS,
-            "messages": [to_message_param(message) for message in messages],
+            "messages": to_message_params(messages),
         }
         if system:
             request["system"] = system
@@ -217,6 +217,27 @@ class AnthropicModel:
         return ModelResponse(content=text, tool_calls=tool_calls, usage=usage, raw=blocks)
 
 
+def to_message_params(messages: Sequence[Message]) -> list[dict[str, Any]]:
+    """The conversation in the provider's message shape, with roles alternating.
+
+    대화 전체를 provider 의 메시지 열로 옮긴다. 이 provider 에서는 도구 결과도 ``user`` 역할이라,
+    tool 턴 뒤에 온 user 턴(운영자 steer, #364)을 따로 보내면 ``user`` 가 연속된다. 연속된 같은
+    역할을 받아 주는지는 provider 마다 다르고 실 API 로 확인하지 않았으므로 **받아 주는 것에
+    기대지 않는다**: 연속된 ``user`` 메시지는 하나로 합친다. 블록 순서는 그대로라
+    ``tool_result`` 가 먼저, steer 의 text 가 그 뒤에 온다.
+
+    연속이 없는 대화(steer 없음)는 메시지별 변환과 같은 결과다.
+    """
+    params: list[dict[str, Any]] = []
+    for message in messages:
+        param = to_message_param(message)
+        if params and param["role"] == "user" and params[-1]["role"] == "user":
+            params[-1]["content"] = [*params[-1]["content"], *param["content"]]
+            continue
+        params.append(param)
+    return params
+
+
 def to_message_param(message: Message) -> dict[str, Any]:
     """One framework conversation turn in the provider's message shape."""
     if isinstance(message, UserTurn):
@@ -266,4 +287,4 @@ def _to_tool_schema(tool: Any) -> dict[str, Any]:
     }
 
 
-__all__ = ["DEFAULT_MAX_TOKENS", "AnthropicModel", "to_message_param"]
+__all__ = ["DEFAULT_MAX_TOKENS", "AnthropicModel", "to_message_param", "to_message_params"]

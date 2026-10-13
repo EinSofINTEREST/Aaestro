@@ -451,3 +451,69 @@ async def test_the_response_keeps_the_provider_blocks_to_send_back():
 
     assert response.raw == blocks
     assert response.tool_calls == (ToolCall(id="t1", name="search", arguments={"q": "x"}),)
+
+
+# --- wire 역할 교대 (#364) ----------------------------------------------------
+
+
+def tool_round(call_id: str, result: str) -> list:
+    return [
+        AssistantTurn(content="", tool_calls=(ToolCall(id=call_id, name="search"),)),
+        ToolTurn(outcomes=(ToolOutcome(call_id=call_id, content=result),)),
+    ]
+
+
+async def wire_of(conversation: list) -> list[dict]:
+    provider = model(Message([Block(type="text", text="done")]))
+    await provider.run("sys", conversation, [])
+    return provider.client.messages.requests[0]["messages"]
+
+
+async def test_a_steer_after_tool_results_does_not_put_two_user_messages_in_a_row():
+    """이 provider 는 도구 결과도 ``user`` 다 — steer 를 따로 보내면 user 가 연속된다.
+
+    프레임워크 타입에서는 ``ToolTurn → UserTurn`` 이라 연속이 아니다: wire 에서만 보인다.
+    """
+    steer = UserTurn(parts=("[operator steer]\nfirst", "[operator steer]\nsecond"))
+    conversation = [*OPENING, *tool_round("t1", "found"), steer, *tool_round("t2", "more")]
+
+    sent = await wire_of(conversation)
+
+    assert [m["role"] for m in sent] == ["user", "assistant", "user", "assistant", "user"]
+    # 한 메시지 안에서 tool_result 가 먼저, steer 의 text 가 그 뒤
+    assert sent[2]["content"] == [
+        {"type": "tool_result", "tool_use_id": "t1", "content": "found"},
+        {"type": "text", "text": "[operator steer]\nfirst"},
+        {"type": "text", "text": "[operator steer]\nsecond"},
+    ]
+    assert sent[4]["content"] == [{"type": "tool_result", "tool_use_id": "t2", "content": "more"}]
+
+
+WIRE_BEFORE_STEER_EXISTED = (
+    '[{"content": [{"text": "recalled", "type": "text"}, {"text": "prompt", "type": "text"}], '
+    '"role": "user"}, '
+    '{"content": [{"id": "t1", "input": {}, "name": "search", "type": "tool_use"}], '
+    '"role": "assistant"}, '
+    '{"content": [{"content": "found", "tool_use_id": "t1", "type": "tool_result"}], '
+    '"role": "user"}, '
+    '{"content": [{"id": "t2", "input": {}, "name": "search", "type": "tool_use"}], '
+    '"role": "assistant"}, '
+    '{"content": [{"content": "boom", "is_error": true, "tool_use_id": "t2", '
+    '"type": "tool_result"}], "role": "user"}]'
+)
+"""steer 도입 전 어댑터가 같은 대화에 대해 보낸 ``messages`` 의 직렬화 — 고정값."""
+
+
+async def test_without_a_steer_the_wire_is_byte_identical_to_before():
+    import json
+
+    conversation = [
+        UserTurn(parts=("recalled", "prompt")),
+        *tool_round("t1", "found"),
+        AssistantTurn(content="", tool_calls=(ToolCall(id="t2", name="search"),)),
+        ToolTurn(outcomes=(ToolOutcome(call_id="t2", content="boom", is_error=True),)),
+    ]
+
+    sent = await wire_of(conversation)
+
+    assert json.dumps(sent, sort_keys=True).encode() == WIRE_BEFORE_STEER_EXISTED.encode()

@@ -18,14 +18,15 @@ It reads `configs/{AAESTRO_ENV}.yaml`. Which surfaces open depends on that file:
 |---|---|
 | Runs (read, drain) | always |
 | Catalog, authoring | always — `registry.roots` resolves against `AAESTRO_REPO_ROOT` |
-| Deployments, run submission, resume | `orchestrator.deployment_store` is set |
+| Deployments, run submission, resume, steer | `orchestrator.deployment_store` is set |
 | Build materials | `orchestrator.material_store` is set — otherwise the routes answer `400` (`CFG_001`) |
 | Image builds, and the deploy gate on custom agents | `orchestrator.material_store` **and** `orchestrator.build_store` are set — otherwise the image routes are absent (`404`) |
 | Access registry | `orchestrator.access_store` is set — otherwise the routes are absent (`404`) |
 | Web UI at `/ui` | always |
 
 Without `orchestrator.deployment_store` the process refuses to start containers and answers
-`POST /v1/runs/{id}/resume` with `501` — it reads the run store but does not drive runs.
+`POST /v1/runs/{id}/resume` and `POST /v1/runs/{id}/steer` with `501` — it reads the run store
+but does not drive runs.
 
 ## Authentication
 
@@ -52,7 +53,8 @@ header, because the check runs as a dependency before any route.
 
 Failures raised by the control plane share one envelope, and the `code` is the stable part —
 match on it rather than on the message. Two responses do **not** use it: `401` (above) and the
-`501` from a control plane that drives no runs, which carries a flatter legacy shape.
+`501` from the run routes (a control plane that drives no runs, or an agent executor that cannot
+be steered), which carries a flatter legacy shape.
 
 ```json
 {
@@ -509,6 +511,62 @@ Continues a run from where it stopped. What that means differs by mode:
 
 `501` means this control plane has no deployment surface: it can read runs but does not drive
 them, and answering `200` would leave an operator believing a resume happened.
+
+### `POST /v1/runs/{run_id}/steer`
+
+Redirects the task a run is executing **without discarding the work done so far**. Cancelling
+and resubmitting starts over; a steer adds one instruction to the conversation the agent is
+already in.
+
+```bash
+curl -X POST -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"text": "Use the 2024 figures, not 2023.", "by": "alice"}' \
+  http://127.0.0.1:8700/v1/runs/run-a2bce8e90f40/steer
+```
+
+| Field | |
+|---|---|
+| `text` | The instruction. Required, at most 4000 characters. |
+| `by` | Who issued it, for the audit trail. Defaults to `operator`; at most 200 printable characters. It is the **caller's claim**, not an authenticated identity — the control plane token does not tell people apart. |
+| `node` | The node to steer. Omit it to steer the node running right now. |
+
+`202` — the instruction is **queued, not applied**:
+
+```json
+{"run_id": "run-a2bce8e90f40", "node": "researcher", "task_id": "…",
+ "agent": "researcher", "status": "queued"}
+```
+
+**When it takes effect.** The agent adds the instruction at its next *turn boundary* — right
+after the tool results of the current turn, as a user turn
+(`assistant(tool calls) → tool results → user(steer)`). It never interrupts a model call in
+progress, never rewrites a message already sent, and never touches the system prompt (that
+would break the task's prompt-cache prefix). Several instructions waiting at the same boundary
+become one user turn. Each one is prefixed with `[operator steer]` so the model can tell it
+from the task input. On providers where tool results already travel in the `user` role, the
+instruction is appended to that same message rather than sent as a second `user` message.
+
+**It may not take effect at all.** If the task ends before another turn boundary — the model
+was already writing its final answer, the tool failed, the turn limit was reached, the task
+was cancelled — the instruction is dropped. `queued` is not a promise. The agent logs a
+`WARN` (`steer dropped, task ended before the next turn boundary`, with `agent`, `task_id`,
+`run_id`, and who issued it) and nothing else happens; check the run's output, and resubmit
+if the direction mattered. A stream consumer sees a `steer` event at the moment an
+instruction enters the conversation, and none if it was dropped. The event says the
+instruction was added — the model reads it on its next call, and that call can still fail.
+
+Refusals:
+
+| Status | Code | When |
+|---|---|---|
+| `404` | `NF_001` | The run is unknown; or it has no task in flight (finished, or between two nodes); or the named `node` is not running; or the agent has not entered its loop yet (the node was dispatched a moment ago — try again); or the task ended just before the instruction arrived. The `message` says which. |
+| `400` | `VAL_002` | The body is malformed or has an unknown key; `text` is empty or longer than 4000 characters; `by` is an empty string, longer than 200 characters, or contains control characters or a line break; 8 instructions are already waiting on that task; several nodes are running and `node` was omitted (`running` in the details lists them); or the node has more than one task in flight, which a node name cannot tell apart (`task_ids` lists them). |
+| `501` | legacy shape ([Errors](#errors)) | This control plane does not drive the run (see resume above), or the agent's executor does not support steering — a custom `spec.entrypoint` that does not implement it. Never answered as `200`. |
+
+What cannot be steered: only the LLM tool loop has turn boundaries, and a task an agent
+delegated to a peer over A2A is not addressable from here — steer the node that delegated.
+Refused instructions are logged by the control plane too (`run steer refused`), with who tried. The instruction text is not written to logs (only its length); the `steer` event
+on the task stream carries it.
 
 ## Access registry
 
@@ -1157,6 +1215,7 @@ agent identity — `403` (`ACC_001`) otherwise.
 | `GET /v1/runs` | `aaestro run-list [--mode service]` |
 | `POST /v1/runs/{id}/drain` | `aaestro run-drain <id>` |
 | `POST /v1/runs/{id}/resume` | `aaestro run-resume <id>` |
+| `POST /v1/runs/{id}/steer` | `aaestro run-steer <id> "<text>" [--node <node>] [--by <who>]` |
 | `PUT /v1/agents/{name}/materials` | `aaestro agent-push <name> <directory>` |
 | `POST` + `GET /v1/agents/{name}/image` | `aaestro agent-build <name> [--wait]` |
 

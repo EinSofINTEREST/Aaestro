@@ -14,7 +14,7 @@ from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import structlog
 
@@ -33,6 +33,7 @@ if TYPE_CHECKING:
     from aaestro.runtime.control import ControlClient
     from aaestro.runtime.deployments import DeploymentManager, DeploymentRecord
     from aaestro.runtime.launcher import AgentLauncher
+    from aaestro.runtime.nodes import SteerReceipt
 
 log = structlog.get_logger(__name__)
 
@@ -68,6 +69,17 @@ class RoutedClients(Mapping[str, "ControlClient"]):
 
     def __len__(self) -> int:
         return len({name for name, _ in self._launcher.launched})
+
+
+@runtime_checkable
+class SteerableRuntime(Protocol):
+    """진행 중 run 의 태스크에 운영자 지시를 전달할 수 있는 노드 런타임 (#364)."""
+
+    async def steer(
+        self, run_id: str, text: str, *, by: str, node: str | None = None
+    ) -> SteerReceipt:
+        """run 이 지금 실행 중인 노드 태스크에 지시를 대기시킨다."""
+        ...
 
 
 def not_deployed_for_runs(deployment_id: str, *, status: str | None = None) -> AaestroError:
@@ -152,6 +164,26 @@ class RunService:
             self._drive(run_id, lambda: self.submitter.resume(topology, run_id))
         log.info("run resumed", graph=record.graph, run_id=run_id, mode=record.mode)
         return self._record(run_id, topology)
+
+    async def steer(
+        self, run_id: str, text: str, *, by: str, node: str | None = None
+    ) -> SteerReceipt | None:
+        """Forward an operator instruction to the task a run is executing right now.
+
+        run 이 지금 실행 중인 노드 태스크에 운영자 지시를 전달합니다 (#364). 진행 중 태스크를
+        아는 것은 run 을 구동하는 노드 런타임뿐이라 그쪽에 맡깁니다.
+
+        Returns:
+            Where it went — or ``None`` when this service's node runtime cannot forward a
+            steer at all. 그것을 어떻게 답할지(501)는 HTTP 표면이 정합니다.
+
+        Raises:
+            AaestroError: The runtime's or the agent's refusal (``NF_001``, ``VAL_002``).
+        """
+        runtime = self.submitter.runtime
+        if not isinstance(runtime, SteerableRuntime):
+            return None
+        return await runtime.steer(run_id, text, by=by, node=node)
 
     def result_of(self, run_id: str) -> RunResult | None:
         """완주한 mission 의 결과 — 이 프로세스가 구동한 것만 안다."""
@@ -282,4 +314,4 @@ class RunService:
         self.drivers[run_id] = asyncio.create_task(run(), name=run_id)
 
 
-__all__ = ["RoutedClients", "RunService"]
+__all__ = ["RoutedClients", "RunService", "SteerableRuntime"]

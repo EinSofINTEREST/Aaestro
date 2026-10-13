@@ -17,14 +17,14 @@ python -m aaestro.orchestrator
 |---|---|
 | Run 조회·drain | 항상 |
 | 카탈로그·저작 | 항상 — `registry.roots` 는 `AAESTRO_REPO_ROOT` 기준으로 해석된다 |
-| 배포·run 제출·재개 | `orchestrator.deployment_store` 가 설정된 경우 |
+| 배포·run 제출·재개·steer | `orchestrator.deployment_store` 가 설정된 경우 |
 | 빌드 재료 | `orchestrator.material_store` 가 설정된 경우 — 아니면 라우트가 `400` (`CFG_001`) 로 답한다 |
 | 이미지 빌드, 커스텀 에이전트의 배포 게이트 | `orchestrator.material_store` **와** `orchestrator.build_store` 가 모두 설정된 경우 — 아니면 이미지 라우트가 없다 (`404`) |
 | 권한 레지스트리 | `orchestrator.access_store` 가 설정된 경우 — 아니면 라우트가 없다 (`404`) |
 | `/ui` 의 Web UI | 항상 |
 
 `orchestrator.deployment_store` 가 없으면 컨테이너를 띄우지 않고
-`POST /v1/runs/{id}/resume` 에 `501` 로 답한다 — run 기록을 읽기만 하고 구동하지는 않기
+`POST /v1/runs/{id}/resume` 과 `POST /v1/runs/{id}/steer` 에 `501` 로 답한다 — run 기록을 읽기만 하고 구동하지는 않기
 때문이다.
 
 ## 인증
@@ -50,8 +50,8 @@ curl -H "Authorization: Bearer $AAESTRO_CONTROL_TOKEN" http://127.0.0.1:8700/v1/
 ## 에러
 
 control plane 이 내는 실패는 같은 봉투를 쓰고, 안정적인 부분은 `code` 다 — 메시지가 아니라
-코드로 분기한다. 두 응답만 이 봉투가 **아니다**: 위의 `401`, 그리고 run 을 구동하지 않는
-control plane 의 `501` (더 납작한 레거시 모양).
+코드로 분기한다. 두 응답만 이 봉투가 **아니다**: 위의 `401`, 그리고 run 라우트의 `501`
+(run 을 구동하지 않는 control plane, 또는 steer 할 수 없는 에이전트 실행기 — 더 납작한 레거시 모양).
 
 ```json
 {
@@ -488,6 +488,58 @@ curl -X POST -H "Authorization: Bearer $TOKEN" -H 'content-type: application/jso
 
 `501` 은 이 control plane 에 배포 표면이 없다는 뜻이다 — run 을 읽기만 하고 구동하지 않는데
 `200` 을 주면 운영자가 재개됐다고 믿는다.
+
+### `POST /v1/runs/{run_id}/steer`
+
+run 이 실행 중인 태스크의 방향을 **지금까지의 작업을 버리지 않고** 바꾼다. 취소 후 재제출은
+처음부터 다시 돈다 — steer 는 에이전트가 이미 진행 중인 대화에 지시 하나를 더한다.
+
+```bash
+curl -X POST -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"text": "2023 이 아니라 2024 수치를 쓴다.", "by": "alice"}' \
+  http://127.0.0.1:8700/v1/runs/run-a2bce8e90f40/steer
+```
+
+| 필드 | |
+|---|---|
+| `text` | 지시. 필수, 최대 4000자. |
+| `by` | 누가 냈는지 — 감사용. 기본값 `operator`, 출력 가능한 문자 최대 200자. **호출자의 주장**이지 인증된 신원이 아니다 — control plane 토큰은 사람을 가르지 않는다. |
+| `node` | steer 할 노드. 생략하면 지금 실행 중인 노드. |
+
+`202` — 지시는 **접수된 것이지 반영된 것이 아니다**:
+
+```json
+{"run_id": "run-a2bce8e90f40", "node": "researcher", "task_id": "…",
+ "agent": "researcher", "status": "queued"}
+```
+
+**언제 반영되나.** 에이전트는 다음 *턴 경계* — 현재 턴의 tool 결과 바로 뒤 — 에 지시를 user
+턴으로 넣는다 (`assistant(tool 호출) → tool 결과 → user(steer)`). 진행 중인 모델 호출에는
+끼어들지 않고, 이미 보낸 메시지를 고쳐 쓰지 않으며, system 프롬프트를 건드리지 않는다 (건드리면
+그 태스크의 프롬프트 캐시 prefix 가 깨진다). 같은 경계에 쌓인 여러 지시는 user 턴 하나가 된다.
+모델이 태스크 입력과 구분할 수 있게 각 지시 앞에 `[operator steer]` 가 붙는다. tool 결과가 이미
+`user` 역할로 가는 provider 에서는 지시를 두 번째 `user` 메시지로 보내지 않고 그 메시지 뒤에 붙인다.
+
+**반영되지 않을 수도 있다.** 다음 턴 경계가 오기 전에 태스크가 끝나면 — 모델이 이미 최종 답을
+쓰고 있었거나, tool 이 실패했거나, turn 상한에 닿았거나, 태스크가 취소됐으면 — 지시는 버려진다.
+`queued` 는 약속이 아니다. 에이전트는 `WARN` 을 남기고 (`steer dropped, task ended before the
+next turn boundary` — `agent`, `task_id`, `run_id`, 누가 냈는지) 그 밖의 일은 일어나지 않는다.
+run 의 결과를 확인하고, 방향이 중요했다면 다시 제출한다. 스트림 소비자는 지시가 대화에 들어간
+순간 `steer` 이벤트를 보고, 버려졌으면 보지 못한다. 이벤트는 지시가 대화에 붙었다는 것까지만
+말한다 — 모델은 다음 호출에서 읽고, 그 호출은 실패할 수 있다.
+
+거절:
+
+| 상태 | 코드 | 언제 |
+|---|---|---|
+| `404` | `NF_001` | 모르는 run 이거나, 진행 중인 태스크가 없거나 (끝났거나 두 노드 사이), 지목한 `node` 가 실행 중이 아니거나, 에이전트가 아직 루프에 들어가지 않았거나 (노드가 방금 배정됐다 — 다시 시도한다), 지시가 닿기 직전에 태스크가 끝났다. 어느 것인지는 `message` 가 말한다. |
+| `400` | `VAL_002` | 본문이 형식에 맞지 않거나 모르는 키가 있다. `text` 가 비었거나 4000자를 넘는다. `by` 가 빈 문자열이거나 200자를 넘거나 제어문자·개행을 담았다. 그 태스크에 이미 8건이 대기 중이다. 여러 노드가 실행 중인데 `node` 를 생략했다 (details 의 `running` 에 목록). 그 노드에 진행 중인 태스크가 둘 이상이라 노드 이름으로 가를 수 없다 (`task_ids` 에 목록). |
+| `501` | 레거시 모양 ([에러](#에러)) | 이 control plane 이 그 run 을 구동하지 않거나 (위 resume 참고), 에이전트의 실행기가 steer 를 지원하지 않는다 — 구현하지 않은 커스텀 `spec.entrypoint`. `200` 으로 답하는 일은 없다. |
+
+steer 할 수 없는 것: 턴 경계는 LLM tool 루프에만 있고, 에이전트가 A2A 로 peer 에게 위임한
+태스크는 여기서 지목할 수 없다 — 위임한 노드를 steer 한다. 거절된 지시도 control plane 이
+누가 시도했는지와 함께 로그에 남긴다 (`run steer refused`). 지시 본문은 로그에 남기지 않는다
+(길이만). 태스크 스트림의 `steer` 이벤트에는 실린다.
 
 ## 권한 레지스트리
 
@@ -1096,6 +1148,7 @@ runtime 이 에이전트보다 먼저 `aaestro-<agent>--mcp-<server>` 라는 이
 | `GET /v1/runs` | `aaestro run-list [--mode service]` |
 | `POST /v1/runs/{id}/drain` | `aaestro run-drain <id>` |
 | `POST /v1/runs/{id}/resume` | `aaestro run-resume <id>` |
+| `POST /v1/runs/{id}/steer` | `aaestro run-steer <id> "<text>" [--node <node>] [--by <who>]` |
 | `PUT /v1/agents/{name}/materials` | `aaestro agent-push <name> <directory>` |
 | `POST` + `GET /v1/agents/{name}/image` | `aaestro agent-build <name> [--wait]` |
 
