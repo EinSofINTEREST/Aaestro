@@ -45,7 +45,10 @@ def workspace(tmp_path: Path) -> Path:
             "apiVersion": "aaestro/v1",
             "kind": "Promptset",
             "metadata": {"name": "solo", "version": "0.1.0"},
-            "spec": {"engine": "jinja2", "templates": {"default": {"file": "t.j2"}}},
+            "spec": {
+                "engine": "jinja2",
+                "templates": {"default": {"file": "t.j2"}, "system": {"file": "t.j2"}},
+            },
         },
     )
     (tmp_path / "graphs").mkdir()
@@ -140,7 +143,10 @@ def test_modules_group_versions_by_name(workspace):
             "apiVersion": "aaestro/v1",
             "kind": "Promptset",
             "metadata": {"name": "solo", "version": "0.2.0"},
-            "spec": {"engine": "jinja2", "templates": {"default": {"file": "t.j2"}}},
+            "spec": {
+                "engine": "jinja2",
+                "templates": {"default": {"file": "t.j2"}, "system": {"file": "t.j2"}},
+            },
         },
     )
 
@@ -286,7 +292,10 @@ def test_a_module_whose_document_contradicts_its_path_is_not_published(workspace
             "apiVersion": "aaestro/v1",
             "kind": "Promptset",
             "metadata": {"name": "solo", "version": "0.1.0"},
-            "spec": {"engine": "jinja2", "templates": {"default": {"file": "t.j2"}}},
+            "spec": {
+                "engine": "jinja2",
+                "templates": {"default": {"file": "t.j2"}, "system": {"file": "t.j2"}},
+            },
         },
     )
 

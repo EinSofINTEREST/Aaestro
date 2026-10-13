@@ -30,7 +30,11 @@ def promptset(name: str = "solo", version: str = "0.1.0") -> dict:
         "metadata": {"name": name, "version": version},
         "spec": {
             "engine": "jinja2",
-            "templates": {"default": {"file": "t.j2"}, "step": {"file": "s.j2"}},
+            "templates": {
+                "default": {"file": "t.j2"},
+                "step": {"file": "s.j2"},
+                "system": {"file": "t.j2"},
+            },
         },
     }
 
@@ -387,7 +391,13 @@ def test_a_node_missing_its_template_is_refused_at_save(author, workspace):
     """#260 — 화면에서 만든 그래프가 run 에서 죽던 자리. 저장 전에 잡아야 한다."""
     write(
         workspace / "modules" / "promptsets" / "solo" / "0.1.0" / "promptset.yaml",
-        {**promptset(), "spec": {"engine": "jinja2", "templates": {"default": {"file": "t.j2"}}}},
+        {
+            **promptset(),
+            "spec": {
+                "engine": "jinja2",
+                "templates": {"default": {"file": "t.j2"}, "system": {"file": "t.j2"}},
+            },
+        },
     )
 
     with pytest.raises(AaestroError) as exc_info:
@@ -405,6 +415,7 @@ def test_a_node_that_does_not_supply_a_required_variable_is_refused(author, work
             "spec": {
                 "engine": "jinja2",
                 "templates": {
+                    "system": {"file": "t.j2"},
                     "default": {"file": "t.j2"},
                     "step": {
                         "file": "s.j2",
@@ -426,7 +437,13 @@ def test_the_author_feeds_the_promptsets_to_the_validator(author, workspace):
     """배선 확인 — `promptsets=` 를 빼면 이 검사는 아무 것도 보지 못한 채 통과한다."""
     write(
         workspace / "modules" / "promptsets" / "solo" / "0.1.0" / "promptset.yaml",
-        {**promptset(), "spec": {"engine": "jinja2", "templates": {"default": {"file": "t.j2"}}}},
+        {
+            **promptset(),
+            "spec": {
+                "engine": "jinja2",
+                "templates": {"default": {"file": "t.j2"}, "system": {"file": "t.j2"}},
+            },
+        },
     )
 
     report = author.validate(graphs=[graph("pipeline")], with_saved_graphs=False)
