@@ -1057,7 +1057,7 @@ def _relaunched(agent: DeployedAgent, launched: LaunchedAgent) -> DeployedAgent:
     )
 
 
-PROXY_TERMINATED_SECRETS = frozenset({"ANTHROPIC_API_KEY"})
+PROXY_TERMINATED_SECRETS = frozenset({"ANTHROPIC_API_KEY", "OPENAI_COMPAT_API_KEY"})
 """이그레스 프록시가 종단해 스스로 주입하는 자격 — 에이전트 env 로 나가지 않는다."""
 
 
@@ -1094,6 +1094,9 @@ class EgressEndpoints:
             MCP_PROXY_URL_ENV: f"{self.providers_url.rstrip('/')}/mcp",
             # 키 자리에 신원을 싣는다 — 프록시가 떼고 진짜 키를 붙인다
             "ANTHROPIC_API_KEY": credential,
+            # OpenAI 호환 provider 도 같은 방식이다 — 주소는 프록시 종단 창구, 키 자리는 신원
+            "OPENAI_COMPAT_BASE_URL": f"{self.providers_url.rstrip('/')}/openai-compat",
+            "OPENAI_COMPAT_API_KEY": credential,
         }
 
 

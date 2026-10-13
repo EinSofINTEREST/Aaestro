@@ -197,6 +197,49 @@ async def test_unbound_provider_is_rejected(monkeypatch):
     assert exc_info.value.details["provider"] == "openai"
 
 
+def _with_provider(provider: str):
+    manifest = load_manifest(ECHO_MANIFEST)
+    model = manifest.spec.model.model_copy(update={"provider": provider, "name": "gpt-compatible"})
+    return manifest.model_copy(update={"spec": manifest.spec.model_copy(update={"model": model})})
+
+
+async def test_openai_compat_manifest_builds_its_adapter_from_the_table(monkeypatch):
+    """진입점이 provider 테이블을 쓴다 — anthropic 이 아니라는 이유로 거절하지 않는다 (#361)."""
+    from aaestro.agentd.providers.openai_compat import OpenAICompatModel
+
+    monkeypatch.delenv(EXECUTOR_ENV, raising=False)
+    monkeypatch.setenv("AAESTRO_ROOT", str(REPO_ROOT))
+    monkeypatch.setenv("OPENAI_COMPAT_BASE_URL", "http://egress:8081/openai-compat")
+    monkeypatch.setenv("OPENAI_COMPAT_API_KEY", "cred-echo")
+
+    executor = await build_executor(_with_provider("openai-compat"))
+
+    [link] = executor._chain.links  # noqa: SLF001
+    assert isinstance(link.model, OpenAICompatModel)
+    assert (link.provider, link.model.base_url, link.model.credential) == (
+        "openai-compat",
+        "http://egress:8081/openai-compat",
+        "cred-echo",
+    )
+
+
+async def test_openai_compat_manifest_without_its_settings_fails_startup(monkeypatch):
+    """주소 없이 뜨면 첫 태스크에서야 드러난다 — 기동에서 막는다."""
+    monkeypatch.delenv(EXECUTOR_ENV, raising=False)
+    monkeypatch.setenv("AAESTRO_ROOT", str(REPO_ROOT))
+    monkeypatch.delenv("OPENAI_COMPAT_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_COMPAT_API_KEY", raising=False)
+
+    with pytest.raises(AaestroError) as exc_info:
+        await build_executor(_with_provider("openai-compat"))
+
+    assert exc_info.value.code == "CFG_001"
+    assert exc_info.value.details["settings"] == [
+        "OPENAI_COMPAT_BASE_URL",
+        "OPENAI_COMPAT_API_KEY",
+    ]
+
+
 async def test_unknown_executor_selection_is_rejected(monkeypatch):
     monkeypatch.setenv(EXECUTOR_ENV, "mystery")
 

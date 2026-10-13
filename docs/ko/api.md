@@ -808,10 +808,27 @@ Memory Service 는 환경에 아래 둘이 **모두** 있으면 **레지스트�
 | 창구 | 에이전트가 보내는 것 | 판정 |
 |---|---|---|
 | CONNECT (`8080`) | `HTTPS_PROXY` 를 통한 HTTPS, 프록시 자격으로 신원 | `host[:port]` 에 대한 `egress` — `:443` 은 생략 |
-| Provider (`8081`) | `ANTHROPIC_BASE_URL` 로 가는 모델 API 호출, 키 자리에 신원 | provider 호스트(`api.anthropic.com`) 에 대한 `egress` |
+| Provider (`8081`) | `ANTHROPIC_BASE_URL` / `OPENAI_COMPAT_BASE_URL` 로 가는 모델 API 호출, 키 자리에 신원 | provider 의 논리 호스트(`api.anthropic.com`, `openai-compat.invalid`) 에 대한 `egress` |
 
 프록시는 TLS 안을 보지 않는다. 모델 호출에서는 에이전트 신원을 떼고 자기가 쥔 키를 붙인 뒤 provider 의
 응답을 그대로 흘려보내므로, **에이전트 환경에는 모델 키가 없고** 모델 접근 회수에 재배포가 필요 없다.
+
+provider 마다 모델 호출에 필요한 경로만 연다 — `anthropic` 은 `POST v1/messages`,
+`POST v1/messages/count_tokens`, `GET v1/models`, `openai-compat` 은 `POST v1/chat/completions`.
+그 밖의 경로는 키를 붙이기 전에 `403 ACC_001` 로 거절하고, 맞춰 본 경로를 그대로 전달한다.
+`openai-compat` 의 키는 `Authorization: Bearer <key>` 로 나간다. 에이전트가 보낸 `Authorization` 은
+신원이라 항상 먼저 뗀다.
+
+요청 헤더는 provider 별 허용 목록이다: `content-type`, `accept`, `accept-encoding`, `user-agent`,
+그리고 `anthropic` 은 `anthropic-version` · `anthropic-beta`. 에이전트가 넣은 그 밖의 헤더는 떼어 낸다 —
+컨테이너 안에서 고른 헤더가 운영자의 키와 함께 나가면 안 된다. 쿠키는 어느 방향으로도 건너지 않고,
+프록시는 호출 사이에 쿠키를 기억하지 않는다: 한 에이전트의 upstream 세션이 다른 에이전트의 요청에
+실리지 않는다.
+
+`openai-compat` 의 판정 대상은 upstream 주소가 아니라 `openai-compat.invalid` 다: 운영자가 회수하는
+것은 이 배치가 어디를 가리키든 "모델 API" 다. 합성 이름이다 — `.invalid` 는 예약 TLD 이고, CONNECT
+창구는 `.invalid` 목적지를 레지스트리에 묻기 전에 `403 ACC_001` 로 거절하므로 provider 선언이 터널을
+열지 않는다.
 
 control plane 에서 켠다:
 
@@ -821,13 +838,14 @@ runtime:
     connect_url: http://aaestro-egress:8080
     providers_url: http://aaestro-egress:8081
     container: aaestro-egress   # MCP 사이드카를 쓸 때만 필요 — 아래 참조
-    providers: [anthropic]      # 프록시가 종단하는 provider — 실제 upstream 구성과 맞춘다 (기본값 [anthropic])
+    providers: [anthropic]      # 프록시가 종단하는 provider — upstream 을 설정했으면 openai-compat 을 더한다 (기본값 [anthropic])
 ```
 
 배포 검증은 `providers` 에 없는 모델 provider(primary·fallback)를 거절한다 (`400 VAL_001`, finding `model_providers`).
 
-그러면 배포가 에이전트마다 `HTTPS_PROXY`(자기 신원을 자격으로), 프록시를 가리키는 `ANTHROPIC_BASE_URL`,
-그리고 `ANTHROPIC_API_KEY` 자리에 신원을 넣는다. 평문 `http` 는 프록시로 보내지 않는다 — 에이전트
+그러면 배포가 에이전트마다 `HTTPS_PROXY`(자기 신원을 자격으로), 프록시를 가리키는 `ANTHROPIC_BASE_URL`
+과 `OPENAI_COMPAT_BASE_URL`, 그리고 `ANTHROPIC_API_KEY` / `OPENAI_COMPAT_API_KEY` 자리에 신원을 넣는다 —
+manifest 가 `env_allowlist` 에 올려도 실 키는 프록시에만 있다. 평문 `http` 는 프록시로 보내지 않는다 — 에이전트
 네트워크의 프레임워크 서비스는 그대로 직접 닿는다. `orchestrator.access_store` 없이
 `runtime.egress_proxy` 를 켜면 기동을 거부한다 (`CFG_001`).
 
@@ -876,6 +894,8 @@ spec:
 | `AAESTRO_ACCESS_URL`, `AAESTRO_ACCESS_ENFORCER_TOKEN` | 레지스트리 — 둘 다 필수, 없으면 기동 거부 |
 | `ANTHROPIC_API_KEY` | 프록시가 모델 호출에 붙이는 키 |
 | `AAESTRO_EGRESS_ANTHROPIC_UPSTREAM` | 모델 호출이 가는 곳 (기본 `https://api.anthropic.com`) |
+| `OPENAI_COMPAT_API_KEY` | 프록시가 `openai-compat` 호출에 `Authorization: Bearer` 로 붙이는 키. 키가 필요 없는 로컬 서버도 자리는 채운다. 설정했는데 공백뿐인 provider 키는 기동을 거부한다 (`CFG_001`) — `ANTHROPIC_API_KEY` 도 같다 |
+| `AAESTRO_EGRESS_OPENAI_COMPAT_UPSTREAM` | `openai-compat` 호출이 가는 곳 — **`/v1` 앞까지**: `https://api.openai.com`, `http://vllm:8000`, `https://gateway.example.com/llm`. 기본값이 없다. 키와 함께 두거나 둘 다 두지 않는다. 하나만 있거나 `/v1` 로 끝나면 기동을 거부한다 (`CFG_001`). 아래 평문 `http` 규칙이 적용된다 |
 | `AAESTRO_EGRESS_ALLOW_PLAINTEXT_UPSTREAM` | `true` 이고 목적지가 `AAESTRO_EGRESS_PRIVATE_DESTINATIONS` 에도 **있을 때만** 평문 `http` 를 받는다 — 사설망의 테스트 대역용. 요청마다 이름을 풀어 사설 주소로만 붙고, 목록의 이름이 공인 주소로 풀리면 거부한다(`502`). 공인 주소로는 설정을 어떻게 해도 평문이 나가지 않는다 |
 | `AAESTRO_EGRESS_PORT`, `AAESTRO_EGRESS_PROVIDER_PORT` | CONNECT 창구와 provider 창구 (기본 `8080`, `8081`) |
 | `AAESTRO_EGRESS_MODE` | `enforce`(기본) 또는 `record` |
@@ -924,7 +944,7 @@ spec:
 | `AAESTRO_EGRESS_MCP_TOKENS` | 프록시가 MCP 서버에 보내도 되는 자격 이름, 쉼표로. 각 값은 프록시 env 에 둔다 |
 
 **목록에 있는 자격 이름만 보낸다.** 선언이 다른 비밀을 `auth.token_env` 로 적으면 그 값 대신
-`502`(`CFG_002`) 로 답한다. 목록에도 프록시가 다른 용도로 쥔 비밀은 올리지 못한다 — `ANTHROPIC_API_KEY` 나
+`502`(`CFG_002`) 로 답한다. 목록에도 프록시가 다른 용도로 쥔 비밀은 올리지 못한다 — `ANTHROPIC_API_KEY`, `OPENAI_COMPAT_API_KEY` 나
 `AAESTRO_*` 이름이 있으면 기동을 거부한다(`CFG_001`). 원격 MCP 서버는 `https` 여야 한다: 평문 `http` 는
 `AAESTRO_EGRESS_ALLOW_PLAINTEXT_UPSTREAM=true` 이고 **동시에** 그 서버가 `AAESTRO_EGRESS_PRIVATE_DESTINATIONS`
 에 있을 때만 받고, 아니면 거부한다(`502`). 스위치 하나로는 아무것도 열리지 않으므로 운영 설정에 스위치가 남아

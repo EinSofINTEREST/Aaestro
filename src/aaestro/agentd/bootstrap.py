@@ -7,7 +7,8 @@ agentd 기동 시퀀스 (03 MCP Startup Sequence). 순서를 지키는 것 자�
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 
 from aaestro.core.agent import ComponentHealth, HealthState, HealthStatus
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
@@ -17,9 +18,10 @@ from aaestro.memory.tool import MEMORY_SEARCH_SPEC, MEMORY_SEARCH_TOOL
 from aaestro.protocols.a2a.tool import ASK_PEER_SPEC, ASK_PEER_TOOL
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Callable, Mapping, Sequence
 
-    from aaestro.core.manifest import AgentManifest, McpServerSpec
+    from aaestro.agentd.executor import Model
+    from aaestro.core.manifest import AgentManifest, McpServerSpec, ModelConfig
     from aaestro.modules.promptset import LoadedPromptset
     from aaestro.modules.skillset import LoadedSkillset
 
@@ -175,6 +177,80 @@ def build_tool_registry(
         registry[ASK_PEER_TOOL] = ASK_PEER_SPEC
 
     return registry
+
+
+def _anthropic_adapter(config: ModelConfig, agent: str, environ: Mapping[str, str]) -> Model:
+    """Anthropic 어댑터 — base URL 과 키는 SDK 가 env 에서 직접 읽는다."""
+    # 쓰는 provider 의 것만 올린다 — SDK import 가 기동 경로 전체에 얹히지 않게
+    from aaestro.agentd.providers.anthropic import AnthropicModel
+
+    return AnthropicModel(config=config, agent=agent)
+
+
+def _openai_compat_adapter(config: ModelConfig, agent: str, environ: Mapping[str, str]) -> Model:
+    """OpenAI 호환 어댑터 — base URL 과 Bearer 값은 설정(env)에서 온다."""
+    from aaestro.agentd.providers.openai_compat import (
+        API_KEY_ENV,
+        BASE_URL_ENV,
+        OpenAICompatModel,
+    )
+
+    base_url = environ.get(BASE_URL_ENV, "").strip()
+    credential = environ.get(API_KEY_ENV, "").strip()
+    missing = [
+        name for name, value in ((BASE_URL_ENV, base_url), (API_KEY_ENV, credential)) if not value
+    ]
+    if missing:
+        # 기본 주소로 떨어지면 선언하지 않은 provider 로 프롬프트가 나간다 — 값 없이 뜨지 않는다
+        raise AaestroError(
+            category=ErrorCategory.CONFIG,
+            code=ErrorCode.CFG_001,
+            message="openai-compat provider requires its base url and credential settings",
+            agent=agent,
+            details={"provider": config.provider, "settings": missing},
+        )
+    return OpenAICompatModel(config=config, agent=agent, base_url=base_url, credential=credential)
+
+
+MODEL_ADAPTERS: Final[Mapping[str, Callable[[ModelConfig, str, Mapping[str, str]], Model]]] = (
+    MappingProxyType(
+        {
+            "anthropic": _anthropic_adapter,
+            "openai-compat": _openai_compat_adapter,
+        }
+    )
+)
+"""provider 이름 → 어댑터. 새 provider 는 여기 한 줄이다 — 분기문을 늘리지 않는다."""
+
+
+def model_factory(agent: str, environ: Mapping[str, str]) -> Callable[[ModelConfig], Model]:
+    """Build the factory that binds a model declaration to its provider adapter.
+
+    모델 선언을 provider 어댑터에 묶는 팩토리를 만듭니다. 체인을 만드는 시점에 검사합니다:
+    기동이면 기동 실패, 태스크가 실어 온 선언이면 그 태스크 실패.
+
+    Args:
+        agent: Agent name for error context.
+        environ: Process settings the adapters read their endpoint from.
+
+    Returns:
+        A factory from a resolved model declaration to its adapter.
+
+    Raises:
+        AaestroError: (from the factory) CONFIG/``CFG_001`` if no adapter is bound for the
+            provider, or the adapter's settings are missing — 모르는 provider 가 조용히 다른
+            provider 로 떨어지지 않습니다.
+    """
+
+    def build(config: ModelConfig) -> Model:
+        adapter = MODEL_ADAPTERS.get(config.provider)
+        if adapter is None:
+            from aaestro.agentd.models import unsupported_provider
+
+            raise unsupported_provider(agent, config.provider)
+        return adapter(config, agent, environ)
+
+    return build
 
 
 class Bootstrap:

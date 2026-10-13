@@ -675,12 +675,25 @@ def test_the_check_is_silent_without_promptsets():
 OPENAI = {"provider": "openai-compat", "name": "gpt-5"}
 
 
-@pytest.fixture
-def openai_known(monkeypatch):
-    """논리 호스트가 알려진 두 번째 provider — 지금 저장소에는 anthropic 뿐이다."""
-    from aaestro.access import baselines
+def test_an_openai_compat_primary_passes_when_the_proxy_terminates_it():
+    """논리 호스트가 있는 provider 다 — 프록시 upstream 에 있으면 배포된다 (#361)."""
+    planner = agent("planner", model=OPENAI)
 
-    monkeypatch.setitem(baselines.PROVIDER_HOSTS, "openai-compat", "api.openai.com")
+    assert run(manifests={"planner": planner}).ok
+    assert run(
+        manifests={"planner": planner}, providers=frozenset({"anthropic", "openai-compat"})
+    ).ok
+
+
+def test_an_openai_compat_primary_the_proxy_does_not_terminate_is_val_002():
+    planner = agent("planner", model=OPENAI)
+
+    report = run(manifests={"planner": planner}, providers=frozenset({"anthropic"}))
+
+    [finding] = model_findings(report)
+    assert finding.code == ErrorCode.VAL_002
+    assert "not an egress proxy upstream" in finding.message
+    assert finding.details == {"agent": "planner", "provider": "openai-compat"}
 
 
 def with_fallback(name: str, fallback: dict) -> object:
@@ -706,7 +719,6 @@ def test_an_unknown_fallback_provider_is_rejected():
     assert "unknown model provider" in finding.message
 
 
-@pytest.mark.usefixtures("openai_known")
 def test_a_fallback_provider_the_proxy_does_not_terminate_is_rejected():
     planner = with_fallback("planner", OPENAI)
 
@@ -721,7 +733,6 @@ def test_a_fallback_provider_the_proxy_does_not_terminate_is_rejected():
     assert accepted.ok
 
 
-@pytest.mark.usefixtures("openai_known")
 def test_a_node_override_to_an_undeclared_provider_is_rejected():
     """이그레스 baseline 은 manifest 에서만 나온다 — 노드가 바꾼 provider 는 프록시가 거부한다."""
     topology = make_topology(["planner"])
@@ -735,7 +746,6 @@ def test_a_node_override_to_an_undeclared_provider_is_rejected():
     assert finding.details["node_id"] == "planner"
 
 
-@pytest.mark.usefixtures("openai_known")
 def test_a_node_override_to_a_declared_fallback_provider_passes():
     topology = make_topology(["planner"]).with_model_overrides({"planner": _override(OPENAI)})
     planner = with_fallback("planner", {"provider": "openai-compat", "name": "gpt-5-mini"})
@@ -743,7 +753,6 @@ def test_a_node_override_to_a_declared_fallback_provider_passes():
     assert run([topology], manifests={"planner": planner}).ok
 
 
-@pytest.mark.usefixtures("openai_known")
 def test_a_provider_the_manifest_already_reported_is_not_reported_again_per_node():
     """노드가 manifest 선언 provider 로 바꾸면 같은 문제는 manifest 검사 한 건으로 충분하다."""
     topology = make_topology(["planner"]).with_model_overrides({"planner": _override(OPENAI)})
