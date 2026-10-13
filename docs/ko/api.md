@@ -97,6 +97,13 @@ control plane 의 `501` (더 납작한 레거시 모양).
 `items`, 실패한 것은 `problems`. **하나가 깨져도 나머지를 가리지 않는다** — 그러지 않으면
 매니페스트 하나가 깨졌을 때 카탈로그 전체가 `500` 이 되고, 어느 파일인지 알 수 없다.
 
+problem 하나는 `{path, code, message, errors, reason}` 이다. `path` 는 파일(또는 모듈 버전
+디렉토리), `errors` 는 스키마 위반이면 문제의 키를 `{field, problem}` 으로, `reason` 은 파일을
+읽지 못한 위치를 말한다 — 중복 키(`duplicate key 'k' at line N`), 파싱 실패
+(`ScannerError at line N, column M`), 텍스트가 아닌 파일(`not valid UTF-8`). 어느 쪽도 거절된
+값이나 입력 조각을 싣지 않는다. 키 이름은 나간다 (64자로 자르고 인쇄할 수 없는 문자는 바꾼다).
+이름 불일치는 기대 이름(`located`)만 싣고 선언에 적힌 이름은 싣지 않는다.
+
 ### `GET /v1/agents`, `GET /v1/graphs`, `GET /v1/groups`
 
 ```json

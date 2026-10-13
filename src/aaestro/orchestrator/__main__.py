@@ -29,6 +29,7 @@ from aaestro.config import (
     load_config,
     resolve_environment,
 )
+from aaestro.core.startup import startup_guard
 from aaestro.http_auth import is_loopback
 from aaestro.observability.metrics import DEFAULT_METRICS_PORT, Metrics, start_metrics_server
 from aaestro.orchestrator.control import create_app
@@ -79,10 +80,19 @@ def main() -> None:
     """Serve the Control Plane over the configured run store."""
     # 계측기는 **노출되는 것 하나**를 모두가 쓴다 — 저마다 새로 만들면 기록은 되는데 아무도 못 본다
     metrics = _setup_observability()
-    config = load_config(
-        resolve_environment(),
-        config_dir=os.environ.get(CONFIG_DIR_ENV, DEFAULT_CONFIG_DIR),
-    )
+    # 설정 로드 뒤의 기동 실패 (빠진 저장소 · 토큰, 깨진 선언) 도 같은 한 줄로 — 가드 밖이면
+    # traceback 만 남고 details 가 사라진다
+    with startup_guard(log, "control plane startup failed"):
+        _start(metrics)
+
+
+def _start(metrics: Metrics) -> None:
+    """설정을 읽고 조립해 서빙한다 — 여기서 올라온 ``AaestroError`` 는 ``main`` 의 가드가 받는다."""
+    with startup_guard(log, "configuration rejected"):
+        config = load_config(
+            resolve_environment(),
+            config_dir=os.environ.get(CONFIG_DIR_ENV, DEFAULT_CONFIG_DIR),
+        )
     orchestrator = config.orchestrator
 
     if orchestrator.run_store is None:

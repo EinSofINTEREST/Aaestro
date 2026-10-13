@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 from aaestro.core.manifest import SemVer
-from aaestro.modules.registry import ModuleRegistry, validation_error
+from aaestro.modules.registry import ModuleRegistry, reject_module
 
 
 class MemoryScope(StrEnum):
@@ -41,7 +41,7 @@ class EmbeddingSpec(BaseModel):
     임베딩 모델 고정 — 변경은 version bump + 전체 재인덱싱을 수반한다.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     provider: str
     model: str
@@ -51,7 +51,7 @@ class EmbeddingSpec(BaseModel):
 class ChunkSpec(BaseModel):
     """Chunking policy for long content."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     max_tokens: int = Field(default=400, gt=0)
     overlap_tokens: int = Field(default=40, ge=0)
@@ -67,7 +67,7 @@ class ChunkSpec(BaseModel):
 class HybridSpec(BaseModel):
     """Hybrid search merge weights (RRF)."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     vector_weight: float = Field(default=0.6, ge=0.0)
     lexical_weight: float = Field(default=0.4, ge=0.0)
@@ -83,7 +83,7 @@ class HybridSpec(BaseModel):
 class IndexSpec(BaseModel):
     """Per-space index configuration."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     embedding: EmbeddingSpec
     chunk: ChunkSpec = Field(default_factory=ChunkSpec)
@@ -93,7 +93,7 @@ class IndexSpec(BaseModel):
 class CompactionSpec(BaseModel):
     """Compaction policy — raw entries collapse into summaries."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     trigger_entries: int = Field(gt=0)
     strategy: Literal["summarize"] = "summarize"
@@ -106,7 +106,7 @@ class RetentionSpec(BaseModel):
     보존 정책 — 영구 스코프는 ttl 또는 compaction 중 하나 이상을 선언해야 한다.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     ttl_days: int | None = Field(default=None, gt=0)
     compaction: CompactionSpec | None = None
@@ -120,7 +120,7 @@ class RetentionSpec(BaseModel):
 class RecallSpec(BaseModel):
     """Auto-recall defaults injected into prompts."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     auto: bool = True
     k: int = Field(default=6, gt=0)
@@ -131,7 +131,7 @@ class RecallSpec(BaseModel):
 class MemorysetSpec(BaseModel):
     """Memoryset body."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     scope: MemoryScope
     index: IndexSpec
@@ -152,7 +152,7 @@ class MemorysetSpec(BaseModel):
 class MemorysetMetadata(BaseModel):
     """Memoryset metadata."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     name: str
     version: SemVer
@@ -162,7 +162,7 @@ class MemorysetMetadata(BaseModel):
 class MemorysetManifest(BaseModel):
     """``memoryset.yaml`` document."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     api_version: Literal["aaestro/v1"] = Field(alias="apiVersion")
     kind: Literal["Memoryset"]
@@ -214,7 +214,7 @@ class MemorysetLoader:
         try:
             manifest = MemorysetManifest.model_validate(document)
         except ValidationError as err:
-            raise validation_error(ref, err) from err
+            reject_module(ref, err)
         return LoadedMemoryset(ref=ref, manifest=manifest)
 
 

@@ -31,7 +31,13 @@ from aaestro.access.client import ACCESS_URL_ENV
 from aaestro.access.model import Mode, ResourceKind, mode_problem
 from aaestro.access.registry import ACCESS_CREDENTIAL_ENV
 from aaestro.core.agent import TaskResult
-from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.core.errors import (
+    AaestroError,
+    ErrorCategory,
+    ErrorCode,
+    field_problems,
+    raise_detached,
+)
 from aaestro.core.events import DoneEvent, ErrorEvent
 
 if TYPE_CHECKING:
@@ -201,13 +207,11 @@ class PermissionAgent:
         try:
             return ExpansionRequest.model_validate(raw)
         except ValidationError as err:
-            problems = [
-                {"field": ".".join(str(p) for p in e["loc"]), "problem": e["msg"]}
-                for e in err.errors()
-            ]
-            raise self._invalid(
-                task, caller, "malformed expansion request", errors=problems
-            ) from err
+            raise_detached(
+                self._invalid(
+                    task, caller, "malformed expansion request", errors=field_problems(err)
+                )
+            )
 
     def _refused(self, message: str, *, task: TaskRequest, **details: Any) -> AaestroError:
         log.warning(

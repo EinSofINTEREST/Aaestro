@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 import uvicorn
-import yaml
+from pydantic import ValidationError
 
 from aaestro.agentd.a2a_server import build_peer_client
 from aaestro.agentd.health import agent_health
@@ -27,10 +27,18 @@ from aaestro.agentd.mcp import build_mcp_client
 from aaestro.agentd.server import AgentRuntime, create_app
 from aaestro.agentd.telemetry import ExecutorTelemetry
 from aaestro.agentd.tools import AgentToolRegistry
-from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.core.errors import (
+    AaestroError,
+    ErrorCategory,
+    ErrorCode,
+    field_problems,
+    raise_detached,
+)
 from aaestro.core.manifest import AgentManifest
 from aaestro.core.skill import SkillSpec
+from aaestro.core.startup import startup_guard
 from aaestro.core.tools import is_mcp_tool
+from aaestro.core.yamlio import YamlReadError, load_yaml_file
 from aaestro.http_auth import resolve_required_token
 from aaestro.memory.http import MEMORY_TOKEN_ENV, MEMORY_URL_ENV
 from aaestro.memory.tool import MEMORY_SEARCH_TOOL
@@ -99,24 +107,28 @@ def load_manifest(path: Path) -> AgentManifest:
         AaestroError: CONFIG/``CFG_001`` if the file is missing or invalid.
     """
     try:
-        raw: Any = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError) as err:
-        raise AaestroError(
-            category=ErrorCategory.CONFIG,
-            code=ErrorCode.CFG_001,
-            message="cannot read agent manifest",
-            details={"path": str(path)},
-        ) from err
+        raw: Any = load_yaml_file(path)
+    except YamlReadError as err:
+        raise_detached(
+            AaestroError(
+                category=ErrorCategory.CONFIG,
+                code=ErrorCode.CFG_001,
+                message="cannot read agent manifest",
+                details={"path": str(path), "reason": err.reason},
+            )
+        )
 
     try:
         return AgentManifest.model_validate(raw)
-    except ValueError as err:
-        raise AaestroError(
-            category=ErrorCategory.CONFIG,
-            code=ErrorCode.CFG_001,
-            message="agent manifest failed validation",
-            details={"path": str(path)},
-        ) from err
+    except ValidationError as err:
+        raise_detached(
+            AaestroError(
+                category=ErrorCategory.CONFIG,
+                code=ErrorCode.CFG_001,
+                message="agent manifest failed validation",
+                details={"path": str(path), "errors": field_problems(err)},
+            )
+        )
 
 
 def build_app(
@@ -679,12 +691,19 @@ def main() -> None:
 
     에이전트 데몬을 실행합니다 — manifest 로드 → 실행기 선택 → Control API 서빙.
     """
-    # 거절 WARN/에러가 구조화 로그로 나가도록 로깅을 먼저 — 메트릭 포트는 거절된 뒤에 연다
+    # 로깅 설정이 기동 판정 · manifest 로드보다 먼저다 — 뒤에 두면 거절 한 줄이 JSON 이 아니고
+    # 마스킹 processor 도 거치지 않는다 (control plane · Memory Service 와 같은 순서).
+    # 메트릭 포트는 거절된 뒤에 연다
     _configure_logging()
+    # 토큰 판정 (CFG_001) 은 가드 밖 — #417 의 계약대로 예외가 그대로 올라온다
     serving = _serving_from_env()
-    manifest = load_manifest(Path(os.environ.get(MANIFEST_ENV, DEFAULT_MANIFEST_PATH)))
+    with startup_guard(log, "agent manifest rejected"):
+        manifest = load_manifest(Path(os.environ.get(MANIFEST_ENV, DEFAULT_MANIFEST_PATH)))
     metrics = _setup_observability()
-    asyncio.run(_run(manifest, metrics, serving))
+    # 가드는 manifest 로드에서 끝나지 않는다 — 모듈 선언 위반 (MOD_003) 은 실행기 조립에서
+    # 올라온다. 가드 밖이면 traceback 만 남고 ``details.errors`` (어느 키인지) 가 사라진다
+    with startup_guard(log, "agent startup failed"):
+        asyncio.run(_run(manifest, metrics, serving))
 
 
 @dataclass(frozen=True)

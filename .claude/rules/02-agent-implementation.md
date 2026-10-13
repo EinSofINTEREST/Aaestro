@@ -180,6 +180,8 @@ spec:
     volumes: []                 # 기본 없음 — 필요 시 명시 선언 (아래 격리 규칙 참조)
 ```
 
+> **구현 상태**: 위 예시의 `spec.decision` 은 v0.1 스키마가 아직 받지 않는다. 지금은 모르는 키로 `VAL_002` 거절된다 (`extra="forbid"`). 아래 Manifest Rules 8 의 `MOD_001` / `MOD_003` 은 구현 뒤의 계약이다.
+
 ### Manifest Rules
 
 1. **Validation**: 배포 시 pydantic 스키마로 검증 — 미검증 manifest 로 컨테이너 기동 금지

@@ -7,6 +7,36 @@ Aaestro 에서 배포 가능한 모든 것은 모듈입니다: 솔루션은 버�
 [04-module-system.md](../../.claude/rules/04-module-system.md),
 [09-memory-context.md](../../.claude/rules/09-memory-context.md).
 
+**모르는 키는 거절됩니다.** 모든 선언(에이전트 manifest, 그룹, 그래프, 스킬셋, 프롬프트셋,
+메모리셋)은 엄격하게 검증됩니다: 스키마가 모르는 키는 로드 · 배포 검증(`aaestro validate`,
+`POST /v1/validate`, 배포) · `PUT` 을 실패시키고, 에러는 문제의 키마다 `{field, problem}` —
+경로와 사유 — 을 알려 주며 **값은 싣지 않습니다**(잘못 놓은 `env: {KEY: 비밀}` 이 비밀을
+되돌려 보내면 안 됩니다. 거절된 입력 — 값 전체든 8자 이상의 조각이든 — 을 인용하는 validator
+메시지는 `<redacted>` 로 가려지고, 원래 예외는 체인으로 잇지 않아 traceback 이나 `exc_info`
+로그도 값을 싣지 않습니다). 이 보장의 범위는 정확히 이렇습니다: 스키마가 **거절한** 값은
+나가지 않습니다. 스키마를 통과한 선언의 **식별자** — 모듈 ref, 에이전트 · 그룹 · 노드 · provider
+이름 — 는 의미 검증 (`aaestro validate`, 배포) 의 finding 에 나갑니다. 운영자가 선언을 고치려면
+보여야 하기 때문입니다. **env 키 이름은 나가지 않습니다**: finding 은 위치로 가리킵니다
+(`spec.runtime.env_allowlist[2]`, 스킬셋의 `requires.env[0]`). 키 이름 자리에 비밀 값 자체를 적는
+실수가 흔하기 때문입니다. 중복을 거절하는 메시지도 값이 아니라 위치를 말합니다
+(`duplicate node id at index 1 and 3`). **키 이름은 나갑니다** — 모르는 키 · 매핑 키 · 중복 키는 `field` /
+`reason` 에 실립니다 (64자로 자르고 인쇄할 수 없는 문자는 바꿉니다). 그러니 값을 키 자리에
+적지 않습니다. 선언을 그 위치와 대조하는 검사 (모듈의 `kind` · 이름 · 버전과 ref, 선언된 이름과
+파일 위치) 는 기대 값만 말하고 선언에 적힌 값은 싣지 않습니다. 한 YAML
+매핑에서 같은 키를 두 번 적는 것도 (키와 줄 번호와 함께, merge key `<<` 는 그대로 동작)
+거절되므로, 좁힌 줄이 뒤의 넓은 줄에 조용히 덮이지 않습니다. YAML 문법 오류는 줄과 열만
+알려 주고 줄 내용은 싣지 않으며, UTF-8 이 아닌 파일은 `not valid UTF-8` 로, YAML 이 값으로
+만들 수 없는 것 (`!!int abc`, `2024-02-30`) 은 `YAML value could not be constructed at line N`
+으로 보고됩니다. `aaestro validate` 와 프로세스 진입점(agentd · control
+plane · Memory Service)은 파일과 문제의 키를 한 줄로 출력하고 비정상 종료합니다. 그래서 좁히는 선언의
+오타(`allowed_tool`, `egres`, `mod`)가 더 넓은 기본값으로 바뀌지 않습니다. 규약에는 있으나
+v0.1 스키마가 아직 받지 않는 선언(`spec.decision`, 그래프 노드 `decision`, memoryset
+`compaction.importance` 등)도 같은 방식으로 거절됩니다.
+
+컨테이너 안의 에이전트 데몬도 control plane 과 같은 엄격도로 manifest 를 검증하므로 "검증을
+통과한 선언"의 뜻이 프로세스마다 같습니다. 감수하는 점: 스키마에 나중에 추가된 필드를 쓰는
+선언은 그 필드를 아는 이미지에서만 기동합니다.
+
 ## 모듈 타입
 
 | 타입 | 선언 내용 | 위치 |

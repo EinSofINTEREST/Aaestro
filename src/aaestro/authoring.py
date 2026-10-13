@@ -23,7 +23,7 @@ import structlog
 import yaml
 from pydantic import BaseModel
 
-from aaestro.catalog import MODULE_TYPES, Catalog, not_found
+from aaestro.catalog import MODULE_TYPES, Catalog, Problem, not_found
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 from aaestro.core.manifest import AgentManifest, agent_name
 from aaestro.deploy import Finding, ValidationReport, validate_deployment
@@ -38,6 +38,16 @@ InUse = Callable[[str, str], bool]
 
 DECLARATION_MODE = 0o644
 """새로 쓰는 선언 파일의 권한 — 다른 uid 로 도는 에이전트 컨테이너도 읽을 수 있어야 한다."""
+
+
+def _problem_details(problem: Problem) -> dict[str, Any]:
+    """카탈로그 문제를 finding details 로 — 경로 · 읽기 실패 사유 · ``{field, problem}`` 목록."""
+    details: dict[str, Any] = {"path": problem.path}
+    if problem.reason:
+        details["reason"] = problem.reason
+    if problem.errors:
+        details["errors"] = list(problem.errors)
+    return details
 
 
 def _version_tuple(version: str) -> tuple[int, ...]:
@@ -178,7 +188,10 @@ class Author:
         )
         broken = [
             Finding(
-                check="catalog", code=ErrorCode(p.code), message=p.message, details={"path": p.path}
+                check="catalog",
+                code=ErrorCode(p.code),
+                message=p.message,
+                details=_problem_details(p),
             )
             for p in problems
             if p.path not in targets
