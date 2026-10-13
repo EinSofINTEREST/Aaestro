@@ -550,3 +550,132 @@ def test_entrypoint_rejects_a_misspelled_config_key_with_one_log_line(
     assert str(tmp_path / "dev.yaml") in output
     assert "Traceback" not in output
     assert MARKER not in output
+
+
+# --- HTTP 본문 검증 (#448) -------------------------------------------------------
+# FastAPI 기본 422 는 `detail[].input` 에 받은 값을 되비춘다. 세 앱이 같은 규칙으로 답해야 한다
+
+HTTP_SENTINEL = "sentinel-secret-value-448"
+SENTINEL_FRAGMENT = HTTP_SENTINEL[:12]
+
+
+def _memory_http_client() -> tuple[Any, Any]:
+    from fastapi.testclient import TestClient
+
+    from aaestro.memory.http import TokenRegistry, create_app
+    from aaestro.memory.index import IndexRegistry
+    from aaestro.memory.recall import Recall
+    from aaestro.memory.service import MemoryService
+    from aaestro.memory.store import SqliteMemoryStore
+
+    store = SqliteMemoryStore()
+    indexer = IndexRegistry()
+    app = create_app(
+        MemoryService(store=store),
+        Recall(indexes=indexer.indexes, store=store),
+        TokenRegistry(),
+        indexer=indexer,
+    )
+    return TestClient(app), store
+
+
+def _agentd_http_client() -> tuple[Any, Any]:
+    from fastapi.testclient import TestClient
+
+    from aaestro.agentd.server import AgentRuntime, create_app
+    from tests.unit.agentd.test_server import TOKEN, FakeExecutor
+
+    runtime = AgentRuntime(agent="researcher", executor=FakeExecutor())
+    client = TestClient(create_app(runtime, token=TOKEN))
+    client.headers["Authorization"] = f"Bearer {TOKEN}"
+    return client, None
+
+
+def _control_http_client() -> tuple[Any, Any]:
+    from fastapi.testclient import TestClient
+
+    from aaestro.orchestrator.control import create_app
+    from aaestro.orchestrator.runstore import InMemoryRunStore
+
+    return TestClient(create_app(InMemoryRunStore())), None
+
+
+def _error_of(body: dict[str, Any]) -> dict[str, Any]:
+    """control plane 은 `{"error": …}` 로 싸고, 두 서비스는 payload 를 그대로 낸다."""
+    inner = body.get("error")
+    return inner if isinstance(inner, dict) else body
+
+
+@pytest.mark.parametrize(
+    ("make_client", "path", "kwargs", "code"),
+    [
+        (_memory_http_client, "/v1/search", {"json": {"query": {"x": HTTP_SENTINEL}}}, "VAL_002"),
+        (_memory_http_client, "/v1/search", {"json": {}}, "VAL_001"),
+        (
+            _memory_http_client,
+            "/v1/read",
+            {"json": {"space": "s", "limit": HTTP_SENTINEL}},
+            "VAL_002",
+        ),
+        (_agentd_http_client, "/v1/invoke", {"json": {"task_id": {"x": HTTP_SENTINEL}}}, "VAL_002"),
+        (_agentd_http_client, "/v1/invoke", {"json": {"input": HTTP_SENTINEL}}, "VAL_002"),
+        (_agentd_http_client, "/v1/invoke", {"json": {}}, "VAL_001"),
+        (_agentd_http_client, "/v1/stream", {"json": {"input": HTTP_SENTINEL}}, "VAL_002"),
+        (
+            _agentd_http_client,
+            "/v1/steer/t1",
+            {"json": {"text": 5, "by": HTTP_SENTINEL}},
+            "VAL_002",
+        ),
+        # control plane 은 필수 누락도 VAL_002 다 (bodies.parsed 와 같은 앱 안의 한 규칙)
+        (
+            _control_http_client,
+            "/v1/runs/x/steer",
+            {"content": HTTP_SENTINEL, "headers": {"content-type": "application/json"}},
+            "VAL_002",
+        ),
+        (_control_http_client, "/v1/runs/x/steer", {}, "VAL_002"),
+    ],
+)
+def test_http_body_validation_hides_the_received_value(make_client, path, kwargs, code):
+    client, store = make_client()
+    try:
+        response = client.post(path, **kwargs)
+    finally:
+        if store is not None:
+            store.close()
+
+    assert response.status_code == 400
+    # 값 전체뿐 아니라 조각도 새면 안 된다
+    assert HTTP_SENTINEL not in response.text
+    assert SENTINEL_FRAGMENT not in response.text
+    assert "detail" not in response.json()
+    error = _error_of(response.json())
+    assert error["code"] == code
+    assert error["category"] == "validation"
+    for item in error["details"]["errors"]:
+        assert set(item) == {"field", "problem"}
+
+
+def test_agentd_validation_rejection_names_the_agent():
+    client, _ = _agentd_http_client()
+
+    response = client.post("/v1/invoke", json={})
+
+    assert response.json()["agent"] == "researcher"
+
+
+def test_memory_append_with_a_long_malformed_entry_does_not_echo_its_content():
+    client, store = _memory_http_client()
+    long_content = HTTP_SENTINEL * 400
+    try:
+        response = client.post(
+            "/v1/append",
+            json={"space": "longterm", "entry": {"kind": "not-a-kind", "content": long_content}},
+        )
+    finally:
+        store.close()
+
+    assert response.status_code == 400
+    assert SENTINEL_FRAGMENT not in response.text
+    assert response.json()["code"] in {"VAL_001", "VAL_002"}

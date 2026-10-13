@@ -11,12 +11,12 @@ import pytest
 from aaestro.core.agent import TaskResult
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 from aaestro.core.manifest import ModelConfig
-from aaestro.core.topology import GraphMode
 from aaestro.orchestrator.checkpoint import build_checkpointer
 from aaestro.orchestrator.run import RESUMED_SUFFIX, RunHandle, RunManager, RunStatus
 from aaestro.orchestrator.runs import RoutedClients, RunService
 from aaestro.orchestrator.runstore import InMemoryRunStore, RunRecord
 from aaestro.orchestrator.submit import RunResult, RunSubmitter
+from aaestro.orchestrator.topology import GraphMode
 from aaestro.runtime.deployments import DeploymentRecord, DeploymentStatus
 from tests.fixtures.topologies import make_mission, make_service
 

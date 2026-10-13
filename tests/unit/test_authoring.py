@@ -11,8 +11,8 @@ from aaestro.authoring import Author
 from aaestro.catalog import Catalog
 from aaestro.core.errors import AaestroError, ErrorCode
 from aaestro.core.manifest import AgentManifest
-from aaestro.core.topology import GraphTopology
 from aaestro.materials import InMemoryMaterialStore
+from aaestro.orchestrator.topology import GraphTopology
 from tests.fixtures.topologies import mission_dict
 
 REPO_ROOT = Path(__file__).resolve().parents[2]

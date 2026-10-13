@@ -26,10 +26,10 @@ from pydantic import BaseModel
 from aaestro.catalog import MODULE_TYPES, Catalog, Problem, not_found
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 from aaestro.core.manifest import AgentManifest, agent_name
-from aaestro.core.topology import GraphTopology
 from aaestro.deploy import Finding, ValidationReport, validate_deployment
 from aaestro.materials import Materials, MaterialStore, check_files
 from aaestro.modules.promptset import PromptsetManifest
+from aaestro.orchestrator.topology import GraphTopology
 
 log = structlog.get_logger(__name__)
 

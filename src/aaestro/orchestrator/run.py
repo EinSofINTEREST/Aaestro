@@ -15,13 +15,13 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
-from aaestro.core.topology import GraphMode, GraphTopology
 from aaestro.orchestrator.runstore import RunRecord
 from aaestro.orchestrator.telemetry import (
     STATUS_COMPLETED,
     STATUS_FAILED,
     OrchestratorTelemetry,
 )
+from aaestro.orchestrator.topology import GraphMode, GraphTopology
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable

@@ -10,7 +10,7 @@ import pytest
 from pydantic import ValidationError
 
 from aaestro.core.errors import AaestroError, ErrorCategory
-from aaestro.core.topology import (
+from aaestro.orchestrator.topology import (
     GraphMode,
     GraphTopology,
     IdlePolicy,
@@ -515,7 +515,7 @@ def test_an_import_ref_outside_the_graphs_package_is_refused_before_import(ref, 
     """검증이 import 하는 순간 모듈 최상위 코드가 돈다 — YAML 문자열 하나로 돌면 안 된다."""
     imported = []
     monkeypatch.setattr(
-        "aaestro.core.topology.importlib.import_module", lambda name: imported.append(name)
+        "aaestro.orchestrator.topology.importlib.import_module", lambda name: imported.append(name)
     )
 
     with pytest.raises(AaestroError) as exc_info:
@@ -540,7 +540,7 @@ def test_a_condition_import_ref_is_still_honoured_but_flagged_deprecated(monkeyp
     """한 버전은 그대로 동작한다 — 대신 운영자가 옮길 곳을 알게 한다."""
     warnings = []
     monkeypatch.setattr(
-        "aaestro.core.topology.log.warning", lambda event, **fields: warnings.append(fields)
+        "aaestro.orchestrator.topology.log.warning", lambda event, **fields: warnings.append(fields)
     )
 
     validate_topology(

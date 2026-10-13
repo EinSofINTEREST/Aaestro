@@ -531,7 +531,7 @@ def test_search_request_bounds_k():
             SearchRequest(query="q", k=bad)
 
 
-async def test_http_search_rejects_an_oversized_k_as_422(served):
+async def test_http_search_rejects_an_oversized_k_as_val_002(served):
     from aaestro.memory.http import MAX_SEARCH_K
 
     access, *_ = served
@@ -541,5 +541,8 @@ async def test_http_search_rejects_an_oversized_k_as_422(served):
         json={"query": "sidecar", "k": MAX_SEARCH_K + 1},
     )
 
-    assert response.status_code == 422, response.text
-    assert response.json()["detail"][0]["loc"] == ["body", "k"]
+    assert response.status_code == 400, response.text
+    body = response.json()
+    assert body["code"] == "VAL_002"
+    assert body["details"]["errors"][0]["field"] == "body.k"
+    assert str(MAX_SEARCH_K + 1) not in str(body["details"])

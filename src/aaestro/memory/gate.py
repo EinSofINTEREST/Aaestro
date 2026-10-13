@@ -25,7 +25,6 @@ from aaestro.access.model import Mode, ResourceKind
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 from aaestro.core.manifest import RESERVED_GLOBAL_GROUP, MemoryMode
 from aaestro.memory.service import AccessToken, MemorySpace
-from aaestro.memory.tokens import issue_token
 
 if TYPE_CHECKING:
     from aaestro.access.client import AccessClient
@@ -111,6 +110,9 @@ class RegistryGate:
         return replace(token, spaces=tuple(allowed))
 
     def _declared(self, agent: str) -> AccessToken:
+        # runtime 패키지는 memory.http 를 import 한다 — 모듈 수준에서 부르면 순환한다
+        from aaestro.runtime.memory import issue_token
+
         try:
             manifest = self.catalog.agent(agent)
         except AaestroError as err:

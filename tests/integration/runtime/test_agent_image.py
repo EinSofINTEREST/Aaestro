@@ -200,7 +200,7 @@ def test_invoke_rejects_a_task_without_trace(echo_container: tuple[str, int]) ->
     with pytest.raises(urllib.error.HTTPError) as exc_info:
         request_json(port, "/v1/invoke", untraceable)
 
-    assert exc_info.value.code == 422
+    assert exc_info.value.code == 400  # 본문 검증 실패 — VAL_001, 값은 싣지 않는다 (#448)
 
 
 @requires_docker

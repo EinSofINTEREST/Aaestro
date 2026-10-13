@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
     from aaestro.catalog import Catalog
     from aaestro.core.manifest import ModelConfig
-    from aaestro.core.topology import GraphTopology, NodeSpec
+    from aaestro.orchestrator.topology import GraphTopology, NodeSpec
 
 
 def resolve_node_model(catalog: Catalog, node: NodeSpec) -> ModelConfig | None:

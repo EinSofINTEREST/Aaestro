@@ -18,12 +18,12 @@ from aaestro.agentd.server import AgentRuntime
 from aaestro.agentd.server import create_app as create_agent_app
 from aaestro.core.agent import TaskStatus
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
-from aaestro.core.topology import NodeSpec
 from aaestro.orchestrator import control as control_module
 from aaestro.orchestrator.control import create_app
 from aaestro.orchestrator.runs import RunService
 from aaestro.orchestrator.runstore import InMemoryRunStore, RunRecord
 from aaestro.orchestrator.submit import RunSubmitter
+from aaestro.orchestrator.topology import NodeSpec
 from aaestro.runtime.control import ControlClient
 from aaestro.runtime.nodes import ControlNodeRuntime, InflightTask, SteerReceipt
 from tests.fixtures.builders import make_task
@@ -279,6 +279,9 @@ async def test_an_agent_cannot_put_its_own_words_in_a_known_refusal(store, categ
     finally:
         await stack.aclose()
 
+    if code == ErrorCode.VAL_002:
+        # 닫힌 사유 집합 밖의 VAL_002 는 알려진 거절이 아니다 — 일반 변환으로 간다 (#448)
+        status, code = 500, "RT_002"
     assert (response.status_code, response.json()["error"]["code"]) == (status, code)
     assert "evil.example" not in response.text and "re-authenticate" not in response.text
 

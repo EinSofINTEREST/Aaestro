@@ -5,7 +5,6 @@ from __future__ import annotations
 import pytest
 
 from aaestro.core.errors import AaestroError, ErrorCategory
-from aaestro.core.topology import NodeSpec
 from aaestro.graphs.schemas import ResearchState
 from aaestro.orchestrator.state import (
     extract_input,
@@ -15,6 +14,7 @@ from aaestro.orchestrator.state import (
     state_fields,
     validate_state,
 )
+from aaestro.orchestrator.topology import NodeSpec
 
 
 def make_node(**overrides: object) -> NodeSpec:

@@ -11,9 +11,11 @@ from __future__ import annotations
 from http import HTTPStatus
 
 import pytest
+from fastapi.exceptions import RequestValidationError
+from pydantic import BaseModel, ValidationError
 
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
-from aaestro.http_errors import status_for
+from aaestro.http_errors import request_validation_error, status_for
 
 
 def error(category: ErrorCategory, code: str, *, retryable: bool = False) -> AaestroError:
@@ -114,3 +116,31 @@ def test_an_override_beats_a_shared_code_mapping():
     missing = error(ErrorCategory.NOT_FOUND, ErrorCode.NF_001)
 
     assert status_for(missing, overrides={ErrorCode.NF_001: HTTPStatus.GONE}) == HTTPStatus.GONE
+
+
+class Body(BaseModel):
+    name: str
+    count: int
+
+
+def failure(payload: dict[str, object]) -> RequestValidationError:
+    try:
+        Body.model_validate(payload)
+    except ValidationError as err:
+        return RequestValidationError(err.errors())
+    raise AssertionError("expected a validation failure")
+
+
+def test_request_validation_error_picks_val_001_only_when_everything_is_missing():
+    assert request_validation_error(failure({})).code == ErrorCode.VAL_001
+    assert request_validation_error(failure({"count": "secret-text"})).code == ErrorCode.VAL_002
+
+
+def test_request_validation_error_can_always_answer_val_002():
+    err = request_validation_error(failure({}), distinguish_missing=False)
+
+    assert err.code == ErrorCode.VAL_002
+
+
+def test_request_validation_error_with_no_errors_is_a_format_error():
+    assert request_validation_error(RequestValidationError([])).code == ErrorCode.VAL_002

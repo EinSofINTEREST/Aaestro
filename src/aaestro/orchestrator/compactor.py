@@ -17,7 +17,6 @@ from pydantic import ValidationError
 
 from aaestro.core.agent import CONTROL_OVERHEAD_S
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
-from aaestro.core.topology import NodeSpec
 from aaestro.orchestrator.compaction import (
     SummarizePolicy,
     apply_deterministic,
@@ -37,15 +36,16 @@ from aaestro.orchestrator.state_artifacts import (
 )
 from aaestro.orchestrator.summarizer import SUMMARY_TIMEOUT_S, StateSummarizer
 from aaestro.orchestrator.telemetry import OrchestratorTelemetry
+from aaestro.orchestrator.topology import NodeSpec
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from aaestro.core.skill import ArtifactStore
-    from aaestro.core.topology import GraphTopology
     from aaestro.observability.metrics import Metrics
     from aaestro.orchestrator.builder import NodeRuntime
     from aaestro.orchestrator.compaction import CompactionPolicy
+    from aaestro.orchestrator.topology import GraphTopology
 
 
 def _compaction_error(code: ErrorCode, message: str, **details: Any) -> AaestroError:

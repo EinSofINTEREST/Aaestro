@@ -9,8 +9,8 @@ import yaml
 
 from aaestro.catalog import Catalog
 from aaestro.core.errors import AaestroError, ErrorCode
-from aaestro.core.topology import NodeSpec
 from aaestro.orchestrator.models import CatalogModels, resolve_node_model, with_recorded_overrides
+from aaestro.orchestrator.topology import NodeSpec
 from tests.fixtures.topologies import make_mission
 
 

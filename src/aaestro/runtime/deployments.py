@@ -49,7 +49,7 @@ if TYPE_CHECKING:
     from aaestro.authoring import Author
     from aaestro.catalog import Catalog
     from aaestro.core.manifest import AgentManifest, ModelOverride
-    from aaestro.core.topology import GraphTopology
+    from aaestro.orchestrator.topology import GraphTopology
     from aaestro.runtime.launcher import AgentLauncher
     from aaestro.runtime.sidecars import ProxyAttachment
 

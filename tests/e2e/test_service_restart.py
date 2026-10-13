@@ -19,11 +19,11 @@ import pytest
 import yaml
 
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
-from aaestro.core.topology import GraphTopology
 from aaestro.orchestrator.checkpoint import build_checkpointer, close_checkpointer
 from aaestro.orchestrator.run import RunManager, RunStatus
 from aaestro.orchestrator.runstore import SqliteRunStore
 from aaestro.orchestrator.submit import RunSubmitter
+from aaestro.orchestrator.topology import GraphTopology
 from aaestro.runtime.control import ControlClient
 from aaestro.runtime.nodes import ControlNodeRuntime
 from tests.e2e.test_stack import (

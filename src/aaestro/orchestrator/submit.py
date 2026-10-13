@@ -17,7 +17,6 @@ from uuid import uuid4
 import structlog
 
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
-from aaestro.core.topology import GraphMode
 from aaestro.orchestrator.builder import build_graph
 from aaestro.orchestrator.compactor import build_state_compactor
 from aaestro.orchestrator.run import (
@@ -30,6 +29,7 @@ from aaestro.orchestrator.run import (
     run_generations,
 )
 from aaestro.orchestrator.state import resolve_graph_state, validate_state
+from aaestro.orchestrator.topology import GraphMode
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping
@@ -38,10 +38,10 @@ if TYPE_CHECKING:
     from langgraph.checkpoint.base import BaseCheckpointSaver
 
     from aaestro.core.skill import ArtifactStore
-    from aaestro.core.topology import GraphTopology
     from aaestro.observability.metrics import Metrics
     from aaestro.orchestrator.builder import ModelResolver, NodeRuntime
     from aaestro.orchestrator.compactor import StateCompactor
+    from aaestro.orchestrator.topology import GraphTopology
 
 DEFAULT_NODE_TIMEOUT_S = 300.0
 

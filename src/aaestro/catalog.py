@@ -25,13 +25,13 @@ from aaestro.core.errors import (
     raise_detached,
 )
 from aaestro.core.manifest import NAME_PATTERN, AgentManifest, GroupManifest
-from aaestro.core.topology import GraphTopology
 from aaestro.core.yamlio import YamlReadError, load_yaml_file
 from aaestro.modules.memoryset import MemorysetManifest
 from aaestro.modules.promptset import PromptsetManifest
 from aaestro.modules.registry import ModuleRegistry, RegistryRoots
 from aaestro.modules.skillpack import SkillpackLoader
 from aaestro.modules.skillset import SkillsetManifest
+from aaestro.orchestrator.topology import GraphTopology
 
 MODULE_TYPES: tuple[str, ...] = ("skillsets", "promptsets", "memorysets", "skillpacks")
 """API 로 읽을 수 있는 모듈 종류 — v0.1 은 전부 읽기 전용이다 (04 Registry 2)."""

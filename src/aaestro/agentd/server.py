@@ -14,13 +14,14 @@ from typing import TYPE_CHECKING, Any
 
 from a2a.utils.constants import AGENT_CARD_WELL_KNOWN_PATH
 from fastapi import APIRouter, Depends, FastAPI, Request, status
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict
 
 from aaestro.core.agent import HealthState, HealthStatus, TaskKey, TaskRequest, TaskResult
 from aaestro.core.errors import AaestroError, AaestroErrorPayload, ErrorCategory, ErrorCode
 from aaestro.http_auth import require_token
-from aaestro.http_errors import status_for
+from aaestro.http_errors import request_validation_error, status_for
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
@@ -43,8 +44,8 @@ class Acknowledgement(BaseModel):
 class SteerRequest(BaseModel):
     """`/v1/steer/{task_id}` 본문.
 
-    길이·대기 수 상한은 대기열을 쥔 실행기가 ``VAL_002`` 로 판정한다 — 여기서 걸면 FastAPI 의
-    422 로 새어 다른 거절과 모양이 갈린다.
+    길이·대기 수 상한은 대기열을 쥔 실행기가 ``VAL_002`` 로 판정한다 — 여기서 걸면 본문 검증
+    실패 핸들러의 일반 ``VAL_00x`` 로 나가 상한 사유(``SteerProblem``)와 모양이 갈린다.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -168,6 +169,13 @@ def create_app(runtime: AgentRuntime, *, token: str | None = None) -> FastAPI:
     """
     app = FastAPI(title=f"aaestro-agentd:{runtime.agent}")
     guard = Depends(require_token(token, realm="agent token"))
+
+    @app.exception_handler(RequestValidationError)
+    async def _bad_body(_request: Request, err: RequestValidationError) -> JSONResponse:
+        """FastAPI 기본 422 는 받은 값을 응답에 되비춘다 — 필드와 사유만 남긴다 (#448)."""
+        problem = request_validation_error(err)
+        problem.agent = runtime.agent
+        return _error_response(problem, status_for(problem))
 
     @app.exception_handler(AaestroError)
     async def _structured(_request: Request, err: AaestroError) -> JSONResponse:

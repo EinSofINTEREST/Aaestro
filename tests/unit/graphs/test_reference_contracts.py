@@ -15,9 +15,9 @@ from pathlib import Path
 import pytest
 import yaml
 
-from aaestro.core.topology import GraphTopology
 from aaestro.modules.promptset import PromptsetManifest
 from aaestro.orchestrator.state import resolve_state_schema
+from aaestro.orchestrator.topology import GraphTopology
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 

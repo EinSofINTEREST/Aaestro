@@ -22,13 +22,13 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
-from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode, field_problems
+from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 from aaestro.core.manifest import AgentManifest, ModelOverride
-from aaestro.core.topology import GraphTopology
 from aaestro.http_auth import require_token
-from aaestro.http_errors import status_for
+from aaestro.http_errors import request_validation_error, status_for
 from aaestro.materials import Materials
 from aaestro.orchestrator.bodies import parsed as _parsed
+from aaestro.orchestrator.topology import GraphTopology
 from aaestro.runtime.images import BuildRecord, image_tag
 from aaestro.ui import UI_ROOT
 
@@ -181,12 +181,8 @@ def create_app(
         """본문이 JSON 도 아니거나 라우트 시그니처에 못 미치면 FastAPI 가 여기 오기 전에
         422 를 낸다 — 카탈로그·authoring 이 내는 `VAL_002` 와 같은 모양으로 맞춘다.
         UI 가 한 가지 모양만 다루게 (#242 리뷰)."""
-        problem = AaestroError(
-            category=ErrorCategory.VALIDATION,
-            code=ErrorCode.VAL_002,
-            message="request failed validation",
-            details={"errors": field_problems(err)},
-        )
+        # bodies.parsed() 도 필수 누락을 VAL_002 로 답한다 — 한 앱 안에서 코드가 갈리지 않게
+        problem = request_validation_error(err, distinguish_missing=False)
         return JSONResponse(
             status_code=status_for(problem), content={"error": problem.payload().model_dump()}
         )
