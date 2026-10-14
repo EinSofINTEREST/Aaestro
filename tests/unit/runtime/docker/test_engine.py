@@ -433,3 +433,135 @@ async def test_drain_success_log_includes_the_image(monkeypatch):
 
     assert recorded[-1]["image"] == handle.image
     assert recorded[-1]["container_id"] == handle.short_id
+
+
+GOOD_HARDENING = {
+    "CapDrop": ["ALL"],
+    "ReadonlyRootfs": True,
+    "User": "1000:1000",
+    "SecurityOpt": ["no-new-privileges:true"],
+}
+
+
+async def verify(hardening, *, internal: bool = False) -> None:
+    client = FakeDockerClient(hardening=hardening)
+    engine = DockerEngine(client=client, network="agents", internal=internal)
+    await engine.verify_isolation("alpha", "img:1", "container-0001")
+
+
+async def test_verify_isolation_accepts_a_hardened_container():
+    await verify(GOOD_HARDENING)
+    await verify(GOOD_HARDENING, internal=True)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("CapDrop", None),
+        ("CapDrop", ["NET_RAW"]),
+        ("ReadonlyRootfs", False),
+        ("User", ""),
+        ("User", "0:0"),
+    ],
+)
+@pytest.mark.parametrize("internal", [False, True])
+async def test_verify_isolation_refuses_a_container_that_lost_its_hardening(field, value, internal):
+    with pytest.raises(AaestroError) as caught:
+        await verify({**GOOD_HARDENING, field: value}, internal=internal)
+
+    assert caught.value.code == "RT_001"
+    assert caught.value.retryable is False
+    assert caught.value.details["fields"] == [field]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("Privileged", True),
+        ("CapAdd", ["SYS_ADMIN"]),
+        ("PidMode", "host"),
+        ("IpcMode", "host"),
+        ("UsernsMode", "host"),
+        ("NetworkMode", "host"),
+        ("PidMode", "container:abc123"),
+        ("IpcMode", "container:abc123"),
+        ("NetworkMode", "container:abc123"),
+        ("UsernsMode", "container:abc123"),
+    ],
+)
+@pytest.mark.parametrize("internal", [False, True])
+async def test_verify_isolation_refuses_settings_that_void_the_hardening(field, value, internal):
+    """CapDrop 이 ALL 이어도 privileged 면 모든 capability 가 주어진다 — 부류로 거절한다."""
+    with pytest.raises(AaestroError) as caught:
+        await verify({**GOOD_HARDENING, field: value}, internal=internal)
+
+    assert caught.value.details["fields"] == [field]
+
+
+async def test_verify_isolation_accepts_the_values_docker_reports_for_a_plain_container():
+    await verify(
+        {
+            **GOOD_HARDENING,
+            "Privileged": False,
+            "CapAdd": None,
+            "PidMode": "",
+            "IpcMode": "private",
+            "UsernsMode": "",
+            "NetworkMode": "agents",
+        }
+    )
+
+
+@pytest.mark.parametrize("security_opt", [None, [], ["seccomp=unconfined"]])
+async def test_verify_isolation_refuses_a_container_missing_a_security_opt_the_spec_now_sets(
+    monkeypatch, security_opt
+):
+    """상수를 채우면 기동 스펙과 대조가 함께 바뀐다 — 빠진 컨테이너는 거절된다."""
+    from aaestro.runtime import spec as spec_module
+
+    monkeypatch.setattr(spec_module, "HARDENED_SECURITY_OPT", ("no-new-privileges:true",))
+    with pytest.raises(AaestroError) as caught:
+        await verify({**GOOD_HARDENING, "SecurityOpt": security_opt})
+
+    assert caught.value.details["fields"] == ["SecurityOpt"]
+    await verify(GOOD_HARDENING)  # 켜진 뒤에도 정상 컨테이너는 붙는다
+
+
+async def test_verify_isolation_ignores_security_opt_while_the_spec_sets_none():
+    await verify({**GOOD_HARDENING, "SecurityOpt": None})
+
+
+def inspect_shape(kwargs):
+    """생성 인자를 `docker inspect` 가 보고하는 모양으로 — 정상 컨테이너가 이렇게 보인다."""
+    return {
+        "CapDrop": kwargs["cap_drop"],
+        "ReadonlyRootfs": kwargs["read_only"],
+        "User": kwargs["user"],
+        "SecurityOpt": kwargs.get("security_opt"),
+    }
+
+
+@pytest.mark.parametrize("filled", [(), ("no-new-privileges:true",)])
+def test_a_container_built_from_the_agent_spec_has_no_hardening_gaps(monkeypatch, filled):
+    from aaestro.runtime import spec as spec_module
+    from aaestro.runtime.docker.engine import hardening_gaps
+
+    monkeypatch.setattr(spec_module, "HARDENED_SECURITY_OPT", filled)
+    kwargs = spec().to_docker_kwargs()
+
+    assert hardening_gaps(inspect_shape(kwargs), spec_module.hardening_kwargs()) == []
+    assert kwargs["security_opt"] == list(filled)
+
+
+@pytest.mark.parametrize("filled", [(), ("no-new-privileges:true",)])
+def test_a_container_built_from_the_sidecar_kwargs_has_no_hardening_gaps(monkeypatch, filled):
+    from aaestro.runtime import spec as spec_module
+    from aaestro.runtime.docker.engine import hardening_gaps
+    from aaestro.runtime.sidecars import sidecar_kwargs
+    from tests.unit.runtime.test_sidecars import SEARCH, with_servers
+
+    monkeypatch.setattr(spec_module, "HARDENED_SECURITY_OPT", filled)
+    manifest = with_servers(SEARCH)
+    kwargs = sidecar_kwargs("researcher", manifest.spec.mcp.servers[0], {}, "net")
+
+    assert hardening_gaps(inspect_shape(kwargs), kwargs) == []

@@ -985,8 +985,12 @@ outside address fails. The proxy is the only way out.
   not retryable) instead of reusing it: a network with a route out would let agents bypass the proxy.
   Remove or recreate that network.
 - **Reattaching checks isolation too.** After a restart, a deployment is reattached only when the
-  agent network is internal and each of its containers is attached to that network alone. Otherwise
-  the deployment becomes `lost` ("network isolation mismatch"), nothing is attached, and its agent
+  agent network is internal and each of its containers is attached to that network alone, and the
+  container still carries the hardening the start spec sets (`CapDrop` has `ALL`, a read-only root
+  filesystem, user `1000:1000`, every `security_opt` the spec sets) and nothing that voids it
+  (privileged, added capabilities, host PID / IPC / user / network namespaces). Otherwise
+  the deployment becomes `lost` ("network isolation mismatch", or "container hardening mismatch"
+  with the field names), nothing is attached, and its agent
   identities are revoked, so containers with a route out lose their memory, peer and model access.
   The containers are left running for you to inspect and tear down.
 - **Agents publish no ports.** Ports cannot be published from an internal network, so the control
