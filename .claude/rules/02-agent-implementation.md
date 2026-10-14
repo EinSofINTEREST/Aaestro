@@ -417,6 +417,8 @@ async def execute(self, task: TaskRequest) -> TaskResult:
 6. **Model Failover**: 모델 호출의 재시도가 소진되면 `spec.model.fallbacks` 중 실패 부류가
    `on` 에 든 다음 모델로 같은 턴을 보낸다 — 전환 주체는 agentd (05 Retry Layering).
    circuit open 인 모델은 건너뛴다
+7. **System Prefix**: 모델 호출의 시스템 자리는 프레임워크의 고정 경계 지시가 promptset `system`
+   렌더보다 먼저 온다 ([04](04-module-system.md) Promptset Rules 6) — 매 턴 같은 문자열이다
 
 ### Steering — 턴 경계의 운영자 지시
 
