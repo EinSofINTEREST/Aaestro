@@ -7,6 +7,7 @@ Docker 그 자체가 아니다.
 from __future__ import annotations
 
 import asyncio
+import threading
 
 import pytest
 
@@ -21,6 +22,7 @@ from aaestro.runtime.docker.engine import (
 from aaestro.runtime.spec import build_container_spec
 from tests.fixtures.builders import make_manifest
 from tests.fixtures.fake_docker import FakeDockerClient
+from tests.fixtures.waiting import until
 
 
 def spec(**overrides):
@@ -206,6 +208,86 @@ async def test_start_failure_discards_the_half_built_container():
         await engine(client).start(spec())
 
     assert len(client.removed) == 1
+
+
+class GatedClient(FakeDockerClient):
+    """지정한 단계를 스레드 안에서 문 앞에 붙잡는다 — 취소돼도 스레드는 문이 열리면 끝까지 간다."""
+
+    def __init__(self, step: str) -> None:
+        super().__init__()
+        self.step = step
+        self.gate = threading.Event()
+        self.entered = threading.Event()
+
+    def _hold(self, step: str) -> None:
+        if step == self.step:
+            self.entered.set()
+            self.gate.wait(5.0)
+
+    def create(self, **kwargs):
+        self._hold("create")
+        return super().create(**kwargs)
+
+    def start(self, container_id: str) -> None:
+        self._hold("start")
+        super().start(container_id)
+
+
+@pytest.mark.parametrize("step", ["create", "start"])
+async def test_a_cancelled_start_discards_the_container_its_thread_built(step: str):
+    """#482 — 취소는 스레드를 멈추지 못한다: 끝까지 만든 컨테이너를 아무도 지우지 않았다."""
+    client = GatedClient(step)
+    docker = engine(client)
+    starting = asyncio.create_task(docker.start(spec()))
+    await until(client.entered.is_set)
+
+    starting.cancel()
+    await asyncio.sleep(0)
+    assert not starting.done(), "기동이 스레드를 기다리지 않고 취소를 올렸다"
+    client.gate.set()
+    with pytest.raises(asyncio.CancelledError):
+        await starting
+
+    assert len(client.created) == 1
+    assert client.removed == ["container-0001" + "0" * 20]
+    assert docker.started == {}
+
+
+async def test_a_cancelled_start_hands_a_hung_cleanup_to_the_engine():
+    """#482 — 걸린 Docker 호출을 그 자리에서 끝없이 기다리면 정지가 묶인다: 상한을 넘기면 넘긴다."""
+    client = GatedClient("create")
+    docker = DockerEngine(client=client, cancel_wait_s=0.01)
+    starting = asyncio.create_task(docker.start(spec()))
+    await until(client.entered.is_set)
+
+    try:
+        starting.cancel()
+        await until(starting.done, timeout_s=1.0)
+        assert starting.cancelled()
+        assert docker._cleanups, "넘긴 정리를 엔진이 쥐지 않았다"
+    finally:
+        client.gate.set()
+
+    await docker.settle_cleanups()
+    assert client.removed == ["container-0001" + "0" * 20]
+    assert not docker._cleanups
+
+
+async def test_settling_abandons_a_cleanup_that_never_finishes():
+    """종료는 끝없이 기다리지 않는다 — 상한을 넘긴 정리는 끊고 넘어간다."""
+    client = GatedClient("create")
+    docker = DockerEngine(client=client, cancel_wait_s=0.01)
+    starting = asyncio.create_task(docker.start(spec()))
+    await until(client.entered.is_set)
+
+    try:
+        starting.cancel()
+        await until(starting.done, timeout_s=1.0)
+        await docker.settle_cleanups(timeout_s=0.01)
+        assert not docker._cleanups
+        assert client.removed == []
+    finally:
+        client.gate.set()
 
 
 async def test_failed_start_is_not_tracked():

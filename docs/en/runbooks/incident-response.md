@@ -49,12 +49,17 @@ Task failures exceed 10% for one agent.
 
 More than five restarts in ten minutes.
 
-1. Check `reason` on `aaestro_container_restarts_total`. `RT_003` means OOM — raise
+1. Check `reason` on `aaestro_container_restarts_total`: `unhealthy` (replaced after failing
+   health checks), `failed` (the replacement container did not start — retried after the next
+   backoff), `gave_up` (the ceiling was hit). OOM kills are not classified yet — the runtime does not
+   log `RT_003` on a restart, and the replaced container is removed — so memory pressure shows up as
+   `unhealthy`. Look for `oom` in `docker events --filter event=oom`; if it is there, raise
    `runtime.resources.memory` or lower concurrency.
-2. Repeated `RT_001` usually means the image or entrypoint is wrong; the container never
-   gets far enough to report health.
-3. After five failures in ten minutes the runtime marks the agent **Failed** and stops
-   retrying. Fix the cause, then redeploy.
+2. Repeated `failed` with `RT_001` usually means the image or entrypoint is wrong; the container
+   never gets far enough to report health. While it retries, the replica stays listed as
+   **Unhealthy** and receives no tasks.
+3. A restart whose container fails to start still counts. After five restarts in ten minutes
+   the runtime marks the agent **Failed** and stops retrying. Fix the cause, then redeploy.
 4. An agent that is restarted **while it is still starting** — never healthy, restarted at
    `interval_s × unhealthy_threshold` — needs a longer startup grace, not a fix to the agent. Raise
    `runtime.health_check.startup_grace_s` and `orchestrator.deployment_ready_timeout_s` together;
