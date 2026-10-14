@@ -58,6 +58,8 @@ packages = ["src/aaestro"]
 line-length = 100
 target-version = "py312"
 src = ["src", "tests"]
+# markdown 의 코드 블록은 설명용 예시 (생략 `...` 포함) 라 포맷하지 않는다 — 루트에서 `ruff format .` 을 쳐도 규약 문서가 바뀌지 않게 (#439)
+extend-exclude = ["*.md"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "ASYNC", "S", "C4", "RET", "SIM", "PTH", "TID252"]
