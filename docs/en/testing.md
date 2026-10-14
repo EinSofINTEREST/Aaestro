@@ -28,6 +28,7 @@ tests/
 - Markers: `@pytest.mark.integration`, `@pytest.mark.e2e`
 - `make test` runs unit only; `make test-integration` and `make test-e2e` are separate
 - E2E runs nightly in CI (`ci-nightly.yml`), not as a PR gate
+- Import contract tests (`tests/unit/{agentd,egress,memory}/test_import_boundary.py`) import each entry point in an isolated `python -I` subprocess and assert that forbidden modules (control plane, server modules, heavy third-party packages) are absent from `sys.modules`; the forbidden lists are constants in the tests
 - Shared E2E scaffolding (the compose stack and the control plane process) lives in
   `tests/e2e/conftest.py` — importing a fixture between test modules shadows it silently
 
