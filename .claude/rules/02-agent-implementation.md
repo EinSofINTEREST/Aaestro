@@ -376,8 +376,13 @@ POST /v1/drain           # graceful drain 개시
    장시간 태스크는 `/stream` 사용
 3. 인증: runtime 이 발급한 per-agent token 을 `Authorization` 헤더로 요구.
    토큰 없이는 기동하지 않는다 (`CFG_001`) — 무인증은 `AAESTRO_ALLOW_UNAUTHENTICATED=1` opt-in
-   이면서 loopback 바인드일 때만 (`http_auth.resolve_required_token`)
-4. `/health` 는 무인증 — Docker healthcheck 가 직접 호출
+   이면서 loopback 바인드일 때만 (`http_auth.resolve_required_token`).
+   토큰은 **본문을 읽기 전에** 본다 (`http_auth.admit_first`) — `Depends` 는 본문 파싱보다 늦어
+   깨진 JSON · UTF-8 본문이 인증보다 먼저 거절된다 (#462). 토큰이 없으면 본문과 무관하게 같은 401 이다.
+   라우팅보다도 먼저 본다 (`http_auth.AdmitBeforeRouting`) — 토큰이 없으면 없는 경로 · 틀린 메서드도
+   같은 401 이라 404 · 405 + `Allow` 로 라우트 표가 새지 않는다
+4. `/health` 는 무인증 — Docker healthcheck 가 직접 호출. 검사하는 라우터 밖에 둔 유일한 라우트이고,
+   API 문서 경로는 열지 않는다
 5. `/steer` 의 `queued` 는 **접수이지 반영이 아니다** (Execution Loop — Steering). 진행 중이
    아닌(끝났거나 모르는) 태스크는 `NF_001` (404), 상한 초과는 `VAL_002` (400). steer 를
    구현하지 않은 실행기(커스텀 entrypoint, echo)는 `/reload` 와 같은 `unsupported` 본문을

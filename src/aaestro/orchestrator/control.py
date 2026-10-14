@@ -11,22 +11,25 @@ Resume 은 다르다: 이어갈 state 가 구동 프로세스의 핸들에 있�
 
 from __future__ import annotations
 
+import hmac
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from typing import TYPE_CHECKING, Annotated, Any
 
 import structlog
-from fastapi import APIRouter, Body, Depends, FastAPI, Request, status
+from fastapi import APIRouter, Body, FastAPI, HTTPException, Request, status
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 from aaestro.core.manifest import AgentManifest, ModelOverride
 from aaestro.core.topology import GraphTopology
-from aaestro.http_auth import require_token
-from aaestro.http_errors import request_validation_error, status_for
+from aaestro.http_auth import AdmitBeforeRouting, admit_first, presented_token, require_token
+from aaestro.http_errors import request_validation_error, status_for, unroutable_problem
 from aaestro.materials import Materials
 from aaestro.orchestrator.bodies import parsed as _parsed
 from aaestro.runtime.images import BuildRecord, image_tag
@@ -39,10 +42,17 @@ if TYPE_CHECKING:
     from aaestro.authoring import Author
     from aaestro.catalog import Catalog, Listing
     from aaestro.deploy import ValidationReport
+    from aaestro.orchestrator.access_api import AccessAudiences
     from aaestro.orchestrator.runs import RunService
     from aaestro.orchestrator.runstore import RunRecord, RunStore
     from aaestro.runtime.deployments import DeploymentManager, DeploymentRecord
     from aaestro.runtime.images import ImageBuilder
+
+HEALTH_PATH = "/v1/health"
+OPEN_PATHS = frozenset({HEALTH_PATH, "/", "/ui"})
+"""자격 없이 닿는 경로 — health 와 운영자 화면 (화면 자체는 데이터를 갖지 않는다)."""
+OPEN_PREFIXES = ("/ui/",)
+"""화면의 정적 파일 — 인증은 화면이 부르는 `/v1/*` 에 있다."""
 
 DEFAULT_STEERED_BY = "operator"
 """steer 본문이 ``by`` 를 생략했을 때의 감사 이름 — control plane 토큰은 사람을 가르지 않는다."""
@@ -167,11 +177,22 @@ def create_app(
             if runs is not None:
                 await runs.close()
 
-    app = FastAPI(title="Aaestro Control Plane", lifespan=lifespan)
-    # 읽기도 보호한다 — 카탈로그에는 env_allowlist 같은 운영 정보가 있다
-    api = APIRouter(dependencies=[Depends(require_token(token, realm="control plane token"))])
+    # 문서 경로를 닫는다 — 무인증 호출자가 스키마(필드 · 상한)를 열거하지 못하게. UI 는 openapi 를
+    # 읽지 않는다. redirect_slashes 도 닫는다 — 기본값이면 `/v1/runs/` 가 307 로 정식 경로를 알려
+    # 준다 (라우트 매칭은 인증보다 먼저다, #462)
+    app = FastAPI(
+        title="Aaestro Control Plane",
+        lifespan=lifespan,
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+        redirect_slashes=False,
+    )
+    # 읽기도 보호한다 — 카탈로그에는 env_allowlist 같은 운영 정보가 있다. 토큰은 본문을 읽기
+    # 전에 본다 — `Depends` 는 본문 파싱보다 늦어 깨진 본문이 인증보다 먼저 거절된다 (#462)
+    api = APIRouter(route_class=admit_first(require_token(token, realm="control plane token")))
 
-    @app.get("/v1/health")
+    @app.get(HEALTH_PATH)
     async def health() -> dict[str, str]:
         """무인증 — 살아 있는지만 답한다. 운영 정보는 싣지 않는다."""
         return {"status": "ok"}
@@ -187,6 +208,22 @@ def create_app(
             status_code=status_for(problem), content={"error": problem.payload().model_dump()}
         )
 
+    @app.exception_handler(StarletteHTTPException)
+    async def _on_unroutable(request: Request, err: StarletteHTTPException) -> Response:
+        """깨진 UTF-8 본문 · 틀린 메서드도 typed 모양으로 — 기본 ``{"detail"}`` 아님.
+
+        401 은 기본 처리 그대로다 (`require_token` 의 사유 + ``WWW-Authenticate``). 라우트 부재의
+        404 도 기본 처리다 — 코드 없는 404 가 "그 표면이 없다" 는 약속이다 (#462).
+        """
+        problem = unroutable_problem(err)
+        if problem is None:
+            return await http_exception_handler(request, err)
+        return JSONResponse(
+            status_code=err.status_code,
+            content={"error": problem.payload().model_dump()},
+            headers=err.headers,
+        )
+
     @app.exception_handler(AaestroError)
     async def _on_error(_request: Request, err: AaestroError) -> JSONResponse:
         """구조화 에러를 상태 코드로 — 매핑은 공용 규칙을 따른다 (#234).
@@ -194,9 +231,7 @@ def create_app(
         여기서 자체 매핑을 갖고 있던 동안 저장소 실패(`STOR_003`)가 400 으로
         나갔다 — 서버 장애를 클라이언트 잘못으로 보고한 셈이다.
         """
-        return JSONResponse(
-            status_code=status_for(err), content={"error": err.payload().model_dump()}
-        )
+        return _error_response(err)
 
     @api.get("/v1/runs")
     async def list_runs(mode: str | None = None) -> list[dict[str, Any]]:
@@ -318,14 +353,85 @@ def create_app(
         _mount_deployments(api, deployments)
     if runs is not None:
         _mount_runs(api, runs)
+    audiences = None
     if access is not None:
         from aaestro.orchestrator.access_api import mount_access
 
-        mount_access(app, api, access, enforcer_token=enforcer_token)
+        audiences = mount_access(app, api, access, enforcer_token=enforcer_token)
+    before_routing = _any_audience(token, access, audiences, enforcer_token)
+    if before_routing is not None:
+        # 라우팅보다도 먼저 — 없는 경로 404 · 틀린 메서드 405 + `Allow` 로 라우트 표가 새지 않게.
+        # 여기서는 청중을 가리고 그 청중이 닿는 경로인지만 본다. 라우트별 검사가 다시 좁힌다
+        app.add_middleware(
+            AdmitBeforeRouting,
+            admit=before_routing,
+            open_paths=OPEN_PATHS,
+            open_prefixes=OPEN_PREFIXES,
+            render_error=_error_response,
+        )
 
     app.include_router(api)
     _mount_ui(app)
     return app
+
+
+def _error_response(err: AaestroError) -> JSONResponse:
+    """구조화 에러의 응답 — 앱의 핸들러와 라우팅 전 검사가 같은 모양으로 답한다."""
+    return JSONResponse(status_code=status_for(err), content={"error": err.payload().model_dump()})
+
+
+def _any_audience(
+    token: str | None,
+    access: AccessRegistry | None,
+    audiences: AccessAudiences | None,
+    enforcer_token: str | None,
+) -> Callable[[Request], None] | None:
+    """라우팅 전 검사 — 어느 청중인지 가리고, 그 청중이 닿는 경로인지 본다.
+
+    운영자 토큰은 전부, enforcer 토큰은 강제 지점 라우트만, 살아 있는 에이전트 신원은 에이전트가
+    쓰는 access 라우트만 닿는다. 에이전트 컨테이너는 신뢰하지 않으므로 (01) 자기 청중 밖의 라우트
+    표도 열거하지 못해야 한다 — 청중 밖 경로는 자격이 없을 때와 **같은** 401 이다.
+
+    한 청중이라도 자격 없이 열려 있으면 (토큰 미설정) None 이다 — 그 청중의 라우트에 누구나 닿으므로
+    라우팅 전에 막을 것이 없다.
+    """
+    if token is None or (access is not None and enforcer_token is None):
+        return None
+    enforcer_paths = audiences.enforcer if audiences is not None else frozenset()
+    agent_paths = audiences.agent if audiences is not None else frozenset()
+
+    def check(request: Request) -> None:
+        presented = presented_token(request) or ""
+        path = request.url.path
+        # 상수 시간 비교를 둘 다 돈다 — 첫 일치에서 끊으면 어느 청중의 토큰인지가 시간으로 드러난다
+        is_operator = hmac.compare_digest(presented.encode(), token.encode())
+        is_enforcer = enforcer_token is not None and hmac.compare_digest(
+            presented.encode(), enforcer_token.encode()
+        )
+        if is_operator or (is_enforcer and path in enforcer_paths):
+            return
+        # 신원 조회는 경로와 무관하게 한다 — 저장소 장애의 503 이 "에이전트 경로" 를 드러내지 않게
+        is_agent = not is_enforcer and access is not None and _is_live_agent(access, presented)
+        if is_agent and path in agent_paths:
+            return
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="invalid control plane token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    return check
+
+
+def _is_live_agent(access: AccessRegistry, presented: str) -> bool:
+    """살아 있는 에이전트 신원인가 — 모르는 자격 (``ACC_001``) 만 아니라고 답한다."""
+    try:
+        access.identify(presented)
+    except AaestroError as err:
+        if err.code != ErrorCode.ACC_001:
+            raise
+        return False
+    return True
 
 
 def _mount_ui(app: FastAPI) -> None:
@@ -338,6 +444,11 @@ def _mount_ui(app: FastAPI) -> None:
 
     @app.get("/", include_in_schema=False)
     async def root() -> RedirectResponse:
+        return RedirectResponse(url="/ui/")
+
+    # redirect_slashes 를 껐으므로 `/ui` → `/ui/` 는 여기서 명시한다 — 화면은 비밀이 아니다
+    @app.get("/ui", include_in_schema=False)
+    async def ui_without_slash() -> RedirectResponse:
         return RedirectResponse(url="/ui/")
 
 

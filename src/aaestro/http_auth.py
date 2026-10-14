@@ -4,6 +4,10 @@ agentd 의 Control API 와 orchestrator 의 Control Plane 이 **같은** 검사�
 같은 검사가 두 벌 있으면 한쪽만 고쳐진다 — 그리고 orchestrator 가 agentd 에서
 import 하는 것은 07 의 의존 방향에 어긋나므로, 둘 다 여기서 가져간다.
 
+검사는 **본문을 읽기 전에** 돈다 (``admit_first``, #462). FastAPI 는 의존성을 풀기 전에 본문을
+읽고 파싱하므로, ``Depends`` 로 건 검사는 깨진 JSON · UTF-8 본문보다 늦다 — 무인증 호출자가 응답
+차이로 라우트의 본문 처리를 알게 된다.
+
 토큰 값은 로그에 남기지 않는다 — 05 의 마스킹은 키 이름으로 판정하므로 이 모듈은
 값을 로그 필드에 싣지 않는 것으로 그 규칙을 지킨다.
 """
@@ -11,16 +15,22 @@ import 하는 것은 07 의 의존 방향에 어긋나므로, 둘 다 여기서 
 from __future__ import annotations
 
 import hmac
+import inspect
 import ipaddress
-from typing import TYPE_CHECKING
+from collections.abc import Awaitable, Callable, Coroutine
+from typing import TYPE_CHECKING, Any
 
 import structlog
-from fastapi import HTTPException, Request, status
+from fastapi import HTTPException, Request, Response, status
+from fastapi.exception_handlers import http_exception_handler
+from fastapi.routing import APIRoute
 
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Mapping
+
+    from starlette.types import ASGIApp, Receive, Scope, Send
 
 BEARER = "Bearer "
 
@@ -31,6 +41,9 @@ _OPT_IN_VALUES = frozenset({"1", "true"})
 _OPT_OUT_VALUES = frozenset({"", "0", "false"})
 
 log = structlog.get_logger(__name__)
+
+Admission = Callable[[Request], Awaitable[None] | None]
+"""요청의 신원을 확인하는 검사 — 거절은 예외 (``HTTPException`` 401 · ``AaestroError``) 로 한다."""
 
 
 def is_loopback(host: str) -> bool:
@@ -150,9 +163,106 @@ def require_token(expected: str | None, *, realm: str = "token") -> Callable[[Re
     return check
 
 
+class AdmittingRoute(APIRoute):
+    """Marker base of every route that checks the caller before the body (``admit_first``).
+
+    구조 테스트가 "앱의 라우트 중 검사를 거치지 않는 것은 허용 목록뿐" 을 이 타입으로 단언한다.
+    """
+
+
+def admit_first(admit: Admission) -> type[AdmittingRoute]:
+    """Build a route class that checks the caller before the body is read.
+
+    본문을 읽고 파싱하기 **전에** ``admit`` 을 부르는 라우트 클래스를 만듭니다. 라우터의
+    ``route_class`` 로 쓰면 그 라우터의 모든 라우트가 같은 검사를 거칩니다 — 신원이 없으면 본문이
+    깨진 JSON 이든 깨진 UTF-8 이든 빈 본문이든 같은 거절입니다.
+
+    무인증으로 열 라우트는 이 클래스를 쓰지 않는 라우터(앱 자체)에 **명시적으로** 둡니다.
+    라우트를 고르기 전의 검사는 ``AdmitBeforeRouting`` 이 맡습니다 — 앱이 여러 청중을 가지면
+    그쪽은 "어느 청중이든 자격이 있는가" 만 보고, 이 클래스가 라우트의 청중으로 좁힙니다.
+
+    Args:
+        admit: Raises to refuse. ``require_token(...)`` 처럼 동기여도, 비동기여도 됩니다.
+    """
+
+    class AdmitFirstRoute(AdmittingRoute):
+        def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
+            parse_and_run = super().get_route_handler()
+
+            async def admit_then_run(request: Request) -> Response:
+                outcome = admit(request)
+                if inspect.isawaitable(outcome):
+                    await outcome
+                return await parse_and_run(request)
+
+            return admit_then_run
+
+    return AdmitFirstRoute
+
+
+class AdmitBeforeRouting:
+    """ASGI middleware that checks the caller before the request is routed (#462).
+
+    라우팅 **전에** 자격을 확인하는 미들웨어입니다. 라우트를 고른 뒤의 검사(``admit_first``)만
+    있으면 무인증 호출자가 응답 차이로 라우트 표를 열거합니다 — 있는 경로는 401, 없는 경로는
+    404, 틀린 메서드는 405 와 ``Allow`` 헤더. 여기서 거절하면 경로 · 메서드와 무관하게
+    같은 거절입니다.
+
+    거절은 ``admit`` 이 던지는 ``HTTPException`` 이고, FastAPI 기본 모양 그대로 답합니다
+    (``{"detail"}`` + 헤더). 검사가 ``AaestroError`` (신원 저장소 장애 등) 를 내면 ``render_error``
+    로 앱과 같은 typed 응답을 냅니다 — 이 층은 앱의 예외 핸들러 바깥이라, 넘기지 않으면 plain
+    500 이 됩니다. ``render_error`` 가 없으면 그대로 올립니다. 열린 경로는 정확히 일치하는
+    ``open_paths`` 와 ``open_prefixes`` 아래뿐입니다. 자격이 있는 요청은 그대로 라우팅되어
+    404 · 405 를 지금처럼 받습니다.
+    """
+
+    def __init__(
+        self,
+        app: ASGIApp,
+        *,
+        admit: Admission,
+        open_paths: frozenset[str],
+        open_prefixes: tuple[str, ...] = (),
+        render_error: Callable[[AaestroError], Response] | None = None,
+    ) -> None:
+        self.app = app
+        self._admit = admit
+        self._open_paths = open_paths
+        self._open_prefixes = open_prefixes
+        self._render_error = render_error
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or self._is_open(scope["path"]):
+            await self.app(scope, receive, send)
+            return
+        # 헤더만 읽는다 — 본문(receive)은 건드리지 않는다
+        request = Request(scope)
+        try:
+            outcome = self._admit(request)
+            if inspect.isawaitable(outcome):
+                await outcome
+        except HTTPException as err:
+            response = await http_exception_handler(request, err)
+            await response(scope, receive, send)
+            return
+        except AaestroError as err:
+            if self._render_error is None:
+                raise
+            await self._render_error(err)(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
+
+    def _is_open(self, path: str) -> bool:
+        return path in self._open_paths or path.startswith(self._open_prefixes)
+
+
 __all__ = [
     "ALLOW_UNAUTHENTICATED_ENV",
     "BEARER",
+    "AdmitBeforeRouting",
+    "Admission",
+    "AdmittingRoute",
+    "admit_first",
     "is_loopback",
     "presented_token",
     "require_token",
