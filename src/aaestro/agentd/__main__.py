@@ -27,6 +27,7 @@ from aaestro.agentd.mcp import build_mcp_client
 from aaestro.agentd.server import AgentRuntime, create_app
 from aaestro.agentd.telemetry import ExecutorTelemetry
 from aaestro.agentd.tools import AgentToolRegistry
+from aaestro.core.agent import AGENT_TOKEN_ENV
 from aaestro.core.errors import (
     AaestroError,
     ErrorCategory,
@@ -34,7 +35,7 @@ from aaestro.core.errors import (
     field_problems,
     raise_detached,
 )
-from aaestro.core.manifest import AgentManifest
+from aaestro.core.manifest import MANIFEST_ENV, AgentManifest
 from aaestro.core.skill import SkillSpec
 from aaestro.core.startup import startup_guard
 from aaestro.core.tools import is_mcp_tool
@@ -42,7 +43,8 @@ from aaestro.core.yamlio import YamlReadError, load_yaml_file
 from aaestro.http_auth import resolve_required_token
 from aaestro.memory.client import MEMORY_TOKEN_ENV, MEMORY_URL_ENV
 from aaestro.memory.tool import MEMORY_SEARCH_TOOL
-from aaestro.observability.metrics import Metrics
+from aaestro.observability.logging import LOG_FORMAT_ENV, LOG_LEVEL_ENV
+from aaestro.observability.metrics import METRICS_PORT_ENV, Metrics
 from aaestro.protocols.a2a.card import build_card
 from aaestro.protocols.a2a.tool import ASK_PEER_TOOL
 
@@ -57,8 +59,6 @@ CONTROL_PORT = 8080
 """Control port — 컨테이너 내부 고정 (02 Network). A2A 포트는 runtime 이 할당한다."""
 
 DEFAULT_MANIFEST_PATH = "/app/manifest.yaml"
-MANIFEST_ENV = "AAESTRO_MANIFEST"
-TOKEN_ENV = "AAESTRO_AGENT_TOKEN"  # noqa: S105 — 값이 아니라 키 이름이다
 EXECUTOR_ENV = "AAESTRO_EXECUTOR"
 BIND_HOST_ENV = "AAESTRO_AGENT_BIND_HOST"
 DEFAULT_BIND_HOST = "0.0.0.0"  # noqa: S104 — 컨테이너 안에서는 runtime 이 닿아야 한다
@@ -79,9 +79,6 @@ ROOT_ENV = "AAESTRO_ROOT"
 DEFAULT_ROOT = "/app"
 """모듈 registry 루트 — 이미지가 modules/ 를 어디에 두는지."""
 
-LOG_LEVEL_ENV = "AAESTRO_LOG_LEVEL"
-LOG_FORMAT_ENV = "AAESTRO_LOG_FORMAT"
-METRICS_PORT_ENV = "AAESTRO_METRICS_PORT"
 """관측 설정 — 컨테이너 안이라 env 로 받는다 (01 Multi-Environment Support)."""
 log = structlog.get_logger(__name__)
 
@@ -723,7 +720,7 @@ def _serving_from_env() -> Serving:
     # env 는 여기서 한 번만 읽는다 — 판정과 바인드가 다른 값을 보면 검사가 무의미하다
     bind_host = os.environ.get(BIND_HOST_ENV, DEFAULT_BIND_HOST)
     token = resolve_required_token(
-        os.environ, token_env=TOKEN_ENV, bind_host=bind_host, component="agentd"
+        os.environ, token_env=AGENT_TOKEN_ENV, bind_host=bind_host, component="agentd"
     )
     return Serving(token=token, bind_host=bind_host)
 

@@ -22,11 +22,12 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 from structlog.testing import capture_logs
 
 from aaestro.access.steward import PermissionAgent
-from aaestro.agentd.__main__ import MANIFEST_ENV, TOKEN_ENV, load_manifest
+from aaestro.agentd.__main__ import load_manifest
 from aaestro.agentd.__main__ import main as agentd_main
 from aaestro.catalog import Catalog, _validate_module, load_yaml, parse_declaration
 from aaestro.cli.main import main as cli_main
 from aaestro.config import load_config
+from aaestro.core.agent import AGENT_TOKEN_ENV
 from aaestro.core.errors import (
     REDACTED,
     AaestroError,
@@ -34,7 +35,7 @@ from aaestro.core.errors import (
     field_problems,
     raise_detached,
 )
-from aaestro.core.manifest import AgentManifest
+from aaestro.core.manifest import MANIFEST_ENV, AgentManifest
 from aaestro.modules.memoryset import MemorysetLoader
 from aaestro.modules.promptset import PromptsetLoader, PromptsetManifest
 from aaestro.modules.registry import ModuleRegistry
@@ -88,7 +89,7 @@ def test_agentd_main_exits_with_a_log_and_no_traceback_or_value(
 ):
     monkeypatch.setenv(MANIFEST_ENV, str(_secret_manifest(tmp_path)))
     # 토큰 판정 (#394) 이 manifest 로드보다 먼저다 — 보려는 것은 선언 실패라 토큰은 준다
-    monkeypatch.setenv(TOKEN_ENV, "issued-token")
+    monkeypatch.setenv(AGENT_TOKEN_ENV, "issued-token")
     # 로깅 설정 · 메트릭 서버는 이 테스트 프로세스에 남는다 (로거 캐시, 포트) — 실제 설정 순서는
     # 별도 프로세스 테스트가 본다 (test_declaration_entrypoints)
     monkeypatch.setattr("aaestro.agentd.__main__._setup_observability", Metrics)
@@ -369,7 +370,7 @@ def test_agentd_process_exits_with_one_structured_line_and_no_value(tmp_path: Pa
         env={
             **os.environ,
             MANIFEST_ENV: str(manifest),
-            TOKEN_ENV: "issued-token",
+            AGENT_TOKEN_ENV: "issued-token",
             "AAESTRO_METRICS_PORT": "0",
         },
         capture_output=True,

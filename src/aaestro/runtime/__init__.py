@@ -31,7 +31,6 @@ from aaestro.runtime.spec import (
     container_name,
 )
 from aaestro.runtime.tokens import (
-    AGENT_TOKEN_ENV,
     TokenIssuer,
     authenticated_env,
     generate_token,
@@ -40,7 +39,6 @@ from aaestro.runtime.tokens import (
 __all__ = [
     "AgentLauncher",
     "LaunchedAgent",
-    "AGENT_TOKEN_ENV",
     "DEFAULT_CONTROL_PORT",
     "DEFAULT_NETWORK",
     "AgentLifecycle",

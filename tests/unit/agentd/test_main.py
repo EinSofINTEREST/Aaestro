@@ -256,7 +256,8 @@ async def test_unknown_executor_selection_is_rejected(monkeypatch):
 
 def test_runtime_issued_token_authorizes_the_agent():
     """runtime 이 발급해 주입한 토큰으로만 Control API 가 열려야 한다."""
-    from aaestro.runtime.tokens import AGENT_TOKEN_ENV, TokenIssuer, authenticated_env
+    from aaestro.core.agent import AGENT_TOKEN_ENV
+    from aaestro.runtime.tokens import TokenIssuer, authenticated_env
 
     issuer = TokenIssuer()
     manifest = load_manifest(ECHO_MANIFEST)
@@ -390,7 +391,7 @@ def entry(monkeypatch):
     import aaestro.agentd.__main__ as agentd
 
     for key in (
-        agentd.TOKEN_ENV,
+        agentd.AGENT_TOKEN_ENV,
         agentd.BIND_HOST_ENV,
         "AAESTRO_ALLOW_UNAUTHENTICATED",
     ):
@@ -424,8 +425,8 @@ def test_main_without_a_token_refuses_to_start(entry):
     (line,) = [entry for entry in logs if entry["log_level"] == "critical"]
     assert line["event"] == "agent startup rejected"
     assert line["error_code"] == "CFG_001"
-    assert line["details"]["setting"] == agentd.TOKEN_ENV
-    assert agentd.TOKEN_ENV in line["error_message"]
+    assert line["details"]["setting"] == agentd.AGENT_TOKEN_ENV
+    assert agentd.AGENT_TOKEN_ENV in line["error_message"]
     assert seen == {}, "거절됐는데 앱 조립까지 갔다"
 
 
@@ -457,7 +458,7 @@ def test_main_opt_in_on_loopback_serves_without_a_token(entry):
 
 def test_main_passes_the_judged_token_and_bind_host_to_the_server(entry):
     agentd, monkeypatch, seen = entry
-    monkeypatch.setenv(agentd.TOKEN_ENV, "issued-token")
+    monkeypatch.setenv(agentd.AGENT_TOKEN_ENV, "issued-token")
     monkeypatch.setenv(agentd.BIND_HOST_ENV, "10.1.2.3")
 
     agentd.main()
@@ -467,7 +468,7 @@ def test_main_passes_the_judged_token_and_bind_host_to_the_server(entry):
 
 def test_main_without_bind_override_binds_the_container_default(entry):
     agentd, monkeypatch, seen = entry
-    monkeypatch.setenv(agentd.TOKEN_ENV, "issued-token")
+    monkeypatch.setenv(agentd.AGENT_TOKEN_ENV, "issued-token")
 
     agentd.main()
 
@@ -485,7 +486,7 @@ def test_main_configures_logging_before_judging_the_token(entry):
         return real(*args, **kwargs)
 
     monkeypatch.setattr(agentd, "resolve_required_token", spy)
-    monkeypatch.setenv(agentd.TOKEN_ENV, "issued-token")
+    monkeypatch.setenv(agentd.AGENT_TOKEN_ENV, "issued-token")
 
     agentd.main()
 

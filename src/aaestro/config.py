@@ -36,6 +36,9 @@ DEFAULT_ENVIRONMENT = "dev"
 MEMORY_DB = ":memory:"
 """sqlite 의 in-memory 지시자 — 연결마다 별개라 프로세스 간에 공유되지 않는다."""
 ENVIRONMENT_ENV = "AAESTRO_ENV"
+CONFIG_DIR_ENV = "AAESTRO_CONFIG_DIR"
+REPO_ROOT_ENV = "AAESTRO_REPO_ROOT"
+"""선언 루트 — 카탈로그 · 원격 MCP 선언 · memory 서비스가 모두 같은 키로 읽는다."""
 
 
 def resolve_environment(
@@ -607,7 +610,9 @@ def load_config(
 __all__ = [
     "DEFAULT_CONFIG_DIR",
     "DEFAULT_ENVIRONMENT",
+    "CONFIG_DIR_ENV",
     "ENVIRONMENT_ENV",
+    "REPO_ROOT_ENV",
     "ENV_PREFIX",
     "NESTED_SEPARATOR",
     "A2AConfig",

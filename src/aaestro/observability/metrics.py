@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
 DEFAULT_METRICS_PORT: Final = 9090
+METRICS_PORT_ENV: Final = "AAESTRO_METRICS_PORT"
 
 # 태스크 latency 는 p50/p95 관찰이 목적 — 초 단위 지수 버킷
 _DURATION_BUCKETS: Final = (0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 300.0)

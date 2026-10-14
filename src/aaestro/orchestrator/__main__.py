@@ -25,14 +25,22 @@ import uvicorn
 from aaestro.authoring import Author
 from aaestro.catalog import Catalog
 from aaestro.config import (
+    CONFIG_DIR_ENV,
     DEFAULT_CONFIG_DIR,
+    REPO_ROOT_ENV,
     load_config,
     resolve_environment,
 )
 from aaestro.core.startup import startup_guard
 from aaestro.http_auth import is_loopback
-from aaestro.memory.client import MEMORY_URL_ENV
-from aaestro.observability.metrics import Metrics, metrics_port_from_env, start_metrics_server
+from aaestro.memory.client import MEMORY_TOKENS_PATH_ENV, MEMORY_URL_ENV
+from aaestro.observability.logging import LOG_FORMAT_ENV, LOG_LEVEL_ENV
+from aaestro.observability.metrics import (
+    METRICS_PORT_ENV,
+    Metrics,
+    metrics_port_from_env,
+    start_metrics_server,
+)
 from aaestro.orchestrator.control import create_app
 from aaestro.orchestrator.inuse import any_of, run_backed
 from aaestro.orchestrator.runstore import SqliteRunStore
@@ -46,14 +54,6 @@ if TYPE_CHECKING:
     from aaestro.runtime.images import ImageBuilder
 
 log = structlog.get_logger(__name__)
-
-CONFIG_DIR_ENV = "AAESTRO_CONFIG_DIR"
-ROOT_ENV = "AAESTRO_REPO_ROOT"
-MEMORY_TOKENS_ENV = "AAESTRO_MEMORY_TOKENS_PATH"
-"""카탈로그가 읽는 레포 루트 — memory 서비스와 같은 이름을 쓴다."""
-LOG_LEVEL_ENV = "AAESTRO_LOG_LEVEL"
-LOG_FORMAT_ENV = "AAESTRO_LOG_FORMAT"
-METRICS_PORT_ENV = "AAESTRO_METRICS_PORT"
 
 
 def _setup_observability() -> Metrics:
@@ -126,7 +126,7 @@ def _start(metrics: Metrics) -> None:
 
     store = SqliteRunStore(path=orchestrator.run_store)
     # 설정의 registry.roots 는 상대 경로다 — 작업 디렉토리가 아니라 레포 루트 기준
-    root = Path(os.environ.get(ROOT_ENV, ".")).resolve()
+    root = Path(os.environ.get(REPO_ROOT_ENV, ".")).resolve()
     catalog = Catalog.from_config(config.registry.roots, base=root)
     deployments = _deployment_manager(config, catalog, store_root=root, orchestrator=orchestrator)
     access = _access_registry(orchestrator, catalog, metrics=metrics)
@@ -213,7 +213,7 @@ def _deployment_manager(
         health_interval_s=config.runtime.health_check.interval_s,
         startup_grace_s=config.runtime.health_check.startup_grace_s,
     )
-    tokens_path = os.environ.get(MEMORY_TOKENS_ENV)
+    tokens_path = os.environ.get(MEMORY_TOKENS_PATH_ENV)
     memory_tokens: dict[str, str] = {}
     if tokens_path and Path(tokens_path).is_file():
         memory_tokens = json.loads(Path(tokens_path).read_text(encoding="utf-8"))

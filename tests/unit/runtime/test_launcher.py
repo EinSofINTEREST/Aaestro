@@ -11,11 +11,11 @@ from pathlib import Path
 import pytest
 import yaml
 
+from aaestro.core.agent import AGENT_TOKEN_ENV
 from aaestro.core.errors import AaestroError, ErrorCode
 from aaestro.core.manifest import AgentManifest
 from aaestro.runtime.docker.engine import DockerEngine
 from aaestro.runtime.launcher import AgentLauncher
-from aaestro.runtime.tokens import AGENT_TOKEN_ENV
 from tests.fixtures.fake_docker import FakeDockerClient
 
 REPO_ROOT = Path(__file__).resolve().parents[3]

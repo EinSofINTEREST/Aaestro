@@ -19,11 +19,13 @@ from typing import Any
 
 import pytest
 
-from aaestro.agentd.__main__ import MANIFEST_ENV, TOKEN_ENV, load_manifest
+from aaestro.agentd.__main__ import load_manifest
 from aaestro.authoring import Author
 from aaestro.catalog import Catalog, load_yaml
 from aaestro.config import load_config
+from aaestro.core.agent import AGENT_TOKEN_ENV
 from aaestro.core.errors import AaestroError
+from aaestro.core.manifest import MANIFEST_ENV
 from aaestro.core.yamlio import NOT_UTF8, UNCONSTRUCTIBLE
 from aaestro.modules.registry import ModuleRegistry
 from aaestro.modules.skillset import SkillsetLoader
@@ -49,7 +51,7 @@ def _run(args: list[str], **env: str) -> subprocess.CompletedProcess[str]:
             **os.environ,
             "AAESTRO_METRICS_PORT": "0",
             "AAESTRO_LOG_FORMAT": "json",
-            TOKEN_ENV: "issued-token",
+            AGENT_TOKEN_ENV: "issued-token",
             **env,
         },
         capture_output=True,
@@ -308,7 +310,7 @@ BAD_TOKEN = "  leaked-token-value  "  # noqa: S105 — 공백이 끼어 거절�
 def test_missing_token_is_one_critical_line_without_a_traceback(name: str, tmp_path: Path):
     """토큰 판정 (CFG_001) 이 가드 밖이면 traceback 이 나오고 ``details.setting`` 이 사라진다."""
     if name == "agentd":
-        result = _entrypoint(name, **{TOKEN_ENV: ""})
+        result = _entrypoint(name, **{AGENT_TOKEN_ENV: ""})
     else:
         # 부모 env 에 레지스트리 설정이 있어도 "누락" 경로를 타도록 명시적으로 비운다
         result = _run(
@@ -323,7 +325,7 @@ def test_missing_token_is_one_critical_line_without_a_traceback(name: str, tmp_p
     assert line["error_code"] == "CFG_001"
     if name == "agentd":
         assert line["event"] == "agent startup rejected"
-        assert line["details"]["setting"] == TOKEN_ENV
+        assert line["details"]["setting"] == AGENT_TOKEN_ENV
     else:
         assert line["event"] == "egress proxy startup rejected"
         assert line["details"]["settings"]
@@ -356,12 +358,12 @@ def test_bad_metrics_port_is_one_critical_line_without_a_traceback(
 
 
 def test_agentd_malformed_token_is_rejected_without_logging_its_value():
-    result = _entrypoint("agentd", **{TOKEN_ENV: BAD_TOKEN})
+    result = _entrypoint("agentd", **{AGENT_TOKEN_ENV: BAD_TOKEN})
 
     line = _critical_line(result)
     assert result.returncode == 1
     assert line["error_code"] == "CFG_001"
-    assert line["details"]["setting"] == TOKEN_ENV
+    assert line["details"]["setting"] == AGENT_TOKEN_ENV
     assert "leaked-token-value" not in result.stdout + result.stderr
     assert "Traceback" not in result.stdout + result.stderr
 

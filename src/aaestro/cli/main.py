@@ -585,9 +585,9 @@ def _control_clients(args: argparse.Namespace) -> dict[str, Any]:
     빠뜨리면 모든 노드 호출이 401 이 됩니다. ``--agent-token`` 이 우선하고,
     없으면 ``AAESTRO_AGENT_TOKEN`` 을 봅니다 (compose 와 같은 키).
     """
+    from aaestro.core.agent import AGENT_TOKEN_ENV
     from aaestro.core.errors import NETWORK_RETRY
     from aaestro.runtime.control import ControlClient
-    from aaestro.runtime.tokens import AGENT_TOKEN_ENV
 
     # 빈 문자열은 미설정과 같게 다룬다 — compose 의 ${VAR:-default} 와 같은 규칙
     token = getattr(args, "agent_token", None) or os.environ.get(AGENT_TOKEN_ENV) or None

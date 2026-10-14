@@ -21,6 +21,8 @@ if TYPE_CHECKING:
     from collections.abc import Iterable, MutableMapping
 
 DEFAULT_LOG_LEVEL = "INFO"
+LOG_LEVEL_ENV = "AAESTRO_LOG_LEVEL"
+LOG_FORMAT_ENV = "AAESTRO_LOG_FORMAT"
 
 LOG_LEVELS = {
     "DEBUG": logging.DEBUG,

@@ -30,7 +30,7 @@ import structlog
 from aaestro.access.client import ACCESS_URL_ENV
 from aaestro.access.model import ACCESS_CREDENTIAL_ENV
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
-from aaestro.core.manifest import agent_name
+from aaestro.core.manifest import MANIFEST_ENV, agent_name
 from aaestro.protocols.mcp.transport import MCP_PROXY_URL_ENV
 from aaestro.runtime.images import image_tag
 from aaestro.runtime.launcher import LaunchedAgent, MemoryEndpoint
@@ -278,8 +278,6 @@ DECLARATION_MOUNT_PATH = "/app/declaration"
 컨테이너에 반영되지 않는다 — 바인드는 inode 에 묶여 옛 파일을 계속 보인다. 디렉토리를 걸면
 경로 조회가 새 파일을 찾는다 (02 Volumes)."""
 MANIFEST_MOUNT_PATH = f"{DECLARATION_MOUNT_PATH}/manifest.yaml"
-MANIFEST_ENV = "AAESTRO_MANIFEST"
-"""agentd 가 매니페스트를 찾는 env — 마운트 자리를 가리키게 주입한다."""
 MODULES_MOUNT_PATH = "/app/modules"
 """agentd 의 기본 `AAESTRO_ROOT` 아래 모듈 자리 — base 이미지 계약."""
 
