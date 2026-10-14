@@ -242,6 +242,9 @@ embedding model (fixed per version), chunking, hybrid search weights, retention/
 and recall defaults (k, min score, token budget). Attachment location must match the
 scope: manifest (local), graph (run), `groups/<name>.yaml` (group),
 `groups/global.yaml` (global).
+Deploy validation enforces it (`MOD_003` on a mismatch, `MOD_001` for a group or graph space that
+does not resolve), and rejects a `service` graph that attaches a run-scope memoryset without
+`retention.compaction` (`MOD_003`).
 
 ## Skillpacks
 

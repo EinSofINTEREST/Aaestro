@@ -14,6 +14,7 @@ from aaestro.core.errors import ErrorCode
 from aaestro.core.manifest import ModelOverride
 from aaestro.orchestrator.control import create_app
 from aaestro.orchestrator.runstore import InMemoryRunStore
+from tests.fixtures.declarations import publish_global_memorysets
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -73,6 +74,7 @@ def workspace(tmp_path: Path) -> Path:
         tmp_path / "groups" / "global.yaml",
         yaml.safe_load((REPO_ROOT / "groups" / "global.yaml").read_text(encoding="utf-8")),
     )
+    publish_global_memorysets(tmp_path)
     (tmp_path / "graphs").mkdir()
     return tmp_path
 
