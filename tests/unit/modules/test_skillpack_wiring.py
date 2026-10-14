@@ -73,7 +73,11 @@ def workspace(tmp_path: Path) -> Path:
                 "metadata": {"name": "solo", "version": "0.1.0"},
                 "spec": {
                     "engine": "jinja2",
-                    "templates": {"default": {"file": "t.j2"}, "solo": {"file": "t.j2"}},
+                    "templates": {
+                        "default": {"file": "t.j2"},
+                        "solo": {"file": "t.j2"},
+                        "system": {"file": "t.j2"},
+                    },
                 },
             }
         )

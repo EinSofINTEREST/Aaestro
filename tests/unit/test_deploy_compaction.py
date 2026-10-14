@@ -37,6 +37,8 @@ SUMMARIZE = {
 
 
 def promptset(templates: dict[str, Any]) -> PromptsetManifest:
+    # 기본 LLM 루프의 `system` 계약 (#445) — 이 파일의 시험은 압축 선언을 본다
+    templates = {"system": {"file": "sys.j2"}, **templates}
     return PromptsetManifest.model_validate(
         {
             "apiVersion": "aaestro/v1",

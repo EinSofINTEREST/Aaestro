@@ -19,7 +19,7 @@ from aaestro.access.baselines import PROVIDER_HOSTS, EgressBaseline
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode, field_problems
 from aaestro.core.manifest import RESERVED_GLOBAL_GROUP, agent_name, agent_ref_parts
 from aaestro.core.topology import GraphMode, validate_topology
-from aaestro.modules.compatibility import check_promptset_templates
+from aaestro.modules.compatibility import check_promptset_templates, check_system_template
 from aaestro.modules.promptset import LoadedPromptset
 from aaestro.orchestrator.compaction import (
     SUMMARIZE_INPUT_KEY,
@@ -171,8 +171,8 @@ class DeployValidator:
     def validate(self, topologies: Sequence[GraphTopology]) -> ValidationReport:
         """Run every contract check across the graphs being deployed.
 
-        배포 대상 그래프 전체에 10항목 검증을 수행합니다 — 01 의 8항목에 노드 템플릿
-        (#260) 과 모델 provider (#358) 검사를 더한 것입니다.
+        배포 대상 그래프 전체에 11항목 검증을 수행합니다 — 01 의 8항목에 노드 템플릿
+        (#260), 모델 provider (#358), 기본 루프 `system` 템플릿 (#445) 검사를 더한 것입니다.
 
         Args:
             topologies: The graph topologies about to be deployed.
@@ -192,6 +192,7 @@ class DeployValidator:
             warnings.extend(self._warn_unbounded_state(topology))
 
         findings.extend(self._check_module_refs())
+        findings.extend(self._check_system_templates())
         findings.extend(self._check_groups())
         findings.extend(self._check_env_allowlists())
         findings.extend(self._check_a2a_ports(topologies))
@@ -515,6 +516,35 @@ class DeployValidator:
                     )
         return findings
 
+    def _check_system_templates(self) -> list[Finding]:
+        """`spec.entrypoint` 없는 에이전트의 promptset 이 ``system`` 을 선언하는지 (#445).
+
+        agentd 기동이 같은 이유로 거절한다 — 컨테이너를 띄운 뒤에야 아는 것을 앞당긴다. 검사는
+        `check_system_template` 하나를 둘이 쓴다 (노드 템플릿 검사와 같은 방식). 배포 검증은
+        이미지의 실행기 선택 (echo) 을 알 수 없어 entrypoint 없는 에이전트 전부를 본다.
+        템플릿 본문은 읽지 않는다 — 빈 렌더는 agentd 기동이 거절한다.
+        """
+        findings = []
+        for name, manifest in self.manifests.items():
+            if manifest.spec.entrypoint is not None:
+                continue
+            ref = manifest.spec.promptset.ref
+            promptset = self.promptsets.get(ref)
+            if promptset is None:
+                continue  # 해석 실패는 module_refs 가 보고한다
+            try:
+                check_system_template(name, ref, promptset.spec.templates)
+            except AaestroError as err:
+                findings.append(
+                    Finding(
+                        check="system_template",
+                        code=ErrorCode(err.code),
+                        message=err.message,
+                        details={"agent": name, "module_ref": ref},
+                    )
+                )
+        return findings
+
     # --- 3. 그룹 소속 -----------------------------------------------------
 
     def _check_groups(self) -> list[Finding]:
@@ -809,7 +839,7 @@ def validate_deployment(
 ) -> ValidationReport:
     """Validate a deployment against every contract check.
 
-    배포를 10항목 계약 검증으로 확인합니다.
+    배포를 11항목 계약 검증으로 확인합니다.
 
     Args:
         topologies: Graphs about to be deployed.

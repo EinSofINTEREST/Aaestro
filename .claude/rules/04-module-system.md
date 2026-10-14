@@ -228,6 +228,9 @@ spec:
    이것은 모듈 작성자의 변경에 대한 규칙이다. 프레임워크 렌더 규칙 (2 의 경계 표시) 이 바뀌면
    게시된 불변 모듈의 유효 프롬프트가 모듈 version bump 없이 바뀐다 — 그 변경은 프레임워크 버전으로
    추적한다
+6. **System Template**: `system` 은 운영자 지시이고 입력 없이 `default_locale` 로 렌더된다 —
+   `variables` 를 선언할 수 없다 (required · default 와 무관, 로드가 `MOD_003` 으로 거절). 렌더
+   결과가 비어 있으면 agentd 기동 · 리로드가 `MOD_003` 으로 거절한다
 
 ## Memoryset Modules
 
@@ -784,7 +787,12 @@ graphs/{name}.yaml
    (agentd 가 `task.node_id` 로 템플릿을 선택하기 때문)
 4. Direct 요청(그래프 밖 단독 태스크, [02-agent-implementation.md](02-agent-implementation.md))
    을 받는 에이전트의 promptset 은 `default` 템플릿 포함 필수
-5. Breaking change 기준 (semver):
+5. 기본 실행 루프를 쓰는 에이전트의 promptset 은 `system` 템플릿 필수 (`MOD_002` — 에이전트 ↔
+   promptset 조합 검사, 노드 · `default` 검사의 형제). 배포 검증은 `spec.entrypoint` 없는 에이전트
+   전부를 본다 — echo 이미지처럼 모델을 부르지 않는 실행기도 포함된다 (배포 검증은 실행기를 알 수
+   없다). agentd 기동은 기본 루프에서만 거절한다. 배포 검증은 템플릿 본문을 읽지 않으므로 빈 렌더
+   (`MOD_003`) 는 agentd 기동에서만 잡힌다. 커스텀 entrypoint 에이전트는 대상이 아니다
+6. Breaking change 기준 (semver):
    - Skillset: tool 이름/시그니처 변경·삭제 = **major** /
      하위 호환 추가 (신규 tool, optional 파라미터) = minor
    - Promptset: 필수 변수 추가·삭제 등 변수 스키마 breaking 변경 = **major** /

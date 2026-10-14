@@ -6,11 +6,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 from aaestro.core.manifest import AgentManifest
-from aaestro.modules.promptset import DEFAULT_TEMPLATE, LoadedPromptset
+from aaestro.modules.promptset import DEFAULT_TEMPLATE, SYSTEM_TEMPLATE, LoadedPromptset
 from aaestro.modules.skillset import LoadedSkillset
 
 
@@ -79,6 +79,27 @@ def check_promptset_templates(
             agent=manifest.name,
             details={"promptset": promptset.ref},
         )
+
+
+def check_system_template(agent: str, promptset_ref: str, template_names: Collection[str]) -> None:
+    """Verify the promptset declares ``system`` for an agent on the default LLM loop.
+
+    기본 실행 루프를 쓰는 에이전트는 운영자 지시 (``system``) 없이 뜨면 안 된다 (#445). 에이전트 ↔
+    promptset **조합**의 문제라 형제 검사 (노드 · ``default``) 와 같은 ``MOD_002`` 다. 배포 검증과
+    agentd 기동이 이 함수 하나를 써서 메시지와 코드가 갈라지지 않는다.
+
+    Raises:
+        AaestroError: MODULE/``MOD_002`` if ``system`` is not declared.
+    """
+    if SYSTEM_TEMPLATE in template_names:
+        return
+    raise AaestroError(
+        category=ErrorCategory.MODULE,
+        code=ErrorCode.MOD_002,
+        message="promptset must declare a system template",
+        agent=agent,
+        details={"promptset": promptset_ref},
+    )
 
 
 def check_tool_namespaces(
