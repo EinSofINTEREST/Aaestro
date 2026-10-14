@@ -216,3 +216,54 @@ def test_default_matching_declared_type_is_accepted(declared, default):
 
 def test_absent_default_is_always_valid():
     assert VariableSpec(type="integer").default is None
+
+
+def test_required_with_default_is_rejected():
+    with pytest.raises(ValidationError, match="required variable must not declare a default"):
+        VariableSpec(type="string", required=True, default="x")
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [{"required": True}, {"default": "x"}, {}],
+)
+def test_required_or_default_alone_is_accepted(kwargs):
+    assert VariableSpec(type="string", **kwargs).type == "string"
+
+
+def test_required_with_default_promptset_load_raises_mod_003_without_value(tmp_path):
+    secret = "SECRET-DEFAULT-VALUE"
+    loader = _write_promptset(
+        tmp_path,
+        yaml_body=HEADER
+        + "    t:\n      file: templates/t.j2\n      variables:\n"
+        + f"        q: {{type: string, required: true, default: {secret}}}\n",
+        files={"t.j2": "hi {{ q }}"},
+    )
+    with pytest.raises(AaestroError) as exc_info:
+        loader.load("promptsets/custom@0.1.0")
+    assert exc_info.value.code == "MOD_003"
+    assert secret not in repr(exc_info.value) + str(exc_info.value.details)
+
+
+def test_required_with_null_default_equals_no_default():
+    # null default 는 default 없음과 같다 — 렌더가 구분하지 않으므로 모순이 아니다
+    assert VariableSpec(type="string", required=True, default=None).default is None
+
+
+def test_required_variable_survives_dump_validate_roundtrip():
+    spec = VariableSpec(type="string", required=True)
+    assert VariableSpec.model_validate(spec.model_dump()) == spec
+
+
+def test_required_with_null_default_loads_and_null_is_not_used_when_missing(tmp_path):
+    loader = _write_promptset(
+        tmp_path,
+        yaml_body=HEADER
+        + "    t:\n      file: templates/t.j2\n      variables:\n"
+        + "        q: {type: string, required: true, default: null}\n",
+        files={"t.j2": "hi {{ q }}"},
+    )
+    loaded = loader.load("promptsets/custom@0.1.0")
+    with pytest.raises(AaestroError, match="missing required template variable"):
+        loaded.render("t")

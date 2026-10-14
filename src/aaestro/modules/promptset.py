@@ -90,6 +90,20 @@ class VariableSpec(BaseModel):
             raise ValueError(f"default value does not match declared type '{self.type}'")
         return self
 
+    @model_validator(mode="after")
+    def _check_required_has_no_default(self) -> VariableSpec:
+        """required 와 default 는 서로 모순된 계약이라 로드에서 거절한다.
+
+        required 는 호출자가 반드시 준다는 약속이고 default 는 안 줘도 된다는 약속이다.
+        렌더가 default 를 적용하면 required 가 뜻을 잃고, 적용하지 않으면 default 가
+        죽은 선언이 된다 — 렌더 시점의 누락 오류로 늦게 드러나기 전에 막는다.
+        """
+        # null default 는 default 없음과 같다 — 렌더가 구분하지 않고, 선언 여부로 가르면
+        # model_dump 가 내보내는 default: None 때문에 dump -> validate 왕복이 깨진다
+        if self.required and self.default is not None:
+            raise ValueError("required variable must not declare a default")
+        return self
+
     def check(self, value: Any) -> bool:
         """값이 선언된 타입에 맞는지 확인한다."""
         expected = _TYPE_CHECKS[self.type]
