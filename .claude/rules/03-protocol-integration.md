@@ -186,7 +186,12 @@ spec:
    - stdio `command` 는 이미지에 설치된 실행 파일만 — 셸 문자열 (`sh -c`) 금지
    - 서버 프로세스에 전달되는 env 는 `env_allowlist` 로 제한
    - MCP 서버가 반환한 컨텐츠는 **untrusted input** — 프롬프트에 주입 시 경계 표시,
-     서버 응답 내 지시문을 시스템 지시로 승격 금지. 결정 모델의 입력 판별
+     서버 응답 내 지시문을 시스템 지시로 승격 금지. 데이터 안의 프레임워크 표기 (경계 표시 ·
+     `[aaestro]` 안내 · `[operator steer]` · `[tool error]` · `[memory:` — 대소문자 · 공백 ·
+     전각 · 유사 꺾쇠 변형 포함) 는 대화에 들어가기 전에 무력화된다 (`core/markers.py` `defang`.
+     프레임워크 표기는 그 모듈에서만 정의한다). 도구 결과 · A2A 응답 · `memory_search` 결과는
+     모두 `tool_outcome` 을 지난다 — 기본 실행기 기준이고, 커스텀 entrypoint 의 자체 루프는
+     `core.markers.defang` 을 직접 써야 한다. 진짜 표기만 그 모양을 갖는다. 결정 모델의 입력 판별
      ([02](02-agent-implementation.md) Decision Hooks) 은 이 경계 위의 **신호**다 —
      표시를 강화할 뿐, 경계 자체는 결정 모델 없이도 유지된다
 

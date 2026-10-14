@@ -20,7 +20,6 @@ from aaestro.agentd.executor import (
     MAX_PENDING_STEERS,
     MAX_STEER_BY_CHARS,
     MAX_STEER_CHARS,
-    STEER_HEADER,
     AssistantTurn,
     Executor,
     ExecutorConfig,
@@ -37,6 +36,7 @@ from aaestro.core.events import (
     ToolCallEvent,
     ToolResultEvent,
 )
+from aaestro.core.markers import STEER_HEADER
 from tests.fixtures.builders import make_task
 from tests.fixtures.fake_model import FakeModel, FakeTools, calls, text
 

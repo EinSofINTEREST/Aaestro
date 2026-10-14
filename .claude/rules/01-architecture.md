@@ -493,6 +493,7 @@ aaestro/
 │       │   ├── decision.py      # DecisionModel 계약, Question/Decision, 판정 구간(Band)
 │       │   ├── topology.py      # GraphTopology 스키마 + 검증 (pure — langgraph 무관, egress·memory 프로세스도 import)
 │       │   ├── compaction.py    # state 압축 정책 스키마 (pure) — topology 가 참조, 적용은 orchestrator/compaction.py
+│       │   ├── markers.py       # 프레임워크 표기 (경계 · 안내 · 머리말) 단일 정의 + 데이터 안 무력화 (defang) — jinja2 없이
 │       │   ├── errors.py        # AaestroError + ErrorCategory + 코드 상수
 │       │   └── events.py        # TaskEvent, 스트리밍 이벤트 모델
 │       │
