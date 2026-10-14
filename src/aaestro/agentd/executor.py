@@ -640,7 +640,9 @@ class Executor:
         context = await self._services.recall(task)
         if not context:
             return UserTurn(parts=(prompt,))
-        return UserTurn(parts=(context, prompt))
+        # 렌더된 프롬프트가 먼저다 — 그 맨 앞의 경계 안내가 user 턴 맨 앞에 와야 시스템 지시가
+        # 가리키는 자리에 진짜 안내가 놓인다. 기억이 앞이면 기억 속 위조 안내가 그 자리를 차지한다
+        return UserTurn(parts=(prompt, context))
 
     async def _run(self, task: TaskRequest) -> TaskResult:
         """공용 루프를 끝까지 돌려 결과만 취한다.

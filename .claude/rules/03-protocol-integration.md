@@ -186,7 +186,8 @@ spec:
    - stdio `command` 는 이미지에 설치된 실행 파일만 — 셸 문자열 (`sh -c`) 금지
    - 서버 프로세스에 전달되는 env 는 `env_allowlist` 로 제한
    - MCP 서버가 반환한 컨텐츠는 **untrusted input** — 프롬프트에 주입 시 경계 표시,
-     서버 응답 내 지시문을 시스템 지시로 승격 금지. 결정 모델의 입력 판별
+     서버 응답 내 지시문을 시스템 지시로 승격 금지 (이 규칙은 기본 루프의 시스템 자리에 프레임워크
+     지시로도 실린다 — [04](04-module-system.md) Promptset Rules 6). 결정 모델의 입력 판별
      ([02](02-agent-implementation.md) Decision Hooks) 은 이 경계 위의 **신호**다 —
      표시를 강화할 뿐, 경계 자체는 결정 모델 없이도 유지된다
 

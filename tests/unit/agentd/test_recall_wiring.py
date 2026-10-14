@@ -53,8 +53,8 @@ async def test_recalled_memory_is_appended_to_the_prompt():
     await executor.execute(make_task())
 
     _, conversation, _ = executor._chain.links[0].model.requests[0]  # type: ignore[attr-defined]
-    # 기억은 태스크 텍스트와 다른 블록 — 모델이 참고 자료와 지시를 구분할 수 있게
-    context, prompt = conversation[0].parts
+    # 기억은 태스크 텍스트와 다른 블록이고 그 뒤에 온다 — 경계 안내가 user 턴 맨 앞에 남게 (#446)
+    prompt, context = conversation[0].parts
     assert prompt.startswith("prompt:")
     assert RECALLED in context
 
