@@ -131,7 +131,7 @@ class ErrorCode(StrEnum):
     # Memory
     MEM_001 = "MEM_001"  # Memory space 미선언 / access 거부
     MEM_002 = "MEM_002"  # Memory 저장 실패
-    MEM_003 = "MEM_003"  # 인덱싱 실패 누적 / 재인덱싱 필요
+    MEM_003 = "MEM_003"  # 인덱싱 실패 누적 / 재인덱싱 필요 / 임베딩 실패 (색인 · 질의)
     MEM_004 = "MEM_004"  # 조회 · 검색 실패 / 인덱스 손상
 
     # Not found

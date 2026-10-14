@@ -44,7 +44,7 @@ iteration checkpoint 를 남기지 않은 run 은 재개할 수 없다 (`STOR_00
 
 ## 메모리 인덱스 손상
 
-`MEM_003` (인덱싱 적체) 또는 `MEM_004` (조회 · 검색 실패 / 인덱스 손상).
+`MEM_003` (인덱싱 적체, 또는 임베딩 실패 — 색인 · 질의 시점, provider 응답을 해석하지 못한 경우 포함) 또는 `MEM_004` (조회 · 검색 실패 / 인덱스 손상).
 
 1. `aaestro_memory_index_lag_seconds` 를 확인한다. 지연이 지속되면 인덱싱 큐가
    빠지지 않는 것이며 대개 embedding provider 가 원인이다.

@@ -66,8 +66,38 @@ _INSERT = (
 )
 
 
-# autocommit 연결이라 실패한 문장이 트랜잭션을 남기지 않는다 — 뒷정리 훅이 없다
-@converts_driver_errors(DriverErrors(base=psycopg.Error, transient=(psycopg.OperationalError,)))
+def _connect(dsn: str) -> psycopg.Connection[dict[str, Any]]:
+    """저장소 연결 하나 — 처음 열 때와 끊긴 뒤 다시 열 때 같은 설정을 쓴다."""
+    return psycopg.connect(dsn, row_factory=dict_row, autocommit=True)
+
+
+def _transient(err: Exception) -> bool:
+    """연결 · 서버 쪽 운영 실패 (``OperationalError`` 계열) 만 일시 장애다."""
+    return isinstance(err, psycopg.OperationalError)
+
+
+def _reconnect(store: PostgresMemoryStore) -> None:
+    """끊긴 연결을 다시 연다 — 일시 장애를 retryable 로 내보내는 약속을 지키는 자리다.
+
+    autocommit 연결이라 실패한 문장이 트랜잭션을 남기지 않으므로 rollback 은 없다. 연결이 멀쩡하면
+    아무것도 하지 않는다 (플래그 두 개만 본다 — 왕복이 없다).
+
+    두 자리에서 부른다: 실패 직후 (``recover`` — 끊김을 알게 된 곳) 와 쿼리 앞 (``prepare``).
+    실패 직후의 다시 열기가 실패하면 그 예외는 뒷정리 실패로 기록되고 원래 실패가 그대로
+    올라간다. 그 다음 호출은 쿼리 앞에서 다시 연다 — 닫힌 연결로 한 번 더 실패하지 않는다.
+
+    겹침: 저장소는 Memory Service 의 이벤트 루프 스레드에서만 동기로 불린다 (``async`` 라우트가
+    직접 부르고, 스레드풀 · 백그라운드 스레드가 없다) — 재연결 도중 다른 호출이 끼어들 수 없다.
+    """
+    conn = store._conn  # noqa: SLF001 — 같은 모듈의 구현 내부다
+    if not (conn.closed or conn.broken):
+        return
+    store._conn = _connect(store.dsn)  # noqa: SLF001
+
+
+@converts_driver_errors(
+    DriverErrors(base=psycopg.Error, transient=_transient, recover=_reconnect, prepare=_reconnect)
+)
 @dataclass
 class PostgresMemoryStore:
     """PostgreSQL-backed memory store (prod).
@@ -80,7 +110,7 @@ class PostgresMemoryStore:
     _conn: psycopg.Connection[dict[str, Any]] = field(init=False)
 
     def __post_init__(self) -> None:
-        self._conn = psycopg.connect(self.dsn, row_factory=dict_row, autocommit=True)
+        self._conn = _connect(self.dsn)
         with self._conn.cursor() as cursor:
             cursor.execute(_SCHEMA)
 

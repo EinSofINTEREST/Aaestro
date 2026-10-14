@@ -138,11 +138,40 @@ def test_a_terminated_connection_is_a_retryable_failure(postgres_dsn, method, co
 
         with pytest.raises(AaestroError) as exc_info:
             QUERY_CALLS[method](store)
+        # retryable 은 "다시 하면 된다" 는 약속이다 — 저장소가 끊긴 연결을 다시 열어야 지켜진다
+        again = store.append(make_entry(content="after reconnect"))
+        assert store.get(again.entry_id) == again
     finally:
         store.close()
 
     assert isinstance(exc_info.value.__cause__, psycopg.OperationalError)
     assert (exc_info.value.code, exc_info.value.retryable) == (code, True)
+
+
+def test_a_failed_reconnect_keeps_the_original_failure(postgres_dsn, monkeypatch):
+    """다시 열기가 실패해도 호출자가 받는 것은 원래 실패다 — 다음 호출이 다시 시도한다."""
+    from aaestro.memory import postgres as postgres_store
+
+    store = PostgresMemoryStore(dsn=postgres_dsn)
+    try:
+        pid = store._conn.info.backend_pid
+        with psycopg.connect(postgres_dsn, autocommit=True) as other:
+            other.execute("SELECT pg_terminate_backend(%s)", (pid,))
+        real_connect = postgres_store._connect
+
+        def refuse(dsn):
+            raise psycopg.OperationalError("qqreconnect refused")
+
+        monkeypatch.setattr(postgres_store, "_connect", refuse)
+        with pytest.raises(AaestroError) as exc_info:
+            store.get("a")
+        assert "qqreconnect" not in str(exc_info.value.__cause__)
+        assert exc_info.value.retryable
+
+        monkeypatch.setattr(postgres_store, "_connect", real_connect)
+        assert store.get("a") is None, "다음 호출이 다시 열고 성공한다"
+    finally:
+        store.close()
 
 
 def test_a_corrupt_row_leaves_a_read_as_mem_004_and_space_of_still_answers(store):

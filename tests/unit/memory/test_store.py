@@ -146,10 +146,28 @@ def test_driver_failure_leaves_every_query_method_as_a_structured_error(dropped,
     err = exc_info.value
     assert err.category is ErrorCategory.MEMORY
     assert err.code == CODE_BY_METHOD[method]
-    assert isinstance(err.__cause__, sqlite3.Error), "원인 체인을 보존한다"
+    assert not err.retryable, "없는 테이블은 다시 걸어도 같다"
+    assert isinstance(err.__cause__, sqlite3.OperationalError), "같은 타입이어도 영구 실패다"
 
 
 # --- 일시 장애와 영구 실패 (#447) -------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "statement",
+    ["SELECT * FROM no_such_table", "SELEC 1", "SELECT no_such_column FROM sqlite_master"],
+)
+def test_permanent_operational_errors_are_not_retryable(statement):
+    """SQLite 는 문법 오류 · 없는 테이블도 OperationalError 로 낸다.
+
+    타입이 아니라 결과 코드로 가른다."""
+    from aaestro.memory.store import _sqlite_transient
+
+    conn = sqlite3.connect(":memory:")
+    with pytest.raises(sqlite3.OperationalError) as exc_info:
+        conn.execute(statement)
+
+    assert _sqlite_transient(exc_info.value) is False
 
 
 @pytest.fixture

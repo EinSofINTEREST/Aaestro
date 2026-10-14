@@ -895,3 +895,64 @@ def test_a_search_that_fails_on_a_later_space_counts_every_space_as_failed(broke
 
     assert operation_statuses(metrics) == {("search", "failed")}
     assert operation_spaces(metrics) == {"search": {empty, stored.space}}
+
+
+# --- PR #457 리뷰: 임베더의 외부 응답 해석 실패도 검색 실패로 기록된다 ----------------------
+
+
+def broken_embedder():
+    """JSON 이 아닌 본문으로 답하는 임베딩 endpoint 대역."""
+    from aaestro.memory.providers import OpenAICompatibleEmbedder
+
+    client = httpx.Client(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, content=b"<html>qqproxy page</html>")
+        )
+    )
+    return OpenAICompatibleEmbedder(
+        model="text-embedding-3-small", dimensions=8, base_url="http://e.test", client=client
+    )
+
+
+@pytest.fixture
+def unparseable(store):
+    """researcher 의 space 인덱스가 망가진 임베더를 쓴다 — 질의 임베딩이 실패한다."""
+    from aaestro.memory.index import SpaceIndex
+
+    metrics = Metrics(registry=CollectorRegistry())
+    service = MemoryService(store=store, metrics=metrics)
+    space = RESEARCHER.resolve("longterm").space_id  # type: ignore[union-attr]
+    indexes = {space: SpaceIndex(space=space, embedder=broken_embedder())}
+    return service, Recall(indexes=indexes, store=store, metrics=metrics), metrics, space
+
+
+async def test_an_unparseable_embedding_fails_an_http_search_with_a_payload(unparseable):
+    service, recall, metrics, space = unparseable
+    tokens = TokenRegistry()
+    app = create_app(service, recall, tokens)
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url=BASE_URL) as http:
+        response = await http.post(
+            "/v1/search",
+            json={"query": "anything"},
+            headers={"authorization": f"Bearer {tokens.issue(RESEARCHER)}"},
+        )
+
+    assert response.status_code == 500, response.text
+    assert response.json()["code"] == "MEM_003"
+    assert "qqproxy" not in response.text
+    assert [(r["op"], r["status"]) for r in service.audit_log] == [("search", "failed")]
+    assert operation_statuses(metrics) == {("search", "failed")}
+    assert operation_spaces(metrics) == {"search": {space}}
+
+
+async def test_an_unparseable_embedding_fails_a_task_recall_and_is_recorded(unparseable):
+    service, recall, metrics, space = unparseable
+    access = ServiceMemoryAccess(service=service, token=RESEARCHER, recall=recall)
+
+    with pytest.raises(AaestroError) as exc_info:
+        await access.recall_for_task("anything", policy=RecallSpec())
+
+    assert exc_info.value.code == ErrorCode.MEM_003
+    assert [(r["op"], r["status"]) for r in service.audit_log] == [("recall", "failed")]
+    assert operation_statuses(metrics) == {("recall", "failed"), ("search", "failed")}

@@ -209,14 +209,20 @@ class DriverErrors:
 
     Attributes:
         base: 드라이버의 예외 기반 클래스 — 이것만 드라이버 실패로 잡는다.
-        transient: 운영 계열 (연결 끊김 · 잠금 · 타임아웃) — 다시 걸어볼 만한 실패다.
-            무결성 · 프로그래밍 · 데이터 오류는 다시 걸어도 같으므로 여기 넣지 않는다.
-        recover: 실패한 쿼리 뒤의 뒷정리 (열린 트랜잭션 rollback) — 필요한 백엔드만 준다.
+        transient: 드라이버 실패 하나가 운영 계열 (연결 끊김 · 잠금 · 타임아웃) 인지 —
+            다시 걸어볼 만한 실패다. 무결성 · 프로그래밍 · 데이터 오류는 다시 걸어도 같다.
+            예외 타입이 아니라 판정 함수다: 드라이버마다 한 타입에 둘이 섞인다 (SQLite 의
+            ``OperationalError`` 는 잠금과 없는 테이블을 함께 담는다).
+        recover: 실패한 쿼리 뒤의 뒷정리 (열린 트랜잭션 rollback, 끊긴 연결 다시 열기) —
+            필요한 백엔드만 준다.
+        prepare: 쿼리 앞의 준비 (끊긴 채 남은 연결 다시 열기) — 실패 뒤의 다시 열기마저 실패했을
+            때, 다음 호출이 닫힌 연결로 한 번 더 실패하지 않게 한다. 실패하면 그 호출의 실패다.
     """
 
     base: type[Exception]
-    transient: tuple[type[Exception], ...] = ()
+    transient: Callable[[Exception], bool] = lambda _err: False
     recover: Callable[[Any], None] | None = None
+    prepare: Callable[[Any], None] | None = None
 
 
 def converts_driver_errors[S](driver: DriverErrors) -> Callable[[type[S]], type[S]]:
@@ -261,10 +267,12 @@ def _converting(op: str, method: Callable[..., Any], driver: DriverErrors) -> Ca
     @wraps(method)
     def call(self: Any, *args: Any, **kwargs: Any) -> Any:
         try:
+            if driver.prepare is not None:
+                driver.prepare(self)
             return method(self, *args, **kwargs)
         except driver.base as err:
             _recover(self, driver, op)
-            retryable = isinstance(err, driver.transient)
+            retryable = driver.transient(err)
             raise query_failure(op, args, retryable=retryable) from err
         except corrupt_row as err:
             # 손상된 행은 다시 읽어도 같다. 원인은 체인에만 두고 에러 본문에는 싣지 않는다 —
@@ -282,6 +290,23 @@ def _recover(store: Any, driver: DriverErrors, op: str) -> None:
         driver.recover(store)
     except driver.base as err:
         log.warning("memory store recovery failed", op=op, exc_info=err)
+
+
+SQLITE_PRIMARY_CODE_MASK = 0xFF
+"""확장 결과 코드의 아래 8비트가 기본 결과 코드다 (``SQLITE_BUSY_SNAPSHOT`` → ``SQLITE_BUSY``)."""
+
+SQLITE_TRANSIENT_CODES = frozenset({sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED})
+"""다시 걸면 풀릴 수 있는 SQLite 실패 — 다른 연결이 쥔 잠금뿐이다."""
+
+
+def _sqlite_transient(err: Exception) -> bool:
+    """잠금 (``SQLITE_BUSY`` · ``SQLITE_LOCKED``) 만 일시 장애다.
+
+    없는 테이블 · 문법 오류도 ``OperationalError`` 로 오므로 타입으로 가르면 영구 실패가
+    재시도 가능으로 나간다.
+    """
+    code = getattr(err, "sqlite_errorcode", None)
+    return isinstance(code, int) and code & SQLITE_PRIMARY_CODE_MASK in SQLITE_TRANSIENT_CODES
 
 
 def _rollback(store: SqliteMemoryStore) -> None:
@@ -322,7 +347,7 @@ def successor_sql() -> str:
 
 
 @converts_driver_errors(
-    DriverErrors(base=sqlite3.Error, transient=(sqlite3.OperationalError,), recover=_rollback)
+    DriverErrors(base=sqlite3.Error, transient=_sqlite_transient, recover=_rollback)
 )
 @dataclass
 class SqliteMemoryStore:
