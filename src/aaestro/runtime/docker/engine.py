@@ -13,10 +13,12 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import structlog
 
+from aaestro.runtime import spec as spec_module
 from aaestro.runtime.docker.errors import (
     OOM_EXIT_CODE,
     NetworkIsolationError,
     drain_timeout,
+    hardening_mismatch,
     image_unavailable,
     invalid_spec,
     network_mismatch,
@@ -63,6 +65,42 @@ def control_port_of(spec: ContainerSpec) -> int:
     raise invalid_spec(agent_of(spec), spec.image, reason="spec declares no control port")
 
 
+SHARED_NAMESPACE_FIELDS = ("PidMode", "IpcMode", "UsernsMode", "NetworkMode")
+HOST_NAMESPACE = "host"
+CONTAINER_NAMESPACE_PREFIX = "container:"
+
+
+def hardening_gaps(found: Mapping[str, Any], expected: Mapping[str, Any]) -> list[str]:
+    """`docker inspect` 값에서 경화가 어긋난 필드 이름 — 없으면 빈 목록.
+
+    ``expected`` 는 그 컨테이너를 만든 생성 인자(user · cap_drop · read_only · security_opt)다 —
+    에이전트는 `spec.hardening_kwargs()`, 사이드카는 `sidecar_kwargs`. 필드 목록이 아니라 부류를
+    본다: 생성 인자가 건 설정이 빠진 것, 그리고 걸려 있어도 뜻을 잃게 만드는 설정(privileged 는
+    CapDrop 과 무관하게 모든 capability 를 주고, 호스트 · 다른 컨테이너와 공유하는 네임스페이스도
+    같다).
+    """
+    wrong: list[str] = []
+    if not set(expected.get("cap_drop") or ()) <= set(found.get("CapDrop") or ()):
+        wrong.append("CapDrop")
+    if expected.get("read_only") and found.get("ReadonlyRootfs") is not True:
+        wrong.append("ReadonlyRootfs")
+    if found.get("User") != expected.get("user"):
+        wrong.append("User")
+    if not set(expected.get("security_opt") or ()) <= set(found.get("SecurityOpt") or ()):
+        wrong.append("SecurityOpt")
+    if found.get("Privileged"):
+        wrong.append("Privileged")
+    if found.get("CapAdd"):
+        wrong.append("CapAdd")
+    wrong.extend(
+        field
+        for field in SHARED_NAMESPACE_FIELDS
+        if (mode := str(found.get(field) or ""))
+        and (mode == HOST_NAMESPACE or mode.startswith(CONTAINER_NAMESPACE_PREFIX))
+    )
+    return wrong
+
+
 @runtime_checkable
 class DockerClient(Protocol):
     """The slice of the Docker SDK this layer uses.
@@ -97,6 +135,10 @@ class DockerClient(Protocol):
 
     def networks_of(self, container_id: str) -> tuple[str, ...]:
         """컨테이너가 붙어 있는 네트워크 이름들."""
+        ...
+
+    def hardening_of(self, container_id: str) -> dict[str, Any]:
+        """`docker inspect` 의 경화 필드 — `hardening_gaps` 가 읽는 이름 그대로."""
         ...
 
     def address_of(self, container_id: str, network: str) -> str:
@@ -286,8 +328,9 @@ class DockerEngine:
 
         Raises:
             AaestroError: RUNTIME/``RT_001`` (재시도 불가) — 네트워크가 내부가 아니거나, 컨테이너가
-                에이전트 네트워크 말고 다른 네트워크에도 붙어 있음.
+                에이전트 네트워크 말고 다른 네트워크에도 붙어 있거나, 경화 설정이 어긋남.
         """
+        await self._verify_hardening(agent, image, container_id)
         if not self.internal:
             return
         try:
@@ -302,6 +345,13 @@ class DockerEngine:
                 NetworkIsolationError(self.network, expected=True, actual=False),
                 attached=sorted(attached),
             )
+
+    async def _verify_hardening(self, agent: str, image: str, container_id: str) -> None:
+        """기동 스펙의 경화 설정이 실제로 걸려 있는지 대조한다 (02 Docker Isolation 3)."""
+        found = await asyncio.to_thread(self.client.hardening_of, container_id)
+        wrong = hardening_gaps(found, spec_module.hardening_kwargs())
+        if wrong:
+            raise hardening_mismatch(agent, image, wrong)
 
     async def inspect(self, handle: ContainerHandle) -> dict[str, Any]:
         """컨테이너 상태를 조회한다."""

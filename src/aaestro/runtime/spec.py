@@ -18,6 +18,25 @@ if TYPE_CHECKING:
 
 DEFAULT_NETWORK: Final = "aaestro-net"
 DEFAULT_CONTROL_PORT: Final = 8080
+HARDENED_USER = "1000:1000"
+HARDENED_CAP_DROP: tuple[str, ...] = ("ALL",)
+HARDENED_SECURITY_OPT: tuple[str, ...] = ()
+"""에이전트 컨테이너가 싣는 security_opt — `to_docker_kwargs` 와 재부착 대조가 같은 값을 쓴다."""
+
+
+def hardening_kwargs() -> dict[str, Any]:
+    """에이전트 컨테이너의 경화 생성 인자 — 기동 스펙과 재부착 대조의 공통 출처.
+
+    `to_docker_kwargs` 가 이 값을 싣고, `engine.hardening_gaps` 가 같은 값을 기대한다.
+    """
+    return {
+        "user": HARDENED_USER,
+        "read_only": True,
+        "cap_drop": list(HARDENED_CAP_DROP),
+        "security_opt": list(HARDENED_SECURITY_OPT),
+    }
+
+
 DEFAULT_PID_LIMIT: Final = 256
 DEFAULT_BASE_IMAGE: Final = "aaestro/agent-base:0.1.0"
 
@@ -112,6 +131,7 @@ class ContainerSpec:
             "user": self.user,
             "read_only": self.read_only_rootfs,
             "cap_drop": list(self.cap_drop),
+            "security_opt": list(HARDENED_SECURITY_OPT),
             "tmpfs": dict.fromkeys(self.tmpfs, TMPFS_OPTIONS),
             "volumes": {
                 volume["name"]: {
@@ -220,9 +240,9 @@ def build_container_spec(
         pids_limit=DEFAULT_PID_LIMIT,
         # base 이미지가 non-root 로 실행되지만, 스펙에서도 명시해 이미지 변경에
         # 관계없이 root 로 뜨지 않게 한다
-        user="1000:1000",
+        user=HARDENED_USER,
         read_only_rootfs=True,
-        cap_drop=("ALL",),
+        cap_drop=HARDENED_CAP_DROP,
         tmpfs=_WRITABLE_TMPFS,
         volumes=volumes,
         labels={

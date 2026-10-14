@@ -176,7 +176,7 @@ DEC_004: 응답이 선언한 값 집합 밖이거나 파싱 불가 — 영구 (p
          결정 호출의 timeout 은 TO_004. 쓰임 안에서는 DEC_*/TO_004 모두 "unavailable" 로 취급해
          원래 경로로 간다 (01 Decision Models 2) — 결정 실패가 태스크를 실패시키지 않는다
 
-RT_001:  컨테이너 기동 실패
+RT_001:  컨테이너 기동 실패 / 재부착 시 격리 · 경화 불일치 (details.kind: network | hardening)
 RT_002:  컨테이너 unhealthy
 RT_003:  OOM killed
 RT_004:  이미지 빌드/풀 실패

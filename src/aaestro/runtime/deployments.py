@@ -596,11 +596,16 @@ class DeploymentManager:
                     continue  # 없는 컨테이너는 아래 대조가 missing 으로 보고한다
                 await engine.verify_isolation(agent.name, agent.image, container_id)
             except AaestroError as err:
-                reason, code = "network isolation mismatch", err.code
+                # 경화 불일치는 어긋난 필드 이름을 함께 남긴다 — 값은 싣지 않는다
+                fields = err.details.get("fields")
+                reason = "container hardening mismatch" if fields else "network isolation mismatch"
+                code = err.code
+                extra = {"fields": fields} if fields else {}
             except Exception as err:  # noqa: BLE001 — 격리를 확인하지 못했다: 붙이지 않는 쪽으로 닫는다
                 # 조회 사이에 컨테이너가 사라지거나 daemon 이 답하지 않으면 SDK 예외가 온다. 여기서
                 # 새면 이 배포는 lost 도 신원 회수도 없이 남고, 뒤의 배포는 재부착조차 되지 않는다
                 reason, code = "network isolation unverifiable", type(err).__name__
+                extra = {}
             else:
                 continue
             self._bind_log(record).error(
@@ -608,8 +613,10 @@ class DeploymentManager:
                 agent=agent.name,
                 reason=reason,
                 error_code=code,
+                **extra,
             )
-            self._mark_lost(record, f"{reason}: {agent.name}", touched)
+            detail = f" ({', '.join(extra['fields'])})" if extra else ""
+            self._mark_lost(record, f"{reason}: {agent.name}{detail}", touched)
             self._revoke_orphaned_identities(record)
             return False
         return True

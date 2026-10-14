@@ -655,6 +655,60 @@ async def test_reattach_refuses_containers_that_are_not_isolated(
             registry.identify(agent.access_credential)  # 외부 경로가 남은 컨테이너의 신원은 회수
 
 
+async def test_reattach_marks_a_deployment_with_lost_hardening_lost_and_moves_on(
+    workspace, healthy, caplog
+):
+    """경화가 풀린 컨테이너는 붙지 않고 신원이 회수되며, 사유에 필드 이름이 남는다 (#483)."""
+    catalog = Catalog.under(workspace)
+    store = InMemoryDeploymentStore()
+    first_docker = TrackingDocker()
+
+    def manager_with(client) -> DeploymentManager:
+        return DeploymentManager(
+            catalog=catalog,
+            author=Author(catalog=catalog),
+            store=store,
+            secrets_env={"ANTHROPIC_API_KEY": "k"},
+            launcher=AgentLauncher(
+                engine=DockerEngine(client=client, network="agents", internal=True),
+                health_interval_s=10.0,
+                health_sleep=Tick(),
+            ),
+            ready_poll_s=0.0,
+            sleep=NoSleep(),
+        )
+
+    first = manager_with(first_docker)
+    registry = with_access(first)
+    broken = await first.deploy("two")
+    await first.launcher.stop_all()
+    write(workspace / "agents" / "gamma" / "manifest.yaml", agent_doc("gamma"))
+    write(workspace / "graphs" / "other.yaml", graph_doc("other", ["gamma"]))
+    healthy_record = await manager_with(first_docker).deploy("other")
+
+    class Loosened(TrackingDocker):
+        def hardening_of(self, container_id: str) -> dict:
+            found = super().hardening_of(container_id)
+            if container_id == self.find("aaestro-alpha-0"):
+                found["Privileged"] = True
+            return found
+
+    later = Loosened(attached=("agents",))
+    later.created = list(first_docker.created)
+    second = manager_with(later)
+    second.access = registry
+
+    touched = {r.deployment_id: r for r in await second.reattach()}
+
+    assert touched[broken.deployment_id].status == DeploymentStatus.LOST
+    assert touched[broken.deployment_id].error == "container hardening mismatch: alpha (Privileged)"
+    with pytest.raises(AaestroError):
+        registry.identify(broken.agents[0].access_credential)
+    assert touched[healthy_record.deployment_id].status == DeploymentStatus.READY
+    assert sorted(second.launcher.launched) == [("gamma", 0)]
+    await second.launcher.stop_all()
+
+
 class VanishingDocker(TrackingDocker):
     """찾은 뒤 조회하는 사이 컨테이너가 사라진다 — SDK 는 NotFound 같은 자기 예외를 던진다."""
 

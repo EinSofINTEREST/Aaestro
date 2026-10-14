@@ -26,6 +26,7 @@ class FakeDockerClient:
         host_port: int = 49152,
         address: str = "172.30.0.7",
         attached: tuple[str, ...] | None = None,
+        hardening: dict[str, Any] | None = None,
     ) -> None:
         self._image_error = image_error
         self._network_error = network_error
@@ -38,6 +39,7 @@ class FakeDockerClient:
         self._host_port = host_port
         self._address = address
         self._attached = attached
+        self._hardening = hardening
 
         self.images: list[str] = []
         self.networks: list[str] = []
@@ -66,6 +68,21 @@ class FakeDockerClient:
 
     def networks_of(self, container_id: str) -> tuple[str, ...]:
         return self._attached if self._attached is not None else tuple(self.networks[-1:])
+
+    def hardening_of(self, container_id: str) -> dict[str, Any]:
+        """지정한 값이 있으면 그것, 없으면 만들 때 받은 스펙대로 걸린 것으로 본다."""
+        if self._hardening is not None:
+            return dict(self._hardening)
+        for index, kwargs in enumerate(self.created, start=1):
+            if container_id == f"container-{index:04d}" + "0" * 20:
+                return {
+                    "CapDrop": kwargs.get("cap_drop"),
+                    "ReadonlyRootfs": kwargs.get("read_only"),
+                    "SecurityOpt": kwargs.get("security_opt"),
+                    "User": kwargs.get("user"),
+                    "NetworkMode": kwargs.get("network_mode"),
+                }
+        raise LookupError(container_id)
 
     def address_of(self, container_id: str, network: str) -> str:
         self.addressed.append((container_id, network))
