@@ -498,6 +498,7 @@ def build_token(
         run_spaces: ``(alias, run_id)`` pairs — omit for direct tasks.
         local_modes: 매니페스트가 선언한 local space 의 mode — 없으면 rw.
         run_id: 이 토큰이 속한 run — 없으면 ``run_spaces`` 의 run 이 하나일 때 그것.
+            run space 가 둘 이상의 run 에 걸치면 ValueError.
 
     Returns:
         The access token.
@@ -528,8 +529,8 @@ def build_token(
     runs = {owner for _alias, owner in run_spaces}
     if run_id is None and len(runs) == 1:
         run_id = next(iter(runs))
-    if run_id is not None and runs - {run_id}:
-        # 한 토큰은 한 run 에 속한다 — 다른 run 의 space 를 섞으면 출처의 run 이 모호해진다
+    # 한 토큰은 한 run 에 속한다 — run 이 둘 이상이면 run_id 가 없어도 출처의 run 이 모호해진다
+    if len(runs) > 1 or (run_id is not None and runs - {run_id}):
         raise ValueError("run spaces must belong to the token's run")
     return AccessToken(agent=agent, group=group, spaces=tuple(spaces), run_id=run_id)
 

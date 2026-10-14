@@ -388,6 +388,30 @@ def test_a_token_refuses_run_spaces_of_another_run():
         build_token(agent="a", group=None, run_spaces=[("scratch", "run-9")], run_id="run-1")
 
 
+def test_a_token_refuses_run_spaces_spanning_several_runs_without_a_run_id():
+    with pytest.raises(ValueError, match="run spaces"):
+        build_token(agent="a", group=None, run_spaces=[("a", "run-1"), ("b", "run-2")])
+
+
+def test_a_token_refuses_run_spaces_spanning_several_runs_with_a_run_id():
+    with pytest.raises(ValueError, match="run spaces"):
+        build_token(
+            agent="a", group=None, run_spaces=[("a", "run-1"), ("b", "run-2")], run_id="run-1"
+        )
+
+
+def test_a_token_accepts_several_run_spaces_of_one_run():
+    token = build_token(agent="a", group=None, run_spaces=[("a", "run-1"), ("b", "run-1")])
+
+    assert token.run_id == "run-1"
+    assert len(token.spaces) == 2
+
+
+def test_a_token_without_run_spaces_keeps_the_given_run_id_or_none():
+    assert build_token(agent="a", group=None, run_id="run-1").run_id == "run-1"
+    assert build_token(agent="a", group=None, run_spaces=[]).run_id is None
+
+
 def test_issue_token_carries_the_run_without_run_spaces():
     from aaestro.core.manifest import AgentManifest
     from aaestro.memory.tokens import issue_token
