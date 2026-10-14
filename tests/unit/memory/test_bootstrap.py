@@ -24,10 +24,10 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 @pytest.fixture
-def deployment():
-    """저장소 선언 그대로 조립한 서비스."""
+def deployment(token_root):
+    """저장소 선언 그대로 조립한 서비스 (run scope 그래프 제외)."""
     config = load_config("dev", config_dir=REPO_ROOT / "configs", environ={})
-    return build_deployment(config, root=REPO_ROOT)
+    return build_deployment(config, root=token_root)
 
 
 def test_every_declared_agent_gets_a_token(deployment):
@@ -145,7 +145,7 @@ def _as_researcher(deployment) -> dict[str, str]:
     return {"Authorization": f"Bearer {deployment.tokens['researcher']}"}
 
 
-async def test_a_restarted_service_finds_what_was_stored_before(tmp_path):
+async def test_a_restarted_service_finds_what_was_stored_before(tmp_path, token_root):
     """인덱스는 프로세스 메모리다 — 저장소에서 되읽지 않으면 재시작 전 기억이 검색되지 않는다."""
     config = _memory_on_disk(tmp_path)
     fact = MemoryEntry(
@@ -154,7 +154,7 @@ async def test_a_restarted_service_finds_what_was_stored_before(tmp_path):
         content="sidecar 이미지는 태그를 고정한다",
         source=MemorySource(agent="researcher"),
     )
-    first = build_deployment(config, root=REPO_ROOT)
+    first = build_deployment(config, root=token_root)
     # SQLite 연결은 만든 스레드에 묶인다 — 앱을 같은 스레드에서 부른다 (uvicorn 과 같다)
     async with _client(first) as client:
         stored = await client.post(
@@ -164,7 +164,7 @@ async def test_a_restarted_service_finds_what_was_stored_before(tmp_path):
         )
         assert stored.status_code == 200, stored.text
 
-    restarted = build_deployment(config, root=REPO_ROOT)
+    restarted = build_deployment(config, root=token_root)
     assert restarted.indexer.warming
     restarted.indexer.drain()
     async with _client(restarted) as client:
@@ -182,8 +182,100 @@ def _client(deployment) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=deployment.app), base_url="http://m")
 
 
-def test_an_empty_store_has_nothing_to_warm(tmp_path):
-    deployment = build_deployment(_memory_on_disk(tmp_path), root=REPO_ROOT)
+def test_an_empty_store_has_nothing_to_warm(tmp_path, token_root):
+    deployment = build_deployment(_memory_on_disk(tmp_path), root=token_root)
 
     assert not deployment.indexer.warming
     assert deployment.indexer.queue.lag == 0
+
+
+# --- run scope 는 레지스트리 모드 전용이다 (#469, #465 결정 3) -----------------------
+
+
+GRAPH_WITH_SPACE = """\
+apiVersion: aaestro/v1
+kind: Graph
+metadata: {name: %s, version: 1.0.0}
+spec:
+  goal: g
+  state:
+    schema: aaestro.graphs.schemas:ResearchState
+  memory:
+    spaces:
+      - {ref: "memorysets/run-scratch@0.1.0", as: scratch}
+  nodes:
+    - {id: a, agent: "agents/echo@0.1.0"}
+  edges:
+    - {from: START, to: a}
+    - {from: a, to: END}
+"""
+
+
+def _graph_text(name: str, *, with_space: bool) -> str:
+    text = GRAPH_WITH_SPACE % name
+    if with_space:
+        return text
+    return text.replace(
+        '  memory:\n    spaces:\n      - {ref: "memorysets/run-scratch@0.1.0", as: scratch}\n', ""
+    )
+
+
+def _config():
+    return load_config("dev", config_dir=REPO_ROOT / "configs", environ={})
+
+
+def test_token_mode_refuses_a_graph_that_declares_run_scope_spaces(token_root):
+    """토큰은 run 없이 발급돼 run space 가 조용히 빠진다 — 뜬 뒤에 알면 늦다."""
+    from aaestro.core.errors import AaestroError, ErrorCode
+
+    (token_root / "graphs" / "with-space.yaml").write_text(
+        _graph_text("with-space", with_space=True), encoding="utf-8"
+    )
+
+    with pytest.raises(AaestroError) as excinfo:
+        build_deployment(_config(), root=token_root)
+
+    assert excinfo.value.code == ErrorCode.CFG_001
+    assert excinfo.value.details["run_scope_spaces"] == [
+        {"graph": "with-space", "alias": "scratch"}
+    ]
+
+
+def test_token_mode_accepts_a_graph_without_spaces(token_root):
+    """space 없는 그래프까지 거절하면 과잉이다."""
+    (token_root / "graphs" / "plain.yaml").write_text(
+        _graph_text("plain", with_space=False), encoding="utf-8"
+    )
+
+    deployment = build_deployment(_config(), root=token_root)
+
+    assert deployment.tokens
+
+
+def test_token_mode_refuses_an_unreadable_graph_with_a_relative_location(token_root):
+    """읽지 못한 그래프 안에 run scope 가 없다는 것을 증명할 수 없다 — 위치는 상대 경로로만."""
+    from aaestro.core.errors import AaestroError, ErrorCode
+
+    (token_root / "graphs" / "broken.yaml").write_text("kind: Graph\n", encoding="utf-8")
+
+    with pytest.raises(AaestroError) as excinfo:
+        build_deployment(_config(), root=token_root)
+
+    assert excinfo.value.code == ErrorCode.CFG_001
+    assert excinfo.value.details["run_scope_spaces"] == []
+    assert excinfo.value.details["unreadable_graphs"] == ["graphs/broken.yaml"]
+
+
+def test_registry_mode_ignores_run_scope_graphs():
+    """run scope 는 레지스트리 모드의 몫이다 — 거부는 토큰 모드에서만."""
+    deployment = build_deployment(_config(), root=REPO_ROOT, access=object())  # type: ignore[arg-type]
+
+    assert deployment.tokens == {}
+
+
+def test_token_mode_refuses_the_repository_graphs():
+    """저장소가 싣는 그래프 (run-scratch 부착) 도 토큰 모드에서는 거부된다."""
+    from aaestro.core.errors import AaestroError
+
+    with pytest.raises(AaestroError):
+        build_deployment(_config(), root=REPO_ROOT)

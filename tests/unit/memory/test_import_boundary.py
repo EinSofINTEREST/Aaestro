@@ -37,11 +37,11 @@ assert not bad, bad
 """
 
 
-def _run(body: str) -> None:
+def _run(body: str, root: Path = REPO_ROOT) -> None:
     script = SCRIPT.format(body=body, forbidden=FORBIDDEN)
     # -I: cwd 와 PYTHONPATH 를 무시해 현재 프로세스가 아닌 깨끗한 import 그래프를 본다
     result = subprocess.run(  # noqa: S603
-        [sys.executable, "-I", "-c", script, str(REPO_ROOT)],
+        [sys.executable, "-I", "-c", script, str(root)],
         capture_output=True,
         text=True,
         check=False,
@@ -54,8 +54,8 @@ def test_main_import_pulls_no_control_plane_modules() -> None:
     _run(script)
 
 
-def test_token_bootstrap_path_pulls_no_control_plane_modules() -> None:
-    _run("build_deployment(config, root=root)")
+def test_token_bootstrap_path_pulls_no_control_plane_modules(token_root: Path) -> None:
+    _run("build_deployment(config, root=root)", token_root)
 
 
 def test_registry_bootstrap_path_pulls_no_control_plane_modules() -> None:
