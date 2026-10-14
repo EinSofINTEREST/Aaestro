@@ -8,15 +8,44 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Annotated, Any, Final
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictFloat,
+    StrictStr,
+    ValidationError,
+    field_validator,
+)
 
+from aaestro.core.errors import (
+    AaestroError,
+    ErrorCategory,
+    ErrorCode,
+    field_problems,
+    raise_detached,
+)
+from aaestro.core.identifiers import MAX_IDENTIFIER_CHARS, identifier_problem
 from aaestro.modules.memoryset import MemoryKind
 
-MAX_CONTENT_BYTES = 8 * 1024
-"""``content`` 상한 — 초과분은 artifact 저장소에 두고 artifact_ref 로 참조한다."""
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+MAX_CONTENT_BYTES: Final = 8 * 1024
+"""``content`` 상한 (UTF-8 바이트) — 초과분은 artifact 저장소에 두고 artifact_ref 로 참조한다.
+
+초안이 먼저 거절하고 (``VAL_002``) 저장소가 같은 상수로 한 번 더 막는다."""
+
+MAX_TAG_CHARS: Final = 64
+MAX_TAGS: Final = 32
+"""태그 하나의 길이 · 한 항목의 태그 수 상한 — 태그는 필터 키로 저장소 행과 색인에 그대로 실린다."""
+
+DEFAULT_IMPORTANCE: Final = 0.5
+IMPORTANCE_RANGE = Field(ge=0.0, le=1.0)
+"""``importance`` 의 범위 — 저장된 항목과 초안이 같은 범위를 쓴다."""
 
 
 class MemorySource(BaseModel):
@@ -49,7 +78,7 @@ class MemoryEntry(BaseModel):
     tags: tuple[str, ...] = ()
     source: MemorySource
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    importance: float = Field(default=0.5, ge=0.0, le=1.0)
+    importance: Annotated[float, IMPORTANCE_RANGE] = DEFAULT_IMPORTANCE
     supersedes: str | None = None
 
     @field_validator("created_at")
@@ -106,4 +135,140 @@ class MemoryEntry(BaseModel):
         )
 
 
-__all__ = ["MAX_CONTENT_BYTES", "MemoryEntry", "MemorySource"]
+def _identifier(value: str | None) -> str | None:
+    """호출자가 고른 식별자를 **성질로** 검증한다 — 규칙은 ``core.identifiers`` 하나다.
+
+    사유의 이름만 메시지에 싣는다 — 값은 싣지 않는다.
+    """
+    if value is None:
+        return None
+    problem = identifier_problem(value)
+    if problem is not None:
+        raise ValueError(f"identifier is invalid: {problem.value}")
+    return value
+
+
+class DraftSource(BaseModel):
+    """The caller's context for a new entry — never its identity.
+
+    새 항목의 호출자 문맥. **에이전트 신원은 여기 없다** — 출처의 ``agent`` 는 서비스가 토큰에서
+    채운다 (09 Entry Rules 4). 호출자가 고를 수 있으면 다른 에이전트의 기억으로 위조된다.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    run_id: StrictStr | None = None
+    task_id: StrictStr | None = None
+    node_id: StrictStr | None = None
+
+    @field_validator("run_id", "task_id", "node_id")
+    @classmethod
+    def _well_formed(cls, value: str | None) -> str | None:
+        return _identifier(value)
+
+
+class MemoryDraft(BaseModel):
+    """What a caller may say about a new entry — content only.
+
+    호출자가 새 항목에 대해 말할 수 있는 것. ``entry_id`` · ``created_at`` · 출처의 신원은
+    **서비스가 발급한다** (#456): ``entry_id`` 는 space 를 넘는 전역 키라, 호출자가 고르면 다른
+    space 의 id 존재를 상태 코드로 알아내거나 남이 쓸 id 를 선점할 수 있다. 모르는 키는
+    거부한다 — 옛 클라이언트가 보낸 ``entry_id`` 를 조용히 버리면 호출자는 자기가 고른 id 로
+    정정하려다 실패한다.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    kind: MemoryKind
+    content: StrictStr
+    tags: Annotated[tuple[StrictStr, ...], Field(max_length=MAX_TAGS)] = ()
+    importance: Annotated[StrictFloat, IMPORTANCE_RANGE] = DEFAULT_IMPORTANCE
+    supersedes: StrictStr | None = None
+    source: DraftSource = DraftSource()
+
+    @field_validator("supersedes")
+    @classmethod
+    def _well_formed(cls, value: str | None) -> str | None:
+        return _identifier(value)
+
+    @field_validator("content")
+    @classmethod
+    def _within_cap(cls, value: str) -> str:
+        """저장소와 같은 상한 — 넘으면 저장 장애 (500) 가 아니라 호출자 잘못 (``VAL_002``) 이다."""
+        if len(value.encode("utf-8")) > MAX_CONTENT_BYTES:
+            raise ValueError("content exceeds the size cap")
+        return value
+
+    @field_validator("tags")
+    @classmethod
+    def _well_formed_tags(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        """태그는 식별자와 같은 성질 — 저장소의 구분자 (``\x1f``) 는 출력 불가라 자연히 막힌다."""
+        for tag in value:
+            problem = identifier_problem(tag, max_chars=MAX_TAG_CHARS)
+            if problem is not None:
+                raise ValueError(f"tag is invalid: {problem.value}")
+        return value
+
+    def issue(
+        self, *, space: str, agent: str, run_id: str | None, created_at: datetime
+    ) -> MemoryEntry:
+        """Turn the draft into a stored entry with a service-issued id and provenance.
+
+        서비스가 정한 값 (space id · 신원 · run · 시각) 과 새 id 로 항목을 만든다. ``run_id`` 는
+        호출자의 값이 아니라 토큰이 아는 run 이다 — 일치 검사는 서비스가 먼저 한다.
+        """
+        return MemoryEntry(
+            entry_id=str(uuid4()),
+            space=space,
+            kind=self.kind,
+            content=self.content,
+            tags=self.tags,
+            source=MemorySource(
+                agent=agent,
+                run_id=run_id,
+                task_id=self.source.task_id,
+                node_id=self.source.node_id,
+            ),
+            created_at=created_at,
+            importance=self.importance,
+            supersedes=self.supersedes,
+        )
+
+
+def draft_from(fields: Mapping[str, Any], *, agent: str | None = None) -> MemoryDraft:
+    """Validate append keyword arguments into a draft — the one shape every client accepts.
+
+    ``append(space, **fields)`` 의 인자를 초안으로 검증한다. HTTP 클라이언트와 in-process 어댑터가
+    같은 함수를 지나므로 같은 입력이 같은 결과를 낸다. 거절은 서비스의 형식 거절과 같은 ``VAL_002``
+    이고, 받은 값은 싣지 않는다 (``field_problems``).
+
+    Raises:
+        AaestroError: VALIDATION/``VAL_002`` if a field is unknown or malformed.
+    """
+    try:
+        return MemoryDraft.model_validate(dict(fields))
+    except ValidationError as err:
+        raise_detached(
+            AaestroError(
+                category=ErrorCategory.VALIDATION,
+                code=ErrorCode.VAL_002,
+                message="memory append failed validation",
+                agent=agent,
+                details={"errors": field_problems(err)},
+            )
+        )
+
+
+__all__ = [
+    "DEFAULT_IMPORTANCE",
+    "IMPORTANCE_RANGE",
+    "MAX_CONTENT_BYTES",
+    "MAX_IDENTIFIER_CHARS",
+    "MAX_TAGS",
+    "MAX_TAG_CHARS",
+    "DraftSource",
+    "MemoryDraft",
+    "MemoryEntry",
+    "MemorySource",
+    "draft_from",
+]

@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient
 
 from aaestro.config import load_config
 from aaestro.memory.bootstrap import build_deployment
-from aaestro.memory.entry import MemoryEntry, MemorySource
+from aaestro.memory.entry import MemoryDraft
 from aaestro.modules.memoryset import MemoryKind
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -82,12 +82,7 @@ def test_a_global_space_rejects_a_write_from_a_non_writer(deployment):
     token = deployment.tokens["researcher"]
     payload = {
         "space": "org",
-        "entry": {
-            "space": "org",
-            "kind": "fact",
-            "content": "오염 시도",
-            "source": {"agent": "researcher"},
-        },
+        "entry": {"kind": "fact", "content": "오염 시도"},
     }
 
     with TestClient(deployment.app) as client:
@@ -148,12 +143,7 @@ def _as_researcher(deployment) -> dict[str, str]:
 async def test_a_restarted_service_finds_what_was_stored_before(tmp_path):
     """인덱스는 프로세스 메모리다 — 저장소에서 되읽지 않으면 재시작 전 기억이 검색되지 않는다."""
     config = _memory_on_disk(tmp_path)
-    fact = MemoryEntry(
-        space="longterm",
-        kind=MemoryKind.FACT,
-        content="sidecar 이미지는 태그를 고정한다",
-        source=MemorySource(agent="researcher"),
-    )
+    fact = MemoryDraft(kind=MemoryKind.FACT, content="sidecar 이미지는 태그를 고정한다")
     first = build_deployment(config, root=REPO_ROOT)
     # SQLite 연결은 만든 스레드에 묶인다 — 앱을 같은 스레드에서 부른다 (uvicorn 과 같다)
     async with _client(first) as client:
