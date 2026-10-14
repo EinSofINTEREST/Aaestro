@@ -329,3 +329,13 @@ def test_nano_cpus_rounds_without_loss(cpu, expected):
     ).to_docker_kwargs()
 
     assert kwargs["nano_cpus"] == expected
+
+
+def test_to_docker_kwargs_sets_no_new_privileges():
+    """setuid 바이너리로 uid 1000 에서 권한이 올라가는 길을 막는다 (#475).
+
+    cap-drop ALL 만으로는 setuid 실행 시 얻는 권한을 막지 못한다.
+    """
+    rendered = build_container_spec(agent_manifest()).to_docker_kwargs()
+
+    assert "no-new-privileges:true" in rendered["security_opt"]
