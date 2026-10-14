@@ -51,6 +51,7 @@ from aaestro.core.events import (
     ToolCallEvent,
     ToolResultEvent,
 )
+from aaestro.core.identifiers import IdentifierProblem, identifier_problem
 from aaestro.core.skill import SkillContext
 from aaestro.core.tools import is_mcp_tool
 
@@ -1104,6 +1105,16 @@ class Executor:
         return paired
 
 
+_ISSUER_PROBLEMS: Final = {
+    IdentifierProblem.NOT_STRING: SteerProblem.ISSUER_MISSING,
+    IdentifierProblem.EMPTY: SteerProblem.ISSUER_MISSING,
+    IdentifierProblem.TOO_LONG: SteerProblem.ISSUER_TOO_LONG,
+    IdentifierProblem.UNPRINTABLE: SteerProblem.ISSUER_NOT_PRINTABLE,
+    IdentifierProblem.SURROUNDING_WHITESPACE: SteerProblem.ISSUER_NOT_PRINTABLE,
+}
+"""식별자 사유 → steer 의 닫힌 거절 문구. ``trimmed=False`` 라 앞뒤 공백 사유는 나오지 않는다."""
+
+
 def _steer_problem(text: str, by: str, *, waiting: int) -> SteerProblem | None:
     """steer 를 받을 수 없는 이유 — 받을 수 있으면 None.
 
@@ -1114,13 +1125,11 @@ def _steer_problem(text: str, by: str, *, waiting: int) -> SteerProblem | None:
         return SteerProblem.TEXT_EMPTY
     if len(text) > MAX_STEER_CHARS:
         return SteerProblem.TEXT_TOO_LONG
-    if not by.strip():
-        return SteerProblem.ISSUER_MISSING
-    if len(by) > MAX_STEER_BY_CHARS:
-        return SteerProblem.ISSUER_TOO_LONG
-    if not by.isprintable():
-        # 로그와 이벤트에 그대로 실린다 — 개행·제어문자로 줄을 위조하지 못하게
-        return SteerProblem.ISSUER_NOT_PRINTABLE
+    # 발행자는 로그와 이벤트에 그대로 실린다 — 규칙은 식별자와 하나 (core.identifiers).
+    # 표시용 이름이라 앞뒤 공백은 받는다 ("김 운영자 <ops@example.com>")
+    issuer = identifier_problem(by, max_chars=MAX_STEER_BY_CHARS, trimmed=False)
+    if issuer is not None:
+        return _ISSUER_PROBLEMS[issuer]
     if waiting >= MAX_PENDING_STEERS:
         return SteerProblem.TOO_MANY_PENDING
     return None

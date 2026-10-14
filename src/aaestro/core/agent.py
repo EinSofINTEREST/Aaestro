@@ -348,7 +348,12 @@ class MemoryAccess(Protocol):
         ...
 
     async def append(self, space: str, **kwargs: Any) -> Any:
-        """항목 추가 — rw 권한이 있는 space 만 허용된다."""
+        """항목 추가 — rw 권한이 있는 space 만 허용된다.
+
+        ``kwargs`` 는 내용만 싣는다 (``kind`` · ``content`` · ``tags`` · ``importance`` ·
+        ``supersedes`` · ``source`` 의 run · task · node). id 와 출처의 신원은 서비스가 발급하고,
+        돌려준 항목에 담긴다 (#456).
+        """
         ...
 
 

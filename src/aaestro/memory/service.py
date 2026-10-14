@@ -9,18 +9,19 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Final
 
 import structlog
 
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 from aaestro.core.manifest import MemoryMode
-from aaestro.memory.entry import MemoryEntry
 from aaestro.modules.memoryset import MemoryScope
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping, Sequence
+    from collections.abc import Callable, Iterator, Mapping, Sequence
 
+    from aaestro.memory.entry import MemoryDraft, MemoryEntry
     from aaestro.memory.store import MemoryStore
     from aaestro.modules.memoryset import MemoryKind
     from aaestro.observability.metrics import Metrics
@@ -50,6 +51,10 @@ UNDECLARED_SPACE_LABEL: Final = "undeclared"
 log = structlog.get_logger(__name__)
 
 
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
 def access_denied(message: str, *, agent: str, space: str, **details: str) -> AaestroError:
     """접근 거부를 구조화 에러로 만든다."""
     return AaestroError(
@@ -58,6 +63,26 @@ def access_denied(message: str, *, agent: str, space: str, **details: str) -> Aa
         message=message,
         agent=agent,
         details={"memory_space": space, **details},
+    )
+
+
+def _run_of(token: AccessToken, claimed: str | None, alias: str) -> str | None:
+    """기억의 ``source.run_id`` — 토큰이 아는 run 이다. 호출자가 실은 값은 그것과 같을 때만 받는다.
+
+    run 을 모르는 토큰 (direct 태스크) 은 run 을 실을 수 없다. 거절은 다른 run 과 없는 run 을
+    가르지 않고, 값도 싣지 않는다 — run 은 다른 run 의 space 를 고르는 열쇠다.
+
+    Raises:
+        AaestroError: VALIDATION/``VAL_002`` if the claim differs from the token's run.
+    """
+    if claimed is None or claimed == token.run_id:
+        return token.run_id
+    raise AaestroError(
+        category=ErrorCategory.VALIDATION,
+        code=ErrorCode.VAL_002,
+        message="source run_id must be the run this token belongs to",
+        agent=token.agent,
+        details={"space": alias, "field": "source.run_id"},
     )
 
 
@@ -118,6 +143,11 @@ class AccessToken:
     """레지스트리가 거부한 ``(별칭, 판정 출처)``.
 
     거부된 space 는 ``spaces`` 에 없으므로 감사 줄이 출처를 잃지 않게 따로 싣는다."""
+    run_id: str | None = None
+    """이 토큰이 속한 graph run — direct 태스크 · 에이전트 단위 토큰은 None.
+
+    기억의 출처 ``source.run_id`` 는 호출자가 아니라 이 값이 정한다 (09 Entry Rules 4). space 를
+    좁혀도 (``narrow``) 그대로 남는다 — run space 가 빠진 토큰도 run 을 안다."""
 
     def source_of(self, alias: str) -> str:
         """이 별칭에 대한 접근의 판정 출처 — 감사 줄에 싣는다 (09 Access Enforcement 6)."""
@@ -155,7 +185,10 @@ class MemoryService:
 
     store: MemoryStore
     metrics: Metrics | None = None
+    clock: Callable[[], datetime] = _utc_now
+    """항목의 ``created_at`` 을 정하는 시계 — 출처의 시각은 호출자가 아니라 서비스가 정한다."""
     _audit: list[dict[str, str]] = field(default_factory=list, init=False)
+    _last_issued: datetime | None = field(default=None, init=False, repr=False)
 
     def _authorize(self, token: AccessToken, alias: str, *, write: bool) -> MemorySpace:
         """접근을 검사하고 대상 space 를 돌려준다."""
@@ -288,19 +321,21 @@ class MemoryService:
         self,
         token: AccessToken,
         alias: str,
-        entry: MemoryEntry,
+        draft: MemoryDraft,
     ) -> MemoryEntry:
-        """Append one entry to a declared space.
+        """Append one entry to a declared space — the service issues its id and provenance.
 
-        선언된 space 에 항목을 추가합니다.
+        선언된 space 에 항목을 추가합니다. ``entry_id`` · ``created_at`` · 출처의 ``agent`` 는
+        서비스가 정합니다 (#456) — 호출자는 내용과 자기 문맥 (run · task · node) 만 싣습니다.
+        id 를 호출자가 고르면 전역 기본 키의 충돌로 다른 space 의 항목 존재가 드러납니다.
 
         Args:
             token: The agent's access token.
             alias: The space alias to write to.
-            entry: The entry — its ``space`` is rewritten to the resolved id.
+            draft: What the caller says about the entry.
 
         Returns:
-            The stored entry.
+            The stored entry — 정정 (``supersedes``) 은 여기 담긴 id 로 합니다.
 
         Raises:
             AaestroError: MEMORY/``MEM_001`` if the space is undeclared or
@@ -310,13 +345,48 @@ class MemoryService:
         """
         space = self._admitted(token, alias, op="append", write=True)
         with self._failing(token, alias, op="append"):
-            self._require_same_space_correction(token, alias, entry, space.space_id)
-            stored = self.store.append(entry.model_copy(update={"space": space.space_id}))
+            run_id = _run_of(token, draft.source.run_id, alias)
+            self._require_same_space_correction(token, alias, draft.supersedes, space.space_id)
+            entry = draft.issue(
+                space=space.space_id, agent=token.agent, run_id=run_id, created_at=self._now()
+            )
+            stored = self.store.append(entry)
         self._record(token, alias, op="append", status="ok")
         return stored
 
+    def record_failure(self, token: AccessToken, alias: str, *, op: str) -> None:
+        """Audit an operation refused before it reached the store — e.g. a malformed draft.
+
+        저장소에 닿기 전에 거절된 연산의 감사 줄 (``failed``) — 신원이 있는 경로 (in-process
+        어댑터) 의 형식 거절이 감사에서 빠지지 않게 한다.
+        """
+        self._record(token, alias, op=op, status="failed")
+
+    def _now(self) -> datetime:
+        """발급할 ``created_at`` — UTC 로 정규화하고, 직전 발급보다 뒤로 가지 않는다.
+
+        저장소는 ``created_at`` 의 ISO 문자열로 정렬한다: 오프셋이 섞이면 문자열 순서가 시각 순서와
+        어긋나고, 시계가 역행하면 나중에 쓴 정정이 ``latest`` 에서 밀린다. 같은 순간은 저장 순서
+        (rowid) 가 가른다.
+
+        Raises:
+            AaestroError: MEMORY/``MEM_002`` if the clock returns a naive timestamp.
+        """
+        now = self.clock()
+        if now.tzinfo is None or now.utcoffset() is None:
+            raise AaestroError(
+                category=ErrorCategory.MEMORY,
+                code=ErrorCode.MEM_002,
+                message="memory service clock returned a naive timestamp",
+            )
+        now = now.astimezone(UTC)
+        if self._last_issued is not None and now < self._last_issued:
+            now = self._last_issued
+        self._last_issued = now
+        return now
+
     def _require_same_space_correction(
-        self, token: AccessToken, alias: str, entry: MemoryEntry, space_id: str
+        self, token: AccessToken, alias: str, supersedes: str | None, space_id: str
     ) -> None:
         """정정은 이 space 에서 지금 읽을 수 있는 항목만 가리킬 수 있다.
 
@@ -324,10 +394,10 @@ class MemoryService:
         대상이 없는 경우와 다른 space 에 있는 경우는 같은 거절이다 — 다르게 답하면 호출자가
         다른 space 의 id 존재 여부를 알아낼 수 있다. 대상 id 와 다른 space 이름도 싣지 않는다.
         """
-        if entry.supersedes is None:
+        if supersedes is None:
             return
         # 대상의 space 만 본다 — 행을 만들면 남의 space 의 손상된 행이 다른 답을 낸다
-        if self.store.space_of(entry.supersedes) == space_id:
+        if self.store.space_of(supersedes) == space_id:
             return
         raise AaestroError(
             category=ErrorCategory.VALIDATION,
@@ -411,6 +481,7 @@ def build_token(
     global_spaces: Sequence[tuple[str, tuple[str, ...]]] = (),
     run_spaces: Sequence[tuple[str, str]] = (),
     local_modes: Mapping[str, MemoryMode] | None = None,
+    run_id: str | None = None,
 ) -> AccessToken:
     """Issue an access token from the declarations that apply to an agent.
 
@@ -426,6 +497,7 @@ def build_token(
         global_spaces: ``(alias, writers)`` pairs from ``groups/global.yaml``.
         run_spaces: ``(alias, run_id)`` pairs — omit for direct tasks.
         local_modes: 매니페스트가 선언한 local space 의 mode — 없으면 rw.
+        run_id: 이 토큰이 속한 run — 없으면 ``run_spaces`` 의 run 이 하나일 때 그것.
 
     Returns:
         The access token.
@@ -453,7 +525,13 @@ def build_token(
         MemorySpace(alias=alias, scope=MemoryScope.RUN, owner=run_id)
         for alias, run_id in run_spaces
     )
-    return AccessToken(agent=agent, group=group, spaces=tuple(spaces))
+    runs = {owner for _alias, owner in run_spaces}
+    if run_id is None and len(runs) == 1:
+        run_id = next(iter(runs))
+    if run_id is not None and runs - {run_id}:
+        # 한 토큰은 한 run 에 속한다 — 다른 run 의 space 를 섞으면 출처의 run 이 모호해진다
+        raise ValueError("run spaces must belong to the token's run")
+    return AccessToken(agent=agent, group=group, spaces=tuple(spaces), run_id=run_id)
 
 
 __all__ = [

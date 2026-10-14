@@ -23,7 +23,7 @@ from aaestro.core.errors import AaestroError, ErrorCode
 from aaestro.core.manifest import MemoryMode
 from aaestro.http_errors import request_validation_error, status_for
 from aaestro.memory.client import MEMORY_TOKEN_ENV, MEMORY_URL_ENV
-from aaestro.memory.entry import MemoryEntry
+from aaestro.memory.entry import MemoryDraft
 from aaestro.memory.gate import Gate, TokenGate, unauthorized
 from aaestro.modules.memoryset import ChunkSpec, MemoryKind
 
@@ -94,12 +94,16 @@ class SearchRequest(BaseModel):
 
 
 class AppendRequest(BaseModel):
-    """항목 추가 요청."""
+    """항목 추가 요청 — 내용만 싣는다.
 
-    model_config = ConfigDict(frozen=True)
+    ``entry_id`` · ``created_at`` · 출처의 ``agent`` 는 서비스가 발급한다 (#456). 옛 형태 (완성된
+    ``MemoryEntry``) 는 모르는 키로 ``VAL_002`` 다 — 조용히 버리지 않는다.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     space: str
-    entry: MemoryEntry
+    entry: MemoryDraft
 
 
 class ReadRequest(BaseModel):

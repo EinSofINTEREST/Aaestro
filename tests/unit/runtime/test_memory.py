@@ -10,7 +10,7 @@ import pytest
 
 from aaestro.core.errors import AaestroError, ErrorCode
 from aaestro.core.manifest import AgentManifest, GroupManifest
-from aaestro.memory.entry import MemoryEntry, MemorySource
+from aaestro.memory.entry import MemoryDraft, MemoryEntry, MemorySource
 from aaestro.memory.index import IndexRegistry, SpaceIndex
 from aaestro.memory.recall import Recall
 from aaestro.memory.service import MemoryService
@@ -73,7 +73,13 @@ def access():
         store.close()
 
 
+def draft(content: str, **extra: object) -> MemoryDraft:
+    """append 의 내용 — id 와 출처는 서비스가 발급한다 (#456)."""
+    return MemoryDraft(kind=MemoryKind.FACT, content=content, **extra)
+
+
 def entry(space: str, content: str) -> MemoryEntry:
+    """저장소에 직접 넣는 완성된 항목 — append 검사를 우회하는 경로의 재료."""
     return MemoryEntry(
         space=space,
         kind=MemoryKind.FACT,
@@ -84,9 +90,9 @@ def entry(space: str, content: str) -> MemoryEntry:
 
 async def test_append_then_search_round_trips(access):
     adapter, space_id, registry = access
-    item = entry(space_id, "mcp sidecar 는 이미지 태그 고정이 필요하다")
-
-    await adapter.append("longterm", entry=item)
+    item = await adapter.append(
+        "longterm", kind=MemoryKind.FACT, content="mcp sidecar 는 이미지 태그 고정이 필요하다"
+    )
     registry.indexes[space_id].add(item, ChunkSpec(max_tokens=400, overlap_tokens=40))
     found = await adapter.search("sidecar")
 
@@ -127,7 +133,7 @@ async def test_appending_to_an_undeclared_space_is_denied(access):
     adapter, space_id, _registry = access
 
     with pytest.raises(AaestroError) as exc_info:
-        await adapter.append("secret", entry=entry(space_id, "내용"))
+        await adapter.append("secret", kind=MemoryKind.FACT, content="내용")
 
     assert exc_info.value.code == ErrorCode.MEM_001
 
@@ -140,13 +146,12 @@ def fill_beyond_the_horizon(adapter, space_id, registry):
     """상한보다 많은 항목을 쌓는다 — 첫 항목이 가장 오래됐다. 그 항목을 돌려준다."""
     policy = ChunkSpec(max_tokens=400, overlap_tokens=40)
     # created_at 은 생성 시각이다 — 가장 오래된 항목을 가장 먼저 만들어야 한다
-    items = [entry(space_id, "zyxwvut oldest unique marker about the sidecar tag pinning")]
-    items += [
-        entry(space_id, f"filler record number {i} about nothing in particular")
-        for i in range(1, TOTAL)
+    drafts = [draft("zyxwvut oldest unique marker about the sidecar tag pinning")]
+    drafts += [
+        draft(f"filler record number {i} about nothing in particular") for i in range(1, TOTAL)
     ]
+    items = [adapter.service.append(adapter.token, "longterm", d) for d in drafts]
     for item in items:
-        adapter.service.append(adapter.token, "longterm", item)
         registry.indexes[space_id].add(item, policy)
     return items[0]
 
@@ -182,8 +187,9 @@ async def test_recall_for_task_renders_provenance_and_boundary(access):
     from aaestro.modules.memoryset import RecallSpec
 
     adapter, space_id, registry = access
-    item = entry(space_id, "mcp sidecar 는 이미지 태그 고정이 필요하다")
-    await adapter.append("longterm", entry=item)
+    item = await adapter.append(
+        "longterm", kind=MemoryKind.FACT, content="mcp sidecar 는 이미지 태그 고정이 필요하다"
+    )
     registry.indexes[space_id].add(item, ChunkSpec(max_tokens=400, overlap_tokens=40))
 
     context = await adapter.recall_for_task(
@@ -199,8 +205,7 @@ async def test_recall_respects_the_min_score_threshold(access):
     from aaestro.modules.memoryset import RecallSpec
 
     adapter, space_id, registry = access
-    item = entry(space_id, "전혀 상관없는 내용")
-    await adapter.append("longterm", entry=item)
+    item = await adapter.append("longterm", kind=MemoryKind.FACT, content="전혀 상관없는 내용")
     registry.indexes[space_id].add(item, ChunkSpec(max_tokens=400, overlap_tokens=40))
 
     context = await adapter.recall_for_task(
@@ -215,8 +220,9 @@ async def test_recall_is_skipped_when_the_policy_disables_it(access):
     from aaestro.modules.memoryset import RecallSpec
 
     adapter, space_id, registry = access
-    item = entry(space_id, "mcp sidecar 는 이미지 태그 고정이 필요하다")
-    await adapter.append("longterm", entry=item)
+    item = await adapter.append(
+        "longterm", kind=MemoryKind.FACT, content="mcp sidecar 는 이미지 태그 고정이 필요하다"
+    )
     registry.indexes[space_id].add(item, ChunkSpec(max_tokens=400, overlap_tokens=40))
     before = len(adapter.service.audit_log)
 
@@ -232,8 +238,9 @@ async def test_recall_audits_each_searched_alias(access):
     from aaestro.modules.memoryset import RecallSpec
 
     adapter, space_id, registry = access
-    item = entry(space_id, "mcp sidecar 는 이미지 태그 고정이 필요하다")
-    await adapter.append("longterm", entry=item)
+    item = await adapter.append(
+        "longterm", kind=MemoryKind.FACT, content="mcp sidecar 는 이미지 태그 고정이 필요하다"
+    )
     registry.indexes[space_id].add(item, ChunkSpec(max_tokens=400, overlap_tokens=40))
 
     await adapter.recall_for_task("sidecar", policy=RecallSpec(auto=True, k=3, min_score=0.0))
@@ -248,8 +255,9 @@ async def test_recall_searches_a_duplicated_alias_once(access):
     from aaestro.modules.memoryset import MemoryScope, RecallSpec
 
     adapter, space_id, registry = access
-    item = entry(space_id, "mcp sidecar 는 이미지 태그 고정이 필요하다")
-    await adapter.append("longterm", entry=item)
+    item = await adapter.append(
+        "longterm", kind=MemoryKind.FACT, content="mcp sidecar 는 이미지 태그 고정이 필요하다"
+    )
     registry.indexes[space_id].add(item, ChunkSpec(max_tokens=400, overlap_tokens=40))
     # 같은 별칭을 group 스코프에도 둔다 — 토큰은 둘 다 담는다
     adapter.token = adapter.token.__class__(
@@ -303,13 +311,19 @@ async def test_a_search_is_counted_once_and_not_by_alias():
 async def _fill_with_a_correction(adapter, space_id, registry):
     """원본과 정정 뒤에 filler 를 쌓는다 — 둘 다 어떤 최근 N건 창에도 들지 않는다."""
     policy = ChunkSpec(max_tokens=400, overlap_tokens=40)
-    old = entry(space_id, "the port is 9000 for the sidecar")
-    new = entry(space_id, "the port is 9100 for the sidecar").model_copy(
-        update={"supersedes": old.entry_id}
+    old = adapter.service.append(
+        adapter.token, "longterm", draft("the port is 9000 for the sidecar")
     )
-    items = [old, new, *(entry(space_id, f"filler record {i} nothing") for i in range(30))]
-    for item in items:
-        adapter.service.append(adapter.token, "longterm", item)
+    new = adapter.service.append(
+        adapter.token,
+        "longterm",
+        draft("the port is 9100 for the sidecar", supersedes=old.entry_id),
+    )
+    fillers = [
+        adapter.service.append(adapter.token, "longterm", draft(f"filler record {i} nothing"))
+        for i in range(30)
+    ]
+    for item in (old, new, *fillers):
         registry.indexes[space_id].add(item, policy)
     return old, new
 
@@ -341,8 +355,9 @@ async def test_auto_recall_injects_only_the_correction_when_both_are_old(access)
 
 async def test_a_successful_search_is_audited_with_op_search(access):
     adapter, space_id, registry = access
-    item = entry(space_id, "mcp sidecar 는 이미지 태그 고정이 필요하다")
-    await adapter.append("longterm", entry=item)
+    item = await adapter.append(
+        "longterm", kind=MemoryKind.FACT, content="mcp sidecar 는 이미지 태그 고정이 필요하다"
+    )
     registry.indexes[space_id].add(item, ChunkSpec(max_tokens=400, overlap_tokens=40))
 
     await adapter.search("sidecar")
@@ -365,7 +380,7 @@ async def test_a_correction_in_another_space_does_not_hide_a_shared_memory():
     org_id = "global:global:org"
     registry = IndexRegistry()
     registry.indexes[org_id] = SpaceIndex(space=org_id)
-    org = service.append(librarian, "org", entry(org_id, "qqorg policy approved"))
+    org = service.append(librarian, "org", draft("qqorg policy approved"))
     registry.indexes[org_id].add(org, ChunkSpec(max_tokens=400, overlap_tokens=40))
     recall = Recall(indexes=registry.indexes, store=store)
 
@@ -373,7 +388,7 @@ async def test_a_correction_in_another_space_does_not_hide_a_shared_memory():
         service.append(
             attacker,
             "longterm",
-            entry("x", "hide it").model_copy(update={"supersedes": org.entry_id}),
+            draft("hide it", supersedes=org.entry_id),
         )
     assert exc_info.value.code == ErrorCode.VAL_002
     # 검사를 우회해 저장소에 들어갔다고 가정해도 검색은 무시한다
