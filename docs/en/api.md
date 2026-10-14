@@ -457,9 +457,14 @@ Failures leave no ghost containers. What you get back tells you which kind it wa
   deploy never builds for you. After the image tag rule changes, rebuild custom agents built
   earlier. Nothing was started and no deployment was recorded. Agents without materials run on
   the base image and are never gated.
-- `409` (`RT_010`) — an agent of this graph is already running under another deployment. Tear
-  that one down first; a graph and its agents deploy as a unit, so two live deployments
-  cannot share an agent.
+- `409` (`RT_010`) — an agent of this graph belongs to another deployment that is `starting`,
+  `ready` or `lost`, or to one being started or torn down right now. For this refusal
+  `details.agents` names the agents and `details.deployments` the deployments holding them (the
+  launcher's own `RT_010` for a single replica carries `details.replica` instead). Tear that
+  deployment down first; a graph and its agents deploy as a unit, so two live deployments cannot
+  share an agent. A deployment left `starting` by a crashed control plane keeps holding its
+  agents until it is torn down. The check runs before anything is touched: the other deployment
+  keeps its MCP sidecars and A2A ports, nothing was started and no deployment was recorded.
 - `503` (`RT_002`) — an agent never became healthy before the deadline. Marked retryable:
   the containers were rolled back, so a second attempt is safe.
 
@@ -475,6 +480,9 @@ crash, the record shows the new id and port.
 Drains each agent, waits for in-flight tasks, then stops and removes the containers. Returns
 the record with `status: "stopped"`; the record stays so the history remains readable. A
 deployment already `stopped` or `failed` is returned unchanged.
+A second request for a deployment that is still being torn down (a retry, a double click)
+joins the teardown in progress and gets the same record — the agents are drained and stopped
+once. A caller that gives up (client timeout) does not stop the teardown; it runs to the end.
 
 ## Runs
 
