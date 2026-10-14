@@ -47,13 +47,33 @@ healthchecks call it) and the static UI under `/ui` (the page holds no data of i
 
 A missing or wrong token is `401` — and that response is **not** the error envelope below.
 It is FastAPI's own `{"detail": "invalid control plane token"}` with a `WWW-Authenticate`
-header, because the check runs as a dependency before any route.
+header. **The check runs before the request body is read**, so without a valid credential the
+answer is the same whatever the body holds — broken JSON, broken UTF-8, a wrong shape or no body
+at all. The access routes check their own credential (enforcer token, agent identity) the same
+way. The API documentation paths (`/docs`, `/redoc`, `/openapi.json`) are not served, and a
+trailing slash is not redirected to the real route.
+
+**A credential is checked before the request is routed, and it only opens its own audience's
+paths.** The control plane token reaches every path; the enforcer token reaches the enforcer
+routes (decisions, identities, change feed); a live agent identity reaches the routes agents
+use (change feed, tickets, verify, grants). Outside `GET /v1/health`, `/` and `/ui`, any other
+request — no credential, an unknown one, or a valid one outside its audience — gets the `401`
+above whatever the path or method: a route that exists, one that does not, a wrong method and a
+trailing slash all answer alike, so the route table cannot be enumerated. The refusal text is
+the same for every audience. Each route then narrows further to its own caller.
+
+With a valid credential, a path that matches no route stays FastAPI's plain `404`
+`{"detail": "Not Found"}` with **no** code — unchanged, and on purpose: a codeless `404` means
+"this surface is absent" (the UI and the CLI read it that way), while `NF_001` means "that run or
+resource does not exist". A wrong method (`405`) and a body FastAPI cannot decode (`400`, e.g.
+broken UTF-8) are `VAL_002` in the envelope below.
 
 ## Errors
 
 Failures raised by the control plane share one envelope, and the `code` is the stable part —
-match on it rather than on the message. Two responses do **not** use it: `401` (above) and the
-`501` from the run routes (a control plane that drives no runs, or an agent executor that cannot
+match on it rather than on the message. Three responses do **not** use it: `401` (above), the
+codeless `404` for a path that matches no route (above, credentialed callers only), and the `501`
+from the run routes (a control plane that drives no runs, or an agent executor that cannot
 be steered), which carries a flatter legacy shape.
 
 ```json
@@ -724,8 +744,11 @@ A refusal is `403` with `ACC_003`, and it is logged and counted
 (`aaestro_access_grants_total{op="refuse"}`). It is refused when the caller is not listed in
 `access_stewards`, grants to itself, names a memory permission without a mode, exceeds the
 ceiling or its `max_ttl_s`, or asks for something an operator revoked — only an operator
-undoes a revocation. An unknown or revoked identity is `403` with `ACC_001`; an unknown agent
-is `404`.
+undoes a revocation. A caller with no credential of an audience that reaches this route
+(unknown, revoked, or the enforcer token) is refused before routing with the `401` of
+[Authentication](#authentication); an unknown agent is `404`. A caller that is not a permission agent is refused **before the body is read**, so it
+is `ACC_003` whatever it sends, and the refusal is still logged and counted — with
+`resource="unknown"`, because the body that names the resource is never read.
 
 ### The permission agent
 
@@ -1199,7 +1222,9 @@ With or without a registry, an agent's A2A port answers two things only: the age
 
 `201` with `{"ticket": "...", "callee": "planner", "expires_at": 1789381500.0}`. A ticket is proof
 of identity, not permission: it is issued even for a revoked connection, and the callee refuses
-the call. An unknown or revoked identity is `403` (`ACC_001`); an unknown callee is `404`.
+the call. A bearer that is not a live agent identity (unknown, revoked, or the enforcer token) is
+refused before routing with the `401` of [Authentication](#authentication); the control plane
+token reaches the route and is `403` (`ACC_001`). An unknown callee is `404`.
 
 ### `POST /v1/access/a2a/verify` — the callee
 
@@ -1214,7 +1239,8 @@ the call. An unknown or revoked identity is `403` (`ACC_001`); an unknown callee
 
 A ticket that is not for this callee, expired, forged, or from a revoked caller is `200` with
 `"agent": null, "decision": "deny", "decided_by": "invalid-ticket"`. The bearer must be a live
-agent identity — `403` (`ACC_001`) otherwise.
+agent identity — otherwise the `401` of [Authentication](#authentication) before routing, or
+`403` (`ACC_001`) for the control plane token.
 
 ## Operational notes
 

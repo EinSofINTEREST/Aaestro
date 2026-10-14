@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import pytest
 import structlog.testing
-from fastapi import Depends, FastAPI
+from fastapi import APIRouter, Depends, FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
+from pydantic import BaseModel
 
-from aaestro.core.errors import AaestroError, ErrorCode
+from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 from aaestro.http_auth import (
     ALLOW_UNAUTHENTICATED_ENV,
+    admit_first,
     presented_token,
     require_token,
     resolve_required_token,
@@ -211,3 +214,83 @@ def test_resolve_opt_in_ignored_because_of_a_token_is_warned():
     warnings = [entry for entry in logs if entry["log_level"] == "warning"]
     assert len(warnings) == 1
     assert "s3cret" not in repr(warnings)
+
+
+# --- 본문보다 먼저 (#462) ---------------------------------------------------------------
+
+
+class _Body(BaseModel):
+    text: str
+
+
+def admitting_app(admit) -> tuple[TestClient, list[str]]:
+    """검사를 라우트 클래스로 건 앱 — 핸들러가 본문을 받았는지 기록한다."""
+    seen: list[str] = []
+    router = APIRouter(route_class=admit_first(admit))
+
+    @router.post("/guarded")
+    async def guarded(body: _Body) -> dict[str, str]:
+        seen.append(body.text)
+        return {"ok": "yes"}
+
+    app = FastAPI()
+    app.include_router(router)
+    return TestClient(app, raise_server_exceptions=False), seen
+
+
+@pytest.mark.parametrize("body", [b"{not", b"\xff\xfd", b'{"text": 5}', b""])
+def test_the_route_class_refuses_before_the_body_is_read(body):
+    """`Depends` 였다면 깨진 본문이 400/422 로 먼저 나간다."""
+    client, seen = admitting_app(require_token("s3cret", realm="test token"))
+
+    response = client.post("/guarded", content=body, headers={"content-type": "application/json"})
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "invalid test token"}
+    assert response.headers.get("www-authenticate") == "Bearer"
+    assert seen == []
+
+
+def test_the_route_class_lets_the_right_token_through_to_the_body():
+    client, seen = admitting_app(require_token("s3cret", realm="test token"))
+
+    response = client.post(
+        "/guarded", json={"text": "hi"}, headers={"authorization": "Bearer s3cret"}
+    )
+
+    assert response.status_code == 200
+    assert seen == ["hi"]
+
+
+def test_the_route_class_awaits_an_async_admission():
+    calls: list[str] = []
+
+    async def admit(request: Request) -> None:
+        calls.append(request.url.path)
+
+    client, seen = admitting_app(admit)
+
+    assert client.post("/guarded", json={"text": "hi"}).status_code == 200
+    assert calls == ["/guarded"]
+    assert seen == ["hi"]
+
+
+def test_the_route_class_lets_a_typed_refusal_through():
+    """신원 검사가 레지스트리라면 거절은 ``AaestroError`` 다 — 그대로 앱의 핸들러로 간다."""
+
+    def admit(_request: Request) -> None:
+        raise AaestroError(category=ErrorCategory.FORBIDDEN, code=ErrorCode.ACC_001, message="no")
+
+    async def forbidden(_request: Request, err: Exception) -> JSONResponse:
+        assert isinstance(err, AaestroError)
+        return JSONResponse(status_code=403, content={"code": str(err.code)})
+
+    client, seen = admitting_app(admit)
+    client.app.add_exception_handler(AaestroError, forbidden)  # type: ignore[attr-defined]
+
+    response = client.post(
+        "/guarded", content=b"{not", headers={"content-type": "application/json"}
+    )
+
+    assert (response.status_code, response.json()) == (403, {"code": "ACC_001"})
+    assert seen == []

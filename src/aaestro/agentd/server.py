@@ -13,20 +13,24 @@ import asyncio
 from typing import TYPE_CHECKING, Any
 
 from a2a.utils.constants import AGENT_CARD_WELL_KNOWN_PATH
-from fastapi import APIRouter, Depends, FastAPI, Request, status
+from fastapi import APIRouter, FastAPI, Request, Response, status
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from aaestro.core.agent import HealthState, HealthStatus, TaskKey, TaskRequest, TaskResult
 from aaestro.core.errors import AaestroError, AaestroErrorPayload, ErrorCategory, ErrorCode
-from aaestro.http_auth import require_token
-from aaestro.http_errors import request_validation_error, status_for
+from aaestro.http_auth import AdmitBeforeRouting, admit_first, require_token
+from aaestro.http_errors import request_validation_error, status_for, unroutable_problem
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
 
 DEFAULT_MAX_CONCURRENT_TASKS = 4
+HEALTH_PATH = "/v1/health"
+"""토큰 없이 닿는 유일한 경로 — Docker healthcheck 가 직접 부른다 (02 API Rules 4)."""
 SSE_MEDIA_TYPE = "text/event-stream"
 
 
@@ -167,8 +171,23 @@ def create_app(runtime: AgentRuntime, *, token: str | None = None) -> FastAPI:
     Returns:
         The FastAPI application.
     """
-    app = FastAPI(title=f"aaestro-agentd:{runtime.agent}")
-    guard = Depends(require_token(token, realm="agent token"))
+    # 문서 경로를 닫는다 — 무인증 호출자가 스키마(필드 · 상한)를 열거하지 못하게.
+    # redirect_slashes 도 닫는다 — 기본값이면 `/v1/invoke/` 가 307 로 정식 경로를 알려 준다
+    # (라우트 매칭은 인증보다 먼저다, #462)
+    app = FastAPI(
+        title=f"aaestro-agentd:{runtime.agent}",
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+        redirect_slashes=False,
+    )
+    # 토큰은 본문을 읽기 전에 본다 — `Depends` 는 본문 파싱보다 늦다 (#462)
+    check = require_token(token, realm="agent token")
+    guarded = admit_first(check)
+    if token is not None:
+        # 라우팅보다도 먼저 — 없는 경로 404 · 틀린 메서드 405 + `Allow` 로 라우트 표가 새지 않게.
+        # 라우트별 검사(guarded)와 같은 검사다: 라우터에서 빠진 라우트도 이 층이 막는다
+        app.add_middleware(AdmitBeforeRouting, admit=check, open_paths=frozenset({HEALTH_PATH}))
 
     @app.exception_handler(RequestValidationError)
     async def _bad_body(_request: Request, err: RequestValidationError) -> JSONResponse:
@@ -176,6 +195,23 @@ def create_app(runtime: AgentRuntime, *, token: str | None = None) -> FastAPI:
         problem = request_validation_error(err)
         problem.agent = runtime.agent
         return _error_response(problem, status_for(problem))
+
+    @app.exception_handler(StarletteHTTPException)
+    async def _unroutable(request: Request, err: StarletteHTTPException) -> Response:
+        """깨진 UTF-8 본문 · 틀린 메서드도 typed 모양으로 — 기본 ``{"detail"}`` 아님.
+
+        401 은 기본 처리 그대로다 (`require_token` 의 사유 + ``WWW-Authenticate``). 라우트 부재의
+        404 도 기본 처리다 — 코드 없는 404 가 "그 표면이 없다" 는 약속이다 (#462).
+        """
+        problem = unroutable_problem(err)
+        if problem is None:
+            return await http_exception_handler(request, err)
+        # 에이전트 이름은 싣지 않는다 — 라우팅 거절은 태스크의 일이 아니다 (형제 401 · 404 와 같다)
+        return JSONResponse(
+            status_code=err.status_code,
+            content=problem.payload().model_dump(mode="json"),
+            headers=err.headers,
+        )
 
     @app.exception_handler(AaestroError)
     async def _structured(_request: Request, err: AaestroError) -> JSONResponse:
@@ -196,9 +232,15 @@ def create_app(runtime: AgentRuntime, *, token: str | None = None) -> FastAPI:
             status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
 
-    router = APIRouter(prefix="/v1")
+    # 무인증은 이 라우트 하나뿐이다 — 검사하는 라우터 밖(앱)에 둔 것이 의도다
+    @app.get(HEALTH_PATH, response_model=HealthStatus)
+    async def health() -> HealthStatus:
+        """상태 조회 — 무인증 (Docker healthcheck 가 직접 호출)."""
+        return runtime.health()
 
-    @router.post("/invoke", response_model=TaskResult, dependencies=[guard])
+    router = APIRouter(prefix="/v1", route_class=guarded)
+
+    @router.post("/invoke", response_model=TaskResult)
     async def invoke(task: TaskRequest) -> TaskResult:
         """태스크를 동기 실행한다 (202+polling 아님)."""
         _reject_when_draining(runtime)
@@ -212,7 +254,7 @@ def create_app(runtime: AgentRuntime, *, token: str | None = None) -> FastAPI:
                 return TaskResult.canceled(task)
             return result
 
-    @router.post("/stream", dependencies=[guard])
+    @router.post("/stream")
     async def stream(task: TaskRequest) -> StreamingResponse:
         """태스크 이벤트를 SSE 로 스트리밍한다."""
         _reject_when_draining(runtime)
@@ -225,17 +267,12 @@ def create_app(runtime: AgentRuntime, *, token: str | None = None) -> FastAPI:
 
         return StreamingResponse(events(), media_type=SSE_MEDIA_TYPE)
 
-    @router.get("/health", response_model=HealthStatus)
-    async def health() -> HealthStatus:
-        """상태 조회 — 무인증 (Docker healthcheck 가 직접 호출)."""
-        return runtime.health()
-
-    @router.get("/card", dependencies=[guard])
+    @router.get("/card")
     async def card() -> dict[str, Any]:
         """A2A AgentCard."""
         return runtime.card()
 
-    @router.post("/cancel/{task_id}", response_model=Acknowledgement, dependencies=[guard])
+    @router.post("/cancel/{task_id}", response_model=Acknowledgement)
     async def cancel(task_id: str) -> Acknowledgement:
         """진행 중 태스크를 취소한다."""
         if not runtime.cancel(task_id):
@@ -251,7 +288,6 @@ def create_app(runtime: AgentRuntime, *, token: str | None = None) -> FastAPI:
     @router.post(
         "/steer/{task_id}",
         response_model=Acknowledgement,
-        dependencies=[guard],
         responses={
             status.HTTP_501_NOT_IMPLEMENTED: {
                 "model": Acknowledgement,
@@ -275,7 +311,7 @@ def create_app(runtime: AgentRuntime, *, token: str | None = None) -> FastAPI:
             )
         return Acknowledgement(status="queued")
 
-    @router.post("/reload", response_model=Acknowledgement, dependencies=[guard])
+    @router.post("/reload", response_model=Acknowledgement)
     async def reload() -> Acknowledgement:
         """promptset/skillset 을 리로드한다 (신규 태스크부터 적용).
 
@@ -285,13 +321,15 @@ def create_app(runtime: AgentRuntime, *, token: str | None = None) -> FastAPI:
         reloaded = await runtime.reload()
         return Acknowledgement(status="reloaded" if reloaded else "unsupported")
 
-    @router.post("/drain", response_model=Acknowledgement, dependencies=[guard])
+    @router.post("/drain", response_model=Acknowledgement)
     async def drain() -> Acknowledgement:
         """새 태스크 수락을 멈추고 진행 중 태스크를 기다린다."""
         await runtime.drain()
         return Acknowledgement(status="drained")
 
-    @app.get(AGENT_CARD_WELL_KNOWN_PATH, dependencies=[guard])
+    well_known = APIRouter(route_class=guarded)
+
+    @well_known.get(AGENT_CARD_WELL_KNOWN_PATH)
     async def well_known_card() -> dict[str, Any]:
         """A2A well-known AgentCard.
 
@@ -301,6 +339,7 @@ def create_app(runtime: AgentRuntime, *, token: str | None = None) -> FastAPI:
         return runtime.card()
 
     app.include_router(router)
+    app.include_router(well_known)
     return app
 
 

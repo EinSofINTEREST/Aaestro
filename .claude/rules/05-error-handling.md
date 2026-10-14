@@ -216,7 +216,12 @@ VAL_002: 필드 형식 오류 / 렌더할 수 없는 태스크 입력 — 너무
          생략이다). 입력 없는 상수 연산이 한도를 넘는 경우도 이 코드로 나간다 (계산 전에 가로채는
          자리가 같다)
 
-NF_001: 대상 리소스 미존재 (run, 에이전트 등)
+NF_001: 대상 리소스 미존재 (run, 에이전트 등). 어떤 라우트에도 맞지 않는 경로의 404 는 NF_001 이
+        아니다 — 코드 없는 기본 응답 그대로다 ("그 표면이 없다", UI · CLI · runtime 이 이것으로 가른다).
+        같은 프레임워크 거절 중 틀린 메서드 405 와 FastAPI 가 해독하지 못한 본문 400 (깨진 UTF-8 —
+        `FRAMEWORK_BODY_PARSE_DETAIL` 로 판별, 앱이 낸 다른 400 은 그대로) 은 VAL_002
+        (`http_errors.unroutable_problem`, #462). 셋 다 자격이 있는 호출자만 본다 — 자격이 없으면
+        라우팅 전에 401 이다
 
 ART_001: Artifact 스코프 미선언 / 접근 거부
 ART_002: Artifact quota 초과 — 저장 거부
@@ -399,8 +404,8 @@ log.info(f"task {task_id} done in {elapsed}ms")
 | `iteration`     | int    | Service run 의 iteration 회차 |
 | `mode`          | str    | Run 모드 (`mission`/`service`/`direct`) |
 | `port`          | int    | 포트 |
-| `resource`      | str    | 권한 자원 종류 (`memory`/`egress`/`mcp_tool`/`a2a`) |
-| `target`        | str    | 권한 대상 (space id, 목적지 host, `server/tool`, 피호출자) |
+| `resource`      | str    | 권한 자원 종류 (`memory`/`egress`/`mcp_tool`/`a2a`, 부여 거절만 `unknown` — 아래 메트릭) |
+| `target`        | str    | 권한 대상 (space id, 목적지 host, `server/tool`, 피호출자, 본문을 읽기 전의 부여 거절은 `unknown` — `resource` 와 같다) |
 | `decision`      | str    | 판정 결과 (`allow`/`deny`) |
 | `decision_source` | str  | 판정 출처 (`fresh`/`cache`/`unreachable`, 레지스트리에 묻지 않는 토큰 모드의 메모리 접근은 `token`) |
 | `grant_id`      | str    | 부여 기록 id |
@@ -527,6 +532,11 @@ aaestro_circuit_state{target}                            # Gauge: 0 closed / 1 o
 # Access control ([01-architecture.md](01-architecture.md) Access Control)
 aaestro_access_decisions_total{resource, decision, source}  # decision: allow|deny, source: fresh|cache|unreachable
 aaestro_access_grants_total{resource, op, decided_by}       # op: grant|revoke|refuse
+                                                            # resource: 자원 종류 | "unknown" — 본문을 읽기 전에
+                                                            #   거절해 (권한 에이전트가 아닌 호출자, #462) 자원 종류를 알 수 없는 부여
+                                                            #   거절. 고정값이다 (09 의 memory `undeclared` 와 같은 결 — 호출자가 고른
+                                                            #   값을 라벨로 쓰지 않는다). AccessGrantRefusalsSpike 는 `sum without (op)`
+                                                            #   라 이 시계열도 그대로 잡는다
 aaestro_access_registry_reachable{component}                # Gauge: 1 / 0 — 강제 지점별
 aaestro_access_cache_invalidations_total{component}
 ```
