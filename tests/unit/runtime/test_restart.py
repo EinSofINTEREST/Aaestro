@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,7 @@ import yaml
 from prometheus_client import CollectorRegistry
 
 from aaestro.core.agent import HealthState, HealthStatus
+from aaestro.core.errors import AaestroError
 from aaestro.core.manifest import AgentManifest
 from aaestro.observability.metrics import Metrics
 from aaestro.runtime.docker.engine import DockerEngine
@@ -307,4 +309,262 @@ async def test_a_reattached_agent_is_restarted_without_waiting_for_a_startup_gra
 
     assert adopted is True
     await until(lambda: len(client.created) > 1)
+    await agents.stop_all()
+
+
+class FakeClock:
+    """재시작 창(window)이 읽는 시계 — backoff 대기만큼만 흐른다."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+class ClockedSleep(Recorder):
+    """대기를 기록하고 그만큼 시계를 흘린다 — 실제로 자지 않는다.
+
+    `heal_after` 회 대기한 뒤 재기동이 다시 성공하게 엔진을 고친다.
+    """
+
+    def __init__(
+        self, clock: FakeClock, client: FakeDockerClient, *, heal_after: int | None = None
+    ) -> None:
+        super().__init__()
+        self._clock = clock
+        self._client = client
+        self._heal_after = heal_after
+
+    async def __call__(self, delay: float) -> None:
+        self.waits.append(delay)
+        self._clock.now += delay
+        if self._heal_after is not None and len(self.waits) > self._heal_after:
+            self._client._start_error = None
+
+
+class HangOnSecondSleep(HangingSleep):
+    """첫 backoff 는 그냥 지나고 두 번째부터 붙잡는다 — 첫 재기동 실패 **뒤**에 고정한다."""
+
+    async def __call__(self, delay: float) -> None:
+        if not self.waits:
+            self.waits.append(delay)
+            return
+        await super().__call__(delay)
+
+
+def break_restarts(client: FakeDockerClient) -> None:
+    """다음 재기동부터 `engine.start` 가 실패하게 한다 (`RT_001`)."""
+    client._start_error = RuntimeError("daemon refused to start the container")
+
+
+def restart_count(metrics: Metrics, reason: str) -> float:
+    return (
+        metrics.counter("aaestro_container_restarts_total")
+        .labels(agent="echo", reason=reason)
+        ._value.get()
+    )
+
+
+async def test_a_failed_restart_is_retried_with_backoff():
+    """#482 — 재기동이 한 번 실패하면 감시도 재시도도 없이 그 레플리카가 사라졌다."""
+    client = FakeDockerClient()
+    clock = FakeClock()
+    metrics = Metrics(registry=CollectorRegistry())
+    waits = ClockedSleep(clock, client, heal_after=2)
+    # 재시작을 직접 돌린다 — 감시 루프가 같은 재시작을 겹쳐 걸지 않게 끈다
+    agents = launcher(client, waits, metrics=metrics, health_interval_s=None)
+    launched, _ = await start_sick(agents)
+    launched.lifecycle.restart_policy = RestartPolicy(clock=clock)
+    break_restarts(client)
+
+    await restart_now(agents, launched)
+
+    # 첫 두 번의 재기동이 실패하고, 세 번째가 선다 — 매번 backoff 가 늘어난다
+    assert waits.waits == [1.0, 2.0, 4.0]
+    revived = agents.replicas_of("echo")
+    assert len(revived) == 1, "재기동이 끝내 서지 않았다"
+    assert revived[0].lifecycle is launched.lifecycle, "같은 lifecycle 을 이어붙여야 상한이 선다"
+    assert revived[0].handle is not launched.handle
+    assert restart_count(metrics, "failed") == 2.0
+    assert restart_count(metrics, "unhealthy") == 1.0
+    await agents.stop_all()
+
+
+async def test_restarts_that_keep_failing_end_in_failed():
+    """02 Rule 6 — 재기동 실패도 창 안의 재시작으로 센다: 상한을 넘으면 Failed + 알림."""
+    client = FakeDockerClient()
+    clock = FakeClock()
+    metrics = Metrics(registry=CollectorRegistry())
+    waits = ClockedSleep(clock, client)
+    agents = launcher(client, waits, metrics=metrics, health_interval_s=None)
+    launched, _ = await start_sick(agents)
+    launched.lifecycle.restart_policy = RestartPolicy(clock=clock)
+    break_restarts(client)
+
+    await restart_now(agents, launched)
+
+    # 1 → 2 → 4 → 8 → 16 — 여섯 번째 계획이 10분 안 5회 상한을 넘는다
+    assert waits.waits == [1.0, 2.0, 4.0, 8.0, 16.0]
+    assert launched.lifecycle.state is AgentState.FAILED
+    assert restart_count(metrics, "failed") == 5.0
+    assert restart_count(metrics, "gave_up") == 1.0
+    assert agents.replicas_of("echo") == [launched], "포기한 레플리카가 목록에서 사라졌다"
+    await agents.stop_all()
+
+
+async def test_a_replica_whose_restart_failed_stays_visible():
+    """재기동 실패 뒤 레플리카가 목록에서 빠지면 배포는 READY 로만 보이고 정지도 못 한다."""
+    client = FakeDockerClient()
+    waits = HangOnSecondSleep()
+    agents = launcher(client, waits)
+    launched, _ = await start_sick(agents)
+    break_restarts(client)
+    launched.lifecycle.record_health(healthy=False, threshold=1)
+    agents._schedule_restart(launched)
+
+    # 첫 재기동이 실패하고 두 번째 backoff 에서 붙잡힌다
+    await until(lambda: len(waits.waits) == 2)
+
+    replicas = agents.replicas_of("echo")
+    assert replicas == [launched], "재시도 중인 레플리카가 목록에서 사라졌다"
+    assert launched.lifecycle.state is AgentState.UNHEALTHY
+    assert not launched.lifecycle.accepts_tasks
+    with pytest.raises(AaestroError) as caught:
+        agents.route("echo")
+    assert caught.value.code == "RT_009"
+
+    # 정지가 재시도를 끊어야 한다 — 놔두면 정지한 자리에 컨테이너를 다시 세운다
+    await agents.stop_all()
+    assert not agents._restarts
+    assert not agents.launched
+    assert launched.lifecycle.state is AgentState.STOPPED
+
+
+class GatedDockerClient(FakeDockerClient):
+    """`create` 를 문 앞에 붙잡는 대역 — 교체가 레플리카를 목록에서 뺀 틈을 고정한다.
+
+    실제 Docker 처럼 create 는 스레드에서 돈다: 기다리던 쪽이 취소돼도 스레드는 문이
+    열리면 컨테이너를 끝까지 만든다.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.gate: threading.Event | None = None
+        self.entered = threading.Event()
+
+    def create(self, **kwargs):
+        if self.gate is not None:
+            self.entered.set()
+            self.gate.wait(GATE_TIMEOUT_S)
+        return super().create(**kwargs)
+
+
+GATE_TIMEOUT_S = 5.0
+SECOND_CONTAINER = "container-0002" + "0" * 20
+
+
+async def hold_a_replacement(agents: AgentLauncher, client: GatedDockerClient, launched) -> None:
+    """재시작을 걸고, 교체가 새 컨테이너의 create 에 들어선 자리에서 멈춘다."""
+    client.gate = threading.Event()
+    launched.lifecycle.record_health(healthy=False, threshold=1)
+    agents._schedule_restart(launched)
+    await until(client.entered.is_set)
+    assert ("echo", 0) not in agents.launched, (
+        "교체가 레플리카를 목록에서 빼지 않았다 — 전제가 틀렸다"
+    )
+
+
+async def stop_while_held(client: GatedDockerClient, stopping) -> None:
+    """정지를 걸어 둔 채 create 를 놓아 준다 — 정지는 create 가 끝나길 기다린다."""
+    task = asyncio.create_task(stopping)
+    await spin(5)
+    assert client.gate is not None
+    client.gate.set()
+    await task
+
+
+@pytest.mark.parametrize("stop_all", [False, True], ids=["stop", "stop_all"])
+async def test_stopping_during_a_replacement_leaves_nothing_behind(stop_all: bool):
+    """#482 — 교체가 목록에서 뺀 틈의 정지가 재시작을 놓치면, 정지한 자리에 컨테이너가 다시 선다."""
+    client = GatedDockerClient()
+    agents = launcher(client, Recorder(), health_interval_s=None)
+    launched = await agents.start(manifest())
+    await hold_a_replacement(agents, client, launched)
+
+    await stop_while_held(client, agents.stop_all() if stop_all else agents.stop("echo"))
+    await spin(20)
+
+    assert not agents.launched, "정지 뒤 재시작이 레플리카를 다시 세웠다"
+    assert not agents._restarts, "재시작 태스크가 소유자 없이 남았다"
+    assert len(client.created) == 2, "취소된 교체가 만든 컨테이너가 있어야 한다 — 전제가 틀렸다"
+    assert SECOND_CONTAINER in client.removed, "취소된 교체가 만든 컨테이너가 미아로 남았다"
+    assert launched.lifecycle.state is AgentState.STOPPED
+
+
+async def test_restart_reasons_exist_before_the_first_restart():
+    """`increase()` 는 새로 생긴 계열의 첫 값을 증가로 보지 않는다 — 미리 0 으로 있어야 울린다."""
+    registry = CollectorRegistry()
+    metrics = Metrics(registry=registry)
+    agents = launcher(FakeDockerClient(), Recorder(), metrics=metrics, health_interval_s=None)
+
+    await agents.start(manifest())
+
+    for reason in ("unhealthy", "failed", "gave_up"):
+        sample = registry.get_sample_value(
+            "aaestro_container_restarts_total", {"agent": "echo", "reason": reason}
+        )
+        assert sample == 0.0, f"{reason} 계열이 없다"
+    await agents.stop_all()
+
+
+async def test_a_stop_stuck_behind_a_hung_docker_call_still_times_out():
+    """#482 — 끊은 태스크를 기다리며 바깥 취소까지 삼켜 `wait_for(stop)` 이 timeout 을 잃었다."""
+    client = GatedDockerClient()
+    agents = launcher(client, Recorder(), health_interval_s=None)
+    launched = await agents.start(manifest())
+    await hold_a_replacement(agents, client, launched)
+    assert client.gate is not None
+
+    try:
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(agents.stop("echo"), STOP_DEADLINE_S)
+        assert ("echo", 0) in agents._restarts, "끊다 만 재시작이 소유자를 잃었다"
+    finally:
+        client.gate.set()
+
+    # 종료가 남은 재시작과 넘겨받은 컨테이너 정리를 끝까지 처리한다
+    await agents.stop_all()
+    assert not agents.launched
+    assert not agents._restarts
+    assert not agents.engine._cleanups
+    assert SECOND_CONTAINER in client.removed, "걸렸던 기동이 만든 컨테이너가 미아로 남았다"
+
+
+STOP_DEADLINE_S = 0.2
+
+
+async def test_giving_up_logs_the_last_restart_failure(monkeypatch: pytest.MonkeyPatch):
+    """상한에 닿기 직전 기동이 왜 실패했는지 포기 로그에 남아야 원인을 고친다."""
+    import aaestro.runtime.launcher as launcher_module
+
+    logged: list[tuple[str, dict]] = []
+
+    class Capture:
+        def __getattr__(self, level: str):
+            return lambda event, **fields: logged.append((event, fields))
+
+    monkeypatch.setattr(launcher_module, "log", Capture())
+    client = FakeDockerClient()
+    clock = FakeClock()
+    agents = launcher(client, ClockedSleep(clock, client), health_interval_s=None)
+    launched, _ = await start_sick(agents)
+    launched.lifecycle.restart_policy = RestartPolicy(clock=clock)
+    break_restarts(client)
+
+    await restart_now(agents, launched)
+
+    gave_up = [fields for event, fields in logged if event == "agent restart limit exceeded"]
+    assert len(gave_up) == 1
+    assert gave_up[0]["last_error_code"] == "RT_001"
     await agents.stop_all()

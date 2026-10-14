@@ -339,7 +339,8 @@ Runtime layer →  env_allowlist 각 키를 local > group > global 순으로 해
 4. **Drain**: 새 태스크 수락 중지 → 진행 중 태스크 완료 대기 (기본 30s) → 종료
 5. **Stop**: SIGTERM → 30s grace → SIGKILL. `shutdown()` 에서 MCP/A2A 세션 정리
 6. **Restart Policy**: Unhealthy 시 exponential backoff 재시작 (1s → 2s → 4s... max 60s),
-   10분 내 5회 초과 시 Failed 로 전환하고 알림
+   10분 내 5회 초과 시 Failed 로 전환하고 알림. 재기동(컨테이너 기동) 자체가 실패해도 한 번의
+   재시작으로 세고 다음 backoff 로 다시 시도한다 — 그 동안 레플리카는 Unhealthy 로 남는다
 
 ### Hot Reload
 

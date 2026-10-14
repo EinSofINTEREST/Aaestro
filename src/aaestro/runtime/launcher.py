@@ -10,7 +10,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -34,6 +33,9 @@ if TYPE_CHECKING:
     from aaestro.runtime.docker.engine import ContainerHandle, DockerEngine
 
 log = structlog.get_logger(__name__)
+
+RESTART_REASONS = ("unhealthy", "failed", "gave_up")
+"""`aaestro_container_restarts_total{reason}` 의 값 — 교체됨 · 교체 기동 실패 · 상한 도달."""
 
 
 @dataclass
@@ -60,6 +62,25 @@ class LaunchedAgent:
     async def aclose(self) -> None:
         """클라이언트 연결을 정리한다."""
         await self.client.aclose()
+
+
+async def cancel_and_wait(task: asyncio.Task[Any]) -> None:
+    """Cancel a task and wait for it, re-raising a cancellation aimed at the waiter.
+
+    다른 태스크를 끊고 끝날 때까지 기다린다. 삼키는 것은 **끊은 태스크의** `CancelledError`
+    뿐이다 — 기다리는 쪽이 받은 취소까지 삼키면 `wait_for(stop(...))` 의 timeout 이 사라지고,
+    정지는 끊은 태스크가 끝날 때까지 조용히 묶인다 (#482). 그 밖의 예외는 그대로 올린다.
+    """
+    if task.done():
+        return
+    task.cancel()
+    current = asyncio.current_task()
+    before = current.cancelling() if current is not None else 0
+    try:
+        await task
+    except asyncio.CancelledError:
+        if current is not None and current.cancelling() > before:
+            raise
 
 
 @dataclass(frozen=True)
@@ -175,6 +196,8 @@ class AgentLauncher:
                 agent=agent,
                 details={"replica": replica},
             )
+
+        self._prime_restart_counter(agent)
 
         # 03 Rule 2 — 포트는 runtime 이 준다. 호출자가 명시하면 그것을 존중하고,
         # 아니면 범위에서 할당한다. A2A 가 꺼진 에이전트는 범위를 소비하지 않는다
@@ -301,61 +324,146 @@ class AgentLauncher:
         self._restarts[key] = asyncio.create_task(self._restart(launched))
 
     async def _restart(self, launched: LaunchedAgent) -> None:
-        """Replace an unhealthy replica's container after a backoff.
+        """Replace an unhealthy replica's container after a backoff, until it stands.
 
         02 Lifecycle Rules 6 — Unhealthy 는 exponential backoff 로 재시작하고,
         상한을 넘으면 Failed 로 간다.
+
+        **재기동이 실패해도 이 태스크 안에서 다시 시도한다** (#482): 교체는 감시 루프를
+        먼저 멈추므로, 실패한 뒤 "다음 health 확인" 은 오지 않는다. 재시도마다 같은
+        lifecycle 의 `plan_restart` 를 거치므로 실패한 재기동도 창 안의 재시작으로 세어
+        crash-loop 상한이 걸린다. 루프는 `_restarts` 가 쥔 이 태스크 하나라 정지가
+        끊을 수 있다 (07 Async 5).
+
+        `tenacity` 를 쓰지 않는다: 대기와 포기의 판단 주체는 lifecycle 의 `RestartPolicy` 다
+        (창 안의 횟수 — 이 연쇄 밖의 재시작도 센다). 재시도기를 하나 더 두면 상한이 두 곳에서
+        갈린다 (05 Retry Layering).
 
         **재시작은 runtime 계층에서만** 한다 (05 Retry Layering): 노드 재시도나
         Control API 재시도와 곱해지면 한 번의 장애가 여러 겹으로 늘어난다.
         """
         agent = launched.agent
-        try:
-            delay = launched.lifecycle.plan_restart()
-        except AaestroError as err:
-            # RT_008 — 상한 초과. lifecycle 이 이미 Failed 로 옮겼다
-            log.error("agent restart limit exceeded", agent=agent, exc_info=err)
-            self._record_restart(agent, reason="gave_up")
+        delay = self._plan_restart(launched)
+        if delay is None:
+            # 포기한 레플리카를 계속 두드리지 않는다 — 실패한 교체 뒤에는 감시가 이미 없다
             await self._unwatch(launched)
             return
+        attempt = 1
+        while True:
+            await self._sleep_restart(delay)
+            try:
+                await self._replace(launched)
+            except asyncio.CancelledError:
+                raise
+            except Exception as err:
+                # runtime 은 살아 있어야 한다 — 실패를 세고 다음 backoff 로 넘어간다
+                self._record_restart(agent, reason="failed")
+                delay = self._plan_restart(launched, last_error=err)
+                if delay is None:
+                    return
+                # 05 Retry Rule 4 — delay_ms 는 **다음** 시도 전의 대기다
+                log.warning(
+                    "agent restart failed; retrying",
+                    agent=agent,
+                    container_id=launched.handle.short_id,
+                    image=launched.handle.image,
+                    attempt=attempt,
+                    max_attempts=launched.lifecycle.restart_policy.max_in_window,
+                    delay_ms=round(delay * 1000),
+                    error_code=getattr(err, "code", None),
+                    exc_info=err,
+                )
+                attempt += 1
+                continue
 
+            revived = self.launched[agent, launched.replica]
+            log.info(
+                "agent restarted",
+                agent=agent,
+                container_id=revived.handle.short_id,
+                image=revived.handle.image,
+                attempt=attempt,
+                delay_ms=round(delay * 1000),
+            )
+            self._record_restart(agent, reason="unhealthy")
+            return
+
+    def _plan_restart(
+        self, launched: LaunchedAgent, *, last_error: BaseException | None = None
+    ) -> float | None:
+        """다음 재시작 전 대기 — 상한을 넘었으면 None 이다 (Failed 로 옮기고 알린다).
+
+        `last_error` 는 직전 재기동의 실패 — 포기 로그가 원인을 잃지 않게 싣는다.
+        """
+        try:
+            return launched.lifecycle.plan_restart()
+        except AaestroError as err:
+            # RT_008 — 상한 초과. lifecycle 이 이미 Failed 로 옮겼다
+            log.error(
+                "agent restart limit exceeded",
+                agent=launched.agent,
+                container_id=launched.handle.short_id,
+                image=launched.handle.image,
+                error_code=ErrorCode.RT_008,
+                # 직전 재기동 실패의 원인 — None 이면 이번 연쇄의 첫 계획에서 포기했다
+                last_error_code=getattr(last_error, "code", None),
+                exc_info=err,
+            )
+            self._record_restart(launched.agent, reason="gave_up")
+            return None
+
+    async def _sleep_restart(self, delay: float) -> None:
+        """backoff 대기 — 06 은 테스트가 실제로 자는 것을 금지하므로 주입을 받는다."""
         sleeper = self.restart_sleep or asyncio.sleep
         await sleeper(delay)
 
-        try:
-            await self._replace(launched)
-        except asyncio.CancelledError:
-            raise
-        except Exception as err:
-            # 재시작이 실패해도 runtime 은 살아 있어야 한다 — 다음 health
-            # 확인이 다시 걸어 준다
-            log.error("agent restart failed", agent=agent, exc_info=err)
-            self._record_restart(agent, reason="failed")
-            return
-
-        log.info("agent restarted", agent=agent, delay_ms=round(delay * 1000))
-        self._record_restart(agent, reason="unhealthy")
-
     async def _replace(self, launched: LaunchedAgent) -> None:
-        """정지한 자리에 같은 선언으로 컨테이너를 다시 세운다."""
+        """정지한 자리에 같은 선언으로 컨테이너를 다시 세운다.
+
+        실패하면 **원래 레플리카를 자리에 되돌리고** Unhealthy 로 둔다: 자리를 비우면
+        `stop` 이 이 레플리카를 찾지 못해 재시도를 끊지 못하고, 배포를 읽는 쪽은 아무
+        일도 없는 것으로 본다 (#482).
+        """
         agent, replica = launched.agent, launched.replica
         await self._unwatch(launched)
-        await launched.aclose()
-        await self.engine.stop(launched.handle)
-        del self.launched[agent, replica]
-        # A2A 포트는 **놓지 않는다**: peer 들의 env 에 이 포트가 굳어 있다 (#243 배선).
-        # 할당기의 예약은 그대로 두고 같은 번호를 명시해 넘기면 start 가 재할당하지 않는다
+        replaced = False
+        try:
+            await launched.aclose()
+            await self.engine.stop(launched.handle)
+            del self.launched[agent, replica]
+            # A2A 포트는 **놓지 않는다**: peer 들의 env 에 이 포트가 굳어 있다 (#243 배선).
+            # 할당기의 예약은 그대로 두고 같은 번호를 명시해 넘기면 start 가 재할당하지 않는다
 
-        args = dict(launched.restart_args)
-        # **같은 lifecycle 을 이어붙인다**: 새로 만들면 재시작 횟수가 리셋되어
-        # crash-loop 상한이 영원히 걸리지 않는다
-        await self.start(
-            args.pop("manifest"),
-            replica=replica,
-            lifecycle=launched.lifecycle,
-            a2a_port=launched.a2a_port,
-            **args,
-        )
+            args = dict(launched.restart_args)
+            # **같은 lifecycle 을 이어붙인다**: 새로 만들면 재시작 횟수가 리셋되어
+            # crash-loop 상한이 영원히 걸리지 않는다
+            await self.start(
+                args.pop("manifest"),
+                replica=replica,
+                lifecycle=launched.lifecycle,
+                a2a_port=launched.a2a_port,
+                **args,
+            )
+            replaced = True
+        finally:
+            # 실패와 취소 모두 — 취소된 교체도 정지가 이 레플리카를 정리해야 한다
+            if not replaced:
+                self.launched.setdefault((agent, replica), launched)
+                # start 가 STARTING 으로 올린 뒤 넘어졌다 — 뜨는 중으로 보이면 안 된다
+                if launched.lifecycle.state is AgentState.STARTING:
+                    launched.lifecycle.transition(AgentState.UNHEALTHY)
+
+    def _prime_restart_counter(self, agent: str) -> None:
+        """이 에이전트의 재시작 사유를 0 으로 미리 만든다.
+
+        `increase()` 는 처음 나타난 계열의 첫 값을 증가로 보지 않는다 — 빠른 기동 실패 루프는
+        계열이 생기자마자 상한에 닿아, `ContainerRestartLoop` 가 조용히 울리지 않는다.
+        """
+        if self.metrics is None:
+            return
+        counter = self.metrics.counter("aaestro_container_restarts_total")
+        for reason in RESTART_REASONS:
+            counter.labels(agent=agent, reason=reason)
 
     def _record_restart(self, agent: str, *, reason: str) -> None:
         """05 의 `ContainerRestartLoop` 알림이 이 카운터를 본다."""
@@ -365,23 +473,39 @@ class AgentLauncher:
             agent=agent, reason=reason
         ).inc()
 
-    async def _cancel_restart(self, launched: LaunchedAgent) -> None:
-        """이 레플리카의 재시작을 끊는다 — 정지한 자리에 다시 세우지 않도록."""
-        task = self._restarts.pop((launched.agent, launched.replica), None)
-        if task is None or task.done():
-            return
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+    async def _cancel_restarts(self, agent: str, *, replica: int | None) -> None:
+        """이 에이전트(레플리카)의 재시작을 끊는다 — 정지한 자리에 다시 세우지 않도록.
+
+        목록이 아니라 **재시작 키로** 찾는다: 교체는 기동을 기다리는 동안 레플리카를
+        잠시 목록에서 뺀다. 그 틈의 정지가 목록만 보면 재시작을 놓쳐, 정지한 자리에
+        컨테이너가 다시 선다.
+        """
+        keys = [
+            key
+            for key in self._restarts
+            if key[0] == agent and (replica is None or key[1] == replica)
+        ]
+        for key in keys:
+            await self._cancel_restart(key)
+
+    async def _cancel_restart(self, key: tuple[str, int]) -> None:
+        """재시작 태스크 하나를 끊고 끝날 때까지 기다린다.
+
+        끝난 뒤에야 목록에서 뺀다 — 기다리다 바깥에서 취소되면 태스크는 아직 돌고 있으니
+        소유자 (`_restarts`) 를 잃지 않게 남긴다. 다음 정지가 다시 끊는다.
+        """
+        task = self._restarts.get(key)
+        if task is not None:
+            await cancel_and_wait(task)
+        self._restarts.pop(key, None)
 
     async def _unwatch(self, launched: LaunchedAgent) -> None:
         """이 레플리카의 health 루프를 멈춘다 — 정지한 컨테이너를 계속 두드리지 않는다."""
-        task = self._monitors.pop((launched.agent, launched.replica), None)
-        if task is None:
-            return
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+        key = (launched.agent, launched.replica)
+        task = self._monitors.get(key)
+        if task is not None:
+            await cancel_and_wait(task)
+        self._monitors.pop(key, None)
 
     def _promote(self, launched: LaunchedAgent, state: AgentState, *, healthy: bool) -> None:
         """첫 health **성공**을 Ready 로 올린다.
@@ -441,6 +565,7 @@ class AgentLauncher:
             control_host=control_host,
         )
         self.issuer.remember(agent, token)
+        self._prime_restart_counter(agent)
         client = ControlClient(handle.control_url, agent=agent, retry=NETWORK_RETRY, token=token)
         # Ready 는 **선언하지 않는다** — 살아 있다는 것과 태스크를 받을 수 있다는
         # 것은 다르다. 첫 health 성공이 올린다 (02 Rule 2, `_promote`)
@@ -514,15 +639,15 @@ class AgentLauncher:
             replica: One replica, or **every** replica when omitted — 02 의
                 drain 은 에이전트 단위이므로 전부가 기본이다.
         """
+        # 진행 중인 재시작을 먼저 끊는다 — 놔두면 방금 정지한 자리에 컨테이너를
+        # 다시 세워 미아를 만든다. 끊긴 교체는 원래 레플리카를 목록에 되돌린다
+        await self._cancel_restarts(agent, replica=replica)
         targets = (
             [self.launched[agent, replica]]
             if replica is not None and (agent, replica) in self.launched
             else self.replicas_of(agent)
         )
         for launched in targets:
-            # 진행 중인 재시작을 먼저 끊는다 — 놔두면 방금 정지한 자리에
-            # 컨테이너를 다시 세워 미아를 만든다
-            await self._cancel_restart(launched)
             await self._unwatch(launched)
             # 02 Lifecycle 5 — 정지 전에 새 태스크 수락을 멈춘다.
             # STARTING 에서 바로 멈추는 경우도 있어 Draining 을 강요하지 않는다
@@ -567,7 +692,10 @@ class AgentLauncher:
     async def stop_all(self) -> None:
         """기동된 에이전트를 전부 정지한다 — 하나가 실패해도 나머지를 계속 정리한다."""
         failures: list[BaseException] = []
-        for agent in dict.fromkeys(name for name, _ in self.launched):
+        # 교체는 기동을 기다리는 동안 레플리카를 목록에서 잠시 뺀다 — 목록만 보면 그 틈의
+        # 에이전트를 놓쳐, 정지가 끝난 뒤 재시작이 컨테이너를 다시 세운다 (#482)
+        names = [name for name, _ in self.launched] + [name for name, _ in self._restarts]
+        for agent in dict.fromkeys(names):
             try:
                 await self.stop(agent)
             except asyncio.CancelledError:
@@ -575,6 +703,8 @@ class AgentLauncher:
             except Exception as err:
                 failures.append(err)
                 log.error("agent stop failed", agent=agent, exc_info=err)
+        # 취소된 기동이 넘긴 컨테이너 정리 — 종료가 끝까지 기다리거나 끊는다 (07 Async 5)
+        await self.engine.settle_cleanups()
 
         if failures:
             raise AaestroError(
