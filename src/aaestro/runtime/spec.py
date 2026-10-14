@@ -21,6 +21,11 @@ DEFAULT_CONTROL_PORT: Final = 8080
 DEFAULT_PID_LIMIT: Final = 256
 DEFAULT_BASE_IMAGE: Final = "aaestro/agent-base:0.1.0"
 
+# 에이전트와 사이드카가 함께 쓰는 경화 집합 — 한쪽만 고치면 둘이 갈라지므로 한 곳에 둔다.
+# cap-drop ALL 만으로는 setuid 바이너리 실행으로 얻는 권한을 막지 못한다 (#475)
+HARDENED_CAP_DROP: Final = ("ALL",)
+HARDENED_SECURITY_OPT: Final = ("no-new-privileges:true",)
+
 A2A_PORT_ENV: Final = "AAESTRO_A2A_PORT"
 """할당된 A2A 포트를 컨테이너에 알리는 키 — agentd 가 이것으로 서버를 띄운다."""
 
@@ -112,6 +117,7 @@ class ContainerSpec:
             "user": self.user,
             "read_only": self.read_only_rootfs,
             "cap_drop": list(self.cap_drop),
+            "security_opt": list(HARDENED_SECURITY_OPT),
             "tmpfs": dict.fromkeys(self.tmpfs, TMPFS_OPTIONS),
             "volumes": {
                 volume["name"]: {
@@ -222,7 +228,7 @@ def build_container_spec(
         # 관계없이 root 로 뜨지 않게 한다
         user="1000:1000",
         read_only_rootfs=True,
-        cap_drop=("ALL",),
+        cap_drop=HARDENED_CAP_DROP,
         tmpfs=_WRITABLE_TMPFS,
         volumes=volumes,
         labels={
