@@ -590,15 +590,37 @@ async def test_client_classifies_a_response_without_a_payload_by_status(
     assert "qqproxy" not in str(err) + str(err.details), "payload 가 아닌 본문의 글은 옮기지 않는다"
 
 
-async def test_client_does_not_echo_the_rejected_input_of_a_422(attacker_over_http):
-    """FastAPI 의 기본 422 본문은 거절된 값을 `input` 과 `msg` 에 되돌려 준다."""
+async def test_client_reports_a_rejected_request_without_echoing_its_input(attacker_over_http):
+    """서비스는 요청 검증 실패를 값 없는 `VAL_002` payload 로 답한다 (#448) — 클라이언트도 값을 싣지 않는다."""
     with pytest.raises(AaestroError) as exc_info:
         await attacker_over_http.search("qqsecret query", k=98765)
 
     err = exc_info.value
     carried = str(err) + str(err.details)
+    assert err.code == ErrorCode.VAL_002
+    assert not err.retryable
     assert "98765" not in carried
     assert "qqsecret" not in carried
+
+
+async def test_client_does_not_echo_the_rejected_input_of_a_default_422():
+    """FastAPI 의 기본 422 본문 (서비스가 아닌 것이 답한 경우) 은 `input` 과 `msg` 에 값을 되돌려 준다."""
+    default_422 = {
+        "detail": [
+            {
+                "type": "less_than_equal",
+                "loc": ["body", "k"],
+                "msg": "Input should be less than or equal to 200",
+                "input": 98765,
+                "ctx": {"le": 200},
+            }
+        ]
+    }
+    err = await refusal(answering(422, default_422))
+
+    carried = str(err) + str(err.details)
+    assert err.code == ErrorCode.VAL_002
+    assert "98765" not in carried
     assert "200" not in carried.replace("'status': 422", ""), "상한을 인용한 msg 도 옮기지 않는다"
     assert err.details["problems"] == [{"loc": "body.k", "type": "less_than_equal"}]
 
