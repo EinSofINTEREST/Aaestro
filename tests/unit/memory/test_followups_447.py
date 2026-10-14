@@ -591,7 +591,10 @@ async def test_client_classifies_a_response_without_a_payload_by_status(
 
 
 async def test_client_reports_a_rejected_request_without_echoing_its_input(attacker_over_http):
-    """서비스는 요청 검증 실패를 값 없는 `VAL_002` payload 로 답한다 (#448) — 클라이언트도 값을 싣지 않는다."""
+    """서비스는 요청 검증 실패를 값 없는 `VAL_002` payload 로 답한다 (#448).
+
+    클라이언트도 값을 싣지 않는다.
+    """
     with pytest.raises(AaestroError) as exc_info:
         await attacker_over_http.search("qqsecret query", k=98765)
 
@@ -604,7 +607,10 @@ async def test_client_reports_a_rejected_request_without_echoing_its_input(attac
 
 
 async def test_client_does_not_echo_the_rejected_input_of_a_default_422():
-    """FastAPI 의 기본 422 본문 (서비스가 아닌 것이 답한 경우) 은 `input` 과 `msg` 에 값을 되돌려 준다."""
+    """FastAPI 의 기본 422 본문은 `input` 과 `msg` 에 값을 되돌려 준다.
+
+    서비스가 아닌 것 (프록시 · 오설정된 URL) 이 답한 경우다.
+    """
     default_422 = {
         "detail": [
             {
