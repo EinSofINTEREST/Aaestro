@@ -51,6 +51,7 @@ from aaestro.core.events import (
     ToolCallEvent,
     ToolResultEvent,
 )
+from aaestro.core.markers import STEER_HEADER, defang
 from aaestro.core.skill import SkillContext
 from aaestro.core.tools import is_mcp_tool
 
@@ -94,12 +95,6 @@ MAX_STEER_CHARS: Final = 4000
 
 MAX_STEER_BY_CHARS: Final = 200
 """``by`` (감사용 신원) 의 길이 상한 — 로그와 이벤트에 그대로 실린다."""
-
-STEER_HEADER: Final = "[operator steer]"
-"""steer 가 대화에 들어갈 때 붙는 머리말 — 모델이 태스크 입력·도구 결과와 구분하게 한다.
-
-회상 기억의 출처 표시(``[memory:…]``)와 같은 결이다. untrusted 표시는 붙이지 않는다:
-steer 는 운영자 입력이다."""
 
 
 def _model_status(err: BaseException) -> str:
@@ -1165,6 +1160,10 @@ def tool_outcome(call: ToolCall, result: Any) -> ToolOutcome:
     문자열은 그대로, 그 밖은 JSON 으로 싣는다 — ``repr`` 을 실으면 모델이 파이썬 객체 표기를 읽는다.
     MCP 도구가 **실행은 됐지만 오류를 보고한** 결과(``is_error``)는 오류로 표시해 돌려준다: 태스크를
     실패시킬 일은 아니지만 모델이 성공으로 읽어서도 안 된다.
+
+    결과는 신뢰하지 않는 데이터다 (skillset · MCP · ``ask_peer`` 의 A2A 응답 · ``memory_search``
+    모두 여기를 지난다). 그 안의 경계 표시 · ``[aaestro]`` 안내 모양 글은 대화에 들어가기 전에
+    무력화한다 — 진짜 경계 · 안내와 같은 모양으로 모델에 가지 않게 (03 MCP Rules 5).
     """
     is_error = bool(getattr(result, "is_error", False))
     payload = getattr(result, "content", result) if hasattr(result, "is_error") else result
@@ -1172,7 +1171,8 @@ def tool_outcome(call: ToolCall, result: Any) -> ToolOutcome:
         content = payload
     else:
         content = json.dumps(payload, ensure_ascii=False, default=str)
-    return ToolOutcome(call_id=call.id, content=content, is_error=is_error)
+    # 직렬화한 뒤에 바꾼다 — 키와 중첩된 값까지 한 번에 덮고, 바꾼 글자는 JSON 을 깨지 않는다
+    return ToolOutcome(call_id=call.id, content=defang(content), is_error=is_error)
 
 
 __all__ = [
@@ -1180,7 +1180,6 @@ __all__ = [
     "MAX_STEER_BY_CHARS",
     "MAX_STEER_CHARS",
     "MODEL_RETRY_POLICIES",
-    "STEER_HEADER",
     "AssistantTurn",
     "Executor",
     "ExecutorConfig",
