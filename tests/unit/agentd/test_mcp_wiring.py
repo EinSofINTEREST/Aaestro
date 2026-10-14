@@ -123,7 +123,7 @@ def test_the_daemon_builds_and_serves_on_one_loop_and_closes_sessions(
         encoding="utf-8",
     )
     monkeypatch.setenv(agentd.MANIFEST_ENV, str(manifest_path))
-    monkeypatch.setenv(agentd.TOKEN_ENV, "agent-token")
+    monkeypatch.setenv(agentd.AGENT_TOKEN_ENV, "agent-token")
     monkeypatch.setattr(agentd, "_setup_observability", Metrics)
     monkeypatch.setattr(agentd, "_configure_logging", lambda: None)
     loops = {}
@@ -193,7 +193,7 @@ def test_a_failure_while_assembling_the_app_closes_the_sessions(
         encoding="utf-8",
     )
     monkeypatch.setenv(agentd.MANIFEST_ENV, str(manifest_path))
-    monkeypatch.setenv(agentd.TOKEN_ENV, "agent-token")
+    monkeypatch.setenv(agentd.AGENT_TOKEN_ENV, "agent-token")
     monkeypatch.setattr(agentd, "_setup_observability", Metrics)
     monkeypatch.setattr(agentd, "_configure_logging", lambda: None)
 

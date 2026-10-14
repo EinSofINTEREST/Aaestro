@@ -31,6 +31,8 @@ if TYPE_CHECKING:
 MEMORY_TOKEN_ENV = "AAESTRO_MEMORY_TOKEN"  # noqa: S105 — env 키 이름이지 값이 아니다
 MEMORY_URL_ENV = "AAESTRO_MEMORY_URL"
 """agentd 가 서비스에 닿기 위해 받는 값 — secrets 와 같은 주입 경로다."""
+MEMORY_TOKENS_PATH_ENV = "AAESTRO_MEMORY_TOKENS_PATH"
+"""memory 서비스가 에이전트 토큰을 내놓는 파일 — 오케스트레이터가 읽어 에이전트에 나눠 준다."""
 
 DEFAULT_TIMEOUT_S = 30.0
 
@@ -334,4 +336,10 @@ class HttpMemoryAccess:
         return listed
 
 
-__all__ = ["DEFAULT_TIMEOUT_S", "MEMORY_TOKEN_ENV", "MEMORY_URL_ENV", "HttpMemoryAccess"]
+__all__ = [
+    "DEFAULT_TIMEOUT_S",
+    "MEMORY_TOKENS_PATH_ENV",
+    "MEMORY_TOKEN_ENV",
+    "MEMORY_URL_ENV",
+    "HttpMemoryAccess",
+]

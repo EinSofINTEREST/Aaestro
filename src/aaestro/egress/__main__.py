@@ -18,9 +18,16 @@ import structlog
 import uvicorn
 
 from aaestro.access.baselines import url_target
+from aaestro.config import REPO_ROOT_ENV
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 from aaestro.core.startup import startup_guard
-from aaestro.observability.metrics import DEFAULT_METRICS_PORT, Metrics, start_metrics_server
+from aaestro.observability.logging import LOG_FORMAT_ENV, LOG_LEVEL_ENV
+from aaestro.observability.metrics import (
+    DEFAULT_METRICS_PORT,
+    METRICS_PORT_ENV,
+    Metrics,
+    start_metrics_server,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -45,11 +52,6 @@ PROXY_HELD_SECRETS = frozenset({ANTHROPIC_KEY_ENV, OPENAI_COMPAT_KEY_ENV})
 MCP_TOKENS_ENV = "AAESTRO_EGRESS_MCP_TOKENS"
 """원격 MCP 서버에 붙여도 되는 자격 이름 — 쉼표로. 선언의 ``auth.token_env`` 가 이 목록에 있을 때만
 그 값을 보낸다 (모델 키 같은 다른 비밀을 선언으로 끌어내지 못하게)."""
-REPO_ROOT_ENV = "AAESTRO_REPO_ROOT"
-"""선언 루트 — 원격 MCP 서버의 주소·자격 이름을 에이전트 선언에서 읽는다. 없으면 MCP 종단이 없다."""
-LOG_LEVEL_ENV = "AAESTRO_LOG_LEVEL"
-LOG_FORMAT_ENV = "AAESTRO_LOG_FORMAT"
-METRICS_PORT_ENV = "AAESTRO_METRICS_PORT"
 
 DEFAULT_CONNECT_PORT = 8080
 DEFAULT_PROVIDER_PORT = 8081

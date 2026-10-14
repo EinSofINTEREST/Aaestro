@@ -26,6 +26,8 @@ from pydantic import (
 from aaestro.core.errors import repeated_positions
 
 RESERVED_GLOBAL_GROUP = "global"
+MANIFEST_ENV = "AAESTRO_MANIFEST"
+"""agentd 가 매니페스트를 찾는 env — 마운트 자리를 가리키게 주입한다."""
 DEFAULT_SIDECAR_PORT = 8000
 DEFAULT_SIDECAR_PATH = "/mcp"
 INVALID_PORT = -1

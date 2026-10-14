@@ -524,7 +524,7 @@ def test_package_entry_point_runs_without_warnings():
 def clients_for(argv: list[str], monkeypatch, env: str | None = None):
     """`aaestro run` 인자로 만들어지는 Control API 클라이언트."""
     from aaestro.cli.main import _control_clients
-    from aaestro.runtime.tokens import AGENT_TOKEN_ENV
+    from aaestro.core.agent import AGENT_TOKEN_ENV
 
     if env is None:
         monkeypatch.delenv(AGENT_TOKEN_ENV, raising=False)

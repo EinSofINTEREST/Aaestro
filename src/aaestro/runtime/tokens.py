@@ -13,7 +13,8 @@ import secrets
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-AGENT_TOKEN_ENV = "AAESTRO_AGENT_TOKEN"  # noqa: S105 — 값이 아니라 키 이름이다
+from aaestro.core.agent import AGENT_TOKEN_ENV
+
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
@@ -116,7 +117,6 @@ def authenticated_env(
 
 
 __all__ = [
-    "AGENT_TOKEN_ENV",
     "TOKEN_BYTES",
     "TokenIssuer",
     "authenticated_env",

@@ -18,10 +18,17 @@ from typing import Any
 import structlog
 import uvicorn
 
-from aaestro.config import load_config
+from aaestro.config import CONFIG_DIR_ENV, ENVIRONMENT_ENV, REPO_ROOT_ENV, load_config
 from aaestro.core.startup import startup_guard
 from aaestro.memory.bootstrap import MemoryDeployment, build_deployment
-from aaestro.observability.metrics import Metrics, metrics_port_from_env, start_metrics_server
+from aaestro.memory.client import MEMORY_TOKENS_PATH_ENV
+from aaestro.observability.logging import LOG_FORMAT_ENV, LOG_LEVEL_ENV
+from aaestro.observability.metrics import (
+    METRICS_PORT_ENV,
+    Metrics,
+    metrics_port_from_env,
+    start_metrics_server,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -29,13 +36,6 @@ DEFAULT_PORT = 8090
 DEFAULT_ROOT = "/repo"
 
 PORT_ENV = "AAESTRO_MEMORY_PORT"
-ROOT_ENV = "AAESTRO_REPO_ROOT"
-ENVIRONMENT_ENV = "AAESTRO_ENV"
-CONFIG_DIR_ENV = "AAESTRO_CONFIG_DIR"
-LOG_LEVEL_ENV = "AAESTRO_LOG_LEVEL"
-LOG_FORMAT_ENV = "AAESTRO_LOG_FORMAT"
-METRICS_PORT_ENV = "AAESTRO_METRICS_PORT"
-TOKENS_PATH_ENV = "AAESTRO_MEMORY_TOKENS_PATH"
 
 
 def _setup_observability() -> Metrics:
@@ -111,11 +111,11 @@ def _start(metrics: Metrics) -> None:
             os.environ.get(ENVIRONMENT_ENV, "dev"),
             config_dir=os.environ.get(CONFIG_DIR_ENV, "configs"),
         )
-    root = Path(os.environ.get(ROOT_ENV, DEFAULT_ROOT))
+    root = Path(os.environ.get(REPO_ROOT_ENV, DEFAULT_ROOT))
 
     deployment = build_deployment(config, root=root, metrics=metrics, access=_access(metrics))
 
-    tokens_path = os.environ.get(TOKENS_PATH_ENV)
+    tokens_path = os.environ.get(MEMORY_TOKENS_PATH_ENV)
     if tokens_path and deployment.access is None:
         _publish_tokens(deployment.tokens, Path(tokens_path))
 

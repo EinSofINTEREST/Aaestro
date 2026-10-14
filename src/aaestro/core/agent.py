@@ -21,6 +21,7 @@ from aaestro.core.manifest import ModelConfig
 if TYPE_CHECKING:
     from aaestro.core.events import TaskEvent
 
+AGENT_TOKEN_ENV = "AAESTRO_AGENT_TOKEN"  # noqa: S105 — 값이 아니라 키 이름이다
 DEFAULT_TASK_TIMEOUT_S = 300.0
 DEFAULT_MAX_TURNS = 20
 DEFAULT_TOOL_TIMEOUT_S = 60.0

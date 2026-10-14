@@ -193,7 +193,7 @@ def test_the_served_app_reloads_the_standard_executor(root, tmp_path, monkeypatc
         encoding="utf-8",
     )
     monkeypatch.setenv(agentd.MANIFEST_ENV, str(manifest_path))
-    monkeypatch.setenv(agentd.TOKEN_ENV, "agent-token")
+    monkeypatch.setenv(agentd.AGENT_TOKEN_ENV, "agent-token")
     monkeypatch.setattr(agentd, "_setup_observability", Metrics)
     monkeypatch.setattr(agentd, "_configure_logging", lambda: None)
     served = {}
@@ -266,7 +266,7 @@ def test_a_custom_entrypoint_is_not_given_the_standard_reload(root, tmp_path, mo
     manifest_path = tmp_path / "manifest.yaml"
     manifest_path.write_text(yaml.safe_dump(doc), encoding="utf-8")
     monkeypatch.setenv(agentd.MANIFEST_ENV, str(manifest_path))
-    monkeypatch.setenv(agentd.TOKEN_ENV, "agent-token")
+    monkeypatch.setenv(agentd.AGENT_TOKEN_ENV, "agent-token")
     monkeypatch.setattr(agentd, "_setup_observability", Metrics)
     monkeypatch.setattr(agentd, "_configure_logging", lambda: None)
     custom = Executor(agent="planner", model=FakeModel([text("x")]), tools=FakeTools(), render=str)
