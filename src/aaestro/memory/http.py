@@ -164,7 +164,15 @@ def create_app(
         gate = TokenGate(tokens)
     entrance: Gate = gate
     # API 문서 경로는 닫는다 — 무인증 호출자가 스키마(필드 · 상한)를 열거하지 못하게 (#450)
-    app = FastAPI(title="Aaestro Memory Service", docs_url=None, redoc_url=None, openapi_url=None)
+    # redirect_slashes 도 닫는다 — 기본값이면 무인증 호출자가 `/v1/search/` 로 307 을 받아
+    # 정식 경로의 존재를 알게 된다 (인증 게이트는 라우트가 매칭된 뒤에야 돈다)
+    app = FastAPI(
+        title="Aaestro Memory Service",
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+        redirect_slashes=False,
+    )
 
     # 무인증은 이 라우트 하나뿐이다 — route_class 를 바꾸기 **전에** 등록해 AdmitFirstRoute 를
     # 타지 않게 한다 (의도). 프로세스가 응답하는지만 말하고 저장소 · 레지스트리 상태는 싣지 않는다

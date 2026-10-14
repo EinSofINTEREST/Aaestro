@@ -728,3 +728,23 @@ async def test_unknown_routes_and_methods_get_a_typed_refusal_without_values():
     finally:
         await client.aclose()
         store.close()
+
+
+async def test_slash_variants_of_routes_are_not_redirected_but_refused_as_unroutable():
+    app, _, store = _auth_first_app()
+    client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=BASE_URL)
+    try:
+        # 인증 없이 slash 변형을 불러도 정식 경로가 있다는 사실이 리다이렉트로 드러나면 안 된다
+        for method, path in (
+            ("POST", "/v1/search/"),
+            ("POST", "/v1/append/"),
+            ("GET", "/v1/health/"),
+        ):
+            response = await client.request(method, path, json={})
+            assert response.status_code == 404, (path, response.status_code)
+            assert "location" not in response.headers, path
+            body = response.json()
+            assert (body["category"], body["code"]) == ("not_found", "NF_001"), path
+    finally:
+        await client.aclose()
+        store.close()
