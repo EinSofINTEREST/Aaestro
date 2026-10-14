@@ -7,28 +7,23 @@ import 하는 경로를 실제로 탄 뒤에 검사한다.
 
 from __future__ import annotations
 
-import subprocess
-import sys
-from pathlib import Path
+from tests.fixtures.import_contract import assert_no_forbidden_imports
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-
+# 새 import 가 생기면 이 상수를 고치는 것이 곧 결정이다
 FORBIDDEN = (
+    "aaestro.orchestrator",
+    "aaestro.runtime",
+    "aaestro.agentd",
+    "aaestro.cli",
+    "aaestro.ui",
     "langgraph",
     "langchain",
-    "aaestro.runtime",
-    "aaestro.orchestrator.builder",
-    "aaestro.orchestrator.checkpoint",
-    "aaestro.orchestrator.run",
+    "docker",
+    "a2a",
+    "mcp",
+    "anthropic",
+    "psycopg",
 )
-
-SCRIPT = """
-import sys
-
-{body}
-bad = sorted(m for m in sys.modules if m.startswith({forbidden!r}))
-assert not bad, bad
-"""
 
 MCP_PATH = """
 from aaestro.egress.__main__ import _mcp_routers
@@ -46,15 +41,7 @@ assert _mcp_routers(config, object())
 
 
 def _run(body: str) -> None:
-    script = SCRIPT.format(body=body, forbidden=FORBIDDEN)
-    # -I: cwd 와 PYTHONPATH 를 무시해 현재 프로세스가 아닌 깨끗한 import 그래프를 본다
-    result = subprocess.run(  # noqa: S603
-        [sys.executable, "-I", "-c", script, str(REPO_ROOT)],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 0, result.stderr
+    assert_no_forbidden_imports(body, FORBIDDEN)
 
 
 def test_main_import_pulls_no_control_plane_modules() -> None:
