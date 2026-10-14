@@ -801,6 +801,9 @@ observability:
 10. 모든 모델 provider (primary · fallback · 노드/배포 override) 가 알려진 논리 호스트를 갖고,
     프록시를 쓰면 `runtime.egress_proxy.providers` 에 있으며, override 의 provider 는 manifest 가
     선언한 집합 안인가
+11. `spec.entrypoint` 없는 에이전트(기본 LLM 루프 — echo 이미지처럼 모델을 부르지 않는 실행기도
+    배포 검증은 알 수 없어 포함된다)의 promptset 이 `system` 템플릿을 선언하는가 (`MOD_002`).
+    템플릿 본문은 읽지 않는다 — 빈 렌더는 agentd 기동이 거절한다 (`MOD_003`)
 
 ## Scalability Considerations
 

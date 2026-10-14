@@ -579,7 +579,10 @@ def test_reference_guard_lists_every_file_the_test_reads():
 # --- 9. 노드 ↔ promptset 계약 (#260) ------------------------------------------------
 
 
-def make_promptset(templates: dict) -> PromptsetManifest:
+def make_promptset(templates: dict, *, system: bool = True) -> PromptsetManifest:
+    # `system` 은 기본 LLM 루프의 계약이다 (#445) — 이 절의 시험은 노드 계약을 보므로 기본으로 깐다
+    if system:
+        templates = {"system": {"file": "sys.j2"}, **templates}
     return PromptsetManifest.model_validate(
         {
             "apiVersion": "aaestro/v1",
@@ -817,3 +820,39 @@ def test_a_subgraph_node_must_not_declare_a_model():
 
     with pytest.raises(ValueError, match="subgraph node must not declare"):
         GraphTopology.model_validate(raw)
+
+
+# --- 기본 LLM 루프의 system 계약 (#445) ----------------------------------------------------
+
+
+def system_report(templates: dict, **spec_extra):
+    return validate_deployment(
+        [make_topology(["solo"])],
+        manifests={"solo": agent("solo", **spec_extra)},
+        resolvable_refs=REFS,
+        promptsets={"promptsets/test@0.1.0": make_promptset(templates, system=False)},
+    )
+
+
+def test_a_default_loop_agent_without_a_system_template_is_rejected():
+    report = system_report({"default": {"file": "d.j2"}, "solo": {"file": "s.j2"}})
+
+    finding = next(f for f in report.findings if f.check == "system_template")
+    assert finding.code == ErrorCode.MOD_002
+    assert finding.message == "promptset must declare a system template"
+    assert finding.details["agent"] == "solo"
+    assert finding.details["module_ref"] == "promptsets/test@0.1.0"
+
+
+def test_a_custom_entrypoint_agent_needs_no_system_template():
+    report = system_report(
+        {"default": {"file": "d.j2"}, "solo": {"file": "s.j2"}}, entrypoint="agent:Custom"
+    )
+
+    assert "system_template" not in report.checks()
+
+
+def test_a_declared_system_template_passes():
+    report = system_report({"system": {"file": "y.j2"}, "solo": {"file": "s.j2"}})
+
+    assert "system_template" not in report.checks()

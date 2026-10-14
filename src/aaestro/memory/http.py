@@ -15,12 +15,13 @@ from secrets import token_urlsafe
 from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, Request, status
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from aaestro.core.errors import AaestroError, ErrorCode
 from aaestro.core.manifest import MemoryMode
-from aaestro.http_errors import status_for
+from aaestro.http_errors import request_validation_error, status_for
 from aaestro.memory.client import MEMORY_TOKEN_ENV, MEMORY_URL_ENV
 from aaestro.memory.entry import MemoryEntry
 from aaestro.memory.gate import Gate, TokenGate, unauthorized
@@ -152,6 +153,14 @@ def create_app(
         gate = TokenGate(tokens)
     entrance: Gate = gate
     app = FastAPI(title="Aaestro Memory Service")
+
+    @app.exception_handler(RequestValidationError)
+    async def _bad_body(_request: Request, err: RequestValidationError) -> JSONResponse:
+        """FastAPI 기본 422 는 받은 값을 응답에 되비춘다 — 필드와 사유만 남긴다 (#448)."""
+        problem = request_validation_error(err)
+        return JSONResponse(
+            status_code=status_for(problem), content=problem.payload().model_dump(mode="json")
+        )
 
     @app.exception_handler(AaestroError)
     async def _structured(_request: Request, err: AaestroError) -> JSONResponse:

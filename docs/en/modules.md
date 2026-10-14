@@ -117,6 +117,17 @@ are declared with schemas — rendering with undeclared variables fails (`MOD_00
 than silently producing empty text. Locale overrides live in `locales/{lang}/`.
 Any prompt wording change requires a version bump.
 
+### The `system` template
+
+An agent on the default LLM loop (no `spec.entrypoint`) must have a `system` template in its
+promptset: it carries the operator instructions and is sent to the model separately from the
+task input. It is rendered without any input in the `default_locale`, so it cannot declare
+`variables` (the promptset fails to load, `MOD_003`). Deploy validation rejects a promptset
+without it (`MOD_002`; it cannot tell which executor an image runs, so every agent without an
+`entrypoint` is checked). It does not read template bodies: an agent whose `system` renders
+empty is refused when agentd starts or reloads (`MOD_003`) — it never runs without operator
+instructions.
+
 ### Untrusted input boundary
 
 Every template variable carries task input — the output of an earlier node, or the body of a

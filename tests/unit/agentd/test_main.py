@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from structlog.testing import capture_logs
 
 from aaestro.agentd.__main__ import (
     CONTROL_PORT,
@@ -416,12 +417,15 @@ def entry(monkeypatch):
 def test_main_without_a_token_refuses_to_start(entry):
     agentd, _, seen = entry
 
-    with pytest.raises(AaestroError) as exc:
+    with capture_logs() as logs, pytest.raises(SystemExit) as exc:
         agentd.main()
 
-    assert exc.value.code == "CFG_001"
-    assert exc.value.details["setting"] == agentd.TOKEN_ENV
-    assert agentd.TOKEN_ENV in exc.value.message
+    assert exc.value.code == 1
+    (line,) = [entry for entry in logs if entry["log_level"] == "critical"]
+    assert line["event"] == "agent startup rejected"
+    assert line["error_code"] == "CFG_001"
+    assert line["details"]["setting"] == agentd.TOKEN_ENV
+    assert agentd.TOKEN_ENV in line["error_message"]
     assert seen == {}, "거절됐는데 앱 조립까지 갔다"
 
 
@@ -430,12 +434,14 @@ def test_main_opt_in_with_a_wildcard_bind_refuses_to_start(entry):
     monkeypatch.setenv("AAESTRO_ALLOW_UNAUTHENTICATED", "1")
     monkeypatch.setenv(agentd.BIND_HOST_ENV, "0.0.0.0")  # noqa: S104
 
-    with pytest.raises(AaestroError) as exc:
+    with capture_logs() as logs, pytest.raises(SystemExit) as exc:
         agentd.main()
 
-    assert exc.value.code == "CFG_001"
-    assert exc.value.details["setting"] == "AAESTRO_ALLOW_UNAUTHENTICATED"
-    assert "loopback" in exc.value.message
+    assert exc.value.code == 1
+    (line,) = [entry for entry in logs if entry["log_level"] == "critical"]
+    assert line["error_code"] == "CFG_001"
+    assert line["details"]["setting"] == "AAESTRO_ALLOW_UNAUTHENTICATED"
+    assert "loopback" in line["error_message"]
     assert seen == {}
 
 

@@ -91,6 +91,7 @@ def workspace(tmp_path: Path) -> Path:
                 "engine": "jinja2",
                 "templates": {
                     "default": {"file": "t.j2"},
+                    "system": {"file": "t.j2"},
                     "n0": {"file": "a.j2"},
                     "n1": {"file": "b.j2"},
                 },

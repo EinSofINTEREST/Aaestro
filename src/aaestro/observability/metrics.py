@@ -9,11 +9,14 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 
 from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
 from prometheus_client import start_http_server as _start_http_server
+
+from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -319,6 +322,34 @@ def snapshot(specs: tuple[MetricSpec, ...] = METRIC_SPECS) -> dict[str, dict[str
     고정해, 대시보드·알림이 의존하는 이름/라벨의 의도치 않은 변경을 감지합니다.
     """
     return {spec.name: {"kind": spec.kind, "labels": list(spec.labels)} for spec in specs}
+
+
+MAX_PORT: Final = 65535
+
+
+def metrics_port_from_env(key: str) -> int:
+    """The metrics port from the environment — ``CFG_001`` unless it is an integer in 0..65535.
+
+    메트릭 포트 설정 읽기. 0 은 임시 포트 (테스트 · 충돌 회피). 잘못된 값은 ``ValueError``
+    traceback 이 아니라 기동 가드가 받는 ``CFG_001`` 이다.
+    """
+    raw = os.environ.get(key, str(DEFAULT_METRICS_PORT))
+    try:
+        port = int(raw)
+    except ValueError as err:
+        raise _bad_port(f"invalid port: {raw!r}", key) from err
+    if not 0 <= port <= MAX_PORT:
+        raise _bad_port(f"port out of range: {raw!r}", key)
+    return port
+
+
+def _bad_port(message: str, key: str) -> AaestroError:
+    return AaestroError(
+        category=ErrorCategory.CONFIG,
+        code=ErrorCode.CFG_001,
+        message=message,
+        details={"setting": key},
+    )
 
 
 def start_metrics_server(

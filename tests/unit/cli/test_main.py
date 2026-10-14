@@ -43,7 +43,11 @@ def workspace(tmp_path: Path) -> Path:
                 # (04 호환성 규칙 3) — `default` 만 두면 run 에서 MOD_004 로 죽는다
                 "spec": {
                     "engine": "jinja2",
-                    "templates": {"default": {"file": "t.j2"}, "solo": {"file": "t.j2"}},
+                    "templates": {
+                        "default": {"file": "t.j2"},
+                        "solo": {"file": "t.j2"},
+                        "system": {"file": "t.j2"},
+                    },
                 },
             }
         ),

@@ -52,6 +52,8 @@ from aaestro.modules.budget import (
 from aaestro.modules.registry import ModulePath, ModuleRegistry, reject_module
 
 DEFAULT_TEMPLATE = "default"
+SYSTEM_TEMPLATE = "system"
+"""운영자 지시 템플릿 이름 — 변수 없이 ``default_locale`` 로 렌더된다 (agentd 기동)."""
 
 log = structlog.get_logger(__name__)
 
@@ -142,6 +144,18 @@ class PromptsetSpec(BaseModel):
         if not value:
             raise ValueError("promptset must declare at least one template")
         return value
+
+    @model_validator(mode="after")
+    def _system_takes_no_variables(self) -> PromptsetSpec:
+        """``system`` 은 입력 없이 렌더되므로 변수를 선언할 이유가 없다.
+
+        required 여부 · default 유무로 갈라 예외를 두면 조합마다 다시 샌다 (#445). ``system`` 이
+        없는 것은 여기서 거절하지 않는다 — 기본 실행 루프를 쓰는지는 에이전트가 안다.
+        """
+        system = self.templates.get(SYSTEM_TEMPLATE)
+        if system is not None and system.variables:
+            raise ValueError("system template must not declare variables")
+        return self
 
 
 class PromptsetMetadata(BaseModel):

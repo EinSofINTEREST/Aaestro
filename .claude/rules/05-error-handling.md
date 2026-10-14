@@ -197,9 +197,9 @@ GRAPH_005: Service iteration 연속 실패 임계 초과 — run 정지
 GRAPH_006: Run 상태가 요청한 조작과 맞지 않음 (상태 충돌, HTTP 409)
 
 MOD_001: 모듈 ref 해석 실패
-MOD_002: 모듈 버전/의존성 충돌
+MOD_002: 모듈 버전/의존성 충돌 / 에이전트 ↔ promptset 조합 불일치 (노드 · `default` · `system` 템플릿 부재)
 MOD_003: 모듈 스키마(yaml) 검증 실패 / 게시된 모듈의 파일 문제 — 선언된 템플릿 파일이 없거나
-         읽히지 않거나, 문법이 틀리거나, 경계를 우회하는 구문을 쓴다 (로드 시점, 04 Promptset Rules 2)
+         읽히지 않거나, 문법이 틀리거나, 경계를 우회하는 구문을 쓴다 (로드 시점, 04 Promptset Rules 2) / `system` 템플릿의 변수 선언 · 빈 렌더 (agentd 기동, 04 Promptset Rules 6)
 MOD_004: Promptset 변수 검증 실패 / 렌더 시점의 템플릿 문제 (거절되는 구문, 없는 필터 · 전역,
          입력이 잘리지 않은 렌더의 표현식 평가 실패 — 예외 종류 이름만 싣는다) / decisionset 질문의 state 조각 불일치
 

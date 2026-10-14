@@ -299,6 +299,73 @@ def test_control_plane_reports_a_failure_after_the_config_load_in_the_same_shape
     assert "Traceback" not in result.stdout + result.stderr
 
 
+# --- 토큰 · 필수 설정 누락도 같은 한 줄 (#438) --------------------------------------------------
+
+BAD_TOKEN = "  leaked-token-value  "  # noqa: S105 — 공백이 끼어 거절되는 값, 비밀이 아니다
+
+
+@pytest.mark.parametrize("name", ["agentd", "egress"])
+def test_missing_token_is_one_critical_line_without_a_traceback(name: str, tmp_path: Path):
+    """토큰 판정 (CFG_001) 이 가드 밖이면 traceback 이 나오고 ``details.setting`` 이 사라진다."""
+    if name == "agentd":
+        result = _entrypoint(name, **{TOKEN_ENV: ""})
+    else:
+        # 부모 env 에 레지스트리 설정이 있어도 "누락" 경로를 타도록 명시적으로 비운다
+        result = _run(
+            ["-c", "from aaestro.egress.__main__ import main; main()"],
+            AAESTRO_ACCESS_URL="",
+            AAESTRO_ACCESS_ENFORCER_TOKEN="",
+        )
+
+    line = _critical_line(result)
+    assert result.returncode == 1
+    assert "Traceback" not in result.stdout + result.stderr
+    assert line["error_code"] == "CFG_001"
+    if name == "agentd":
+        assert line["event"] == "agent startup rejected"
+        assert line["details"]["setting"] == TOKEN_ENV
+    else:
+        assert line["event"] == "egress proxy startup rejected"
+        assert line["details"]["settings"]
+
+
+@pytest.mark.parametrize("name", sorted(ENTRYPOINTS) + ["egress"])
+@pytest.mark.parametrize("raw", ["http", "70000", "-1"])
+def test_bad_metrics_port_is_one_critical_line_without_a_traceback(
+    name: str, raw: str, tmp_path: Path
+):
+    """포트 설정 읽기도 기동 실패다 — 가드 밖이면 ValueError traceback 이 나온다."""
+    env = {
+        "AAESTRO_METRICS_PORT": raw,
+        "AAESTRO_ENV": "dev",
+        "AAESTRO_CONFIG_DIR": str(_config_dir(tmp_path, b"{}\n")),
+        "AAESTRO_ACCESS_URL": "http://x",
+        "AAESTRO_ACCESS_ENFORCER_TOKEN": "y",
+        # agentd 는 manifest 를 먼저 읽는다 — 멀쩡한 선언을 줘야 포트에서 실패한다
+        MANIFEST_ENV: str(REPO_ROOT / "agents/echo/manifest.yaml"),
+    }
+    code = f"from {ENTRYPOINTS.get(name, 'aaestro.egress.__main__')} import main; main()"
+
+    result = _run(["-c", code], **env)
+
+    line = _critical_line(result)
+    assert result.returncode == 1
+    assert "Traceback" not in result.stdout + result.stderr
+    assert line["error_code"] == "CFG_001"
+    assert "AAESTRO_METRICS_PORT" in json.dumps(line["details"])
+
+
+def test_agentd_malformed_token_is_rejected_without_logging_its_value():
+    result = _entrypoint("agentd", **{TOKEN_ENV: BAD_TOKEN})
+
+    line = _critical_line(result)
+    assert result.returncode == 1
+    assert line["error_code"] == "CFG_001"
+    assert line["details"]["setting"] == TOKEN_ENV
+    assert "leaked-token-value" not in result.stdout + result.stderr
+    assert "Traceback" not in result.stdout + result.stderr
+
+
 # --- 기동 실패의 형식: 세 진입점이 같은 한 줄 --------------------------------------------------
 
 

@@ -111,6 +111,15 @@ from aaestro.core.skill import SkillContext, skill
 선언되며, 미선언 변수 사용 시 조용히 빈 값이 되지 않고 렌더 실패(`MOD_004`) 합니다.
 Locale 오버라이드는 `locales/{lang}/`. 프롬프트 문구 변경도 반드시 version bump.
 
+### `system` 템플릿
+
+기본 LLM 루프를 쓰는 에이전트 (`spec.entrypoint` 없음) 의 promptset 에는 `system` 템플릿이 있어야
+합니다. 운영자 지시를 싣고 태스크 입력과 따로 모델에 보내집니다. 입력 없이 `default_locale` 로
+렌더되므로 `variables` 를 선언할 수 없습니다 (promptset 로드 실패, `MOD_003`). 배포 검증은 없는
+promptset 을 거절합니다 (`MOD_002` — 이미지가 어떤 실행기를 쓰는지 알 수 없어 `entrypoint` 없는
+에이전트 전부를 봅니다). 템플릿 본문은 읽지 않습니다: `system` 이 빈 글로 렌더되는 에이전트는 agentd
+기동 · 리로드가 거절합니다 (`MOD_003`) — 운영자 지시 없이 돌지 않습니다.
+
 ### 신뢰하지 않는 입력의 경계
 
 템플릿 변수는 전부 태스크 입력을 싣습니다 — 앞 노드의 산출물이거나 direct 요청의 본문입니다. 이 글은

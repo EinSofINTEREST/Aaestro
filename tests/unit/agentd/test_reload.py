@@ -302,3 +302,82 @@ async def test_the_system_template_reaches_the_model_on_its_own(root):
 
     assert executor.binding.system == "OPERATOR RULES"
     assert "OPERATOR RULES" not in executor.binding.render(make_task(**DIRECT))
+
+
+PLANNER_PROMPTSET = "planner/0.3.0"
+
+
+def edit_promptset(root: Path, mutate) -> Path:
+    """게시된 planner promptset 선언을 고친다 — 고친 선언의 디렉토리를 돌려준다."""
+    module = root / "modules" / "promptsets" / PLANNER_PROMPTSET
+    document = yaml.safe_load((module / "promptset.yaml").read_text(encoding="utf-8"))
+    mutate(document)
+    (module / "promptset.yaml").write_text(yaml.safe_dump(document), encoding="utf-8")
+    return module
+
+
+async def test_a_promptset_without_a_system_template_refuses_to_start(root):
+    """빈 운영자 지시로 조용히 뜨면 도구 결과를 믿지 말라는 지시가 모델에 닿지 않는다 (#445)."""
+    edit_promptset(root, lambda doc: doc["spec"]["templates"].pop("system"))
+
+    with pytest.raises(AaestroError) as exc_info:
+        await agentd.build_executor(planner())
+
+    assert exc_info.value.code == "MOD_002"
+    assert exc_info.value.message == "promptset must declare a system template"
+    assert exc_info.value.agent == "planner"
+    assert exc_info.value.details["promptset"] == "promptsets/planner@0.3.0"
+
+
+EMPTY_BODIES = {
+    "empty-file": "",
+    "whitespace-only": " \n\t \n",
+    "comment-only": "{# nothing to say #}\n",
+    "always-false-if": "{% if false %}rules{% endif %}\n",
+}
+
+
+@pytest.mark.parametrize("body", EMPTY_BODIES.values(), ids=EMPTY_BODIES.keys())
+async def test_a_system_template_that_renders_empty_refuses_to_start(root, body):
+    (root / "modules" / "promptsets" / PLANNER_PROMPTSET / "templates" / "system.j2").write_text(
+        body, encoding="utf-8"
+    )
+
+    with pytest.raises(AaestroError) as exc_info:
+        await agentd.build_executor(planner())
+
+    assert exc_info.value.code == "MOD_003"
+    assert exc_info.value.message == "system template rendered empty"
+    assert exc_info.value.agent == "planner"
+    assert exc_info.value.details["promptset"] == "promptsets/planner@0.3.0"
+
+
+async def test_a_reload_that_empties_the_system_template_keeps_the_previous_binding(root):
+    templates = root / "modules" / "promptsets" / PLANNER_PROMPTSET / "templates"
+    (templates / "system.j2").write_text("OPERATOR RULES\n", encoding="utf-8")
+    manifest = planner()
+    executor = await agentd.build_executor(manifest)
+    reload = agentd.build_reload(manifest, executor)
+    before = executor.binding
+    (templates / "system.j2").write_text("\n", encoding="utf-8")
+
+    with pytest.raises(AaestroError) as exc_info:
+        await reload()
+
+    assert exc_info.value.code == "MOD_003"
+    assert executor.binding is before
+    assert executor.binding.system == "OPERATOR RULES"
+
+
+async def test_a_reload_that_drops_the_system_template_keeps_the_previous_binding(root):
+    manifest = planner()
+    executor = await agentd.build_executor(manifest)
+    reload = agentd.build_reload(manifest, executor)
+    before = executor.binding
+    edit_promptset(root, lambda doc: doc["spec"]["templates"].pop("system"))
+
+    with pytest.raises(AaestroError) as exc_info:
+        await reload()
+
+    assert exc_info.value.code == "MOD_002"
+    assert executor.binding is before

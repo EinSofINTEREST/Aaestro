@@ -21,7 +21,7 @@ import uvicorn
 from aaestro.config import load_config
 from aaestro.core.startup import startup_guard
 from aaestro.memory.bootstrap import MemoryDeployment, build_deployment
-from aaestro.observability.metrics import DEFAULT_METRICS_PORT, Metrics, start_metrics_server
+from aaestro.observability.metrics import Metrics, metrics_port_from_env, start_metrics_server
 
 log = structlog.get_logger(__name__)
 
@@ -52,7 +52,7 @@ def _setup_observability() -> Metrics:
     )
     metrics = Metrics()
     start_metrics_server(
-        int(os.environ.get(METRICS_PORT_ENV, DEFAULT_METRICS_PORT)),
+        metrics_port_from_env(METRICS_PORT_ENV),
         registry=metrics.registry,
     )
     return metrics
@@ -97,9 +97,10 @@ def _access(metrics: Metrics) -> Any:
 
 def main() -> None:
     """Run the Memory Service."""
-    metrics = _setup_observability()
     # 설정 로드 뒤의 기동 실패 (깨진 memoryset 선언 등) 도 같은 한 줄로
     with startup_guard(log, "memory service startup failed"):
+        # 포트 설정 읽기 (CFG_001) 도 가드 안 — 로깅 설정이 그보다 먼저라 한 줄은 JSON 이다
+        metrics = _setup_observability()
         _start(metrics)
 
 
