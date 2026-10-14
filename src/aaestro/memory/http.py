@@ -10,16 +10,20 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from secrets import token_urlsafe
 from typing import TYPE_CHECKING, Any
 
-from fastapi import FastAPI, Request, status
+from fastapi import FastAPI, Request, Response, status
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from aaestro.core.errors import AaestroError, ErrorCode
+from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 from aaestro.core.manifest import MemoryMode
 from aaestro.http_errors import request_validation_error, status_for
 from aaestro.memory.client import MEMORY_TOKEN_ENV, MEMORY_URL_ENV
@@ -121,6 +125,13 @@ class LatestRequest(BaseModel):
     entry_id: str
 
 
+def _bearer(request: Request) -> str | None:
+    """Authorization 헤더의 Bearer 토큰 — 없거나 형식이 다르면 None."""
+    header = request.headers.get("authorization", "")
+    prefix = "bearer "
+    return header[len(prefix) :] if header.lower().startswith(prefix) else None
+
+
 def create_app(
     service: MemoryService,
     recall: Recall,
@@ -152,7 +163,38 @@ def create_app(
             raise ValueError("memory service needs either issued tokens or a gate")
         gate = TokenGate(tokens)
     entrance: Gate = gate
-    app = FastAPI(title="Aaestro Memory Service")
+    # API 문서 경로는 닫는다 — 무인증 호출자가 스키마(필드 · 상한)를 열거하지 못하게 (#450)
+    app = FastAPI(title="Aaestro Memory Service", docs_url=None, redoc_url=None, openapi_url=None)
+
+    # 무인증은 이 라우트 하나뿐이다 — route_class 를 바꾸기 **전에** 등록해 AdmitFirstRoute 를
+    # 타지 않게 한다 (의도). 프로세스가 응답하는지만 말하고 저장소 · 레지스트리 상태는 싣지 않는다
+    @app.get("/v1/health")
+    async def health() -> dict[str, str]:
+        """Liveness only — no token, no store or registry state."""
+        return {"status": "ok"}
+
+    class AdmitFirstRoute(APIRoute):
+        """본문을 읽기 전에 신원부터 확인하는 라우트 (#450).
+
+        FastAPI 는 의존성보다 먼저 본문을 읽고 JSON 을 파싱하므로, ``Depends`` 로는 깨진 JSON ·
+        UTF-8 본문이 인증보다 먼저 거절된다. 라우트 핸들러를 감싸 신원 확인(``admit``)을 가장
+        앞에 둔다 — 신원이 없으면 본문 내용과 무관하게 같은 ``MEM_001`` 이다. space 별 판정
+        (``narrow``)은 본문의 space 목록이 필요하므로 라우트 안에 남는다.
+        """
+
+        def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
+            parse_and_run = super().get_route_handler()
+
+            async def admit_then_run(request: Request) -> Response:
+                presented = _bearer(request)
+                declared = await entrance.admit(presented)
+                request.state.presented = presented
+                request.state.declared = declared
+                return await parse_and_run(request)
+
+            return admit_then_run
+
+    app.router.route_class = AdmitFirstRoute
 
     @app.exception_handler(RequestValidationError)
     async def _bad_body(_request: Request, err: RequestValidationError) -> JSONResponse:
@@ -160,6 +202,40 @@ def create_app(
         problem = request_validation_error(err)
         return JSONResponse(
             status_code=status_for(problem), content=problem.payload().model_dump(mode="json")
+        )
+
+    @app.exception_handler(StarletteHTTPException)
+    async def _unroutable_or_unreadable(request: Request, err: StarletteHTTPException) -> Response:
+        """400 (깨진 UTF-8 등) · 404 · 405 도 typed 모양으로 — 기본 ``{"detail"}`` 이 아니다.
+
+        404 · 405 는 라우트 매칭에서 나므로 인증보다 먼저다 — 문서 경로를 닫았으므로 드러나는
+        것은 라우트 몇 개의 존재뿐이다 (09 Access Enforcement 7). 값은 싣지 않는다.
+        """
+        typed = {
+            status.HTTP_400_BAD_REQUEST: (
+                ErrorCategory.VALIDATION,
+                ErrorCode.VAL_002,
+                "request body could not be read",
+            ),
+            status.HTTP_404_NOT_FOUND: (
+                ErrorCategory.NOT_FOUND,
+                ErrorCode.NF_001,
+                "route not found",
+            ),
+            status.HTTP_405_METHOD_NOT_ALLOWED: (
+                ErrorCategory.VALIDATION,
+                ErrorCode.VAL_002,
+                "method not allowed",
+            ),
+        }.get(err.status_code)
+        if typed is None:
+            return await http_exception_handler(request, err)
+        category, code, message = typed
+        problem = AaestroError(category=category, code=code, message=message)
+        return JSONResponse(
+            status_code=err.status_code,
+            content=problem.payload().model_dump(mode="json"),
+            headers=err.headers,
         )
 
     @app.exception_handler(AaestroError)
@@ -176,18 +252,15 @@ def create_app(
     async def granted(
         request: Request, aliases: list[str] | None, *, write: bool
     ) -> tuple[AccessToken, list[str]]:
-        """Bearer 토큰 → 지금 닿을 수 있는 권한, 그리고 대상 별칭.
+        """확인된 신원 → 지금 닿을 수 있는 권한, 그리고 대상 별칭.
 
-        헤더를 직접 읽는다 — ``Depends`` 를 인자 기본값에 두면 lint 가 막고,
-        ``Annotated`` 로만 쓰면 FastAPI 가 dataclass 를 쿼리 파라미터로 읽는다.
+        신원은 ``AdmitFirstRoute`` 가 본문을 읽기 전에 이미 확인했다.
 
         별칭을 지정하지 않으면(검색 전체) 지금 허용된 것만 대상이다 — 회수된 space 하나가
         검색 전체를 실패시키지 않는다. 지정했으면 거부된 별칭이 그대로 ``MEM_001`` 로 간다.
         """
-        header = request.headers.get("authorization", "")
-        prefix = "bearer "
-        presented = header[len(prefix) :] if header.lower().startswith(prefix) else None
-        declared = await entrance.admit(presented)
+        declared: AccessToken = request.state.declared
+        presented: str | None = request.state.presented
         wanted = aliases if aliases is not None else [s.alias for s in declared.spaces]
         narrowed = await entrance.narrow(presented or "", declared, wanted, write=write)
         if aliases is None:
