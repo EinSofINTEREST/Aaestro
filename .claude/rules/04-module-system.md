@@ -177,6 +177,8 @@ spec:
 
 1. **Variables Schema**: 템플릿 변수는 promptset.yaml 에 선언 — 미선언 변수 사용 시
    렌더 단계에서 `MOD_004` 에러 (silent empty rendering 금지)
+   `required: true` 와 `default` 를 함께 선언하면 (`default: null` 은 default 없음과 같다) 모순된 선언이라 로드에서 `MOD_003` 으로 거절한다
+   (`required` 는 호출자가 반드시 준다는 계약, `default` 는 안 줘도 된다는 계약)
 2. **Engine**: Jinja2 고정, `autoescape` 비활성 (프롬프트는 HTML 이 아님).
    **Untrusted Boundary**: 템플릿 변수는 전부 태스크 입력(앞 노드의 산출물 · direct 요청 본문)이므로
    전부 untrusted 다 — 렌더러가 출력되는 모든 표현식 값에 경계를 친다

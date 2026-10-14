@@ -117,7 +117,18 @@ def test_an_unreachable_endpoint_becomes_mem_003():
     assert exc_info.value.code == ErrorCode.MEM_003
 
 
-@pytest.mark.parametrize("body", [{}, {"data": "not a list"}, {"data": [{}]}])
+@pytest.mark.parametrize(
+    "body",
+    [
+        {},
+        {"data": "not a list"},
+        {"data": [{}]},
+        {"data": [{"embedding": 7}]},
+        {"data": [{"embedding": ["qqnot-a-number"] * DIMENSIONS}]},
+        {"data": []},
+        {"data": [{"embedding": [0.5] * DIMENSIONS}] * 2},
+    ],
+)
 def test_an_uninterpretable_response_becomes_mem_003(body):
     """조용히 빈 벡터로 처리하면 그 기억은 검색에서 영원히 사라진다."""
     built = embedder(client=endpoint(body=body))
@@ -214,3 +225,23 @@ def test_the_registry_falls_back_offline(monkeypatch):
     spec = EmbeddingSpec(provider="openai-compatible", model="m", dimensions=DIMENSIONS)
 
     assert isinstance(build_index_registry(spec).embedder, HashEmbedder)
+
+
+def raw_endpoint(content: bytes) -> httpx.Client:
+    """JSON 이 아닌 본문으로 답하는 대역 — 프록시 오류 페이지, 잘린 응답."""
+    return httpx.Client(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, content=content))
+    )
+
+
+@pytest.mark.parametrize("content", [b"<html>qqproxy error</html>", b'{"data": [', b"\xff\xfe"])
+def test_a_body_that_is_not_json_becomes_mem_003_without_echoing_it(content):
+    built = embedder(client=raw_endpoint(content))
+
+    with pytest.raises(AaestroError) as exc_info:
+        built.embed(["x"])
+
+    err = exc_info.value
+    assert err.code == ErrorCode.MEM_003
+    assert isinstance(err.__cause__, ValueError), "원인 체인을 보존한다"
+    assert "qqproxy" not in str(err) + str(err.details)

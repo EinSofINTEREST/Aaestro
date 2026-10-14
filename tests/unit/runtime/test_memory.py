@@ -107,12 +107,20 @@ async def test_search_denies_before_touching_the_store(access):
     """서비스 호출이 우연히 막아주는 것에 기대면, 저장소를 안 거치는 경로가
     생기는 순간 구멍이 된다 — 어댑터가 먼저 거부해야 한다."""
     adapter, _space_id, _registry = access
-    adapter.service = None  # type: ignore[assignment]
+    # 거부의 감사 줄은 서비스가 남긴다 (#447) — 닿으면 안 되는 것은 저장소와 인덱스다
+    adapter.service.store = None  # type: ignore[assignment]
+    adapter.recall = None  # type: ignore[assignment]
 
     with pytest.raises(AaestroError) as exc_info:
         await adapter.search("무엇이든", spaces=["secret"])
 
     assert exc_info.value.code == ErrorCode.MEM_001
+    record = adapter.service.audit_log[-1]
+    assert (record["op"], record["status"], record["memory_space"]) == (
+        "search",
+        "denied",
+        "secret",
+    )
 
 
 async def test_appending_to_an_undeclared_space_is_denied(access):

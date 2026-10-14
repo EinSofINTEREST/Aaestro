@@ -14,8 +14,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from aaestro.core.errors import AaestroError
 from aaestro.memory.recall import AutoRecall, render_context
-from aaestro.memory.service import access_denied
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -61,26 +61,15 @@ class ServiceMemoryAccess:
         # 같은 별칭을 두 번 넘겨도 한 번만 본다 — 중복 검색은 비용만 늘린다
         requested = list(dict.fromkeys(requested))
 
-        # 별칭 해석이 곧 경계 검사다 — 선언되지 않은 별칭은 여기서 MEM_001
-        resolved = [self._space_id(alias) for alias in requested]
-        found = list(self.recall.search(query, spaces=resolved, **kwargs))
+        # 별칭 해석이 곧 경계 검사다 — 선언되지 않은 별칭은 여기서 MEM_001 (감사 줄 포함)
+        resolved = self.service.searchable(self.token, requested)
+        try:
+            found = list(self.recall.search(query, spaces=resolved, **kwargs))
+        except AaestroError:
+            self.service.record_search(self.token, requested, status="failed")
+            raise
         self.service.record_search(self.token, requested)
         return found
-
-    def _space_id(self, alias: str) -> str:
-        """별칭을 실제 space id 로 해석한다 — 인덱스는 id 로 색인된다.
-
-        해석 실패가 곧 접근 거부다: 인덱스는 서비스를 거치지 않으므로 어댑터가
-        경계를 지켜야 한다.
-        """
-        space = self.token.resolve(alias)
-        if space is None:
-            raise access_denied(
-                "memory space is not declared for this agent",
-                agent=self.token.agent,
-                space=alias,
-            )
-        return space.space_id
 
     async def recall_for_task(self, query: str, *, policy: RecallSpec) -> str:
         """Recall once at task entry and render it for the prompt.
@@ -107,7 +96,12 @@ class ServiceMemoryAccess:
             return ""
 
         auto = AutoRecall(recall=self.recall, policy=policy)
-        selected = auto.for_task(query, spaces=[self._space_id(alias) for alias in aliases])
+        resolved = self.service.searchable(self.token, aliases, op="recall")
+        try:
+            selected = auto.for_task(query, spaces=resolved)
+        except AaestroError:
+            self.service.record_search(self.token, aliases, op="recall", status="failed")
+            raise
         self.service.record_search(self.token, aliases, op="recall")
         return render_context(selected)
 

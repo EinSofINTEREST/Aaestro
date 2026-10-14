@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 OP_SEARCH: Final = "search"
 OP_RECALL: Final = "recall"
 STATUS_OK: Final = "ok"
+STATUS_FAILED: Final = "failed"
 
 
 class IndexTelemetry:
