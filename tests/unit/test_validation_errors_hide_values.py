@@ -566,18 +566,23 @@ def _memory_http_client() -> tuple[Any, Any]:
     from aaestro.memory.http import TokenRegistry, create_app
     from aaestro.memory.index import IndexRegistry
     from aaestro.memory.recall import Recall
-    from aaestro.memory.service import MemoryService
+    from aaestro.memory.service import MemoryService, build_token
     from aaestro.memory.store import SqliteMemoryStore
 
     store = SqliteMemoryStore()
     indexer = IndexRegistry()
+    tokens = TokenRegistry()
+    # 인증이 본문 검증보다 먼저다 (#450) — 검증 거절을 보려면 통하는 토큰이 필요하다
+    secret = tokens.issue(build_token(agent="researcher", group=None, local=[("longterm", "r")]))
     app = create_app(
         MemoryService(store=store),
         Recall(indexes=indexer.indexes, store=store),
-        TokenRegistry(),
+        tokens,
         indexer=indexer,
     )
-    return TestClient(app), store
+    client = TestClient(app)
+    client.headers["Authorization"] = f"Bearer {secret}"
+    return client, store
 
 
 def _agentd_http_client() -> tuple[Any, Any]:
