@@ -16,7 +16,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 from aaestro.memory.entry import MemoryEntry
-from aaestro.memory.store import storage_error, validate_entry
+from aaestro.memory.store import DriverErrors, converts_driver_errors, validate_entry
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -66,6 +66,38 @@ _INSERT = (
 )
 
 
+def _connect(dsn: str) -> psycopg.Connection[dict[str, Any]]:
+    """저장소 연결 하나 — 처음 열 때와 끊긴 뒤 다시 열 때 같은 설정을 쓴다."""
+    return psycopg.connect(dsn, row_factory=dict_row, autocommit=True)
+
+
+def _transient(err: Exception) -> bool:
+    """연결 · 서버 쪽 운영 실패 (``OperationalError`` 계열) 만 일시 장애다."""
+    return isinstance(err, psycopg.OperationalError)
+
+
+def _reconnect(store: PostgresMemoryStore) -> None:
+    """끊긴 연결을 다시 연다 — 일시 장애를 retryable 로 내보내는 약속을 지키는 자리다.
+
+    autocommit 연결이라 실패한 문장이 트랜잭션을 남기지 않으므로 rollback 은 없다. 연결이 멀쩡하면
+    아무것도 하지 않는다 (플래그 두 개만 본다 — 왕복이 없다).
+
+    두 자리에서 부른다: 실패 직후 (``recover`` — 끊김을 알게 된 곳) 와 쿼리 앞 (``prepare``).
+    실패 직후의 다시 열기가 실패하면 그 예외는 뒷정리 실패로 기록되고 원래 실패가 그대로
+    올라간다. 그 다음 호출은 쿼리 앞에서 다시 연다 — 닫힌 연결로 한 번 더 실패하지 않는다.
+
+    겹침: 저장소는 Memory Service 의 이벤트 루프 스레드에서만 동기로 불린다 (``async`` 라우트가
+    직접 부르고, 스레드풀 · 백그라운드 스레드가 없다) — 재연결 도중 다른 호출이 끼어들 수 없다.
+    """
+    conn = store._conn  # noqa: SLF001 — 같은 모듈의 구현 내부다
+    if not (conn.closed or conn.broken):
+        return
+    store._conn = _connect(store.dsn)  # noqa: SLF001
+
+
+@converts_driver_errors(
+    DriverErrors(base=psycopg.Error, transient=_transient, recover=_reconnect, prepare=_reconnect)
+)
 @dataclass
 class PostgresMemoryStore:
     """PostgreSQL-backed memory store (prod).
@@ -78,7 +110,7 @@ class PostgresMemoryStore:
     _conn: psycopg.Connection[dict[str, Any]] = field(init=False)
 
     def __post_init__(self) -> None:
-        self._conn = psycopg.connect(self.dsn, row_factory=dict_row, autocommit=True)
+        self._conn = _connect(self.dsn)
         with self._conn.cursor() as cursor:
             cursor.execute(_SCHEMA)
 
@@ -97,16 +129,8 @@ class PostgresMemoryStore:
             AaestroError: MEMORY/``MEM_002`` on validation or storage failure.
         """
         validate_entry(entry)
-        try:
-            with self._conn.cursor() as cursor:
-                cursor.execute(_INSERT, entry.to_row())
-        except psycopg.Error as err:
-            raise storage_error(
-                "failed to store memory entry",
-                space=entry.space,
-                agent=entry.source.agent,
-                entry_id=entry.entry_id,
-            ) from err
+        with self._conn.cursor() as cursor:
+            cursor.execute(_INSERT, entry.to_row())
         return entry
 
     def get(self, entry_id: str) -> MemoryEntry | None:
@@ -115,6 +139,13 @@ class PostgresMemoryStore:
             cursor.execute("SELECT * FROM memory_entries WHERE entry_id = %s", (entry_id,))
             row = cursor.fetchone()
         return MemoryEntry.from_row(row) if row else None
+
+    def space_of(self, entry_id: str) -> str | None:
+        """항목이 속한 space id — 행을 항목으로 만들지 않는다."""
+        with self._conn.cursor() as cursor:
+            cursor.execute("SELECT space FROM memory_entries WHERE entry_id = %s", (entry_id,))
+            row = cursor.fetchone()
+        return str(row["space"]) if row else None
 
     def get_many(self, entry_ids: Sequence[str]) -> dict[str, MemoryEntry]:
         """id 들의 항목을 쿼리 한 번으로 조회한다 — 없는 id 는 결과에 빠진다."""
@@ -174,29 +205,38 @@ class PostgresMemoryStore:
             rows = cursor.fetchall()
         return tuple(str(r["space"]) for r in rows)
 
-    def latest_of_chain(self, entry_id: str) -> MemoryEntry | None:
-        """Follow the correction chain forward.
+    def latest_of_chain(self, space: str, entry_id: str) -> MemoryEntry | None:
+        """Follow the correction chain forward, inside one space.
 
         정정 체인을 앞으로 따라가 최신 항목을 찾습니다 — 대체된 기억을 주입하면
-        모델이 이미 틀린 것으로 정정된 사실을 다시 믿습니다.
+        모델이 이미 틀린 것으로 정정된 사실을 다시 믿습니다. 체인은 ``space`` 를 넘지 않습니다
+        (``space`` 조건이 없으면 다른 space 에서 낸 정정이 이 space 의 기억을 가립니다).
 
         Args:
+            space: The space the chain lives in.
             entry_id: Any entry id in the chain.
 
         Returns:
-            The newest entry superseding it, or None if the id is unknown.
+            The newest entry superseding it, or None if the id is unknown in this space.
         """
-        current = self.get(entry_id)
-        if current is None:
+        # 시작 행도 space 로 좁혀 읽는다 — 다른 space 의 행은 만들지 않는다
+        with self._conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT * FROM memory_entries WHERE entry_id = %s AND space = %s",
+                (entry_id, space),
+            )
+            start = cursor.fetchone()
+        if start is None:
             return None
+        current = MemoryEntry.from_row(start)
 
         seen = {entry_id}
         while True:
             with self._conn.cursor() as cursor:
                 cursor.execute(
-                    "SELECT * FROM memory_entries WHERE supersedes = %s "
+                    "SELECT * FROM memory_entries WHERE supersedes = %s AND space = %s "
                     "ORDER BY created_at DESC, ctid DESC LIMIT 1",
-                    (current.entry_id,),
+                    (current.entry_id, space),
                 )
                 row = cursor.fetchone()
             if row is None:

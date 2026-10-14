@@ -461,21 +461,17 @@ async def test_a_read_only_agent_cannot_hide_a_shared_memory_with_a_correction(o
     seen = await attacker.search("qqorg policy", spaces=["org"])
     assert [s.entry.entry_id for s in seen] == [org.entry_id], "공격자는 id 를 읽을 수 있다"
 
-    # 클라이언트는 4xx 를 MEM_004 로 옮기므로 서비스의 응답을 직접 본다
     forged = entry("local:attacker:longterm", "hide it").model_copy(
         update={"supersedes": org.entry_id}
     )
-    response = await attacker.client.post(
-        f"{BASE_URL}/v1/append",
-        json={"space": "longterm", "entry": forged.model_dump(mode="json")},
-        headers={"authorization": f"Bearer {attacker.token}"},
-    )
+    with pytest.raises(AaestroError) as exc_info:
+        await attacker.append("longterm", entry=forged)
 
-    assert response.status_code < 500
-    assert response.status_code >= 400
-    body = response.json()
-    assert body["code"] == "VAL_002"
-    assert org.entry_id not in response.text
+    refused = exc_info.value
+    assert refused.code == ErrorCode.VAL_002
+    assert not refused.retryable
+    assert org.entry_id not in str(refused)
+    assert org.entry_id not in str(refused.details)
     found = await victim.search("qqorg policy", spaces=["org"])
     assert [s.entry.entry_id for s in found] == [org.entry_id]
 

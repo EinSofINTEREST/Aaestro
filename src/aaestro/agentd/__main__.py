@@ -552,7 +552,7 @@ def _memory_access(agent: str) -> Any:
 
     from aaestro.memory.client import HttpMemoryAccess
 
-    return HttpMemoryAccess(base_url=url, token=token)
+    return HttpMemoryAccess(base_url=url, token=token, agent=agent)
 
 
 def _telemetry_for(manifest: AgentManifest, metrics: Metrics | None) -> ExecutorTelemetry | None:

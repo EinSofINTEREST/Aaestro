@@ -108,13 +108,23 @@ class OpenAICompatibleEmbedder:
                 status=str(response.status_code),
             )
 
-        return self._vectors(response.json())
+        return self._vectors(response, expected=len(texts))
 
-    def _vectors(self, body: Any) -> tuple[tuple[float, ...], ...]:
-        """응답에서 벡터를 꺼내고 차원을 검증한다."""
+    def _vectors(self, response: Any, *, expected: int) -> tuple[tuple[float, ...], ...]:
+        """응답에서 벡터를 꺼내고 개수와 차원을 검증한다.
+
+        외부 응답의 해석 실패는 전부 여기서 구조화 에러가 된다 — JSON 이 아닌 본문, 모양이 다른
+        본문, 수가 아닌 값. 인덱스 · 검색 경로는 ``AaestroError`` 만 실패로 기록하므로 여기서 새는
+        예외는 감사 · 메트릭을 건너뛴다. 본문은 싣지 않는다 (예외 종류 이름만).
+        """
         try:
-            rows = [item["embedding"] for item in body["data"]]
-        except (KeyError, TypeError) as err:
+            rows = [
+                tuple(float(value) for value in item["embedding"])
+                for item in response.json()["data"]
+            ]
+        except (KeyError, TypeError, ValueError) as err:
+            # ValueError 는 JSON 이 아닌 본문 (JSONDecodeError · UnicodeDecodeError) 과
+            # 수로 읽히지 않는 값이다
             raise embedding_error(
                 ErrorCode.MEM_003,
                 "embedding response could not be interpreted",
@@ -122,6 +132,15 @@ class OpenAICompatibleEmbedder:
                 cause=type(err).__name__,
             ) from err
 
+        if len(rows) != expected:
+            # 개수가 어긋나면 인덱스의 zip(strict) · 검색의 언패킹이 ValueError 로 터진다
+            raise embedding_error(
+                ErrorCode.MEM_003,
+                "embedding response does not answer every input",
+                model=self.model,
+                expected=str(expected),
+                received=str(len(rows)),
+            )
         for row in rows:
             if len(row) != self.dimensions:
                 # 09 는 모델/차원 변경을 version bump + 전체 재인덱싱 대상으로
@@ -133,7 +152,7 @@ class OpenAICompatibleEmbedder:
                     declared=str(self.dimensions),
                     received=str(len(row)),
                 )
-        return tuple(tuple(float(value) for value in row) for row in rows)
+        return tuple(rows)
 
     def _http(self) -> Any:
         """요청에 쓸 클라이언트 — 주입하지 않으면 모듈 기본을 쓴다."""

@@ -13,7 +13,14 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from aaestro.memory.telemetry import OP_RECALL, OP_SEARCH, IndexTelemetry
+from aaestro.core.errors import AaestroError
+from aaestro.memory.telemetry import (
+    OP_RECALL,
+    OP_SEARCH,
+    STATUS_FAILED,
+    STATUS_OK,
+    IndexTelemetry,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -149,23 +156,30 @@ class Recall:
         vector_weight = self.hybrid.vector_weight if self.hybrid else 0.6
         lexical_weight = self.hybrid.lexical_weight if self.hybrid else 0.4
 
+        searched = [space for space in spaces if space in self.indexes]
         results: list[ScoredEntry] = []
-        for space in spaces:
-            index = self.indexes.get(space)
-            if index is None:
-                continue
-
-            started = time.perf_counter()
-            fused = reciprocal_rank_fusion(
-                [
-                    index.search_vector(query, k=k, kinds=kinds, tags=tags),
-                    index.search_lexical(query, k=k, kinds=kinds, tags=tags),
-                ],
-                weights=[vector_weight, lexical_weight],
-            )
-            self._record_search(space, duration_s=time.perf_counter() - started)
-
-            results.extend(self._materialise(space, normalize_scores(fused)))
+        durations: dict[str, float] = {}
+        try:
+            for space in searched:
+                index = self.indexes[space]
+                started = time.perf_counter()
+                fused = reciprocal_rank_fusion(
+                    [
+                        index.search_vector(query, k=k, kinds=kinds, tags=tags),
+                        index.search_lexical(query, k=k, kinds=kinds, tags=tags),
+                    ],
+                    weights=[vector_weight, lexical_weight],
+                )
+                durations[space] = time.perf_counter() - started
+                results.extend(self._materialise(space, normalize_scores(fused)))
+        except AaestroError:
+            # 한 호출은 한 결과다 — 호출자는 결과를 하나도 받지 못하므로, 앞서 끝난 space 를
+            # ok 로 세면 감사 줄 (전부 failed) 과 어긋난다
+            for space in searched:
+                self._record_failure(space)
+            raise
+        for space in searched:
+            self._record_search(space, duration_s=durations[space])
 
         results.sort(key=lambda r: (-r.score, r.entry.entry_id))
         return tuple(results[:k])
@@ -212,6 +226,11 @@ class Recall:
                 continue
             found.append(ScoredEntry(entry=entry, score=score, space=space))
         return found
+
+    def _record_failure(self, space: str) -> None:
+        """실패한 검색을 연산 카운터에 남긴다 — 메트릭 미주입 시 무동작."""
+        if self.metrics is not None:
+            IndexTelemetry(self.metrics).operation(space=space, op=OP_SEARCH, status=STATUS_FAILED)
 
     def _record_search(self, space: str, *, duration_s: float) -> None:
         """검색 지연과 연산 카운터를 남긴다 — 메트릭 미주입 시 무동작."""
@@ -309,8 +328,12 @@ class AutoRecall:
             return ()
 
         self.invocations += 1
+        try:
+            found = self.recall.search(query, spaces=spaces, k=self.policy.k)
+        except AaestroError:
+            self._record_recall(spaces, status=STATUS_FAILED)
+            raise
         self._record_recall(spaces)
-        found = self.recall.search(query, spaces=spaces, k=self.policy.k)
         selected = apply_budget(
             found,
             min_score=self.policy.min_score,
@@ -327,14 +350,14 @@ class AutoRecall:
         )
         return selected
 
-    def _record_recall(self, spaces: Sequence[str]) -> None:
-        """자동 회상 1회를 space 별로 센다 — 메트릭 미주입 시 무동작."""
+    def _record_recall(self, spaces: Sequence[str], *, status: str = STATUS_OK) -> None:
+        """자동 회상 1회를 space 별로 센다 — 검색이 끝난 뒤, 그 결과로. 메트릭 미주입 시 무동작."""
         metrics = self.recall.metrics
         if metrics is None:
             return
         telemetry = IndexTelemetry(metrics)
         for space in spaces:
-            telemetry.operation(space=space, op=OP_RECALL)
+            telemetry.operation(space=space, op=OP_RECALL, status=status)
 
 
 __all__ = [
