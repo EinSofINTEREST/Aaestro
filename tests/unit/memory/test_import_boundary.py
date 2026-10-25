@@ -18,6 +18,7 @@ FORBIDDEN = (
     "aaestro.ui",
     "langgraph",
     "langchain",
+    "langchain_core",
     "docker",
     "a2a",
     "mcp",
