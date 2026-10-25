@@ -200,6 +200,11 @@ def admit_first(admit: Admission) -> type[AdmittingRoute]:
     return AdmitFirstRoute
 
 
+OpenRoute = tuple[str, str]
+"""(HTTP 메서드, 경로 또는 접두사) — 자격 없이 열린 곳. 메서드까지 묶어야
+열린 경로의 다른 메서드가 라우팅까지 닿지 않는다."""
+
+
 class AdmitBeforeRouting:
     """ASGI middleware that checks the caller before the request is routed (#462).
 
@@ -211,9 +216,11 @@ class AdmitBeforeRouting:
     거절은 ``admit`` 이 던지는 ``HTTPException`` 이고, FastAPI 기본 모양 그대로 답합니다
     (``{"detail"}`` + 헤더). 검사가 ``AaestroError`` (신원 저장소 장애 등) 를 내면 ``render_error``
     로 앱과 같은 typed 응답을 냅니다 — 이 층은 앱의 예외 핸들러 바깥이라, 넘기지 않으면 plain
-    500 이 됩니다. ``render_error`` 가 없으면 그대로 올립니다. 열린 경로는 정확히 일치하는
-    ``open_paths`` 와 ``open_prefixes`` 아래뿐입니다. 자격이 있는 요청은 그대로 라우팅되어
-    404 · 405 를 지금처럼 받습니다.
+    500 이 됩니다. ``render_error`` 가 없으면 그대로 올립니다.
+    열린 곳은 (메서드, 경로) 쌍으로 정확히 일치하는 ``open_routes`` 와 (메서드, 접두사) 쌍인
+    ``open_prefixes`` 아래뿐입니다 — 열린 경로에 다른 메서드로 오면 닫힌 경로와 같은 401 입니다
+    (405 + ``Allow`` 로 메서드가 새지 않게). 자격이 있는 요청은 그대로 라우팅되어 404 · 405 를
+    지금처럼 받습니다.
     """
 
     def __init__(
@@ -221,18 +228,18 @@ class AdmitBeforeRouting:
         app: ASGIApp,
         *,
         admit: Admission,
-        open_paths: frozenset[str],
-        open_prefixes: tuple[str, ...] = (),
+        open_routes: frozenset[OpenRoute],
+        open_prefixes: tuple[OpenRoute, ...] = (),
         render_error: Callable[[AaestroError], Response] | None = None,
     ) -> None:
         self.app = app
         self._admit = admit
-        self._open_paths = open_paths
+        self._open_routes = open_routes
         self._open_prefixes = open_prefixes
         self._render_error = render_error
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http" or self._is_open(scope["path"]):
+        if scope["type"] != "http" or self._is_open(scope["method"], scope["path"]):
             await self.app(scope, receive, send)
             return
         # 헤더만 읽는다 — 본문(receive)은 건드리지 않는다
@@ -252,8 +259,11 @@ class AdmitBeforeRouting:
             return
         await self.app(scope, receive, send)
 
-    def _is_open(self, path: str) -> bool:
-        return path in self._open_paths or path.startswith(self._open_prefixes)
+    def _is_open(self, method: str, path: str) -> bool:
+        return (method, path) in self._open_routes or any(
+            method == open_method and path.startswith(prefix)
+            for open_method, prefix in self._open_prefixes
+        )
 
 
 __all__ = [
@@ -261,6 +271,7 @@ __all__ = [
     "BEARER",
     "AdmitBeforeRouting",
     "Admission",
+    "OpenRoute",
     "AdmittingRoute",
     "admit_first",
     "is_loopback",

@@ -159,7 +159,7 @@ curl -X POST http://127.0.0.1:18081/v1/invoke \
        "input":{"msg":"hello"},"trace":{"trace_id":"tr-1"}}'
 ```
 
-The Control API requires a per-agent token; `/v1/health` is the only unauthenticated
+The Control API requires a per-agent token; `GET /v1/health` is the only unauthenticated
 endpoint (Docker's healthcheck calls it directly). In production the runtime mints a
 random token per agent and injects it — the dev stack uses a fixed placeholder so the
 same code path stays exercised.

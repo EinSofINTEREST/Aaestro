@@ -28,7 +28,13 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 from aaestro.core.manifest import AgentManifest, ModelOverride
 from aaestro.core.topology import GraphTopology
-from aaestro.http_auth import AdmitBeforeRouting, admit_first, presented_token, require_token
+from aaestro.http_auth import (
+    AdmitBeforeRouting,
+    OpenRoute,
+    admit_first,
+    presented_token,
+    require_token,
+)
 from aaestro.http_errors import request_validation_error, status_for, unroutable_problem
 from aaestro.materials import Materials
 from aaestro.orchestrator.bodies import parsed as _parsed
@@ -49,9 +55,9 @@ if TYPE_CHECKING:
     from aaestro.runtime.images import ImageBuilder
 
 HEALTH_PATH = "/v1/health"
-OPEN_PATHS = frozenset({HEALTH_PATH, "/", "/ui"})
-"""자격 없이 닿는 경로 — health 와 운영자 화면 (화면 자체는 데이터를 갖지 않는다)."""
-OPEN_PREFIXES = ("/ui/",)
+OPEN_ROUTES: frozenset[OpenRoute] = frozenset({("GET", HEALTH_PATH), ("GET", "/"), ("GET", "/ui")})
+"""자격 없이 닿는 (메서드, 경로) — health 와 운영자 화면 (화면 자체는 데이터를 갖지 않는다)."""
+OPEN_PREFIXES: tuple[OpenRoute, ...] = (("GET", "/ui/"),)
 """화면의 정적 파일 — 인증은 화면이 부르는 `/v1/*` 에 있다."""
 
 DEFAULT_STEERED_BY = "operator"
@@ -365,7 +371,7 @@ def create_app(
         app.add_middleware(
             AdmitBeforeRouting,
             admit=before_routing,
-            open_paths=OPEN_PATHS,
+            open_routes=OPEN_ROUTES,
             open_prefixes=OPEN_PREFIXES,
             render_error=_error_response,
         )

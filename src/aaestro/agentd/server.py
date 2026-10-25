@@ -187,7 +187,8 @@ def create_app(runtime: AgentRuntime, *, token: str | None = None) -> FastAPI:
     if token is not None:
         # 라우팅보다도 먼저 — 없는 경로 404 · 틀린 메서드 405 + `Allow` 로 라우트 표가 새지 않게.
         # 라우트별 검사(guarded)와 같은 검사다: 라우터에서 빠진 라우트도 이 층이 막는다
-        app.add_middleware(AdmitBeforeRouting, admit=check, open_paths=frozenset({HEALTH_PATH}))
+        open_health = frozenset({("GET", HEALTH_PATH)})
+        app.add_middleware(AdmitBeforeRouting, admit=check, open_routes=open_health)
 
     @app.exception_handler(RequestValidationError)
     async def _bad_body(_request: Request, err: RequestValidationError) -> JSONResponse:

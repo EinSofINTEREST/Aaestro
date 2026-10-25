@@ -463,3 +463,29 @@ async def test_a_storage_failure_before_routing_is_the_typed_503(tmp_path):
     error = response.json()["error"]
     assert (error["code"], error["retryable"]) == ("STOR_003", True)
     assert "some-agent" not in response.text
+
+
+@pytest.mark.parametrize("method", ["POST", "DELETE", "OPTIONS", "HEAD"])
+@pytest.mark.parametrize("path", ["/v1/health", "/", "/ui", "/ui/", "/ui/index.html"])
+async def test_open_paths_are_open_for_get_only(api, path, method):
+    """열린 경로의 다른 메서드는 닫힌 경로와 같은 401 — 405 + `Allow` 로 메서드가 새지 않는다."""
+    # 같은 메서드로 닫힌 경로를 부른 응답과 헤더 전체까지 같아야 한다 (HEAD 는 본문이 없다)
+    reference = await api.request(method, "/v1/nope", follow_redirects=False)
+
+    response = await api.request(method, path, follow_redirects=False)
+
+    assert reference.status_code == 401
+    assert (response.status_code, response.content, dict(response.headers)) == (
+        reference.status_code,
+        reference.content,
+        dict(reference.headers),
+    )
+    assert "allow" not in response.headers
+
+
+async def test_an_authenticated_wrong_method_on_health_is_still_405(api):
+    """자격이 있는 호출자는 라우팅까지 닿는다."""
+    response = await api.post("/v1/health", headers=OPERATOR)
+
+    assert response.status_code == 405
+    assert response.headers["allow"] == "GET"

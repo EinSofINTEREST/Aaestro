@@ -43,7 +43,8 @@ a token (`CFG_001`), and it logs a warning when it starts without one. Set a tok
 anything but a single-operator machine.
 
 Two routes are unauthenticated by design even with a token set: `GET /v1/health` (Docker
-healthchecks call it) and the static UI under `/ui` (the page holds no data of its own).
+healthchecks call it) and the static UI under `/ui` (the page holds no data of its own). Only `GET` is open on them —
+any other method (`HEAD` included) gets the same `401` as a closed path.
 
 A missing or wrong token is `401` — and that response is **not** the error envelope below.
 It is FastAPI's own `{"detail": "invalid control plane token"}` with a `WWW-Authenticate`
@@ -56,7 +57,7 @@ trailing slash is not redirected to the real route.
 **A credential is checked before the request is routed, and it only opens its own audience's
 paths.** The control plane token reaches every path; the enforcer token reaches the enforcer
 routes (decisions, identities, change feed); a live agent identity reaches the routes agents
-use (change feed, tickets, verify, grants). Outside `GET /v1/health`, `/` and `/ui`, any other
+use (change feed, tickets, verify, grants). Outside `GET /v1/health`, `GET /` and `GET /ui`, any other
 request — no credential, an unknown one, or a valid one outside its audience — gets the `401`
 above whatever the path or method: a route that exists, one that does not, a wrong method and a
 trailing slash all answer alike, so the route table cannot be enumerated. The refusal text is

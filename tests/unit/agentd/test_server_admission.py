@@ -138,7 +138,13 @@ PROBES = [
     pytest.param("POST", "/v1/invoke/", id="trailing-slash"),
     pytest.param("GET", "/openapi.json", id="openapi"),
     pytest.param("GET", "/v1/health/", id="health-with-slash"),
+    pytest.param("POST", "/v1/health", id="health-post"),
+    pytest.param("DELETE", "/v1/health", id="health-delete"),
+    pytest.param("OPTIONS", "/v1/health", id="health-options"),
 ]
+
+# HEAD 응답은 본문이 없다 — 따로 상태와 챌린지만 본다
+HEAD_PROBE = "/v1/health"
 
 
 @pytest.mark.parametrize(("method", "path"), PROBES)
@@ -200,3 +206,27 @@ def test_without_a_configured_token_the_body_is_validated_directly():
 
     assert response.status_code == 400
     assert response.json()["code"] == "VAL_002"
+
+
+@pytest.mark.parametrize("headers", [{}, {"authorization": "Bearer wrong"}], ids=["none", "wrong"])
+def test_head_on_health_is_rejected_like_any_closed_path(headers):
+    """Docker healthcheck 는 GET 만 쓴다 — HEAD 는 열지 않는다."""
+    api = client()
+
+    closed = api.head("/v1/nope", headers=headers)
+    response = api.head(HEAD_PROBE, headers=headers)
+
+    assert closed.status_code == 401
+    assert (response.status_code, dict(response.headers)) == (
+        closed.status_code,
+        dict(closed.headers),
+    )
+    assert "allow" not in response.headers
+
+
+def test_an_authenticated_wrong_method_on_health_is_still_405():
+    """자격이 있는 호출자는 라우팅까지 닿는다 — 405 는 그대로다 (열거 방어는 무자격 대상)."""
+    response = client().post("/v1/health", headers=AUTH)
+
+    assert response.status_code == 405
+    assert response.headers["allow"] == "GET"
