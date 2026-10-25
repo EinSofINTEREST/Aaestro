@@ -391,6 +391,35 @@ async def test_a_failed_restart_is_retried_with_backoff():
     await agents.stop_all()
 
 
+async def test_a_failed_restart_does_not_stop_the_same_container_twice():
+    """#491 — 교체 실패 뒤의 재시도가 이미 정지·제거한 원래 컨테이너를 또 정지시키지 않는다.
+
+    `_replace` 는 원래 컨테이너를 정지한 **뒤** `engine.start` 가 실패해도 같은
+    `launched` 를 자리에 되돌린다 — 그 handle 로 다음 재시도가 다시 `engine.stop` 을
+    부르면 이미 없는 컨테이너에 대한 거짓 WARN (`container stop failed` /
+    `container removal failed`) 이 재시도마다 쌓인다.
+    """
+    client = FakeDockerClient()
+    clock = FakeClock()
+    metrics = Metrics(registry=CollectorRegistry())
+    waits = ClockedSleep(clock, client, heal_after=2)
+    agents = launcher(client, waits, metrics=metrics, health_interval_s=None)
+    launched, _ = await start_sick(agents)
+    launched.lifecycle.restart_policy = RestartPolicy(clock=clock)
+    break_restarts(client)
+
+    await restart_now(agents, launched)
+
+    # 세 번 시도했지만(재기동 실패 2회 + 성공 1회), 원래 컨테이너는 한 번만 정지·제거된다.
+    # 실패한 재시도마다 반쯤 만들어진 **새** 컨테이너도 따로 지워지므로 (`_discard`),
+    # 원래 handle 의 id 가 몇 번 나오는지로만 본다
+    original_id = launched.handle.container_id
+    assert len(waits.waits) == 3
+    assert [cid for cid, _ in client.stopped if cid == original_id] == [original_id]
+    assert [cid for cid in client.removed if cid == original_id] == [original_id]
+    await agents.stop_all()
+
+
 async def test_restarts_that_keep_failing_end_in_failed():
     """02 Rule 6 — 재기동 실패도 창 안의 재시작으로 센다: 상한을 넘으면 Failed + 알림."""
     client = FakeDockerClient()
