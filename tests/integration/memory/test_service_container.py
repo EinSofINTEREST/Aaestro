@@ -78,6 +78,10 @@ def service():
         f"{PORT}:8090",
         "-v",
         f"{REPO_ROOT}:/repo:ro",
+        # 토큰 모드는 run scope 를 선언한 그래프가 있으면 기동을 거부한다 (#469) —
+        # 그래프 선언을 빈 tmpfs 로 가려 run scope 없는 트리로 띄운다 (compose.e2e.yaml 과 같다)
+        "--tmpfs",
+        "/repo/graphs:size=1m",
         IMAGE,
     )
     try:
