@@ -166,7 +166,8 @@ def build_deployment(
     """
     from aaestro.catalog import Catalog
 
-    catalog = Catalog.under(root)
+    # control plane 과 같은 루트 해석 — 설정된 graphs 위치가 기본과 달라도 같은 선언을 본다
+    catalog = Catalog.from_config(config.registry.roots, base=root)
     agents, groups_found = catalog.agents(), catalog.groups()
     problems = [*agents.problems, *groups_found.problems]
     if problems:

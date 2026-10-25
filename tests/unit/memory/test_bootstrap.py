@@ -279,3 +279,34 @@ def test_token_mode_refuses_the_repository_graphs():
 
     with pytest.raises(AaestroError):
         build_deployment(_config(), root=REPO_ROOT)
+
+
+def test_token_mode_reads_graphs_from_the_configured_root(token_root):
+    """control plane 과 같은 선언을 본다 — 기본 graphs/ 가 비어도 설정된 위치를 놓치지 않는다."""
+    from aaestro.core.errors import AaestroError, ErrorCode
+
+    configured = token_root / "custom-graphs"
+    configured.mkdir()
+    (configured / "with-space.yaml").write_text(
+        _graph_text("with-space", with_space=True), encoding="utf-8"
+    )
+    (configured / "broken.yaml").write_text("kind: Graph\n", encoding="utf-8")
+    config = _config()
+    config = config.model_copy(
+        update={
+            "registry": config.registry.model_copy(
+                update={
+                    "roots": config.registry.roots.model_copy(update={"graphs": "custom-graphs"})
+                }
+            )
+        }
+    )
+
+    with pytest.raises(AaestroError) as excinfo:
+        build_deployment(config, root=token_root)
+
+    assert excinfo.value.code == ErrorCode.CFG_001
+    assert excinfo.value.details["run_scope_spaces"] == [
+        {"graph": "with-space", "alias": "scratch"}
+    ]
+    assert excinfo.value.details["unreadable_graphs"] == ["custom-graphs/broken.yaml"]
