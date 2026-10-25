@@ -10,6 +10,7 @@ import asyncio
 from pathlib import Path
 
 import pytest
+import structlog.testing
 
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 from aaestro.runtime.control import ControlClient
@@ -19,8 +20,9 @@ from aaestro.runtime.deployments import (
     DeploymentStatus,
     InMemoryDeploymentStore,
 )
-from aaestro.runtime.docker.engine import DockerEngine
+from aaestro.runtime.docker.engine import AGENT_LABEL, DockerEngine
 from aaestro.runtime.lifecycle import AgentState
+from aaestro.runtime.spec import container_name
 from tests.fixtures.waiting import until
 from tests.unit.runtime.test_deployments import (  # noqa: F401 — fixture
     SIDECAR,
@@ -280,6 +282,78 @@ async def test_a_deployment_interrupted_while_starting_holds_its_agents(planes):
     assert (await manager.teardown("dep-interrupted")).status == DeploymentStatus.STOPPED
     assert (await manager.deploy(OVERLAP)).status == DeploymentStatus.READY
     await manager.launcher.stop_all()
+
+
+def interrupted_record() -> DeploymentRecord:
+    """기동 도중 죽은 배포 — agents 가 비었고 선언된 이름만 있다."""
+    return DeploymentRecord(
+        deployment_id="dep-interrupted",
+        graph="solo",
+        version="1.0.0",
+        status=DeploymentStatus.STARTING,
+        updated_at="2026-10-14T00:00:00+00:00",
+        a2a_secret="s",
+        declared=("alpha",),
+    )
+
+
+def track_revocations(manager: DeploymentManager) -> list[str]:
+    registry = with_access(manager)
+    revoked: list[str] = []
+    original = registry.revoke_deployment
+
+    def recording(deployment_id: str) -> int:
+        revoked.append(deployment_id)
+        return original(deployment_id)
+
+    registry.revoke_deployment = recording  # type: ignore[method-assign]
+    return revoked
+
+
+async def test_teardown_of_an_interrupted_deployment_removes_its_orphan_containers(planes):
+    """기동 도중 죽은 배포는 agents 가 비어 있다 — 선언된 이름으로 남은 컨테이너를 치운다."""
+    make, fake = planes
+    first = make(InMemoryDeploymentStore())
+    await first.deploy("solo")
+    agent_container = fake.find(container_name("alpha", 0))
+    assert agent_container is not None
+    orphans = set(fake.labeled({AGENT_LABEL: "alpha"}))
+    assert agent_container in orphans
+    # 새 control plane — launcher 는 이 컨테이너를 모르고, 기록은 STARTING 에 agents 가 비었다
+    store = InMemoryDeploymentStore()
+    store.upsert(interrupted_record())
+    manager = make(store)
+    revoked = track_revocations(manager)
+
+    assert (await manager.teardown("dep-interrupted")).status == DeploymentStatus.STOPPED
+
+    assert agent_container in fake.removed
+    assert orphans <= set(fake.removed)
+    assert fake.labeled({AGENT_LABEL: "alpha"}) == ()
+    assert revoked == ["dep-interrupted"]
+    assert "alpha" not in manager._claimed  # noqa: SLF001
+    await first.launcher.stop_all()
+
+
+async def test_teardown_survives_a_failing_orphan_lookup(planes, monkeypatch):
+    """조회 실패가 신원 회수와 STOPPED 기록을 막으면 해체한 배포가 READY 로 남는다."""
+    make, fake = planes
+    store = InMemoryDeploymentStore()
+    store.upsert(interrupted_record())
+    manager = make(store)
+    revoked = track_revocations(manager)
+
+    def unreachable(labels):
+        raise ConnectionError("daemon unreachable")
+
+    monkeypatch.setattr(fake, "labeled", unreachable)
+
+    with structlog.testing.capture_logs() as logs:
+        record = await manager.teardown("dep-interrupted")
+
+    assert record.status == DeploymentStatus.STOPPED
+    assert revoked == ["dep-interrupted"]
+    assert any(e["event"] == "orphan containers could not be listed" for e in logs)
 
 
 async def test_an_overlap_with_a_reattached_deployment_is_refused(planes):

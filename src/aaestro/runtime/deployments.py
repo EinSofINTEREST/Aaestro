@@ -32,6 +32,7 @@ from aaestro.access.model import ACCESS_CREDENTIAL_ENV
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 from aaestro.core.manifest import MANIFEST_ENV, agent_name
 from aaestro.protocols.mcp.transport import MCP_PROXY_URL_ENV
+from aaestro.runtime.docker.engine import AGENT_LABEL, ContainerHandle
 from aaestro.runtime.images import image_tag
 from aaestro.runtime.launcher import LaunchedAgent, MemoryEndpoint
 from aaestro.runtime.scope import ScopedSecrets
@@ -569,7 +570,8 @@ class DeploymentManager:
             )
 
     async def _teardown(self, record: DeploymentRecord) -> DeploymentRecord:
-        names = list(dict.fromkeys(agent.name for agent in record.agents))
+        # 기동 도중 끊긴 배포는 agents 가 비어 있다 — 선언된 이름이 컨테이너를 찾는 유일한 단서다
+        names = list(dict.fromkeys([*record.declared, *(a.name for a in record.agents)]))
         # 끝날 때까지 쥔다 — 하나씩 멈추는 사이 새 배포가 서면 아래 sidecars.stop 이 그 배포의
         # 사이드카를 지운다. 이미 다른 쪽이 쥔 이름은 그쪽이 놓는다
         held = [n for n in names if n not in self._claimed]
@@ -587,6 +589,10 @@ class DeploymentManager:
             # 에이전트 정지가 실패해도 사이드카는 치운다 — 03 Placement 1, lifecycle 을 함께한다
             for name in names:
                 await self.sidecars.stop(name)
+            # launcher 가 모르는 컨테이너 (control plane 재시작 전에 뜬 것) 도 치운다. 사이드카도
+            # 같은 라벨을 달아 sidecars.stop 이 놓친 것이 있으면 여기서 한 번 더 지워진다 (멱등)
+            for name in names:
+                await self._remove_orphans(name)
             # 해체를 요청한 이상 신원은 죽인다 — 정지 하나가 실패했다고 모든 신원이 살아 남으면
             # 운영자가 끝냈다고 믿는 배포가 강제 지점을 계속 통과한다
             self._revoke_identities(record.deployment_id)
@@ -596,6 +602,24 @@ class DeploymentManager:
         self.store.upsert(stopped)
         self._bind_log(stopped).info("deployment stopped", agents=len(record.agents))
         return stopped
+
+    async def _remove_orphans(self, agent: str) -> None:
+        """이 에이전트 라벨이 붙은 남은 컨테이너 전부를 지운다 — launcher 의 핸들 없이.
+
+        조회 실패는 신원 회수와 남은 이름의 정리를 막지 않는다 — `McpSidecars.stop` 과 같은 규칙.
+        정지·제거 실패는 `engine.stop` 이 스스로 삼키고 기록한다.
+        """
+        engine = self.launcher.engine
+        try:
+            found = await asyncio.to_thread(engine.client.labeled, {AGENT_LABEL: agent})
+        except Exception as err:  # noqa: BLE001 — 찾지 못해도 해체는 끝까지 간다; 로그로 드러낸다
+            log.warning("orphan containers could not be listed", agent=agent, exc_info=err)
+            return
+        for container_id in found:
+            handle = ContainerHandle(
+                agent=agent, container_id=container_id, image="unknown", control_port=0
+            )
+            await engine.stop(handle)
 
     async def reattach(self) -> Sequence[DeploymentRecord]:
         """After a restart, find the containers we left running and pick them back up.
