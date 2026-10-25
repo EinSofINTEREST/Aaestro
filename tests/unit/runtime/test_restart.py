@@ -568,3 +568,70 @@ async def test_giving_up_logs_the_last_restart_failure(monkeypatch: pytest.Monke
     assert len(gave_up) == 1
     assert gave_up[0]["last_error_code"] == "RT_001"
     await agents.stop_all()
+
+
+@pytest.mark.parametrize("hold", ["finished", "backoff", "engine_start"])
+async def test_stop_restart_scheduled_while_stopping_another_replica_leaves_no_orphan(
+    monkeypatch: pytest.MonkeyPatch, hold: str
+):
+    """#491 리뷰 — 정지가 재시작 목록을 먼저 찍고 나면, 다른 레플리카를 정지하는 동안
+    그 레플리카의 감시가 건 재시작이 컨테이너를 다시 세워 정지 뒤에 미아로 남았다.
+
+    정지가 그 레플리카에 닿을 때 재시작이 이미 끝났는지 (`finished`), backoff 에서
+    (`backoff`) 또는 기동 진입에서 (`engine_start`) 아직 돌고 있는지를 나눠 본다.
+    """
+    client = FakeDockerClient()
+    restart_entered, restart_release = asyncio.Event(), asyncio.Event()
+
+    async def restart_sleep(_delay: float) -> None:
+        if hold == "backoff":
+            restart_entered.set()
+            await restart_release.wait()
+
+    agents = launcher(client, restart_sleep, health_interval_s=None)
+    first = await agents.start(manifest(), replica=0)
+    second = await agents.start(manifest(), replica=1)
+
+    if hold == "engine_start":
+        engine_start = agents.engine.start
+
+        async def held_start(spec):
+            restart_entered.set()
+            await restart_release.wait()
+            return await engine_start(spec)
+
+        monkeypatch.setattr(agents.engine, "start", held_start)
+
+    # 첫 레플리카의 Docker 정지를 붙잡는다 — 그 틈이 경쟁 창이다
+    stop_entered, stop_release = asyncio.Event(), asyncio.Event()
+    engine_stop = agents.engine.stop
+
+    async def held_stop(handle, *args, **kwargs):
+        if handle is first.handle:
+            stop_entered.set()
+            await stop_release.wait()
+        await engine_stop(handle, *args, **kwargs)
+
+    monkeypatch.setattr(agents.engine, "stop", held_stop)
+    stopping = asyncio.create_task(agents.stop("echo"))
+    await stop_entered.wait()
+
+    # 둘째 레플리카의 감시 루프가 Unhealthy 를 보고한 것과 같은 콜백
+    second.lifecycle.record_health(healthy=False, threshold=1)
+    agents._promote(second, AgentState.UNHEALTHY, healthy=False)
+    if hold == "finished":
+        await until(agents._restarts["echo", 1].done)
+        assert len(client.created) == 3, "재시작이 새 컨테이너를 세우지 않았다 — 전제가 틀렸다"
+    else:
+        await until(restart_entered.is_set)
+
+    stop_release.set()
+    await stopping
+    restart_release.set()
+    await spin(50)
+    await agents.engine.settle_cleanups()
+
+    orphans = client.labeled({})
+    assert not orphans, f"정지 중 재시작이 세운 컨테이너가 미아로 남았다: {orphans}"
+    assert not agents.launched, "정지 뒤에 레플리카가 남았다"
+    assert not agents._restarts, "재시작 태스크가 소유자 없이 남았다"

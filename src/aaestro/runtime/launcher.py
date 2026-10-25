@@ -648,7 +648,12 @@ class AgentLauncher:
             else self.replicas_of(agent)
         )
         for launched in targets:
+            key = (agent, launched.replica)
             await self._unwatch(launched)
+            # 감시를 끈 **뒤에** 다시 끊는다: 앞 레플리카를 정지하는 동안 이 레플리카의 감시가
+            # 새 재시작을 걸었을 수 있다. 그 재시작이 이미 교체를 끝냈으면 목록의 것이 새 컨테이너다
+            await self._cancel_restart(key)
+            launched = self.launched.get(key, launched)
             # 02 Lifecycle 5 — 정지 전에 새 태스크 수락을 멈춘다.
             # STARTING 에서 바로 멈추는 경우도 있어 Draining 을 강요하지 않는다
             if launched.lifecycle.state is AgentState.READY:
