@@ -81,6 +81,7 @@ class FakeDockerClient:
                     "SecurityOpt": kwargs.get("security_opt"),
                     "User": kwargs.get("user"),
                     "NetworkMode": kwargs.get("network_mode"),
+                    "PidsLimit": kwargs.get("pids_limit"),
                 }
         raise LookupError(container_id)
 

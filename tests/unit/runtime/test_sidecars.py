@@ -12,6 +12,7 @@ from aaestro.runtime.sidecars import (
     sidecar_env,
     sidecar_network,
 )
+from aaestro.runtime.spec import DEFAULT_PID_LIMIT
 from tests.fixtures.builders import make_manifest
 from tests.fixtures.fake_docker import FakeDockerClient
 
@@ -205,11 +206,25 @@ async def test_reattach_replaces_a_sidecar_attached_to_another_network():
     assert first in docker.removed
 
 
+SOUND_SIDECAR_HARDENING = {
+    "CapDrop": ["ALL"],
+    "ReadonlyRootfs": True,
+    "User": "1000:1000",
+    "SecurityOpt": ["no-new-privileges:true"],
+    "PidsLimit": DEFAULT_PID_LIMIT,
+}
+
+
 @pytest.mark.parametrize(
     "hardening",
     [
         {"CapDrop": None, "ReadonlyRootfs": True, "User": "1000:1000"},
         {"CapDrop": ["ALL"], "ReadonlyRootfs": True, "User": "1000:1000", "Privileged": True},
+        {**SOUND_SIDECAR_HARDENING, "PidsLimit": 0},
+        {
+            **SOUND_SIDECAR_HARDENING,
+            "SecurityOpt": ["no-new-privileges:true", "seccomp=unconfined"],
+        },
     ],
 )
 async def test_reattach_replaces_a_sidecar_that_lost_its_hardening(hardening):
