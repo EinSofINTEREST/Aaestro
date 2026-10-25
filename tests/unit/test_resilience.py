@@ -200,3 +200,158 @@ async def test_success_on_the_first_try_does_not_wait(slept: list[float]):
 
     assert await retrying(NETWORK_RETRY, op, rng=fixed_rng()) == "ok"
     assert slept == []
+
+
+async def test_cancel_and_wait_swallows_only_the_cancelled_tasks_own_cancellation():
+    from aaestro.resilience import cancel_and_wait
+
+    task = asyncio.create_task(asyncio.Event().wait())
+    await asyncio.sleep(0)
+
+    await cancel_and_wait(task)
+
+    assert task.cancelled()
+
+
+async def test_cancel_and_wait_returns_for_a_finished_task():
+    from aaestro.resilience import cancel_and_wait
+
+    task = asyncio.create_task(asyncio.sleep(0))
+    await task
+
+    await cancel_and_wait(task)
+
+
+async def test_cancel_and_wait_propagates_other_errors():
+    from aaestro.resilience import cancel_and_wait
+
+    async def fails_on_cancel() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            raise RuntimeError("cleanup failed") from None
+
+    task = asyncio.create_task(fails_on_cancel())
+    await asyncio.sleep(0)
+
+    with pytest.raises(RuntimeError, match="cleanup failed"):
+        await cancel_and_wait(task)
+
+
+async def test_cancel_and_wait_reraises_a_cancellation_aimed_at_the_waiter():
+    """기다리는 쪽이 받은 취소를 삼키면 바깥 timeout 이 사라진다 (#490)."""
+    from aaestro.resilience import cancel_and_wait
+
+    async def slow_to_cancel() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await asyncio.sleep(0.5)
+            raise
+
+    task = asyncio.create_task(slow_to_cancel())
+    await asyncio.sleep(0)
+
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(cancel_and_wait(task), 0.1)
+
+
+async def test_cancel_and_wait_retrieves_the_error_of_an_already_failed_task():
+    from structlog.testing import capture_logs
+
+    from aaestro.resilience import cancel_and_wait
+
+    async def boom() -> None:
+        raise RuntimeError("boom")
+
+    task = asyncio.create_task(boom())
+    await asyncio.wait([task])
+
+    with capture_logs() as logs:
+        await cancel_and_wait(task)
+
+    assert [e["log_level"] for e in logs] == ["warning"]
+
+
+async def test_cancel_all_and_wait_cancels_each_task_only_once():
+    from aaestro.resilience import cancel_all_and_wait
+
+    finished: list[int] = []
+
+    def make(index: int, delay: float) -> asyncio.Task[None]:
+        async def run() -> None:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                await asyncio.sleep(delay)
+                finished.append(index)
+                raise
+
+        return asyncio.create_task(run())
+
+    tasks = [make(0, 0.05), make(1, 0.15), make(2, 0.01)]
+    await asyncio.sleep(0)
+
+    failures = await cancel_all_and_wait(tasks)
+
+    assert sorted(finished) == [0, 1, 2] and failures == {}
+
+
+async def test_cancel_all_and_wait_reports_failures_and_yields_to_outer_cancel():
+    from aaestro.resilience import cancel_all_and_wait
+
+    async def fails() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            raise RuntimeError("cleanup failed") from None
+
+    task = asyncio.create_task(fails())
+    await asyncio.sleep(0)
+    failures = await cancel_all_and_wait([task])
+    assert list(failures) == [task] and isinstance(failures[task], RuntimeError)
+
+    async def slow() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await asyncio.sleep(0.5)
+            raise
+
+    slow_task = asyncio.create_task(slow())
+    await asyncio.sleep(0)
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(cancel_all_and_wait([slow_task]), 0.1)
+    # 바깥 취소가 와도 끊은 태스크를 아무도 기다리지 않는 채로 남기지 않는다
+    assert slow_task.done() and slow_task.cancelled()
+
+
+async def test_cancel_all_and_wait_collects_every_failure_when_cancelled_from_outside():
+    """바깥 취소로 반환하지 못하는 경로에서도 입력 전부의 예외를 회수한다 (#490)."""
+    from structlog.testing import capture_logs
+
+    from aaestro.resilience import cancel_all_and_wait
+
+    async def bad_already() -> None:
+        raise RuntimeError("failed before")
+
+    async def fails_while_cleaning() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            # 정리가 오래 걸리다 두 번째 취소를 받으면 예외로 끝난다
+            try:
+                await asyncio.sleep(0.5)
+            except asyncio.CancelledError:
+                raise RuntimeError("failed during cleanup") from None
+
+    done = asyncio.create_task(bad_already(), name="done-bad")
+    await asyncio.wait([done])
+    slow = asyncio.create_task(fails_while_cleaning(), name="slow-bad")
+    await asyncio.sleep(0)
+
+    with capture_logs() as logs, pytest.raises(TimeoutError):
+        await asyncio.wait_for(cancel_all_and_wait([done, slow]), 0.01)
+
+    logged = {e["task"] for e in logs if e["event"] == "task failed at shutdown"}
+    assert logged == {"done-bad", "slow-bad"}

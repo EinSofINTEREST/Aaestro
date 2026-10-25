@@ -7,8 +7,11 @@
 
 from __future__ import annotations
 
+import sqlite3
+
 import pytest
 
+from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 from aaestro.orchestrator.run import RunManager, RunStatus, ServiceRunner
 from aaestro.orchestrator.runstore import (
     InMemoryRunStore,
@@ -321,3 +324,60 @@ async def test_a_service_run_without_a_store_is_unaffected(tmp_path):
     await runner.run(handle, {"feeds": []}, max_iterations=2)
 
     assert handle.iteration == 2
+
+
+class _BrokenConnection:
+    """닫을 때 sqlite 오류를 내는 연결 — close() 의 변환을 확인한다."""
+
+    def close(self) -> None:
+        raise sqlite3.OperationalError("disk I/O error")
+
+
+def _close_with_broken_connection(store: SqliteRunStore) -> None:
+    store._conn.close()  # noqa: SLF001
+    store._conn = _BrokenConnection()  # type: ignore[assignment]  # noqa: SLF001
+    store.close()
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda s: s.upsert(record()),
+        lambda s: s.get("run-1"),
+        lambda s: s.list(),
+        lambda s: s.list(mode="mission"),
+        lambda s: s.request_drain("run-1"),
+        _close_with_broken_connection,
+    ],
+    ids=["upsert", "get", "list", "list-by-mode", "request_drain", "close"],
+)
+def test_sqlite_methods_convert_database_errors_to_stor_003(tmp_path, call):
+    """모든 공개 메서드가 같은 boundary 변환을 한다 — 호출자는 sqlite 예외 타입을 몰라도 된다."""
+    store = SqliteRunStore(path=tmp_path / "runs.db")
+    if call is not _close_with_broken_connection:
+        store.close()
+
+    with pytest.raises(AaestroError) as caught:
+        call(store)
+
+    assert caught.value.code == ErrorCode.STOR_003
+    assert caught.value.category is ErrorCategory.STORAGE
+    assert isinstance(caught.value.__cause__, sqlite3.Error)
+
+
+@pytest.mark.parametrize(
+    "read", [lambda s: s.get("run-1"), lambda s: s.list()], ids=["get", "list"]
+)
+def test_a_corrupted_row_reads_as_stor_003(tmp_path, read):
+    store = SqliteRunStore(path=tmp_path / "runs.db")
+    try:
+        store.upsert(record())
+        store._conn.execute("UPDATE runs SET model_overrides = '{not json'")  # noqa: SLF001
+
+        with pytest.raises(AaestroError) as caught:
+            read(store)
+    finally:
+        store.close()
+
+    assert caught.value.code == ErrorCode.STOR_003
+    assert isinstance(caught.value.__cause__, ValueError)

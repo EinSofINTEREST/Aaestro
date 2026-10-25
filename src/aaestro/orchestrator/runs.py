@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import uuid
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Iterator, Mapping
@@ -23,6 +22,7 @@ from aaestro.core.topology import GraphMode
 from aaestro.orchestrator.models import with_recorded_overrides
 from aaestro.orchestrator.run import RunStatus
 from aaestro.orchestrator.runstore import RunRecord
+from aaestro.resilience import cancel_all_and_wait
 from aaestro.runtime.deployments import DeploymentStatus
 
 if TYPE_CHECKING:
@@ -190,15 +190,39 @@ class RunService:
         return self.results.get(run_id)
 
     async def close(self) -> None:
-        for task in list(self.drivers.values()):
-            task.cancel()
-        for task in list(self.drivers.values()):
-            # 종료 중이다 — 취소된/실패한 드라이버의 결과는 버린다
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await task
-        # 아직 시작도 못 한 드라이버는 finally 를 타지 않아 스스로 빠지지 않는다
-        self.drivers.clear()
-        await self.submitter.stop_services()
+        """Cancel every driver, wait for their cleanup, then stop the services.
+
+        드라이버마다 한 번씩만 끊고 정리를 병렬로 기다린다. 바깥 취소(종료 timeout)가 오면
+        드라이버에 취소를 한 번 더 넣어 정리를 끊고, 그것들이 끝난 뒤 서비스를 정지하고 취소를
+        다시 올린다 (`cancel_all_and_wait`) — 그래서 취소가 전파되기까지 잘린 정리와 서비스 정지만큼
+        더 걸릴 수 있다.
+        """
+        try:
+            failures = await cancel_all_and_wait(list(self.drivers.values()))
+            for task, err in failures.items():
+                run_id = task.get_name()
+                record = self._lookup_for_log(run_id)
+                # 드라이버가 이미 ERROR 로 남긴 실패다 — 종료 경로의 반복이라 WARN
+                log.warning(
+                    "run driver failed while closing",
+                    graph=record.graph if record is not None else None,
+                    run_id=run_id,
+                    error_code=(
+                        err.code if isinstance(err, AaestroError) else ErrorCode.INTERNAL_001
+                    ),
+                    exc_info=err,
+                )
+        finally:
+            # 아직 시작도 못 한 드라이버는 finally 를 타지 않아 스스로 빠지지 않는다
+            self.drivers.clear()
+            await self.submitter.stop_services()
+
+    def _lookup_for_log(self, run_id: str) -> RunRecord | None:
+        """종료 경로의 로그용 조회 — 저장소 실패가 남은 정리와 종료 결과를 바꾸지 않게 한다."""
+        try:
+            return self.store.get(run_id)
+        except AaestroError:
+            return None
 
     # --- 내부 --------------------------------------------------------------
 

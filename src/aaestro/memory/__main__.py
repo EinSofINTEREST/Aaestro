@@ -10,7 +10,6 @@ Memory Service 를 프로세스로 실행한다 — ``python -m aaestro.memory``
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import os
 from pathlib import Path
 from typing import Any
@@ -29,6 +28,7 @@ from aaestro.observability.metrics import (
     metrics_port_from_env,
     start_metrics_server,
 )
+from aaestro.resilience import cancel_all_and_wait
 
 log = structlog.get_logger(__name__)
 
@@ -141,23 +141,35 @@ async def _run(deployment: MemoryDeployment, port: int, *, interval_s: float) ->
     server = uvicorn.Server(
         uvicorn.Config(deployment.app, host="0.0.0.0", port=port, log_config=None)  # noqa: S104
     )
-    indexing = asyncio.create_task(_index_loop(deployment.indexer, interval_s))
+    indexing = asyncio.create_task(
+        _index_loop(deployment.indexer, interval_s), name="memory-indexer"
+    )
     # 변경 알림을 따라가지 않으면 회수가 캐시 뒤에 묻힌다
     access = deployment.access
-    watching = asyncio.create_task(access.watch()) if access is not None else None
+    watching = (
+        asyncio.create_task(access.watch(), name="memory-access-watch")
+        if access is not None
+        else None
+    )
     try:
         await server.serve()
     finally:
-        indexing.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await indexing
-        if access is not None and watching is not None:
-            watching.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await watching
-            await access.aclose()
-        # 종료 직전 한 번 더 비운다 — 버리면 그 항목은 영원히 검색되지 않는다
-        _drain_once(deployment.indexer)
+        # 두 태스크를 함께 끊는다 — 하나를 기다리는 동안 다른 하나가 취소를 못 받으면 안 된다.
+        # 바깥 취소가 와도 연결 정리와 마지막 색인은 하고, 취소는 그 뒤에 마저 전파된다
+        try:
+            background = [indexing] if watching is None else [indexing, watching]
+            failures = await cancel_all_and_wait(background)
+            for task, err in failures.items():
+                log.warning(
+                    "background task failed at shutdown", task=task.get_name(), exc_info=err
+                )
+        finally:
+            try:
+                if access is not None:
+                    await access.aclose()
+            finally:
+                # 종료 직전 한 번 더 비운다 — 버리면 그 항목은 영원히 검색되지 않는다
+                _drain_once(deployment.indexer)
 
 
 async def _index_loop(indexer: Any, interval_s: float) -> None:
