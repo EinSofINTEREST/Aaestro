@@ -32,6 +32,7 @@ from aaestro.access.model import ACCESS_CREDENTIAL_ENV
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 from aaestro.core.manifest import MANIFEST_ENV, agent_name
 from aaestro.protocols.mcp.transport import MCP_PROXY_URL_ENV
+from aaestro.runtime.docker.engine import AGENT_LABEL, ContainerHandle
 from aaestro.runtime.images import image_tag
 from aaestro.runtime.launcher import LaunchedAgent, MemoryEndpoint
 from aaestro.runtime.scope import ScopedSecrets
@@ -374,6 +375,15 @@ class DeploymentManager:
     ready_poll_s: float = DEFAULT_READY_POLL_S
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
     clock: Callable[[], float] = time.monotonic
+    _claimed: dict[str, str] = field(default_factory=dict, init=False, repr=False)
+    """기동 · 해체 중인 배포가 쥔 에이전트 → 그 배포 id. launcher 는 컨테이너가 선 뒤에야 알고,
+    기록은 해체가 끝나야 STOPPED 가 된다. await 없이 확인 · 추가하므로 락이 필요 없다
+    (이벤트 루프 하나)."""
+    _teardowns: dict[str, asyncio.Task[DeploymentRecord]] = field(
+        default_factory=dict, init=False, repr=False
+    )
+    """배포 id → 진행 중인 해체. 같은 배포의 두 번째 해체는 새로 돌지 않고 여기에 합류한다.
+    task 의 소유자는 이 표다 — 끝나면 `_teardown_done` 이 지운다."""
 
     def __post_init__(self) -> None:
         secretish = [k for k in self.agent_env if _looks_secret(k)]
@@ -419,7 +429,9 @@ class DeploymentManager:
 
         Raises:
             AaestroError: VALIDATION/``VAL_002`` if an override names an unknown node,
-                ``VAL_001`` if the graph fails deployment validation.
+                ``VAL_001`` if the graph fails deployment validation,
+                RUNTIME/``RT_010`` if one of its agents already runs (or is starting) under
+                another deployment (HTTP 409).
         """
         overrides = dict(model_overrides or {})
         topology = self.catalog.graph(graph_name).with_model_overrides(overrides)
@@ -436,7 +448,25 @@ class DeploymentManager:
         # 기록을 남기기 전에 — 거절된 배포는 실패한 배포가 아니라 시작되지 않은 배포다
         self._check_images(manifests)
         self._check_sidecars(manifests)
+        # 사이드카 · 포트 · 신원 · 기록 어느 것보다 먼저 — 겹치는 배포의 되감기는 떠 있는 배포의
+        # 사이드카와 포트 기록을 치운다 (#473). 첫 await 전에 잡아야 동시에 온 배포도 막힌다
+        # 배포 id 를 점유 전에 정한다 — 기동 중에 막힌 배포가 무엇을 기다리는지 알 수 있게
         deployment_id = f"dep-{uuid.uuid4().hex[:12]}"
+        claimed = self._claim(manifests, deployment_id)
+        try:
+            return await self._start(deployment_id, graph_name, topology, manifests, overrides)
+        finally:
+            self._release(claimed, deployment_id)
+
+    async def _start(
+        self,
+        deployment_id: str,
+        graph_name: str,
+        topology: GraphTopology,
+        manifests: Sequence[AgentManifest],
+        overrides: Mapping[str, ModelOverride],
+    ) -> DeploymentRecord:
+        """기록 → 신원 → 배선 → 기동 → health. 실패하면 이 배포가 만든 것만 되감는다."""
         record = DeploymentRecord(
             deployment_id=deployment_id,
             graph=graph_name,
@@ -508,11 +538,50 @@ class DeploymentManager:
         return ready
 
     async def teardown(self, deployment_id: str) -> DeploymentRecord:
-        """Drain then stop every agent (02 Lifecycle 4·5). 기록은 남긴다."""
-        record = self.get(deployment_id)
-        if record.status in (DeploymentStatus.STOPPED, DeploymentStatus.FAILED):
-            return record
-        names = list(dict.fromkeys(agent.name for agent in record.agents))
+        """Drain then stop every agent (02 Lifecycle 4·5). 기록은 남긴다.
+
+        같은 배포의 해체가 이미 돌고 있으면 새로 돌지 않고 그것에 **합류**해 같은 결과를 받는다 —
+        두 해체가 따로 돌면 먼저 끝난 쪽이 점유를 놓은 뒤 늦은 쪽의 정리가 새로 선 배포의 사이드카를
+        지운다 (HTTP 재시도 · 이중 클릭). 부른 쪽이 취소돼도 해체는 끝까지 간다 — 반쯤 멈춘 배포를
+        남기지 않는다.
+        """
+        running = self._teardowns.get(deployment_id)
+        if running is None:
+            record = self.get(deployment_id)
+            if record.status in (DeploymentStatus.STOPPED, DeploymentStatus.FAILED):
+                return record
+            running = asyncio.create_task(self._teardown(record))
+            self._teardowns[deployment_id] = running
+            running.add_done_callback(lambda task: self._teardown_done(deployment_id, task))
+        return await asyncio.shield(running)
+
+    def _teardown_done(self, deployment_id: str, task: asyncio.Task[DeploymentRecord]) -> None:
+        if self._teardowns.get(deployment_id) is task:
+            del self._teardowns[deployment_id]
+        if task.cancelled():
+            return
+        err = task.exception()
+        if err is not None:
+            # 부른 쪽이 모두 취소됐으면 이 실패를 볼 곳이 여기뿐이다
+            log.error(
+                "deployment teardown failed",
+                deployment_id=deployment_id,
+                error_code=_code(err),
+            )
+
+    async def _teardown(self, record: DeploymentRecord) -> DeploymentRecord:
+        # 기동 도중 끊긴 배포는 agents 가 비어 있다 — 선언된 이름이 컨테이너를 찾는 유일한 단서다
+        names = list(dict.fromkeys([*record.declared, *(a.name for a in record.agents)]))
+        # 끝날 때까지 쥔다 — 하나씩 멈추는 사이 새 배포가 서면 아래 sidecars.stop 이 그 배포의
+        # 사이드카를 지운다. 이미 다른 쪽이 쥔 이름은 그쪽이 놓는다
+        held = [n for n in names if n not in self._claimed]
+        self._claimed.update(dict.fromkeys(held, record.deployment_id))
+        try:
+            return await self._stop(record, names)
+        finally:
+            self._release(held, record.deployment_id)
+
+    async def _stop(self, record: DeploymentRecord, names: Sequence[str]) -> DeploymentRecord:
         try:
             for name in names:
                 await self.launcher.stop(name)
@@ -520,15 +589,37 @@ class DeploymentManager:
             # 에이전트 정지가 실패해도 사이드카는 치운다 — 03 Placement 1, lifecycle 을 함께한다
             for name in names:
                 await self.sidecars.stop(name)
+            # launcher 가 모르는 컨테이너 (control plane 재시작 전에 뜬 것) 도 치운다. 사이드카도
+            # 같은 라벨을 달아 sidecars.stop 이 놓친 것이 있으면 여기서 한 번 더 지워진다 (멱등)
+            for name in names:
+                await self._remove_orphans(name)
             # 해체를 요청한 이상 신원은 죽인다 — 정지 하나가 실패했다고 모든 신원이 살아 남으면
             # 운영자가 끝냈다고 믿는 배포가 강제 지점을 계속 통과한다
-            self._revoke_identities(deployment_id)
+            self._revoke_identities(record.deployment_id)
         stopped = DeploymentRecord(
             **{**record.__dict__, "status": DeploymentStatus.STOPPED, "updated_at": _now()}
         )
         self.store.upsert(stopped)
         self._bind_log(stopped).info("deployment stopped", agents=len(record.agents))
         return stopped
+
+    async def _remove_orphans(self, agent: str) -> None:
+        """이 에이전트 라벨이 붙은 남은 컨테이너 전부를 지운다 — launcher 의 핸들 없이.
+
+        조회 실패는 신원 회수와 남은 이름의 정리를 막지 않는다 — `McpSidecars.stop` 과 같은 규칙.
+        정지·제거 실패는 `engine.stop` 이 스스로 삼키고 기록한다.
+        """
+        engine = self.launcher.engine
+        try:
+            found = await asyncio.to_thread(engine.client.labeled, {AGENT_LABEL: agent})
+        except Exception as err:  # noqa: BLE001 — 찾지 못해도 해체는 끝까지 간다; 로그로 드러낸다
+            log.warning("orphan containers could not be listed", agent=agent, exc_info=err)
+            return
+        for container_id in found:
+            handle = ContainerHandle(
+                agent=agent, container_id=container_id, image="unknown", control_port=0
+            )
+            await engine.stop(handle)
 
     async def reattach(self) -> Sequence[DeploymentRecord]:
         """After a restart, find the containers we left running and pick them back up.
@@ -804,6 +895,55 @@ class DeploymentManager:
             if launched is not None and launched.a2a_port is not None:
                 found[steward] = f"{container_name(steward, 0)}:{launched.a2a_port}"
         return found
+
+    def _claim(self, manifests: Sequence[AgentManifest], deployment_id: str) -> list[str]:
+        """이 배포의 에이전트를 쥔다 — 다른 배포가 쥐고 있으면 거부한다.
+
+        소유권의 원천은 **배포 기록**이다: STARTING · READY · LOST 인 기록이 선언한 에이전트는
+        그 배포의 것이다. launcher 메모리는 재시작 대기 중이거나 재시작이 실패하면 비고, LOST 배포의
+        컨테이너 · 사이드카는 launcher 밖에 남는다 — launcher 만 보면 그 틈으로 겹친다.
+        기동 도중 프로세스가 죽어 STARTING 으로 남은 기록도 막는다 (fail-closed) — 운영자가 그
+        배포를 해체하면 풀린다. ``_claimed`` 는 같은 프로세스에서 기동 · 해체 중인 배포를 기록과
+        따로 쥔다 — 기록이 소유를 말하지 못하는 순간이 생겨도 그 배포의 id 로 막는다.
+
+        레플리카가 아니라 **에이전트** 단위다: 사이드카 · 사이드카 네트워크 · 신원 토큰은
+        에이전트 이름에 묶여 있어, 어느 레플리카든 떠 있으면 새 배포가 그것을 건드린다.
+
+        Raises:
+            AaestroError: RUNTIME/``RT_010`` — 겹치는 배포를 먼저 해체하면 되는 상태 충돌
+                (HTTP 409). ``details.deployments`` 가 막고 있는 배포다. 아무것도 바꾸지 않았고
+                배포 기록도 남지 않는다.
+        """
+        names = [m.name for m in manifests]
+        holders: dict[str, set[str]] = {}
+        for record in self.store.list():
+            if record.status in _HOLDS_DECLARATIONS:
+                for name in _agents_declared(record) & set(names):
+                    holders.setdefault(name, set()).add(record.deployment_id)
+        for name in names:
+            if name in self._claimed:
+                holders.setdefault(name, set()).add(self._claimed[name])
+        # launcher 만 아는 에이전트 — 같은 프로세스에서는 위 둘과 겹치지만, 기록 없이 launcher 에만
+        # 띄운 경로 (테스트 · 레플리카 직접 기동) 에서 사이드카를 지키는 마지막 방어다
+        taken = [n for n in names if n in holders or self.launcher.replicas_of(n)]
+        if taken:
+            raise AaestroError(
+                category=ErrorCategory.RUNTIME,
+                code=ErrorCode.RT_010,
+                message="agents already run under another deployment — tear that one down first",
+                details={
+                    "agents": taken,
+                    "deployments": sorted({d for n in taken for d in holders.get(n, ())}),
+                },
+            )
+        self._claimed.update(dict.fromkeys(names, deployment_id))
+        return names
+
+    def _release(self, names: Sequence[str], deployment_id: str) -> None:
+        """이 배포가 쥔 것만 놓는다 — 그 사이 다른 쪽이 쥔 이름은 건드리지 않는다."""
+        for name in names:
+            if self._claimed.get(name) == deployment_id:
+                del self._claimed[name]
 
     def _issue_identities(
         self, manifests: Sequence[AgentManifest], deployment_id: str, graph: str
