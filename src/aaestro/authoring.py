@@ -157,13 +157,14 @@ class Author:
         """
         saved_agents, saved_groups = self.catalog.agents(), self.catalog.groups()
         manifests = {**saved_agents.items, **{m.name: m for m in agents}}
-        promptsets, unloadable = self._promptsets(manifests.values())
+        published = self.catalog.module_refs()
+        promptsets, unloadable = self._promptsets(manifests.values(), published)
         saved_graphs = self.catalog.graphs()
         drafted = {g.metadata.name for g in graphs}
         others = saved_graphs.items.items() if with_saved_graphs else ()
         topologies = [*graphs, *(g for n, g in others if n not in drafted)]
         memorysets, unreadable = self._memorysets(
-            manifests.values(), saved_groups.items.values(), topologies
+            manifests.values(), saved_groups.items.values(), topologies, published
         )
         unloadable.extend(unreadable)
 
@@ -171,7 +172,7 @@ class Author:
             topologies,
             manifests=manifests,
             groups=saved_groups.items,
-            resolvable_refs=self.catalog.module_refs(),
+            resolvable_refs=published,
             promptsets=promptsets,
             memorysets=memorysets,
             global_secrets=(
@@ -207,14 +208,24 @@ class Author:
             for p in problems
             if p.path not in targets
         ]
-        return ValidationReport(
+        final = ValidationReport(
             findings=(*broken, *unloadable, *report.findings), warnings=report.warnings
         )
+        # validate_deployment 는 카탈로그 문제를 모르므로 통과 · 실패는 최종 판정이 난 여기서 말한다
+        if final.ok:
+            log.info("graph and agent checks passed", graphs=len(topologies))
+        else:
+            log.error(
+                "deployment validation failed",
+                graphs=len(topologies),
+                failures=len(final.findings),
+            )
+        return final
 
     # --- 그래프 ---------------------------------------------------------------
 
     def _promptsets(
-        self, manifests: Iterable[AgentManifest]
+        self, manifests: Iterable[AgentManifest], published: frozenset[str]
     ) -> tuple[dict[str, PromptsetManifest], list[Finding]]:
         """검증 대상 에이전트들이 선언한 promptset 을 ref 로 모은다 (#260).
 
@@ -222,19 +233,18 @@ class Author:
         그 에이전트에 대해 아무 것도 보지 못한 채로 통과한다 — 검사가 있다는 사실만
         남고 실제로는 꺼져 있는 상태가 된다.
 
-        해석 자체가 안 되는 ref(`MOD_001`)만 예외다 — 모듈 ref 검사가 이미 보고한다.
+        **게시된 ref 만** 읽는다 — 해석 실패는 모듈 ref 검사의 `MOD_001` 이, 깨진 문서는 catalog 가
+        이미 보고하므로 여기서 다시 내면 한 결함이 finding 여럿이 된다 (#472).
         """
         found: dict[str, PromptsetManifest] = {}
         problems: list[Finding] = []
         for manifest in manifests:
             ref = manifest.spec.promptset.ref
-            if ref in found:
+            if ref in found or ref not in published:
                 continue
             try:
                 found[ref] = self.catalog.promptset(ref)
             except AaestroError as err:
-                if err.code == ErrorCode.MOD_001:
-                    continue
                 problems.append(
                     Finding(
                         check="node_templates",
@@ -250,6 +260,7 @@ class Author:
         manifests: Iterable[AgentManifest],
         groups: Iterable[GroupManifest],
         topologies: Iterable[GraphTopology],
+        published: frozenset[str],
     ) -> tuple[dict[str, LoadedMemoryset], list[Finding]]:
         """부착된 memoryset 을 ref 로 모은다 (#467).
 
@@ -263,7 +274,6 @@ class Author:
             *((g.spec.memory.spaces, {"group": g.metadata.name}) for g in groups),
             *((t.spec.memory.spaces, {"graph": t.metadata.name}) for t in topologies),
         ]
-        published = self.catalog.module_refs()
         loader = MemorysetLoader(ModuleRegistry(self.catalog.roots))
         found: dict[str, LoadedMemoryset] = {}
         problems: list[Finding] = []

@@ -207,32 +207,54 @@ class SqliteRunStore:
 
     def get(self, run_id: str) -> RunRecord | None:
         """기록 조회 — 다른 프로세스가 쓴 것도 보인다."""
-        with self._lock:
-            row = self._conn.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone()
-        return _record(row) if row is not None else None
+        try:
+            with self._lock:
+                row = self._conn.execute(
+                    "SELECT * FROM runs WHERE run_id = ?", (run_id,)
+                ).fetchone()
+            return _record(row) if row is not None else None
+        except sqlite3.Error as err:
+            raise _storage_error("run record could not be read", run_id=run_id) from err
+        except ValueError as err:
+            # 손상된 행(깨진 JSON)도 저장소 읽기 실패다
+            raise _storage_error("run record could not be decoded", run_id=run_id) from err
 
     def list(self, *, mode: str | None = None) -> Sequence[RunRecord]:
         """기록 목록 — 최근 갱신 순."""
-        with self._lock:
-            if mode is None:
-                rows = self._conn.execute("SELECT * FROM runs ORDER BY updated_at DESC").fetchall()
-            else:
-                rows = self._conn.execute(
-                    "SELECT * FROM runs WHERE mode = ? ORDER BY updated_at DESC", (mode,)
-                ).fetchall()
-        return [_record(row) for row in rows]
+        try:
+            with self._lock:
+                if mode is None:
+                    rows = self._conn.execute(
+                        "SELECT * FROM runs ORDER BY updated_at DESC"
+                    ).fetchall()
+                else:
+                    rows = self._conn.execute(
+                        "SELECT * FROM runs WHERE mode = ? ORDER BY updated_at DESC", (mode,)
+                    ).fetchall()
+            return [_record(row) for row in rows]
+        except sqlite3.Error as err:
+            raise _storage_error("run records could not be listed") from err
+        except ValueError as err:
+            raise _storage_error("run records could not be decoded") from err
 
     def request_drain(self, run_id: str) -> bool:
         """drain 요청을 남긴다 — 구동 프로세스가 iteration 경계에서 읽는다."""
-        with self._lock:
-            cursor = self._conn.execute(
-                "UPDATE runs SET drain = 1, updated_at = ? WHERE run_id = ?", (_now(), run_id)
-            )
+        try:
+            with self._lock:
+                cursor = self._conn.execute(
+                    "UPDATE runs SET drain = 1, updated_at = ? WHERE run_id = ?",
+                    (_now(), run_id),
+                )
+        except sqlite3.Error as err:
+            raise _storage_error("drain request could not be recorded", run_id=run_id) from err
         return cursor.rowcount > 0
 
     def close(self) -> None:
         """연결을 닫는다."""
-        self._conn.close()
+        try:
+            self._conn.close()
+        except sqlite3.Error as err:
+            raise _storage_error("run store could not be closed") from err
 
 
 def _record(row: sqlite3.Row) -> RunRecord:

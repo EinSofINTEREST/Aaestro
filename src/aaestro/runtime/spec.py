@@ -116,6 +116,15 @@ class ContainerSpec:
             "read_only": self.read_only_rootfs,
             "cap_drop": list(self.cap_drop),
             "security_opt": list(self.security_opt),
+            # 마운트도 경화다 — 선언에 없는 바인드(호스트 경로, docker.sock)는 격리를 연다 (#488)
+            "tmpfs": dict.fromkeys(self.tmpfs, TMPFS_OPTIONS),
+            "volumes": {
+                volume["name"]: {
+                    "bind": volume["mount_path"],
+                    "mode": "ro" if volume["read_only"] else "rw",
+                }
+                for volume in self.volumes
+            },
         }
 
     def to_docker_kwargs(self) -> dict[str, Any]:
@@ -133,14 +142,6 @@ class ContainerSpec:
             "nano_cpus": round(self.cpu_cores * 1_000_000_000),
             "mem_limit": self.memory_bytes,
             **self.hardening_kwargs(),
-            "tmpfs": dict.fromkeys(self.tmpfs, TMPFS_OPTIONS),
-            "volumes": {
-                volume["name"]: {
-                    "bind": volume["mount_path"],
-                    "mode": "ro" if volume["read_only"] else "rw",
-                }
-                for volume in self.volumes
-            },
             "labels": dict(self.labels),
             # 호스트 네트워크 금지, 임의 포트 publish 금지 (02 Network 규칙)
             "network_mode": None,

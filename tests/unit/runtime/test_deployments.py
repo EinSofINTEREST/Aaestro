@@ -667,8 +667,11 @@ async def test_reattach_refuses_containers_that_are_not_isolated(
         # 기록 → 기대값 유도 고리: 기대값에서 pids_limit 이 빠지면 이 케이스가 붙어 버린다
         ("PidsLimit", None),
         ("SecurityOpt", ["seccomp=unconfined"]),
+        # 선언 마운트는 그대로 두고 docker.sock 바인드만 더한다 (#488)
+        ("Mounts", [{"Type": "bind", "Source": "/var/run/docker.sock",
+                     "Destination": "/var/run/docker.sock", "RW": True}]),
     ],
-)
+)  # fmt: skip
 async def test_reattach_marks_a_deployment_with_lost_hardening_lost_and_moves_on(
     workspace, healthy, field, value
 ):
@@ -707,7 +710,7 @@ async def test_reattach_marks_a_deployment_with_lost_hardening_lost_and_moves_on
         def hardening_of(self, container_id: str) -> dict:
             found = super().hardening_of(container_id)
             if container_id == self.find("aaestro-alpha-0"):
-                found[field] = value
+                found[field] = [*found[field], *value] if field == "Mounts" else value
             return found
 
     later = Loosened(attached=("agents",))

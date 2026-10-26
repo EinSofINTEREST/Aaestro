@@ -12,8 +12,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import random
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import structlog
 from tenacity import AsyncRetrying, RetryCallState, retry_if_exception, stop_after_attempt
@@ -21,7 +22,7 @@ from tenacity import AsyncRetrying, RetryCallState, retry_if_exception, stop_aft
 from aaestro.observability.logging import LogField
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Sequence
+    from collections.abc import Awaitable, Callable, Iterable, Sequence
 
     from aaestro.core.errors import RetryPolicy
 
@@ -205,4 +206,75 @@ async def retrying_any[T](
     raise AssertionError("unreachable: tenacity always resolves an attempt")
 
 
-__all__ = ["retrying", "retrying_any"]
+async def cancel_and_wait(task: asyncio.Task[Any]) -> None:
+    """Cancel a task and wait for it, re-raising a cancellation aimed at the waiter.
+
+    다른 태스크를 끊고 끝날 때까지 기다린다. 삼키는 것은 **끊은 태스크의** `CancelledError`
+    뿐이다 — 기다리는 쪽이 받은 취소까지 삼키면 바깥의 `wait_for` timeout 이 사라지고,
+    종료가 끊은 태스크의 정리가 끝날 때까지 조용히 묶인다 (#490). 바깥 취소는 `await task`
+    중이던 끊은 태스크에도 전달된다 — 정리가 잘리는 것은 종료 timeout 의 뜻이다.
+    그 밖의 예외는 그대로 올린다.
+    """
+    if task.done():
+        # 이미 끝난 태스크의 예외는 여기서 회수한다 — 안 읽으면 "never retrieved" 로 새어 나온다.
+        # 종료 경로라 다시 올리지 않고 기록만 한다
+        if not task.cancelled() and (err := task.exception()) is not None:
+            log.warning("task had already failed", task=task.get_name(), exc_info=err)
+        return
+    task.cancel()
+    current = asyncio.current_task()
+    before = current.cancelling() if current is not None else 0
+    # 끊은 태스크가 전달된 바깥 취소를 처리하고 정상 반환해도 바깥 취소는 남아 있다 —
+    # 판정은 끊은 태스크의 결과가 아니라 기다리는 쪽의 취소 요청 수로 한다
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+    if current is not None and current.cancelling() > before:
+        raise asyncio.CancelledError
+
+
+async def cancel_all_and_wait(
+    tasks: Iterable[asyncio.Task[Any]],
+) -> dict[asyncio.Task[Any], BaseException]:
+    """Cancel every task once, then wait for all of them in parallel.
+
+    여러 태스크를 한 번씩만 끊고 정리를 병렬로 진행시킨 채 전부를 기다린다. 하나씩 기다리면
+    정리가 직렬이 되고, 미리 전부 끊어 두고 하나씩 `cancel_and_wait` 하면 뒤 태스크의 정리
+    구간에 두 번째 취소가 들어가 정리가 잘린다 (#490).
+
+    기다리는 쪽이 바깥 취소를 받으면 아직 끝나지 않은 태스크에 취소를 한 번 더 넣고 그것들이
+    끝날 때까지 기다린 뒤 바깥 취소를 다시 올린다 — `cancel_and_wait` 와 같은 의미이고, 끊은
+    태스크가 아무도 기다리지 않는 채 남지 않는다. 정리가 잘리는 것은 종료 timeout 의 뜻이다.
+    한계: 이 두 번째 기다림 중에 또 취소가 오면 그대로 전파된다. 호출자는 자원 해제를
+    `finally` 로 보장해야 한다.
+
+    Returns:
+        태스크가 취소가 아닌 예외로 끝난 경우의 예외. 기록과 처리는 호출자가 정한다.
+    """
+    everything = list(tasks)
+    pending = [task for task in everything if not task.done()]
+    for task in pending:
+        task.cancel()
+    if pending:
+        try:
+            await asyncio.wait(pending)
+        except asyncio.CancelledError:
+            still_pending = [task for task in pending if not task.done()]
+            for task in still_pending:
+                task.cancel()
+            if still_pending:
+                await asyncio.wait(still_pending)
+            # 아무도 기다리지 않을 태스크의 예외는 여기서 회수한다
+            for task in everything:
+                if task.done() and not task.cancelled() and (err := task.exception()) is not None:
+                    log.warning("task failed at shutdown", task=task.get_name(), exc_info=err)
+            raise
+    failures: dict[asyncio.Task[Any], BaseException] = {}
+    for task in everything:
+        if task.cancelled():
+            continue
+        if (err := task.exception()) is not None:
+            failures[task] = err
+    return failures
+
+
+__all__ = ["cancel_all_and_wait", "cancel_and_wait", "retrying", "retrying_any"]

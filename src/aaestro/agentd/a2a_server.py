@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from aaestro.protocols.a2a.allowlist import Allowlist, Edge
+from aaestro.resilience import cancel_and_wait
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -254,10 +255,11 @@ def _following(verifier: Any) -> Any:
         try:
             yield
         finally:
-            watching.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await watching
-            await verifier.aclose()
+            # 바깥 취소가 와도 연결은 닫는다 — 취소는 닫은 뒤에 마저 전파된다
+            try:
+                await cancel_and_wait(watching)
+            finally:
+                await verifier.aclose()
 
     return lifespan
 

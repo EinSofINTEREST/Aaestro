@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from aaestro.core.errors import field_problems
 from aaestro.core.manifest import (
     RESERVED_GLOBAL_GROUP,
     AgentManifest,
@@ -16,6 +17,7 @@ from aaestro.core.manifest import (
     ModelOverride,
     ParsedModuleRef,
     ResourceSpec,
+    VolumeSpec,
     sidecar_host,
     sidecar_url,
 )
@@ -313,7 +315,45 @@ def test_duplicate_memory_alias_is_rejected():
 )
 def test_sensitive_volume_mounts_are_rejected(path):
     with pytest.raises(ValidationError, match="sensitive host path"):
-        make_manifest(spec=_spec_with(runtime={"volumes": [{"name": "v", "mount_path": path}]}))
+        make_manifest(spec=_spec_with(runtime={"volumes": [{"name": "vol", "mount_path": path}]}))
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "/var/run/docker.sock",
+        "/",
+        "/etc",
+        "./work",
+        "../x",
+        "a/b",
+        "..",
+        ".",
+        "-v",
+        "_v",
+        "",
+        "a b",
+        "a" * 256,
+        "v",
+        "7",
+        "work\n",
+    ],
+)
+def test_volume_source_that_is_not_a_named_volume_is_rejected(name):
+    with pytest.raises(ValidationError, match="docker named volume"):
+        VolumeSpec(name=name, mount_path="/data")
+
+
+@pytest.mark.parametrize("name", ["work", "cache-1", "a.b_c", "ab", "A" * 255])
+def test_named_volume_is_accepted(name):
+    assert VolumeSpec(name=name, mount_path="/data").name == name
+
+
+def test_rejected_volume_source_is_not_echoed():
+    with pytest.raises(ValidationError) as exc:
+        VolumeSpec(name="/secret-host-dir", mount_path="/data")
+
+    assert all("secret-host-dir" not in p["problem"] for p in field_problems(exc.value))
 
 
 @pytest.mark.parametrize("cpu", ["one", "1.0.0", "-1", ""])

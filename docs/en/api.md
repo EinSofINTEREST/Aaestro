@@ -1035,7 +1035,16 @@ outside address fails. The proxy is the only way out.
   filesystem, user `1000:1000`, the PID limit (`DEFAULT_PID_LIMIT`, 256), and a `security_opt` whose
   effective value per key equals the spec's — adding an entry or overriding one later is refused)
   and nothing that voids it (privileged, added capabilities, host PID / IPC / user / network
-  namespaces, an empty `MaskedPaths` or `ReadonlyPaths`). Otherwise
+  namespaces, an empty `MaskedPaths` or `ReadonlyPaths`). Its mounts must be exactly the ones the
+  start spec sets: the read-only declaration mounts, the declared volumes and the `tmpfs` paths. A
+  bind the spec did not declare (a host path, `/var/run/docker.sock`), a declared mount made
+  writable or pointed elsewhere, and an extra or missing `tmpfs` are refused (`Mounts` / `Tmpfs`;
+  the reason names the field, never the path). Paths are compared normalized (`/cache/` is
+  `/cache`). The one exception is the anonymous volume Docker creates for a path the image declares
+  with `VOLUME` — read from the image itself, not from the container's `Config.Volumes`, which also
+  lists volumes added at creation; if the image cannot be inspected there is no exception. Every volume, declared or anonymous, must also be a plain `local` volume: one
+  recreated under the same name with a `device` or `bind` option opens a host path and is refused,
+  and so is a volume that cannot be inspected. Otherwise
   the deployment becomes `lost` ("network isolation mismatch", or "container hardening mismatch"
   with the field names), nothing is attached, and its agent
   identities are revoked, so containers with a route out lose their memory, peer and model access.
@@ -1199,7 +1208,8 @@ URL.
 - **Plain http, private addresses only.** A sidecar carries no credential (`auth` is rejected for
   sidecars), so the proxy calls it over `http`, and only at an address that resolves privately.
 - **Restarts.** Docker restarts a sidecar that exits with an error, up to five times. After a control
-  plane restart, reattach brings back a sidecar that is gone or stopped and marks the deployment
+  plane restart, reattach brings back a sidecar that is gone or stopped, or that no longer matches
+  its start arguments (hardening, networks, mounts), and marks the deployment
   `lost` if it cannot. agentd waits up to about ten seconds for a sidecar that is still starting; a
   remote server is not waited for.
 

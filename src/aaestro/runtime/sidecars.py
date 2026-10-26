@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any, Final
 import structlog
 
 from aaestro.core.manifest import ResourceSpec, sidecar_host
-from aaestro.runtime.docker.engine import AGENT_LABEL, hardening_gaps
+from aaestro.runtime.docker.engine import AGENT_LABEL, hardening_gaps, inspect_hardening
 from aaestro.runtime.docker.errors import (
     NetworkIsolationError,
     image_unavailable,
@@ -232,7 +232,7 @@ class McpSidecars:
         image = kwargs["image"]
         existing = await asyncio.to_thread(self.client.find, kwargs["name"])
         if existing is not None:
-            if reuse and await self._sound(existing, network, kwargs):
+            if reuse and await self._sound(agent, existing, network, kwargs):
                 return
             await self._discard(agent, existing)
         try:
@@ -261,12 +261,16 @@ class McpSidecars:
         log.info("mcp sidecar started", agent=agent, mcp_server=server.name,
                  container_id=container_id[:12], image=image)  # fmt: skip
 
-    async def _sound(self, container_id: str, network: str, expected: Mapping[str, Any]) -> bool:
+    async def _sound(
+        self, agent: str, container_id: str, network: str, expected: Mapping[str, Any]
+    ) -> bool:
         """재부착해도 되는 사이드카인가 — 떠 있고, 그 네트워크에만 붙어 있고, 경화가 그대로다."""
         try:
             state = await asyncio.to_thread(self.client.inspect, container_id)
             attached = await asyncio.to_thread(self.client.networks_of, container_id)
-            found = await asyncio.to_thread(self.client.hardening_of, container_id)
+            found = await asyncio.to_thread(
+                inspect_hardening, self.client, container_id, agent=agent
+            )
         except Exception:  # noqa: BLE001 — 확인하지 못하면 새로 세운다
             return False
         return (

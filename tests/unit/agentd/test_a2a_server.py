@@ -315,3 +315,65 @@ async def test_valid_sends_leave_nothing_in_the_assembled_store(method, injected
 
     assert len(saved) == 3, "태스크가 store 를 거치지 않았다 — 이 시험이 보는 경로가 아니다"
     assert len(app.state.task_store) == 0
+
+
+async def test_lifespan_shutdown_yields_to_an_outer_cancellation():
+    """종료 정리가 바깥 취소를 삼키면 서버 종료 timeout 이 사라진다 (#490)."""
+    import asyncio
+
+    from aaestro.agentd.a2a_server import _following
+
+    watchers: list[asyncio.Task[None]] = []
+
+    class Verifier:
+        async def watch(self) -> None:
+            watchers.append(asyncio.current_task())  # type: ignore[arg-type]
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                await asyncio.sleep(0.5)
+                raise
+
+        async def aclose(self) -> None:
+            return None
+
+    async def run() -> None:
+        async with _following(Verifier())(None):
+            await asyncio.sleep(0)
+
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(run(), 0.2)
+
+    assert all(task.done() and task.cancelled() for task in watchers)
+
+
+async def test_lifespan_closes_the_verifier_even_when_cancelled_from_outside():
+    import asyncio
+
+    from aaestro.agentd.a2a_server import _following
+
+    closed: list[bool] = []
+
+    watchers: list[asyncio.Task[None]] = []
+
+    class Verifier:
+        async def watch(self) -> None:
+            watchers.append(asyncio.current_task())  # type: ignore[arg-type]
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                await asyncio.sleep(0.5)
+                raise
+
+        async def aclose(self) -> None:
+            closed.append(True)
+
+    async def run() -> None:
+        async with _following(Verifier())(None):
+            await asyncio.sleep(0)
+
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(run(), 0.2)
+
+    assert closed == [True]
+    assert all(task.done() and task.cancelled() for task in watchers)

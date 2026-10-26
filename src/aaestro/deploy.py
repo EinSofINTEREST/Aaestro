@@ -215,16 +215,6 @@ class DeployValidator:
                 graphs=len(topologies),
                 warnings=len(warnings),
             )
-        if report.ok:
-            # 이 단계 (그래프 · 에이전트 대조) 의 범위만 말한다 — 호출자가 카탈로그 문제를 더해
-            # 최종 판정을 내리므로, 여기서 "validation passed" 라고 찍으면 실패한 실행에도 남는다
-            log.info("graph and agent checks passed", graphs=len(topologies))
-        else:
-            log.error(
-                "deployment validation failed",
-                graphs=len(topologies),
-                failures=len(report.findings),
-            )
         return report
 
     # --- 1. agent ref 해석 ------------------------------------------------
@@ -291,7 +281,8 @@ class DeployValidator:
             ref = manifest.spec.promptset.ref
             promptset = self.promptsets.get(ref)
             if promptset is None:
-                continue  # module_refs 가 해석 실패를, Author 가 로드 실패를 보고한다
+                # module_refs 는 해석 실패를, catalog 는 깨진 문서를, Author 는 못 읽은 것을 보고
+                continue
             try:
                 # 규칙 3 의 판정은 이 헬퍼가 이미 구현한다 — 두 벌 두면 갈라진다.
                 # `root` 는 이 규칙이 읽지 않으므로 선언만으로 감싼다. `accepts_direct`
@@ -446,7 +437,8 @@ class DeployValidator:
             )
         promptset = self.promptsets.get(manifest.spec.promptset.ref)
         if promptset is None:
-            return []  # module_refs 가 해석 실패를, Author 가 로드 실패를 보고한다
+            # module_refs 는 해석 실패를, catalog 는 깨진 문서를, Author 는 못 읽은 것을 보고
+            return []
         template = promptset.spec.templates.get(policy.template)
         if template is None:
             # 노드 템플릿 검사가 같은 부류를 MOD_002 로 낸다 — 코드를 맞춘다
