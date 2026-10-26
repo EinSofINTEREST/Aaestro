@@ -39,6 +39,11 @@ HARDENING_FIELDS = (
     "IpcMode",
     "UsernsMode",
     "NetworkMode",
+    "UTSMode",
+    "CgroupnsMode",
+    "Devices",
+    "DeviceRequests",
+    "DeviceCgroupRules",
 )
 """`HostConfig` 에서 읽는 경화 필드 — `engine.hardening_gaps` 가 같은 이름으로 대조한다."""
 
