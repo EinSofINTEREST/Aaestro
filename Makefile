@@ -12,15 +12,17 @@ install: ## 고정된 의존성 설치 (uv.lock 기준)
 	$(UV) sync --frozen
 
 lint: ## ruff check + format 검사
-	$(RUN) ruff check src tests
-	$(RUN) ruff format --check src tests
+	$(RUN) ruff check src tests scripts
+	$(RUN) ruff format --check src tests scripts
 
 fmt: ## ruff format 적용 + import 정렬
-	$(RUN) ruff format src tests
-	$(RUN) ruff check --fix src tests
+	$(RUN) ruff format src tests scripts
+	$(RUN) ruff check --fix src tests scripts
 
-typecheck: ## mypy (aaestro.core 는 strict)
+# CI 스크립트는 패키지가 아니라 경로로 본다 — pyproject 의 packages 설정과 따로 돈다
+typecheck: ## mypy (aaestro.core 는 strict) + CI 스크립트 (strict)
 	$(RUN) mypy
+	$(RUN) mypy --strict --explicit-package-bases scripts/ci
 
 test: ## unit 테스트 + 커버리지 게이트 (>= 70%)
 	$(RUN) pytest tests/unit

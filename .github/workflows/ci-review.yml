@@ -1,0 +1,75 @@
+# 리뷰 존재 게이트 — 리뷰로 인정할 것이 하나 이상인지 판정해 PR head 에 commit status 로 남긴다 (#514).
+# 판정 정의 · 상태 이름은 docs/en/ci/status-checks.md 와 일치 필수.
+#
+# 결과를 job 결과가 아니라 commit status 로 남기는 이유: schedule 실행은 PR head 에서 돌지 않아
+# job 이 그 PR 의 check 가 되지 않는다. 모든 경로가 같은 context (`Review Presence`) 로 쓴다.
+# job 이름은 일부러 status context 와 다르게 둔다 — 같으면 Ruleset 이 둘 중 무엇을 보는지 모호해진다.
+#
+# PR 이벤트는 pull_request_target 이다 — 기본 브랜치의 워크플로 파일로 돌아서, 이 파일을 고친 PR 이
+# 자기 head 에 success 를 쓰지 못한다. 이 트리거의 일반적 위험 (쓰기 토큰으로 PR 코드를 실행) 은
+# 여기 해당하지 않는다: PR 코드를 checkout 하지 않고 (아래 checkout 은 기본 브랜치), PR 은 API 로
+# 읽기만 한다. PR 에서 온 값 (제목 · 본문 · 브랜치명) 을 셸에 넣지 않는다 — 번호만 env 로 받는다.
+# pull_request_review(_comment) 는 PR 쪽 워크플로 파일로 돈다. 남는 위조 경로 (쓰기 권한 토큰으로
+# status 를 직접 쓰기) 와 schedule 의 한계는 status-checks.md "Known limits" 에 있다.
+name: ci-review
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+  # 판정 근거가 생기거나 사라지는 이벤트 — 리뷰 본문 수정 · 라인 코멘트 삭제 포함
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+  pull_request_review_comment:
+    types: [created, edited, deleted]
+  # 리액션 (Codex 👍) 은 워크플로를 발화시키지 못한다 — 이 경로로만 반영된다.
+  # 판정과 다른 status (한 번 쓴 위조 포함) 도 이 실행이 덮어쓴다. 반복해 쓰는 위조는 이기지 못한다.
+  # schedule 은 best-effort 라 늦거나 빠질 수 있고, 정시 (매시 0분) 가 가장 붐비므로 피한다
+  schedule:
+    - cron: "7,22,37,52 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+  statuses: write
+
+# PR 이벤트는 PR 별 그룹, schedule · 수동 실행은 따로 한 그룹이다. GitHub 은 그룹당 대기 실행을 하나만
+# 두고 더 새 실행이 오면 대기 중이던 것을 취소한다 — 한 그룹으로 묶으면 다른 PR 의 이벤트가 철회
+# 이벤트를 지워 리뷰 없는 success 가 남는다. PR 별 그룹에서는 대기 실행을 대신하는 것이 같은 PR 의
+# 더 새 실행이고, 그것이 실행 시점의 상태를 다시 읽으므로 잃는 것이 없다. schedule 과 PR 이벤트는
+# 서로 겹칠 수 있다 — 남는 경합 창은 status-checks.md "Known limits"
+concurrency:
+  group: ci-review-${{ github.event.pull_request.number || 'all-open' }}
+  cancel-in-progress: false
+
+jobs:
+  judge:
+    name: Review Presence Judge
+    runs-on: ubuntu-latest
+    steps:
+      # 판정 스크립트는 기본 브랜치의 것을 쓴다 — PR 이 자기 게이트를 고쳐 통과시키지 못하게
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          sparse-checkout: scripts/ci
+      - name: judge and post status
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.pull_request.number }}
+          # docs/en/ci/status-checks.md "Review Presence" 와 동기화 유지 (쉼표 구분)
+          REVIEW_BOTS: chatgpt-codex-connector[bot],copilot-pull-request-reviewer[bot],coderabbitai[bot]
+        run: |
+          script=scripts/ci/review_presence.py
+          # 이 게이트를 도입하는 PR 은 기본 브랜치에 스크립트가 아직 없다 — status 를 쓰지 않으면
+          # 필수 체크가 비어 머지가 막히므로 조용한 통과가 아니다
+          if [ ! -f "$script" ]; then
+            echo "::warning::$script 가 기본 브랜치에 없습니다 — Review Presence 를 판정하지 않습니다"
+            exit 0
+          fi
+          if [ -n "$NUMBER" ]; then
+            python3 "$script" --repo "$REPO" --pr "$NUMBER"
+          else
+            python3 "$script" --repo "$REPO" --all-open
+          fi
