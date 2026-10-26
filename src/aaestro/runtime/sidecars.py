@@ -31,7 +31,12 @@ from aaestro.runtime.docker.errors import (
     network_mismatch,
     start_failed,
 )
-from aaestro.runtime.spec import DEFAULT_PID_LIMIT, TMPFS_OPTIONS
+from aaestro.runtime.spec import (
+    DEFAULT_PID_LIMIT,
+    HARDENED_CAP_DROP,
+    HARDENED_SECURITY_OPT,
+    TMPFS_OPTIONS,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -103,8 +108,8 @@ def sidecar_kwargs(
         # 02 Security — 이미지가 root 로 뜨도록 만들어졌어도 non-root 로 돌린다
         "user": "1000:1000",
         "read_only": True,
-        "cap_drop": ["ALL"],
-        "security_opt": ["no-new-privileges:true"],
+        "cap_drop": list(HARDENED_CAP_DROP),
+        "security_opt": list(HARDENED_SECURITY_OPT),
         "tmpfs": {SIDECAR_HOME: TMPFS_OPTIONS},
         "volumes": {},
         "labels": {AGENT_LABEL: agent, ROLE_LABEL: SIDECAR_ROLE, SIDECAR_LABEL: server.name},

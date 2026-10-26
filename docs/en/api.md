@@ -1136,8 +1136,11 @@ URL.
   the runtime attaches it to each sidecar network under the host name of `connect_url`. A graph with a
   sidecar behind the proxy is refused without this setting (`CFG_001`), because joining the agent to its
   sidecar directly would leave the tool decisions to a check inside the agent's container.
-- **Hardened like an agent.** uid 1000, a read-only root filesystem with a writable `/tmp` (also
-  `HOME`), `cap-drop ALL`, `no-new-privileges`, a PID limit, and no published ports. Undeclared
+- **Hardened like an agent.** Agents and sidecars take the same hardening set from one place
+  (`runtime/spec.py`): uid 1000, a read-only root filesystem with a writable `/tmp` (also
+  `HOME`), `cap-drop ALL`, `no-new-privileges`, and a PID limit. Networking differs: the agent's
+  own control and optional A2A ports bind to loopback, while a sidecar has no port mapping at all.
+  Undeclared
   resources default to the agent default (1 CPU, 1Gi), and each sidecar counts toward the group quota
   once, whatever the replica count.
 - **Environment.** Only the server's `env_allowlist`, plus the owning agent's `HTTPS_PROXY` when the

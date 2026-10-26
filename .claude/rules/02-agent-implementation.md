@@ -253,6 +253,7 @@ spec:
    - MUST NOT bake secrets into images (빌드 arg 로도 금지)
    - SHOULD use read-only root filesystem + 명시적 writable volume (`/workspace`, `/tmp`)
    - Capability drop: `--cap-drop=ALL` 기본, 필요 capability 만 manifest 로 선언
+   - `--security-opt=no-new-privileges:true` 기본 — setuid 바이너리로 권한을 되찾는 길을 막는다 (사이드카와 같은 경화 집합)
 
 4. **Resources**
    - CPU/Memory limit 필수 (manifest `runtime.resources`)
