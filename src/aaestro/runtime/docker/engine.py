@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import posixpath
 import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
@@ -91,11 +92,136 @@ def security_opt_map(options: Iterable[str] | None) -> dict[str, str | None]:
     return parsed
 
 
+ANONYMOUS_VOLUME_NAME = re.compile(r"[0-9a-f]{64}")
+"""Docker 가 이미지의 `VOLUME` 에 만드는 익명 볼륨의 이름 — 무작위 64자 hex."""
+BIND_MOUNT_OPTIONS = frozenset({"bind", "rbind"})
+LOCAL_VOLUME_DRIVER = "local"
+
+
+def _clean(path: Any) -> Any:
+    """경로 비교용 정규화 — Docker 는 `/cache/` 를 `/cache` 로 보고한다.
+
+    `posixpath.normpath` 는 맨 앞 `//` 를 남기므로(POSIX 규칙) 하나로 줄인다.
+    """
+    if not isinstance(path, str) or not path.startswith("/"):
+        return path
+    return "/" + posixpath.normpath(path).lstrip("/")
+
+
+def _mount_key(mount: Mapping[str, Any]) -> tuple[Any, Any, bool]:
+    """`docker inspect` 의 `Mounts` 항목 → (컨테이너 경로, 출처, 쓰기 가능) — 생성 인자의 모양."""
+    # 이름 있는 볼륨의 Source 는 daemon 의 데이터 경로라 생성 인자의 키는 Name 이다
+    source = mount.get("Name") if mount.get("Type") == "volume" else _clean(mount.get("Source"))
+    return _clean(mount.get("Destination")), source, bool(mount.get("RW"))
+
+
+def _plain_volume(volume: Mapping[str, Any] | None) -> bool:
+    """호스트 경로를 열지 않는 볼륨인가 — local 드라이버이고 device · bind 옵션이 없다.
+
+    같은 이름의 볼륨을 `--opt type=none --opt device=/ --opt o=bind` 로 다시 만들면 이름은 같아도
+    호스트 `/` 가 열린다 (#488 QA 실측). `None` 은 확인하지 못한 볼륨이라 통과시키지 않는다.
+    """
+    if volume is None or volume.get("Driver") != LOCAL_VOLUME_DRIVER:
+        return False
+    options = volume.get("Options") or {}
+    flags = {flag.strip() for flag in str(options.get("o") or "").split(",")}
+    return "device" not in options and not flags & BIND_MOUNT_OPTIONS
+
+
+def _image_volume(mount: Mapping[str, Any], declared: Mapping[str, Any], images: set[Any]) -> bool:
+    """이미지의 `VOLUME` 경로에 Docker 가 만든 익명 볼륨인가 — 생성 인자 밖이어도 허용한다."""
+    return (
+        mount.get("Type") == "volume"
+        and mount.get("Name") not in declared
+        and bool(ANONYMOUS_VOLUME_NAME.fullmatch(str(mount.get("Name") or "")))
+        and _clean(mount.get("Destination")) in images
+    )
+
+
+def mount_gaps(found: Mapping[str, Any], expected: Mapping[str, Any]) -> list[str]:
+    """마운트가 생성 인자와 다른 필드 이름 — `Mounts`(바인드 · 볼륨) 와 `Tmpfs`.
+
+    집합이 같아야 한다: 생성 인자 밖의 바인드(호스트 경로, `/var/run/docker.sock`), 다른 출처로
+    바뀐 마운트, 읽기 전용에서 쓰기 가능으로 바뀐 선언 마운트가 모두 걸린다. 예외는 이미지가
+    `VOLUME` 으로 선언한 경로(`ImageVolumes` — 컨테이너가 아니라 **이미지** 의 `Config.Volumes`)의
+    익명 볼륨 하나다. 볼륨은 이름만으로 믿지 않는다 —
+    `inspect_hardening` 이 붙인 볼륨 inspect 값(`Volume`)이 `_plain_volume` 을 통과해야 한다.
+    `--tmpfs` 는 `Mounts` 에 보이지 않고 `HostConfig.Tmpfs` 에만 있고, `--mount type=tmpfs` 는
+    `Mounts` 에 보인다 — 둘을 합쳐 tmpfs 경로 집합으로 본다. 경로는 정규화해 비교한다(`_clean`).
+    다른 검사와 달리 `None` 을 "보고 안 함" 으로 넘기지 않는다: 빈 마운트가 기본이라 넘기면 검사가
+    없는 것과 같다.
+    """
+    mounts = list(found.get("Mounts") or ())
+    volumes = expected.get("volumes") or {}
+    want = {
+        (_clean(target["bind"]), _clean(source), target["mode"] == "rw")
+        for source, target in volumes.items()
+    }
+    images = {_clean(path) for path in found.get("ImageVolumes") or ()}
+    binds = [mount for mount in mounts if mount.get("Type") != "tmpfs"]
+    have = {_mount_key(mount) for mount in binds if not _image_volume(mount, volumes, images)}
+    unsafe = any(
+        mount.get("Type") == "volume" and not _plain_volume(mount.get("Volume")) for mount in binds
+    )
+    tmpfs = {_clean(path) for path in found.get("Tmpfs") or {}} | {
+        _clean(mount.get("Destination")) for mount in mounts if mount.get("Type") == "tmpfs"
+    }
+    wrong: list[str] = []
+    if have != want or unsafe:
+        wrong.append("Mounts")
+    if tmpfs != {_clean(path) for path in expected.get("tmpfs") or {}}:
+        wrong.append("Tmpfs")
+    return wrong
+
+
+def inspect_hardening(client: DockerClient, container_id: str, *, agent: str) -> dict[str, Any]:
+    """`hardening_of` 에 볼륨 마운트마다 그 볼륨의 inspect 값(`Volume`)을 붙인다 — 동기 호출.
+
+    볼륨 inspect 가 실패하면 `Volume` 은 `None` 이고 `mount_gaps` 가 거절한다 — 확인하지 못한
+    볼륨은 통과시키지 않는다.
+    """
+    found = client.hardening_of(container_id)
+    images = _image_volumes(client, str(found.get("Image") or ""), agent=agent)
+    mounts = []
+    for mount in found.get("Mounts") or ():
+        if mount.get("Type") == "volume":
+            try:
+                volume: dict[str, Any] | None = client.volume_of(str(mount.get("Name") or ""))
+            except Exception as err:  # noqa: BLE001 — 거절로 바뀐다; 원인 종류는 로그로 남긴다
+                log.warning(
+                    "volume inspect failed",
+                    agent=agent,
+                    container_id=container_id[:12],
+                    error=type(err).__name__,
+                )
+                volume = None
+            mount = {**mount, "Volume": volume}
+        mounts.append(mount)
+    return {**found, "Mounts": mounts, "ImageVolumes": images}
+
+
+def _image_volumes(client: DockerClient, image_id: str, *, agent: str) -> set[str]:
+    """컨테이너를 만든 이미지가 `VOLUME` 으로 선언한 경로 — 확인하지 못하면 빈 집합.
+
+    컨테이너의 `Config.Volumes` 는 쓰지 않는다: 생성 때 넘긴 볼륨 목적지도 그리로 복사되어
+    (docker-py `_create_container_args`), `-v /extra` 를 더한 컨테이너가 "이미지 선언" 으로 보인다.
+    빈 집합은 이미지 VOLUME 예외를 없애는 쪽 — 닫는 쪽이다.
+    """
+    if not image_id:
+        return set()
+    try:
+        return client.image_volumes(image_id)
+    except Exception as err:  # noqa: BLE001 — 예외를 닫는 쪽으로 바뀐다; 원인 종류는 로그로 남긴다
+        log.warning("image inspect failed", agent=agent, error=type(err).__name__)
+        return set()
+
+
 def hardening_gaps(found: Mapping[str, Any], expected: Mapping[str, Any]) -> list[str]:
     """`docker inspect` 값에서 경화가 어긋난 필드 이름 — 없으면 빈 목록.
 
     ``expected`` 는 그 컨테이너를 만든 생성 인자(user · cap_drop · read_only · security_opt ·
-    pids_limit)다 — 에이전트는 `ContainerSpec.hardening_kwargs()`, 사이드카는 `sidecar_kwargs`.
+    pids_limit · tmpfs · volumes)다 — 에이전트는 `ContainerSpec.hardening_kwargs()`, 사이드카는
+    `sidecar_kwargs`.
     필드 목록이 아니라 부류를 본다: 생성 인자가 건 설정이 빠진 것, 그리고 걸려 있어도 뜻을 잃게
     만드는 설정(privileged 는 CapDrop 과 무관하게 모든 capability 를 주고, 호스트 · 다른 컨테이너와
     공유하는 네임스페이스도 같다). `security_opt` 는 키별 유효값이 생성 인자와 같아야 한다 —
@@ -103,8 +229,9 @@ def hardening_gaps(found: Mapping[str, Any], expected: Mapping[str, Any]) -> lis
     `MaskedPaths` · `ReadonlyPaths` 가 빈 목록이면 `/proc` · `/sys` 가림이 꺼진 것이다
     (`systempaths=unconfined` 는 `SecurityOpt` 에 남지 않고 여기에만 드러난다). `None` 은 그 필드를
     보고하지 않는 옛 daemon 이라 불일치로 보지 않는다 — 비었다는 증거가 아니다.
+    마운트는 예외로 엄격하다(`mount_gaps`): 없음을 "마운트 없음" 으로 읽는다.
     """
-    wrong: list[str] = []
+    wrong: list[str] = mount_gaps(found, expected)
     if not set(expected.get("cap_drop") or ()) <= set(found.get("CapDrop") or ()):
         wrong.append("CapDrop")
     if expected.get("read_only") and found.get("ReadonlyRootfs") is not True:
@@ -168,6 +295,14 @@ class DockerClient(Protocol):
 
     def hardening_of(self, container_id: str) -> dict[str, Any]:
         """`docker inspect` 의 경화 필드 — `hardening_gaps` 가 읽는 이름 그대로."""
+        ...
+
+    def volume_of(self, name: str) -> dict[str, Any]:
+        """`docker volume inspect` 의 `Driver` · `Options` — 없으면 예외."""
+        ...
+
+    def image_volumes(self, image_id: str) -> set[str]:
+        """이미지 `Config.Volumes` 의 경로들 — 이미지가 `VOLUME` 으로 선언한 것. 없으면 예외."""
         ...
 
     def address_of(self, container_id: str, network: str) -> str:
@@ -482,7 +617,7 @@ class DockerEngine:
         self, agent: str, image: str, container_id: str, expected: Mapping[str, Any]
     ) -> None:
         """기동 스펙의 경화 설정이 실제로 걸려 있는지 대조한다 (02 Docker Isolation 3)."""
-        found = await asyncio.to_thread(self.client.hardening_of, container_id)
+        found = await asyncio.to_thread(inspect_hardening, self.client, container_id, agent=agent)
         wrong = hardening_gaps(found, expected)
         if wrong:
             raise hardening_mismatch(agent, image, wrong)

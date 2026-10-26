@@ -21,7 +21,7 @@ from aaestro.runtime.docker.engine import (
 )
 from aaestro.runtime.spec import build_container_spec
 from tests.fixtures.builders import make_manifest
-from tests.fixtures.fake_docker import FakeDockerClient
+from tests.fixtures.fake_docker import FakeDockerClient, inspect_mounts
 from tests.fixtures.waiting import until
 
 
@@ -528,6 +528,9 @@ GOOD_HARDENING = {
     "User": "1000:1000",
     "SecurityOpt": ["no-new-privileges:true"],  # 에이전트 기본 스펙이 싣는 HARDENED_SECURITY_OPT
     "PidsLimit": 256,
+    # 에이전트 기본 스펙의 tmpfs 두 경로 — `--tmpfs` 는 `Mounts` 에 보이지 않는다
+    "Mounts": [],
+    "Tmpfs": {"/tmp": "mode=1777", "/workspace": "mode=1777"},  # noqa: S108 — 컨테이너 안 경로다
 }
 
 
@@ -536,8 +539,10 @@ def empty_opt_expected():
     return {**spec().hardening_kwargs(), "security_opt": []}
 
 
-async def verify(hardening, *, internal: bool = False, expected=None) -> None:
-    client = FakeDockerClient(hardening=hardening)
+async def verify(
+    hardening, *, internal: bool = False, expected=None, volumes=None, images=None
+) -> None:
+    client = FakeDockerClient(hardening=hardening, volumes=volumes, image_volumes=images)
     engine = DockerEngine(client=client, network="agents", internal=internal)
     wanted = spec().hardening_kwargs() if expected is None else expected
     await engine.verify_isolation("alpha", "img:1", "container-0001", wanted)
@@ -705,6 +710,240 @@ async def test_verify_isolation_refuses_a_container_that_lost_its_pid_limit(pids
     assert caught.value.details["fields"] == ["PidsLimit"]
 
 
+# --- 마운트 대조 (#488) ---------------------------------------------------------
+
+DECLARATION_DIR = "/srv/aaestro/agents/alpha"
+MODULES_DIR = "/srv/aaestro/modules/skillsets"
+
+
+def mounted_spec():
+    """runtime 이 거는 읽기 전용 선언 마운트 둘과 쓰기 가능한 이름 있는 볼륨 하나를 가진 스펙."""
+    return build_container_spec(
+        make_manifest(),
+        mounts=[
+            {"name": DECLARATION_DIR, "mount_path": "/etc/aaestro", "read_only": True},
+            {"name": MODULES_DIR, "mount_path": "/opt/modules/skillsets", "read_only": True},
+            {"name": "alpha-cache", "mount_path": "/cache", "read_only": False},
+        ],
+    )
+
+
+def mounted_found(**overrides):
+    """그 스펙으로 만든 정상 컨테이너의 inspect 값."""
+    built = mounted_spec()
+    return {**GOOD_HARDENING, **inspect_mounts(built.to_docker_kwargs()), **overrides}
+
+
+def bind(source, destination, *, rw=True):
+    return {"Type": "bind", "Source": source, "Destination": destination, "RW": rw}
+
+
+async def test_verify_isolation_accepts_the_mounts_its_spec_declared():
+    found = mounted_found()
+    await verify(found, expected=mounted_spec().hardening_kwargs())
+    # 순서는 뜻이 없다
+    reordered = {**found, "Mounts": list(reversed(found["Mounts"]))}
+    await verify(reordered, expected=mounted_spec().hardening_kwargs())
+
+
+def _declared():
+    return mounted_found()["Mounts"]
+
+
+@pytest.mark.parametrize(
+    ("label", "mounts"),
+    [
+        ("docker socket", [*_declared(), bind("/var/run/docker.sock", "/var/run/docker.sock")]),
+        ("host path", [*_declared(), bind("/home/someone", "/data", rw=False)]),
+        ("shared named volume", [*_declared(), {"Type": "volume", "Name": "beta-cache",
+                                                "Destination": "/beta", "RW": True}]),
+        ("declaration made writable", [{**_declared()[0], "RW": True}, *_declared()[1:]]),
+        ("declaration from another host path", [{**_declared()[0], "Source": "/"},
+                                                *_declared()[1:]]),
+        ("volume swapped for another agent's", [*_declared()[:2], {**_declared()[2],
+                                                                    "Name": "beta-cache"}]),
+        ("declared mount missing", _declared()[1:]),
+        ("no mounts reported", None),
+    ],
+)  # fmt: skip
+async def test_verify_isolation_refuses_mounts_its_spec_did_not_declare(label, mounts):
+    with pytest.raises(AaestroError) as caught:
+        await verify(mounted_found(Mounts=mounts), expected=mounted_spec().hardening_kwargs())
+
+    assert caught.value.code == "RT_001", label
+    assert caught.value.retryable is False
+    assert caught.value.details["fields"] == ["Mounts"]
+    # 사유에는 필드 이름만 — 호스트 경로를 싣지 않는다
+    assert "/var/run" not in str(caught.value) + str(caught.value.details)
+    assert "/home" not in str(caught.value) + str(caught.value.details)
+
+
+@pytest.mark.parametrize(
+    ("label", "tmpfs", "extra"),
+    [
+        ("tmpfs dropped", {"/tmp": "mode=1777"}, []),  # noqa: S108 — 컨테이너 안 경로다
+        ("no tmpfs reported", None, []),
+        ("extra --tmpfs", {**GOOD_HARDENING["Tmpfs"], "/app": ""}, []),
+        ("extra --mount type=tmpfs", GOOD_HARDENING["Tmpfs"],
+         [{"Type": "tmpfs", "Source": "", "Destination": "/app", "RW": True}]),
+    ],
+)  # fmt: skip
+async def test_verify_isolation_refuses_tmpfs_its_spec_did_not_declare(label, tmpfs, extra):
+    with pytest.raises(AaestroError) as caught:
+        await verify({**GOOD_HARDENING, "Tmpfs": tmpfs, "Mounts": extra})
+
+    assert caught.value.details["fields"] == ["Tmpfs"], label
+
+
+async def test_verify_isolation_accepts_a_tmpfs_reported_through_mounts():
+    """`--mount type=tmpfs` 로 건 같은 경로는 `Mounts` 쪽에 보인다 — 같은 tmpfs 집합이다."""
+    found = {
+        **GOOD_HARDENING,
+        "Tmpfs": {"/tmp": "mode=1777"},  # noqa: S108 — 컨테이너 안 경로다
+        "Mounts": [{"Type": "tmpfs", "Source": "", "Destination": "/workspace", "RW": True}],
+    }
+    await verify(found)
+
+
+ANONYMOUS = "a" * 64
+
+
+def anonymous(destination, name=ANONYMOUS):
+    return {"Type": "volume", "Name": name, "Destination": destination, "RW": True}
+
+
+IMAGE_ID = "sha256:" + "b" * 64
+DATA_IMAGE = {IMAGE_ID: {"/data"}}
+"""`VOLUME ["/data"]` 를 선언한 이미지 — 컨테이너 inspect 의 `Image` 가 이 id 를 가리킨다."""
+
+
+def from_image(**found):
+    return {**GOOD_HARDENING, "Image": IMAGE_ID, **found}
+
+
+async def test_verify_isolation_accepts_an_anonymous_volume_the_image_declared():
+    """이미지의 `VOLUME ["/data"]` 에 Docker 가 만든 익명 볼륨은 생성 인자 밖이어도 정상이다."""
+    await verify(from_image(Mounts=[anonymous("/data")]), images=DATA_IMAGE)
+
+
+@pytest.mark.parametrize(
+    ("label", "found", "volumes", "images"),
+    [
+        ("outside the image volumes", from_image(Mounts=[anonymous("/other")]), None, DATA_IMAGE),
+        ("image declares no volumes", from_image(Mounts=[anonymous("/data")]), None, None),
+        ("no image reported", {**GOOD_HARDENING, "Mounts": [anonymous("/data")]}, None,
+         DATA_IMAGE),
+        ("named volume at an image volume path",
+         from_image(Mounts=[anonymous("/data", "beta-cache")]), None, DATA_IMAGE),
+        ("anonymous volume opened onto the host", from_image(Mounts=[anonymous("/data")]),
+         {ANONYMOUS: {"Driver": "local", "Options": {"type": "none", "device": "/",
+                                                     "o": "bind"}}}, DATA_IMAGE),
+        # 확인하지 못한 이미지는 VOLUME 예외를 닫는다 — 이미지 VOLUME 익명 볼륨도 거절된다
+        ("image inspect failed", from_image(Mounts=[anonymous("/data")]), None,
+         {IMAGE_ID: RuntimeError("image gone")}),
+    ],
+)  # fmt: skip
+async def test_verify_isolation_refuses_volumes_the_image_did_not_declare(
+    label, found, volumes, images
+):
+    with pytest.raises(AaestroError) as caught:
+        await verify(found, volumes=volumes, images=images)
+
+    assert caught.value.details["fields"] == ["Mounts"], label
+
+
+async def test_verify_isolation_refuses_an_anonymous_volume_the_caller_added():
+    """생성 때 넘긴 `-v /extra` 도 컨테이너 `Config.Volumes` 에 복사된다 — 허용 근거는 이미지다.
+
+    일반 local 옵션의 64-hex 익명 볼륨이라 이름 · 드라이버로는 이미지 VOLUME 과 구분되지 않는다.
+    """
+    found = from_image(
+        Volumes={"/data": {}, "/extra": {}},  # 컨테이너 Config.Volumes — 대조가 읽지 않는다
+        Mounts=[anonymous("/data"), anonymous("/extra", "c" * 64)],
+    )
+    with pytest.raises(AaestroError) as caught:
+        await verify(found, images=DATA_IMAGE)
+
+    assert caught.value.details["fields"] == ["Mounts"]
+
+
+@pytest.mark.parametrize(
+    "volume",
+    [
+        {"Driver": "local", "Options": {"type": "none", "device": "/", "o": "bind"}},
+        {"Driver": "local", "Options": {"device": "/home"}},
+        {"Driver": "local", "Options": {"o": "ro,rbind"}},
+        {"Driver": "local", "Options": {"o": "bind"}},
+        {"Driver": "rexray", "Options": {}},
+        RuntimeError("volume inspect failed"),  # 확인하지 못한 볼륨은 통과시키지 않는다
+    ],
+)
+async def test_verify_isolation_refuses_a_declared_volume_that_opens_the_host(volume):
+    """같은 이름이어도 bind 옵션으로 다시 만든 볼륨은 호스트 경로를 연다 (#488 QA 실측)."""
+    with pytest.raises(AaestroError) as caught:
+        await verify(
+            mounted_found(), expected=mounted_spec().hardening_kwargs(),
+            volumes={"alpha-cache": volume},
+        )  # fmt: skip
+
+    assert caught.value.details["fields"] == ["Mounts"]
+    assert "/home" not in str(caught.value) + str(caught.value.details)
+
+
+async def test_a_failed_volume_inspect_is_logged_with_the_agent(monkeypatch):
+    """확인하지 못한 볼륨의 WARN 에 runtime 필수 필드 `agent` 가 실린다 (05) — 값은 싣지 않는다."""
+    import structlog.testing
+
+    from aaestro.runtime.docker import engine as engine_module
+
+    # 앞선 테스트가 모듈 로거를 굳혀 두면 capture_logs 가 보지 못한다
+    monkeypatch.setattr(engine_module, "log", structlog.get_logger("test"))
+    with structlog.testing.capture_logs() as logs, pytest.raises(AaestroError):
+        await verify(
+            mounted_found(),
+            expected=mounted_spec().hardening_kwargs(),
+            volumes={"alpha-cache": RuntimeError("/home/secret")},
+        )
+
+    [warning] = [entry for entry in logs if entry["event"] == "volume inspect failed"]
+    assert warning["agent"] == "alpha"
+    assert warning["log_level"] == "warning"
+    assert "/home/secret" not in str(warning)
+
+
+@pytest.mark.parametrize(
+    "volume",
+    [{"Driver": "local", "Options": None}, {"Driver": "local", "Options": {"o": "size=1g"}}],
+)
+async def test_verify_isolation_accepts_a_plain_local_volume(volume):
+    await verify(
+        mounted_found(), expected=mounted_spec().hardening_kwargs(),
+        volumes={"alpha-cache": volume},
+    )  # fmt: skip
+
+
+async def test_verify_isolation_compares_normalized_paths():
+    """Docker 는 `/cache/` · `/opt//x` 를 정규화해 보고한다 — 선언의 표기 차이로 거절하지 않는다."""
+    declared = build_container_spec(
+        make_manifest(),
+        mounts=[
+            {"name": f"{DECLARATION_DIR}/", "mount_path": "/etc//aaestro/", "read_only": True},
+            {"name": "alpha-cache", "mount_path": "//cache/", "read_only": False},
+        ],
+    )
+    reported = build_container_spec(
+        make_manifest(),
+        mounts=[
+            {"name": DECLARATION_DIR, "mount_path": "/etc/aaestro", "read_only": True},
+            {"name": "alpha-cache", "mount_path": "/cache", "read_only": False},
+        ],
+    )
+    expected = {**declared.hardening_kwargs(), "tmpfs": {"/tmp/": "", "//workspace": ""}}  # noqa: S108
+    found = {**GOOD_HARDENING, **inspect_mounts(reported.to_docker_kwargs())}
+
+    await verify(found, expected=expected)
+
+
 def inspect_shape(kwargs):
     """생성 인자를 `docker inspect` 가 보고하는 모양으로 — 정상 컨테이너가 이렇게 보인다."""
     return {
@@ -715,10 +954,13 @@ def inspect_shape(kwargs):
         "PidsLimit": kwargs["pids_limit"],
         "MaskedPaths": DEFAULT_MASKED_PATHS,
         "ReadonlyPaths": DEFAULT_READONLY_PATHS,
+        **inspect_mounts(kwargs),
     }
 
 
-HARDENING_KEYS = ("pids_limit", "user", "read_only", "cap_drop", "security_opt")
+HARDENING_KEYS = (
+    "pids_limit", "user", "read_only", "cap_drop", "security_opt", "tmpfs", "volumes"
+)  # fmt: skip
 
 
 @pytest.mark.parametrize("filled", [(), ("no-new-privileges:true",)])
@@ -771,6 +1013,9 @@ def test_a_container_built_from_the_sidecar_kwargs_has_no_hardening_gaps(monkeyp
         ("SecurityOpt", ["no-new-privileges:true", "seccomp=unconfined"]),
         ("PidsLimit", None),
         ("MaskedPaths", []),
+        ("Mounts", [bind("/var/run/docker.sock", "/var/run/docker.sock")]),
+        ("Mounts", [bind("/", "/host", rw=False)]),
+        ("Tmpfs", {}),
     ],
 )
 async def test_sidecar_reattach_replaces_a_weakened_sidecar(field, value):
