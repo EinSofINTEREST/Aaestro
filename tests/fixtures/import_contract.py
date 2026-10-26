@@ -6,12 +6,70 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 import textwrap
+import tomllib
+from collections.abc import Iterable, Mapping
+from importlib.metadata import packages_distributions
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _normalize(name: str) -> str:
+    """PEP 503 정규화 — 대소문자와 ``-`` ``_`` ``.`` 를 같게 본다."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def runtime_dependencies(repo_root: Path = REPO_ROOT) -> frozenset[str]:
+    """pyproject ``[project].dependencies`` 의 정규화된 배포판 이름 (extras · 버전 제외)."""
+    data = tomllib.loads((repo_root / "pyproject.toml").read_text("utf-8"))
+    names = set()
+    for spec in data["project"]["dependencies"]:
+        match = re.match(r"[A-Za-z0-9][A-Za-z0-9._-]*", spec)
+        assert match, f"unparseable dependency: {spec!r}"
+        names.add(_normalize(match.group()))
+    return frozenset(names)
+
+
+def modules_of(dependencies: Iterable[str]) -> tuple[str, ...]:
+    """의존성 이름 (pyproject 표기) 에서 설치된 최상위 모듈 이름을 유도한다.
+
+    배포판 하나가 여러 모듈을 줄 수 있고 (pyyaml → yaml, _yaml), 여러 배포판이 한 모듈을
+    나눠 쓸 수도 있다 (langgraph-checkpoint-* → langgraph). 설치돼 있지 않아 모듈을
+    찾지 못하면 실패시킨다 — 빈 금지 목록으로 조용히 통과하지 않게.
+    """
+    owners: dict[str, set[str]] = {}
+    for module, dists in packages_distributions().items():
+        for dist in dists:
+            owners.setdefault(_normalize(dist), set()).add(module)
+    modules: set[str] = set()
+    for dep in dependencies:
+        found = owners.get(_normalize(dep))
+        assert found, f"dependency {dep!r} is not installed, cannot derive its modules"
+        modules |= found
+    return tuple(sorted(modules))
+
+
+def assert_dependencies_classified(
+    forbidden: Iterable[str], allowed: Mapping[str, str], *, repo_root: Path = REPO_ROOT
+) -> None:
+    """pyproject 런타임 의존성이 각각 정확히 한 번 "금지" 또는 "허용 (사유)" 로 분류됐음을 단언한다.
+
+    분류 없이 들어온 새 의존성, pyproject 에서 사라진 낡은 항목, 양쪽에 걸친 항목,
+    사유 없는 허용을 모두 실패로 본다.
+    """
+    declared = runtime_dependencies(repo_root)
+    forbidden_set = {_normalize(d) for d in forbidden}
+    allowed_set = {_normalize(d) for d in allowed}
+    assert not forbidden_set & allowed_set, sorted(forbidden_set & allowed_set)
+    classified = forbidden_set | allowed_set
+    assert declared <= classified, f"unclassified dependencies: {sorted(declared - classified)}"
+    assert classified <= declared, f"not in pyproject: {sorted(classified - declared)}"
+    assert all(reason.strip() for reason in allowed.values()), "allowed needs a reason"
+
 
 _SCRIPT = """
 import os, sys

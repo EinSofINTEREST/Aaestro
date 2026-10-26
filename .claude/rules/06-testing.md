@@ -83,7 +83,7 @@ tests/
 
 - 마커: `@pytest.mark.integration`, `@pytest.mark.e2e` — 기본 실행(`make test`)은 unit 만,
   `make test-integration` / `make test-e2e` 로 분리 실행
-- import 계약 테스트: 진입점 (`agentd` · `egress` · `memory` 의 `__main__`) 은 `tests/unit/<패키지>/test_import_boundary.py` 가 `python -I` 서브프로세스의 `sys.modules` 로 금지 모듈 (control plane · 서버 모듈 · 서드파티) 을 단언한다 — 금지 목록은 테스트 안의 상수이고 공통 헬퍼는 `tests/fixtures/import_contract.py`. 새 import 가 생기면 그 상수를 고치는 것이 곧 결정이다
+- import 계약 테스트: 진입점 (`agentd` · `egress` · `memory` 의 `__main__`) 은 `tests/unit/<패키지>/test_import_boundary.py` 가 `python -I` 서브프로세스의 `sys.modules` 로 금지 모듈 (control plane · 서버 모듈 · 서드파티) 을 단언한다 — `aaestro.*` 는 모듈 이름으로, 서드파티는 pyproject 의존성 이름으로 선언해 모듈 이름을 `packages_distributions()` 로 유도한다 (공통 헬퍼 `tests/fixtures/import_contract.py`). pyproject 의 모든 런타임 의존성은 각 테스트에서 "금지" 또는 "허용 (사유)" 로 분류돼야 하고, 분류 없는 새 의존성은 실패한다 — 분류를 정하는 것이 곧 결정이다
 
 ### Frameworks
 
