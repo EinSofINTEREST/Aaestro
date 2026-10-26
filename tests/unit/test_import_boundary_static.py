@@ -23,6 +23,7 @@ CONTROL_PLANE = (
     "aaestro.orchestrator",
     "langgraph",
     "langchain",
+    "langchain_core",
 )
 LIGHT_PACKAGES = ("memory", "egress", "access", "modules", "observability")
 LIGHT_MODULES = ("catalog.py", "config.py")
