@@ -246,6 +246,8 @@ Memoryset 은 memory space 의 정책을 고정합니다: scope (`run | local | 
 임베딩 모델(버전 고정), 청킹, 하이브리드 검색 가중치, 보존/compaction, recall 기본값
 (k, 최소 점수, 토큰 예산). 부착 위치는 scope 와 일치해야 합니다: manifest(local),
 그래프(run), `groups/<name>.yaml`(group), `groups/global.yaml`(global).
+배포 검증이 이를 강제합니다 (불일치는 `MOD_003`, 해석되지 않는 그룹 · 그래프 space 는 `MOD_001`).
+또한 `service` 그래프가 `retention.compaction` 없는 run scope memoryset 을 부착하면 거절합니다 (`MOD_003`).
 
 ## 스킬팩
 
