@@ -210,7 +210,7 @@ async def test_an_overlap_while_a_restart_waits_for_its_container_is_refused(ove
 
 
 async def test_an_overlap_after_a_failed_restart_is_refused(overlap, monkeypatch):
-    """재시작이 실패하면 launcher 항목은 영영 비지만 배포는 여전히 그 에이전트를 쥔다."""
+    """재시작이 실패해도 배포는 그 에이전트를 쥔다 — 항목은 정지 상태로 남는다 (#491)."""
     manager, fake = overlap
     running_one = await manager.deploy("solo")
     sidecar, ports = fake.find(SIDECAR), ports_of(manager)
@@ -227,7 +227,7 @@ async def test_an_overlap_after_a_failed_restart_is_refused(overlap, monkeypatch
     launched.lifecycle.transition(AgentState.UNHEALTHY)
     with pytest.raises(AaestroError):
         await manager.launcher._replace(launched)  # noqa: SLF001
-    assert not manager.launcher.replicas_of("alpha")
+    assert [r.stopped for r in manager.launcher.replicas_of("alpha")] == [True]
 
     error = await refused(manager)
 
