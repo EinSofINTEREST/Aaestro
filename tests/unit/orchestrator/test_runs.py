@@ -440,3 +440,136 @@ async def test_a_service_run_records_and_resumes_with_the_deployment_overrides(p
     assert store.get(f"svc-1{RESUMED_SUFFIX}").model_overrides == {
         node_id: {"name": "claude-haiku-4-5"}
     }
+
+
+async def _slow_to_cancel() -> RunResult:
+    """취소를 받아도 바로 끝나지 않는 드라이버 — 정리가 오래 걸리는 경우."""
+    try:
+        await asyncio.Event().wait()
+    except asyncio.CancelledError:
+        await asyncio.sleep(0.5)
+        raise
+    raise AssertionError("unreachable")
+
+
+async def test_close_yields_to_an_outer_cancellation(parts):
+    """종료 타임아웃이 드라이버 정리가 끝날 때까지 삼켜지면 안 된다 (#490)."""
+    _, _, _, mission, _ = parts
+    runs = service_for(parts, deployed(mission.metadata.name))
+    runs._drive("slow", _slow_to_cancel)  # noqa: SLF001
+    await asyncio.sleep(0)
+
+    drivers = list(runs.drivers.values())
+
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(runs.close(), 0.1)
+
+    assert all(task.done() and task.cancelled() for task in drivers)
+
+
+async def test_close_logs_a_driver_that_failed_and_still_finishes(parts):
+    from structlog.testing import capture_logs
+
+    _, _, submitter, mission, _ = parts
+    runs = service_for(parts, deployed(mission.metadata.name))
+
+    async def failing() -> RunResult:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            raise RuntimeError("cleanup failed") from None
+        raise AssertionError("unreachable")
+
+    runs._drive("bad", failing)  # noqa: SLF001
+    await asyncio.sleep(0)
+
+    with capture_logs() as logs:
+        await runs.close()
+
+    failed = [e for e in logs if e["event"] == "run driver failed while closing"]
+    assert [e["log_level"] for e in failed] == ["warning"]
+    assert [(e["run_id"], e["error_code"]) for e in failed] == [("bad", ErrorCode.INTERNAL_001)]
+    assert "graph" in failed[0]
+    assert submitter.stopped and runs.drivers == {}
+
+
+async def test_close_lets_every_driver_finish_its_cleanup(parts):
+    """`close()` 가 전부 끊어 둔 뒤 하나씩 `cancel_and_wait` 로 기다리면 안 된다 (#490).
+
+    그 형태는 뒤 드라이버가 이미 정리 중일 때 두 번째 취소를 넣어 정리를 자른다.
+    """
+    _, _, _, mission, _ = parts
+    runs = service_for(parts, deployed(mission.metadata.name))
+    finished: list[int] = []
+
+    def slow(index: int, delay: float):
+        async def driver() -> RunResult:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                await asyncio.sleep(delay)
+                finished.append(index)
+                raise
+            raise AssertionError("unreachable")
+
+        return driver
+
+    for index, delay in enumerate((0.05, 0.15, 0.01)):
+        runs._drive(f"run-{index}", slow(index, delay))  # noqa: SLF001
+    await asyncio.sleep(0)
+
+    await runs.close()
+
+    assert sorted(finished) == [0, 1, 2]
+
+
+async def test_close_stops_services_even_when_cancelled_from_outside(parts):
+    _, _, submitter, mission, _ = parts
+    runs = service_for(parts, deployed(mission.metadata.name))
+    runs._drive("slow", _slow_to_cancel)  # noqa: SLF001
+    await asyncio.sleep(0)
+
+    drivers = list(runs.drivers.values())
+
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(runs.close(), 0.1)
+
+    assert submitter.stopped and runs.drivers == {}
+    assert all(task.done() and task.cancelled() for task in drivers)
+
+
+async def test_close_keeps_logging_when_the_store_lookup_fails(parts, monkeypatch):
+    """로그용 조회가 실패해도 남은 실패 기록과 서비스 정지는 계속된다."""
+    from structlog.testing import capture_logs
+
+    _, _, submitter, mission, _ = parts
+    runs = service_for(parts, deployed(mission.metadata.name))
+
+    def failing_driver():
+        async def driver() -> RunResult:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                raise RuntimeError("cleanup failed") from None
+            raise AssertionError("unreachable")
+
+        return driver
+
+    runs._drive("bad-1", failing_driver())  # noqa: SLF001
+    runs._drive("bad-2", failing_driver())  # noqa: SLF001
+    await asyncio.sleep(0)
+
+    def broken(run_id: str):
+        raise AaestroError(
+            category=ErrorCategory.STORAGE, code=ErrorCode.STOR_003, message="store unavailable"
+        )
+
+    monkeypatch.setattr(runs.store, "get", broken)
+
+    with capture_logs() as logs:
+        await runs.close()
+
+    failed = [e for e in logs if e["event"] == "run driver failed while closing"]
+    assert sorted(e["run_id"] for e in failed) == ["bad-1", "bad-2"]
+    assert all(e["graph"] is None for e in failed)
+    assert submitter.stopped
