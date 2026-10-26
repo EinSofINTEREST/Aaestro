@@ -699,6 +699,16 @@ _VOLUME_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]+$")
 MAX_VOLUME_NAME_LENGTH = 255
 
 
+def agent_volume_name(agent: str, volume: str) -> str:
+    """Docker volume name for a volume an agent declares.
+
+    매니페스트 볼륨의 실제 Docker 이름 — 에이전트마다 갈라 같은 선언 이름이 볼륨을 공유하지 않게
+    한다 (02 Volumes). 레플리카는 같은 볼륨을 쓴다. 생성 인자와 재부착 대조가 이 함수 하나를 거친다.
+    """
+    # 구분자 `.` 은 에이전트 이름에 올 수 없다 — `-` 로 이으면 a + b-work 와 a-b + work 가 겹친다
+    return f"aaestro-{agent}.{volume}"
+
+
 class VolumeSpec(BaseModel):
     """An explicitly declared volume mount.
 
@@ -851,6 +861,18 @@ class AgentManifest(BaseModel):
             if server.auth is not None and server.auth.token_env not in allowed:
                 raise ValueError(
                     f"spec.mcp.servers[{index}].auth.token_env must be in runtime.env_allowlist"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def _check_volume_names_fit(self) -> AgentManifest:
+        """에이전트 이름을 붙인 볼륨 이름이 Docker 상한 안인지 — 기동 전 배포 검증에서 거절."""
+        for index, volume in enumerate(self.spec.runtime.volumes):
+            if len(agent_volume_name(self.name, volume.name)) > MAX_VOLUME_NAME_LENGTH:
+                # 위치만 싣는다 — 이름 자체는 에러 · 로그로 내보내지 않는다
+                raise ValueError(
+                    f"spec.runtime.volumes[{index}].name exceeds {MAX_VOLUME_NAME_LENGTH} "
+                    "characters once prefixed with the agent name"
                 )
         return self
 
