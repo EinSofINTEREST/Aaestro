@@ -453,8 +453,8 @@ def test_the_author_feeds_the_promptsets_to_the_validator(author, workspace):
     assert [f.check for f in report.findings] == ["node_templates"]
 
 
-def test_an_unloadable_promptset_is_a_finding_not_a_silent_skip(author, workspace):
-    """읽지 못한 promptset 을 건너뛰면 그 에이전트의 노드 검사가 조용히 꺼진다."""
+def test_an_unpublished_promptset_is_reported_by_the_catalog_not_loaded_again(author, workspace):
+    """깨진 promptset 은 catalog 가 보고한다 — 로드 실패로 또 내지 않는다 (#472)."""
     write(
         workspace / "modules" / "promptsets" / "solo" / "0.1.0" / "promptset.yaml",
         {
@@ -468,9 +468,8 @@ def test_an_unloadable_promptset_is_a_finding_not_a_silent_skip(author, workspac
     report = author.validate(graphs=[graph("pipeline")], with_saved_graphs=False)
 
     assert not report.ok
-    assert any(
-        f.check == "node_templates" and "could not be loaded" in f.message for f in report.findings
-    ), [f.message for f in report.findings]
+    assert any(f.check == "catalog" for f in report.findings)
+    assert not any("could not be loaded" in f.message for f in report.findings)
 
 
 # --- 빌드 재료 (#264) ----------------------------------------------------------------
