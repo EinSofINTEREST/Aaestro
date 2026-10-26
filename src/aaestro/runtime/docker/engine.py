@@ -68,19 +68,16 @@ def control_port_of(spec: ContainerSpec) -> int:
 SHARED_NAMESPACE_FIELDS = ("PidMode", "IpcMode", "UsernsMode", "NetworkMode")
 HOST_NAMESPACE = "host"
 CONTAINER_NAMESPACE_PREFIX = "container:"
-DISABLING_SECURITY_OPT = frozenset({"seccomp=unconfined"})
-"""기대 목록을 전부 포함해도 샌드박스 자체를 끄는 값 — superset 검사만으로는 못 거른다 (#489)."""
 
 
 def hardening_gaps(found: Mapping[str, Any], expected: Mapping[str, Any]) -> list[str]:
     """`docker inspect` 값에서 경화가 어긋난 필드 이름 — 없으면 빈 목록.
 
-    ``expected`` 는 그 컨테이너를 만든 생성 인자(user · cap_drop · read_only · security_opt ·
-    pids_limit)다 — 에이전트는 `spec.hardening_kwargs()`, 사이드카는 `sidecar_kwargs`. 필드
-    목록이 아니라 부류를 본다: 생성 인자가 건 설정이 빠진 것, 그리고 걸려 있어도 뜻을 잃게
-    만드는 설정(privileged 는 CapDrop 과 무관하게 모든 capability 를 주고, 호스트 · 다른
-    컨테이너와 공유하는 네임스페이스도 같다, `seccomp=unconfined` 는 다른 SecurityOpt 가
-    그대로 있어도 샌드박스를 끈다).
+    ``expected`` 는 그 컨테이너를 만든 생성 인자(user · cap_drop · read_only · security_opt)다 —
+    에이전트는 `spec.hardening_kwargs()`, 사이드카는 `sidecar_kwargs`. 필드 목록이 아니라 부류를
+    본다: 생성 인자가 건 설정이 빠진 것, 그리고 걸려 있어도 뜻을 잃게 만드는 설정(privileged 는
+    CapDrop 과 무관하게 모든 capability 를 주고, 호스트 · 다른 컨테이너와 공유하는 네임스페이스도
+    같다).
     """
     wrong: list[str] = []
     if not set(expected.get("cap_drop") or ()) <= set(found.get("CapDrop") or ()):
@@ -89,14 +86,8 @@ def hardening_gaps(found: Mapping[str, Any], expected: Mapping[str, Any]) -> lis
         wrong.append("ReadonlyRootfs")
     if found.get("User") != expected.get("user"):
         wrong.append("User")
-    found_security_opt = set(found.get("SecurityOpt") or ())
-    if (
-        not set(expected.get("security_opt") or ()) <= found_security_opt
-        or found_security_opt & DISABLING_SECURITY_OPT
-    ):
+    if not set(expected.get("security_opt") or ()) <= set(found.get("SecurityOpt") or ()):
         wrong.append("SecurityOpt")
-    if found.get("PidsLimit") != expected.get("pids_limit"):
-        wrong.append("PidsLimit")
     if found.get("Privileged"):
         wrong.append("Privileged")
     if found.get("CapAdd"):

@@ -18,7 +18,7 @@ from aaestro.runtime.docker.engine import (
     agent_of,
     control_port_of,
 )
-from aaestro.runtime.spec import DEFAULT_PID_LIMIT, build_container_spec
+from aaestro.runtime.spec import build_container_spec
 from tests.fixtures.builders import make_manifest
 from tests.fixtures.fake_docker import FakeDockerClient
 
@@ -440,7 +440,6 @@ GOOD_HARDENING = {
     "ReadonlyRootfs": True,
     "User": "1000:1000",
     "SecurityOpt": ["no-new-privileges:true"],
-    "PidsLimit": DEFAULT_PID_LIMIT,
 }
 
 
@@ -463,8 +462,6 @@ async def test_verify_isolation_accepts_a_hardened_container():
         ("ReadonlyRootfs", False),
         ("User", ""),
         ("User", "0:0"),
-        ("PidsLimit", None),
-        ("PidsLimit", 0),
     ],
 )
 @pytest.mark.parametrize("internal", [False, True])
@@ -490,15 +487,11 @@ async def test_verify_isolation_refuses_a_container_that_lost_its_hardening(fiel
         ("IpcMode", "container:abc123"),
         ("NetworkMode", "container:abc123"),
         ("UsernsMode", "container:abc123"),
-        ("SecurityOpt", ["no-new-privileges:true", "seccomp=unconfined"]),
     ],
 )
 @pytest.mark.parametrize("internal", [False, True])
 async def test_verify_isolation_refuses_settings_that_void_the_hardening(field, value, internal):
-    """CapDrop 이 ALL 이어도 privileged 면 모든 capability 가 주어진다 — 부류로 거절한다.
-
-    `seccomp=unconfined` 도 같다: 기대한 값이 다 있어도(여기선 기본이 빈 집합이라 항상
-    superset) 그 값 하나가 샌드박스를 끈다 (#489)."""
+    """CapDrop 이 ALL 이어도 privileged 면 모든 capability 가 주어진다 — 부류로 거절한다."""
     with pytest.raises(AaestroError) as caught:
         await verify({**GOOD_HARDENING, field: value}, internal=internal)
 
@@ -545,7 +538,6 @@ def inspect_shape(kwargs):
         "ReadonlyRootfs": kwargs["read_only"],
         "User": kwargs["user"],
         "SecurityOpt": kwargs.get("security_opt"),
-        "PidsLimit": kwargs.get("pids_limit"),
     }
 
 

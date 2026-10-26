@@ -24,9 +24,6 @@ HARDENED_SECURITY_OPT: tuple[str, ...] = ()
 """에이전트 컨테이너가 싣는 security_opt — `to_docker_kwargs` 와 재부착 대조가 같은 값을 쓴다."""
 
 
-DEFAULT_PID_LIMIT: Final = 256
-
-
 def hardening_kwargs() -> dict[str, Any]:
     """에이전트 컨테이너의 경화 생성 인자 — 기동 스펙과 재부착 대조의 공통 출처.
 
@@ -37,10 +34,10 @@ def hardening_kwargs() -> dict[str, Any]:
         "read_only": True,
         "cap_drop": list(HARDENED_CAP_DROP),
         "security_opt": list(HARDENED_SECURITY_OPT),
-        "pids_limit": DEFAULT_PID_LIMIT,
     }
 
 
+DEFAULT_PID_LIMIT: Final = 256
 DEFAULT_BASE_IMAGE: Final = "aaestro/agent-base:0.1.0"
 
 A2A_PORT_ENV: Final = "AAESTRO_A2A_PORT"
