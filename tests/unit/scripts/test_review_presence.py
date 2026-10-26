@@ -20,6 +20,8 @@ from scripts.ci.review_presence import (
     WAITING,
     Reaction,
     Review,
+    Verdict,
+    combine,
     judge,
     to_reactions,
     to_reviews,
@@ -236,6 +238,7 @@ class FakeGitHub:
         self.broken: set[int] = set()
         self.garbled: set[int] = set()
         self.headless: set[int] = set()
+        self.closed: set[int] = set()
 
     def add_pr(
         self,
@@ -265,7 +268,8 @@ class FakeGitHub:
         path = args[2] if args[1] == "--paginate" else args[1]
         parts = path.split("/")
         if path.endswith("pulls?state=open"):
-            return self._lines([data["pr"] for data in self.prs.values()])
+            opened = [d["pr"] for n, d in self.prs.items() if n not in self.closed]
+            return self._lines(opened)
         if parts[3] == "commits":
             # combined status 의 `.statuses[]` — context 마다 최신 값 하나, 여러 context 가 섞인다
             latest: dict[str, dict[str, Any]] = {}
@@ -484,3 +488,105 @@ def test_workflow_review_bots_match_the_script_default() -> None:
     line = next(line for line in lines if line.strip().startswith("REVIEW_BOTS:"))
 
     assert line.split(":", 1)[1].strip().split(",") == list(review_presence.DEFAULT_REVIEW_BOTS)
+
+
+# --- 같은 head sha 를 공유하는 PR 들 (#517 리뷰) -------------------------------------------------
+
+REVIEWED = {"reactions": [CODEX_THUMBS_UP]}
+
+
+def test_combine_single_verdict_is_unchanged() -> None:
+    assert combine({1: Verdict(False, WAITING)}) == Verdict(False, WAITING)
+
+
+def test_combine_lists_the_waiting_prs() -> None:
+    merged = combine(
+        {3: Verdict(True, "x"), 2: Verdict(False, WAITING), 1: Verdict(False, WAITING)}
+    )
+
+    assert merged == Verdict(False, "waiting for at least one review on #1, #2")
+
+
+def test_combine_all_reviewed_passes() -> None:
+    assert combine({1: Verdict(True, "x"), 2: Verdict(True, "y")}).passed is True
+
+
+@pytest.mark.parametrize("reviewed_first", [True, False])
+def test_main_all_open_shared_sha_with_one_unreviewed_pr_is_pending(
+    github: FakeGitHub, reviewed_first: bool
+) -> None:
+    order = [(1, REVIEWED), (2, {})] if reviewed_first else [(2, {}), (1, REVIEWED)]
+    for number, extra in order:
+        github.add_pr(number, **extra)
+
+    assert run("--all-open") == 0
+    assert run("--all-open") == 0
+
+    (post,) = github.posts
+    assert post["state"] == "pending"
+    assert post["description"] == "waiting for at least one review on #2"
+
+
+def test_main_all_open_shared_sha_all_reviewed_is_success(github: FakeGitHub) -> None:
+    github.add_pr(1, **REVIEWED)
+    github.add_pr(2, **REVIEWED)
+
+    assert run("--all-open") == 0
+
+    (post,) = github.posts
+    assert post["state"] == "success"
+    assert "#1, #2" in post["description"]
+
+
+@pytest.mark.parametrize("requested", ["1", "2"])
+def test_main_pr_event_judges_every_open_pr_on_the_same_sha(
+    github: FakeGitHub, requested: str
+) -> None:
+    github.add_pr(1, **REVIEWED)
+    github.add_pr(2)
+    github.add_pr(3, sha="c" * 40)
+
+    assert run("--pr", requested) == 0
+
+    (post,) = github.posts
+    assert (post["sha"], post["state"]) == (SHA, "pending")
+
+
+def test_main_pr_event_for_a_closed_pr_reads_its_own_head(github: FakeGitHub) -> None:
+    github.add_pr(1, **REVIEWED)
+    github.closed.add(1)
+
+    assert run("--pr", "1") == 0
+
+    assert [(p["sha"], p["state"]) for p in github.posts] == [(SHA, "success")]
+
+
+def test_main_shared_sha_failure_writes_nothing_for_that_sha(github: FakeGitHub) -> None:
+    github.add_pr(1, **REVIEWED)
+    github.add_pr(2, **REVIEWED)
+    github.broken.add(2)
+
+    assert run("--all-open") == 1
+
+    assert github.posts == []
+
+
+def test_main_closed_pr_does_not_hold_back_an_open_pr_on_the_same_sha(github: FakeGitHub) -> None:
+    # 리뷰 없이 닫힌 PR 이 같은 head 의 리뷰된 열린 PR 을 pending 으로 붙잡지 않는다
+    github.add_pr(1)
+    github.add_pr(2, **REVIEWED)
+    github.closed.add(1)
+
+    assert run("--pr", "1") == 0
+
+    assert [(p["sha"], p["state"]) for p in github.posts] == [(SHA, "success")]
+
+
+def test_main_unreadable_closed_pr_exits_1(github: FakeGitHub) -> None:
+    github.add_pr(1)
+    github.closed.add(1)
+    github.broken.add(1)
+
+    assert run("--pr", "1") == 1
+
+    assert github.posts == []

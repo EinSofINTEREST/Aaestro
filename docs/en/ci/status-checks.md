@@ -70,8 +70,15 @@ status context.
   head sha and writes only when state or description differs. GitHub caps statuses at
   1000 per sha and context ("Attempts to create more than 1000 statuses will result in a
   validation error"), so rewriting the same value every run would stop the gate after
-  about ten days. With `--all-open`, each PR is judged and then immediately read and
-  written before the next PR starts. A failure on one PR (API error, malformed response)
+  about ten days. A status belongs to a sha, not to a PR, so the judgment is made per
+  sha: every open PR whose head is that sha is judged, and `success` is written only
+  when all of them count — otherwise `pending`, naming the PRs still waiting ("waiting for
+  at least one review on #12, #34"). One PR's review never opens another PR's gate. An
+  event for PR N also judges the other open PRs on N's head (found by `head.sha` in the
+  open-PR list; `commits/{sha}/pulls` returns PRs that *contain* the commit, not PRs it
+  heads). A closed PR is judged only when no open PR heads its sha — the gate guards open
+  PRs, so a closed PR never holds an open one back. `--all-open` groups by sha and writes each sha once, reading and writing right
+  after judging that sha before moving to the next. A failure on one PR (API error, malformed response)
   is logged and skipped; the run still exits 1.
 - **Gate integrity**: the judging script is always checked out from the default branch,
   and PR events use `pull_request_target`, which runs the default branch's workflow file —

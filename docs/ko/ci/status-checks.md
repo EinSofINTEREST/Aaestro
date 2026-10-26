@@ -65,8 +65,15 @@
 - **쓰기**: 쓰기 전에 head sha 의 현재 `Review Presence` status 를 읽고, state 나
   description 이 다를 때만 쓴다. GitHub 은 sha · context 당 status 를 1000건으로 제한한다
   ("Attempts to create more than 1000 statuses will result in a validation error") — 실행마다
-  같은 값을 다시 쓰면 약 열흘 뒤 게이트가 멈춘다. `--all-open` 은 PR 하나를 판정한 직후 곧바로
-  현재 값을 읽고 쓴 뒤에 다음 PR 로 간다. PR 하나의 실패 (API 오류, 모양이 어긋난 응답) 는
+  같은 값을 다시 쓰면 약 열흘 뒤 게이트가 멈춘다. status 는 PR 이 아니라 sha 에 붙으므로 판정도
+  sha 단위다: 그 sha 를 head 로 가진 열린 PR 전부를 판정해 모두 인정될 때만 `success` 를 쓰고,
+  아니면 기다리는 PR 번호를 적은 `pending` ("waiting for at least one review on #12, #34") 을
+  쓴다. 한 PR 의 리뷰가 다른 PR 의 게이트를 열지 않는다. PR N 의 이벤트도 N 의 head 를 공유하는
+  다른 열린 PR 을 함께 판정한다 (열린 PR 목록의 `head.sha` 로 찾는다 — `commits/{sha}/pulls` 는
+  그 커밋을 *포함* 하는 PR 을 돌려줄 뿐 head 인지 보지 않는다). 닫힌 PR 은 그 sha 를 head 로
+  가진 열린 PR 이 없을 때만 판정한다 — 게이트는 열린 PR 을 위한 것이라 닫힌 PR 이 열린 PR 을
+  붙잡지 않는다. `--all-open` 은 sha 별로 묶어
+  한 번씩 쓰고, 한 sha 를 판정한 직후 곧바로 현재 값을 읽고 쓴 뒤에 다음 sha 로 간다. PR 하나의 실패 (API 오류, 모양이 어긋난 응답) 는
   로그를 남기고 건너뛰며, 실행은 종료 코드 1 로 끝난다.
 - **게이트 무결성**: 판정 스크립트는 항상 기본 브랜치에서 checkout 하고, PR 이벤트는 기본
   브랜치의 워크플로 파일로 도는 `pull_request_target` 을 쓴다 — `ci-review.yml` 을 고친 PR 이

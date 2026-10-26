@@ -203,25 +203,104 @@ def post_status(repo: str, sha: str, verdict: Verdict) -> bool:
     return True
 
 
-def _judge_one(repo: str, number: int, review_bots: Sequence[str], *, dry_run: bool) -> bool:
-    """Judge and post one PR. Returns False on an API failure (already logged)."""
-    # 판정 직후 곧바로 현재 status 를 읽고 쓴다 — 다른 PR 처리를 사이에 끼우지 않아, 판정과 쓰기
-    # 사이에 들어온 철회를 오래된 판정이 덮는 창을 이 PR 의 API 호출 몇 번으로 줄인다
+@dataclass(frozen=True)
+class _Options:
+    review_bots: Sequence[str]
+    dry_run: bool
+
+
+def combine(verdicts: dict[int, Verdict]) -> Verdict:
+    """Merge the verdicts of every open PR whose head is one sha into that sha's verdict.
+
+    status 는 sha 단위라, 같은 head 를 공유하는 PR 들의 판정이 한 status 를 덮어쓴다. 그래서 모두
+    인정될 때만 success 이고, 하나라도 아니면 pending 이다 — 한 PR 의 리뷰가 다른 PR 의 게이트를
+    열지 않게. 단일 PR 의 판정은 그대로 돌려준다.
+    """
+    if len(verdicts) == 1:
+        return next(iter(verdicts.values()))
+    waiting = sorted(n for n, v in verdicts.items() if not v.passed)
+    if waiting:
+        listed = ", ".join(f"#{n}" for n in waiting)
+        return Verdict(False, f"waiting for at least one review on {listed}")
+    listed = ", ".join(f"#{n}" for n in sorted(verdicts))
+    return Verdict(True, f"all open PRs on this commit reviewed: {listed}")
+
+
+def _evaluate_logged(
+    repo: str, number: int, review_bots: Sequence[str]
+) -> tuple[str, Verdict] | None:
+    """`evaluate` that logs a failure and returns None instead of raising."""
     try:
-        sha, verdict = evaluate(repo, number, review_bots)
-        if dry_run:
-            action = "dry-run"
-        else:
-            action = "posted" if post_status(repo, sha, verdict) else "unchanged"
+        return evaluate(repo, number, review_bots)
     except subprocess.CalledProcessError as err:
         print(f"#{number} failed: {err.stderr.strip() or err}", file=sys.stderr)
-        return False
     # 응답 모양이 어긋난 PR 하나 (JSON 오류 · 빠진 키) 가 뒤의 판정을 막지 않게 — 실패는 종료 코드 1
     except Exception as err:  # noqa: BLE001
         print(f"#{number} failed: {type(err).__name__}: {err}", file=sys.stderr)
+    return None
+
+
+def _judge_sha(repo: str, sha: str, numbers: set[int], opts: _Options) -> bool:
+    """Judge every PR sharing `sha`, then post the combined verdict once.
+
+    판정 직후 곧바로 현재 status 를 읽고 쓴다 — 다른 sha 처리를 사이에 끼우지 않아, 판정과 쓰기
+    사이에 들어온 철회를 오래된 판정이 덮는 창을 이 묶음의 API 호출 몇 번으로 줄인다.
+    묶음의 PR 하나라도 판정에 실패하면 그 sha 에는 쓰지 않는다 (False).
+    판정 중에 head 가 옮겨 간 PR 이 묶음에 남아도 "모두 인정" 조건이 더 엄격해질 뿐 느슨해지지
+    않는다.
+    """
+    verdicts: dict[int, Verdict] = {}
+    for number in sorted(numbers):
+        result = _evaluate_logged(repo, number, opts.review_bots)
+        if result is None:
+            return False
+        verdicts[number] = result[1]
+    verdict = combine(verdicts)
+    action = "dry-run"
+    try:
+        if not opts.dry_run:
+            action = "posted" if post_status(repo, sha, verdict) else "unchanged"
+    except subprocess.CalledProcessError as err:
+        print(f"{sha[:12]} write failed: {err.stderr.strip() or err}", file=sys.stderr)
         return False
-    print(f"#{number} {sha[:12]} {verdict.state} ({action}): {verdict.reason}")
+    listed = ", ".join(f"#{n}" for n in sorted(numbers))
+    print(f"{listed} {sha[:12]} {verdict.state} ({action}): {verdict.reason}")
     return True
+
+
+def _group_by_sha(
+    repo: str, requested: Sequence[int], *, all_open: bool
+) -> tuple[dict[str, set[int]], list[int]]:
+    """Map head sha → PR numbers to judge together, plus requested PRs whose head was unreadable.
+
+    같은 sha 를 head 로 가진 PR 은 열린 PR 목록의 head.sha 로 찾는다 — `commits/{sha}/pulls` 는
+    그 커밋을 *포함* 하는 PR 을 돌려주고 (head 인지 묻지 않는다), 기본 브랜치에 들어간 커밋이면
+    병합된 PR 만 돌려준다 (REST "List pull requests associated with a commit").
+    그 sha 에 열린 PR 이 하나라도 있으면 닫힌 PR 은 묶음에서 뺀다 — 게이트는 열린 PR 의 머지를
+    위한 것이라, 리뷰 없이 닫힌 PR 이 리뷰된 열린 PR 을 붙잡지 않게. 열린 PR 이 없을 때만 닫힌
+    PR 을 혼자 판정한다.
+    """
+    open_heads = {p["number"]: p["head"]["sha"] for p in _list(f"repos/{repo}/pulls?state=open")}
+    targets: dict[int, str] = dict(open_heads) if all_open else {}
+    unreadable: list[int] = []
+    for number in requested:
+        if number in open_heads:
+            targets[number] = open_heads[number]
+            continue
+        # 닫힌 PR 의 이벤트 — 자기 head 를 직접 읽어 판정한다. 실패는 판정 단계에서 다시 기록된다
+        result = _evaluate_logged(repo, number, ())
+        if result is None:
+            unreadable.append(number)
+        else:
+            targets[number] = result[0]
+    groups: dict[str, set[int]] = {}
+    for number, sha in targets.items():
+        groups.setdefault(sha, set()).add(number)
+    for sha in groups:
+        opened = {n for n, head in open_heads.items() if head == sha}
+        if opened:
+            groups[sha] = opened
+    return groups, unreadable
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -237,13 +316,14 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     bots_env = os.environ.get("REVIEW_BOTS", "")
     review_bots = [b.strip() for b in bots_env.split(",") if b.strip()] or DEFAULT_REVIEW_BOTS
-    numbers = list(args.pr or [])
-    if args.all_open:
-        numbers += [p["number"] for p in _list(f"repos/{args.repo}/pulls?state=open")]
+    opts = _Options(review_bots, args.dry_run)
+    requested = list(args.pr or [])
+    groups, unreadable = _group_by_sha(args.repo, requested, all_open=args.all_open)
 
-    # PR 하나의 실패가 뒤의 판정을 막지 않게 끝까지 돌고, 실패가 있었으면 1 로 끝낸다
-    results = [_judge_one(args.repo, n, review_bots, dry_run=args.dry_run) for n in numbers]
-    return 0 if all(results) else 1
+    # 묶음 하나의 실패가 뒤의 판정을 막지 않게 끝까지 돌고, 실패가 있었으면 1 로 끝낸다
+    results = [_judge_sha(args.repo, sha, numbers, opts) for sha, numbers in groups.items()]
+    # head 를 못 읽은 요청 PR 은 묶음에 없다 — 이미 기록된 실패로 센다
+    return 0 if all(results) and not unreadable else 1
 
 
 if __name__ == "__main__":
