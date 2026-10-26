@@ -690,6 +690,15 @@ class ArtifactSpec(BaseModel):
         return None if self.quota is None else parse_bytes(self.quota)
 
 
+# Docker 이름 있는 볼륨 규칙. 실 daemon 에서 확인했다: 한 글자 이름은 "at least two alphanumeric
+# characters" 로 거절되고 `ab`, `a.b_c` 는 만들어진다. 첫 글자가 영숫자라 "/" 로 시작하는 호스트
+# 경로, ".", ".." 도 빠진다.
+_VOLUME_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]+$")
+# 실 daemon 에서 255자 이름은 만들어지고 256자는 "file name too long" 으로 실패한다
+# (local 드라이버가 이름을 디렉토리 이름으로 쓴다).
+MAX_VOLUME_NAME_LENGTH = 255
+
+
 class VolumeSpec(BaseModel):
     """An explicitly declared volume mount.
 
@@ -701,6 +710,14 @@ class VolumeSpec(BaseModel):
     name: str
     mount_path: str
     read_only: bool = False
+
+    @field_validator("name")
+    @classmethod
+    def _require_named_volume(cls, value: str) -> str:
+        """볼륨 출처는 Docker 이름 있는 볼륨만 — 호스트 경로 bind 는 부류째 금지."""
+        if len(value) > MAX_VOLUME_NAME_LENGTH or not _VOLUME_NAME_PATTERN.fullmatch(value):
+            raise ValueError("volume name must be a docker named volume, not a host path")
+        return value
 
     @field_validator("mount_path")
     @classmethod
