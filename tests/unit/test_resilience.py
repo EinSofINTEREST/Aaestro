@@ -256,6 +256,45 @@ async def test_cancel_and_wait_reraises_a_cancellation_aimed_at_the_waiter():
         await asyncio.wait_for(cancel_and_wait(task), 0.1)
 
 
+async def test_cancel_and_wait_reraises_the_waiters_cancellation_after_a_normal_return():
+    """끊은 태스크가 전달된 바깥 취소를 처리하고 정상 반환해도 바깥 timeout 이 남는다 (#490)."""
+    from aaestro.resilience import cancel_and_wait
+
+    async def returns_on_second_cancel() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            # 첫 취소에 정리를 시작하고, 두 번째 (바깥 timeout 이 전달한) 취소에 반환한다
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                return
+
+    task = asyncio.create_task(returns_on_second_cancel())
+    await asyncio.sleep(0)
+
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(cancel_and_wait(task), 0.01)
+    assert task.done() and not task.cancelled()
+
+
+async def test_cancel_and_wait_returns_when_the_task_absorbs_its_own_cancellation():
+    from aaestro.resilience import cancel_and_wait
+
+    async def absorbs_cancel() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            return
+
+    task = asyncio.create_task(absorbs_cancel())
+    await asyncio.sleep(0)
+
+    await cancel_and_wait(task)
+
+    assert task.done() and not task.cancelled()
+
+
 async def test_cancel_and_wait_retrieves_the_error_of_an_already_failed_task():
     from structlog.testing import capture_logs
 

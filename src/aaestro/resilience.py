@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import random
 from typing import TYPE_CHECKING, Any
 
@@ -223,11 +224,12 @@ async def cancel_and_wait(task: asyncio.Task[Any]) -> None:
     task.cancel()
     current = asyncio.current_task()
     before = current.cancelling() if current is not None else 0
-    try:
+    # 끊은 태스크가 전달된 바깥 취소를 처리하고 정상 반환해도 바깥 취소는 남아 있다 —
+    # 판정은 끊은 태스크의 결과가 아니라 기다리는 쪽의 취소 요청 수로 한다
+    with contextlib.suppress(asyncio.CancelledError):
         await task
-    except asyncio.CancelledError:
-        if current is not None and current.cancelling() > before:
-            raise
+    if current is not None and current.cancelling() > before:
+        raise asyncio.CancelledError
 
 
 async def cancel_all_and_wait(
