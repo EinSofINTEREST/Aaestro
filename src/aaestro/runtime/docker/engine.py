@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import structlog
 
+from aaestro.core.errors import AaestroError
 from aaestro.runtime.docker.errors import (
     OOM_EXIT_CODE,
     NetworkIsolationError,
@@ -174,14 +175,22 @@ def mount_gaps(found: Mapping[str, Any], expected: Mapping[str, Any]) -> list[st
     return wrong
 
 
+INSPECT_FAILURES = "InspectFailures"
+"""`inspect_hardening` 이 조회하지 못한 볼륨 · 이미지 inspect 의 예외 종류 이름.
+
+`hardening_gaps` 는 읽지 않는다 (닫는 쪽 값이 이미 실려 있다). 기동 대조는 이것을 먼저 보고
+재시도 가능한 실패로 올린다."""
+
+
 def inspect_hardening(client: DockerClient, container_id: str, *, agent: str) -> dict[str, Any]:
     """`hardening_of` 에 볼륨 마운트마다 그 볼륨의 inspect 값(`Volume`)을 붙인다 — 동기 호출.
 
     볼륨 inspect 가 실패하면 `Volume` 은 `None` 이고 `mount_gaps` 가 거절한다 — 확인하지 못한
-    볼륨은 통과시키지 않는다.
+    볼륨은 통과시키지 않는다. 실패한 조회는 `INSPECT_FAILURES` 에 종류 이름으로 남는다.
     """
     found = client.hardening_of(container_id)
-    images = _image_volumes(client, str(found.get("Image") or ""), agent=agent)
+    failures: list[str] = []
+    images = _image_volumes(client, str(found.get("Image") or ""), agent=agent, failures=failures)
     mounts = []
     for mount in found.get("Mounts") or ():
         if mount.get("Type") == "volume":
@@ -194,13 +203,16 @@ def inspect_hardening(client: DockerClient, container_id: str, *, agent: str) ->
                     container_id=container_id[:12],
                     error=type(err).__name__,
                 )
+                failures.append(type(err).__name__)
                 volume = None
             mount = {**mount, "Volume": volume}
         mounts.append(mount)
-    return {**found, "Mounts": mounts, "ImageVolumes": images}
+    return {**found, "Mounts": mounts, "ImageVolumes": images, INSPECT_FAILURES: failures}
 
 
-def _image_volumes(client: DockerClient, image_id: str, *, agent: str) -> set[str]:
+def _image_volumes(
+    client: DockerClient, image_id: str, *, agent: str, failures: list[str]
+) -> set[str]:
     """컨테이너를 만든 이미지가 `VOLUME` 으로 선언한 경로 — 확인하지 못하면 빈 집합.
 
     컨테이너의 `Config.Volumes` 는 쓰지 않는다: 생성 때 넘긴 볼륨 목적지도 그리로 복사되어
@@ -213,7 +225,46 @@ def _image_volumes(client: DockerClient, image_id: str, *, agent: str) -> set[st
         return client.image_volumes(image_id)
     except Exception as err:  # noqa: BLE001 — 예외를 닫는 쪽으로 바뀐다; 원인 종류는 로그로 남긴다
         log.warning("image inspect failed", agent=agent, error=type(err).__name__)
+        failures.append(type(err).__name__)
         return set()
+
+
+def verify_started_hardening(
+    client: DockerClient,
+    container_id: str,
+    expected: Mapping[str, Any],
+    *,
+    agent: str,
+    image: str,
+    **details: Any,
+) -> None:
+    """방금 만든 컨테이너의 경화를 생성 인자와 대조한다 — 동기 호출, 에이전트 · 사이드카 기동 공용.
+
+    판정은 재부착과 같은 `hardening_gaps` 다. 다른 것은 조회 실패의 분류뿐이다: 재부착은 확인하지
+    못한 것을 닫는 쪽으로 읽어 `lost` 로 가지만, 기동은 일시 실패를 영구 불일치로 오분류하지 않게
+    재시도 가능한 `start_failed` 로 올린다 (#501).
+
+    Raises:
+        AaestroError: RUNTIME/``RT_001`` — 조회 실패 · 판정 중 예외면 재시도 가능 (reason 은 예외
+            종류 이름), 경화 불일치면 재시도 불가 (``kind=hardening``, 필드 이름만).
+    """
+    short_id = container_id[:12]
+    try:
+        found = inspect_hardening(client, container_id, agent=agent)
+        failures = found[INSPECT_FAILURES]
+        wrong = [] if failures else hardening_gaps(found, expected)
+    except AaestroError:
+        raise
+    except Exception as err:
+        # 판정 단계의 어떤 예외든 (예상과 다른 inspect 모양 포함) 분류된 기동 실패로 — 호출자는
+        # AaestroError 에서만 컨테이너를 지운다
+        raise start_failed(
+            agent, image, container_id=short_id, reason=type(err).__name__, **details
+        ) from err
+    if failures:
+        raise start_failed(agent, image, container_id=short_id, reason=failures[0], **details)
+    if wrong:
+        raise hardening_mismatch(agent, image, wrong, container_id=short_id, **details)
 
 
 def hardening_gaps(found: Mapping[str, Any], expected: Mapping[str, Any]) -> list[str]:
@@ -479,6 +530,21 @@ class DockerEngine:
             raise start_failed(agent, spec.image, reason=type(err).__name__) from err
 
         try:
+            # 재부착과 같은 판정으로 띄우기 전에 대조한다 — daemon 이 설정을 조용히 버린 호스트를
+            # 다음 재시작의 재부착이 아니라 지금 드러낸다 (#501)
+            await asyncio.to_thread(
+                verify_started_hardening,
+                self.client,
+                container_id,
+                spec.hardening_kwargs(),
+                agent=agent,
+                image=spec.image,
+            )
+        except AaestroError:
+            # 이미 분류된 에러 (조회 실패는 재시도 가능, 불일치는 불가) — 지우고 그대로 올린다
+            await self._discard(container_id, agent=agent, image=spec.image)
+            raise
+        try:
             for extra in spec.extra_networks:
                 await asyncio.to_thread(self.client.connect, extra, container_id)
             await asyncio.to_thread(self.client.start, container_id)
@@ -620,7 +686,7 @@ class DockerEngine:
         found = await asyncio.to_thread(inspect_hardening, self.client, container_id, agent=agent)
         wrong = hardening_gaps(found, expected)
         if wrong:
-            raise hardening_mismatch(agent, image, wrong)
+            raise hardening_mismatch(agent, image, wrong, container_id=container_id[:12])
 
     async def inspect(self, handle: ContainerHandle) -> dict[str, Any]:
         """컨테이너 상태를 조회한다."""

@@ -218,7 +218,7 @@ async def test_reattach_replaces_a_sidecar_that_lost_its_hardening(hardening):
     manifest = with_servers(SEARCH)
     await sidecars.start(manifest, {})
     first = docker.find("aaestro-researcher--mcp-search")
-    docker._hardening = hardening
+    docker.hardening_by_id[first] = hardening
 
     await sidecars.start(manifest, {}, reuse=True)
 
@@ -233,6 +233,86 @@ async def test_a_sidecar_that_fails_to_start_is_removed_and_reported():
 
     assert caught.value.code == ErrorCode.RT_001
     assert caught.value.details["mcp_server"] == "search"
+    assert docker.removed == ["container-0001" + "0" * 20]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("PidsLimit", None), ("SecurityOpt", ["seccomp=unconfined"]),
+     ("Mounts", [{"Type": "bind", "Source": "/var/run/docker.sock",
+                  "Destination": "/var/run/docker.sock", "RW": True}])],
+)  # fmt: skip
+async def test_a_fresh_sidecar_whose_hardening_did_not_take_is_removed_not_started(field, value):
+    """새로 세운 사이드카도 재사용과 같은 대조를 거친다 (#501) — 띄우지 않고 지운다."""
+    docker = FakeDockerClient()
+    sidecars = McpSidecars(docker)
+    created = docker.create
+
+    def weakened_create(**kwargs):
+        container_id = created(**kwargs)
+        docker.hardening_by_id[container_id] = {**docker.hardening_of(container_id), field: value}
+        return container_id
+
+    docker.create = weakened_create
+
+    with pytest.raises(AaestroError) as caught:
+        await sidecars.start(with_servers(SEARCH), {})
+
+    assert caught.value.code == ErrorCode.RT_001
+    assert caught.value.retryable is False
+    assert caught.value.details["kind"] == "hardening"
+    assert caught.value.details["fields"] == [field]
+    assert caught.value.details["mcp_server"] == "search"
+    assert "/var/run" not in str(caught.value.details)
+    assert docker.started == []
+    assert docker.removed == ["container-0001" + "0" * 20]
+
+
+@pytest.mark.parametrize(
+    "lookup",
+    [{"hardening_error": ConnectionError("eof")},
+     {"image_volumes": {"mcp/search:0.3.0": ConnectionError("eof")}}],
+    ids=["container", "image"],
+)  # fmt: skip
+async def test_a_fresh_sidecar_whose_hardening_cannot_be_read_is_a_retryable_failure(lookup):
+    """조회 실패는 불일치가 아니다 — 재시도 가능한 기동 실패로, 띄우지 않고 지운다 (#501)."""
+    docker = FakeDockerClient(**lookup)
+
+    with pytest.raises(AaestroError) as caught:
+        await McpSidecars(docker).start(with_servers(SEARCH), {})
+
+    assert caught.value.code == ErrorCode.RT_001
+    assert caught.value.retryable is True
+    assert caught.value.details.get("kind") is None
+    assert caught.value.details["reason"] == "ConnectionError"
+    assert caught.value.details["mcp_server"] == "search"
+    assert docker.started == []
+    assert docker.removed == ["container-0001" + "0" * 20]
+
+
+@pytest.mark.parametrize(
+    "malformed", [{"Mounts": ["/var/run/docker.sock"]}, {"CapDrop": 5}], ids=["mounts", "capdrop"]
+)
+async def test_a_fresh_sidecar_with_malformed_inspect_is_removed_and_retryable(malformed):
+    """정리는 예외 종류에 의존하지 않는다 — 판정 중 예외도 지우고 재시도 가능하게 올린다."""
+    docker = FakeDockerClient()
+    created = docker.create
+
+    def malformed_create(**kwargs):
+        container_id = created(**kwargs)
+        docker.hardening_by_id[container_id] = {**docker.hardening_of(container_id), **malformed}
+        return container_id
+
+    docker.create = malformed_create
+
+    with pytest.raises(AaestroError) as caught:
+        await McpSidecars(docker).start(with_servers(SEARCH), {})
+
+    assert caught.value.code == ErrorCode.RT_001
+    assert caught.value.retryable is True
+    assert caught.value.details.get("kind") is None
+    assert caught.value.details["mcp_server"] == "search"
+    assert docker.started == []
     assert docker.removed == ["container-0001" + "0" * 20]
 
 
