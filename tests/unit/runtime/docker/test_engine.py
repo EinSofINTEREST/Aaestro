@@ -1030,10 +1030,155 @@ async def test_sidecar_reattach_replaces_a_weakened_sidecar(field, value):
     first = docker.find("aaestro-researcher--mcp-search")
     sound = {**inspect_shape(docker.created[-1]), "NetworkMode": None}
 
-    docker._hardening = sound
+    docker.hardening_by_id[first] = sound
     await sidecars.start(manifest, {}, reuse=True)
     assert docker.find("aaestro-researcher--mcp-search") == first  # 정상이면 그대로 붙는다
 
-    docker._hardening = {**sound, field: value}
+    # 약해진 것은 기존 사이드카뿐이다 — 새로 세운 것은 스펙대로 걸린다 (기동 대조, #501)
+    docker.hardening_by_id[first] = {**sound, field: value}
     await sidecars.start(manifest, {}, reuse=True)
     assert first in docker.removed
+
+
+# --- 기동 직후 경화 대조 (#501) --------------------------------------------------
+
+SOCKET_BIND = bind("/var/run/docker.sock", "/var/run/docker.sock")
+
+
+@pytest.mark.parametrize(
+    ("label", "found", "field"),
+    [
+        ("pid limit dropped by the daemon", {**GOOD_HARDENING, "PidsLimit": None}, "PidsLimit"),
+        ("unexpected security_opt", {**GOOD_HARDENING,
+                                     "SecurityOpt": ["no-new-privileges:true",
+                                                     "seccomp=unconfined"]}, "SecurityOpt"),
+        ("undeclared bind", {**GOOD_HARDENING, "Mounts": [SOCKET_BIND]}, "Mounts"),
+    ],
+)  # fmt: skip
+async def test_start_hardening_mismatch_raises_rt_001_and_leaves_no_container(label, found, field):
+    client = FakeDockerClient(hardening=found)
+
+    with pytest.raises(AaestroError) as caught:
+        await engine(client).start(spec())
+
+    assert caught.value.code == "RT_001", label
+    assert caught.value.retryable is False
+    assert caught.value.details["kind"] == "hardening"
+    assert caught.value.details["fields"] == [field]
+    # 사유에는 필드 이름만 — 값을 싣지 않는다
+    assert "/var/run" not in str(caught.value) + str(caught.value.details)
+    assert "unconfined" not in str(caught.value) + str(caught.value.details)
+    # 어긋난 컨테이너는 띄우지 않고 지운다
+    assert client.started == []
+    assert client.removed == [f"container-{1:04d}" + "0" * 20]
+
+
+async def test_start_hardening_mismatch_is_raised_even_if_the_discard_fails():
+    """정리 실패가 원래 오류를 가리지 않는다 — 제거 실패는 로그로 남는다."""
+    client = FakeDockerClient(
+        hardening={**GOOD_HARDENING, "PidsLimit": None}, remove_error=RuntimeError("busy")
+    )
+
+    with pytest.raises(AaestroError) as caught:
+        await engine(client).start(spec())
+
+    assert caught.value.details["fields"] == ["PidsLimit"]
+
+
+async def test_start_accepts_a_container_hardened_as_specified():
+    client = FakeDockerClient(hardening=GOOD_HARDENING)
+
+    handle = await engine(client).start(spec())
+
+    assert client.started == [handle.container_id]
+    assert client.removed == []
+
+
+PARITY_CASES = [
+    GOOD_HARDENING,
+    {**GOOD_HARDENING, "PidsLimit": None},
+    {**GOOD_HARDENING, "PidsLimit": 0},
+    {**GOOD_HARDENING, "SecurityOpt": None},
+    {**GOOD_HARDENING, "SecurityOpt": ["no-new-privileges:false"]},
+    {**GOOD_HARDENING, "SecurityOpt": ["no-new-privileges=true"]},
+    {**GOOD_HARDENING, "SecurityOpt": ["no-new-privileges:true", "apparmor=unconfined"]},
+    {**GOOD_HARDENING, "CapDrop": None},
+    {**GOOD_HARDENING, "ReadonlyRootfs": False},
+    {**GOOD_HARDENING, "User": "0:0"},
+    {**GOOD_HARDENING, "Privileged": True},
+    {**GOOD_HARDENING, "CapAdd": ["SYS_ADMIN"]},
+    {**GOOD_HARDENING, "PidMode": "host"},
+    {**GOOD_HARDENING, "NetworkMode": "container:abc123"},
+    {**GOOD_HARDENING, "MaskedPaths": []},
+    {**GOOD_HARDENING, "Mounts": [SOCKET_BIND]},
+    {**GOOD_HARDENING, "Mounts": None, "Tmpfs": None},
+    {**GOOD_HARDENING, "Tmpfs": {"/tmp": "mode=1777"}},  # noqa: S108 — 컨테이너 안 경로다
+    {**GOOD_HARDENING, "PidsLimit": None, "Privileged": True, "Mounts": [SOCKET_BIND]},
+]
+
+
+async def _fields(call) -> list[str]:
+    try:
+        await call
+    except AaestroError as err:
+        return list(err.details["fields"])
+    return []
+
+
+@pytest.mark.parametrize("found", PARITY_CASES)
+async def test_start_and_reattach_reach_the_same_verdict(found):
+    """두 시점이 같은 함수 · 같은 기대값으로 판정한다 — 기준이 갈라지면 여기서 드러난다."""
+    reattached = FakeDockerClient(hardening=found)
+    started = FakeDockerClient(hardening=found)
+    built = spec()
+
+    at_reattach = await _fields(
+        engine(reattached).verify_isolation(
+            "test-agent", built.image, "container-0001", built.hardening_kwargs()
+        )
+    )
+    at_start = await _fields(engine(started).start(built))
+
+    assert at_start == at_reattach
+    assert (started.started == []) == bool(at_reattach)
+
+
+def _failing_lookups():
+    """기동 직후 대조의 조회 하나가 일시 실패하는 대역들 — (이름, 클라이언트, 스펙)."""
+    built = mounted_spec()
+    return [
+        ("container inspect", FakeDockerClient(hardening_error=ConnectionError("eof")), built),
+        ("volume inspect",
+         FakeDockerClient(volumes={"alpha-cache": ConnectionError("eof")}), built),
+        ("image inspect",
+         FakeDockerClient(image_volumes={built.image: ConnectionError("eof")}), built),
+    ]  # fmt: skip
+
+
+@pytest.mark.parametrize("case", range(3), ids=["container", "volume", "image"])
+async def test_start_lookup_failure_is_a_retryable_start_failure_not_a_mismatch(case):
+    """조회하지 못한 것은 불일치가 아니다 — 일시 실패를 영구 RT_001 로 오분류하지 않는다."""
+    label, client, built = _failing_lookups()[case]
+
+    with pytest.raises(AaestroError) as caught:
+        await engine(client).start(built)
+
+    assert caught.value.code == "RT_001", label
+    assert caught.value.retryable is True
+    assert caught.value.details.get("kind") is None
+    assert caught.value.details["reason"] == "ConnectionError"
+    assert client.started == []
+    assert client.removed == [f"container-{1:04d}" + "0" * 20]
+
+
+async def test_reattach_still_refuses_a_volume_it_could_not_inspect():
+    """재부착은 확인하지 못한 볼륨을 닫는 쪽으로 읽는다 — 기동 쪽 분류가 이것을 바꾸지 않는다."""
+    with pytest.raises(AaestroError) as caught:
+        await verify(
+            mounted_found(),
+            expected=mounted_spec().hardening_kwargs(),
+            volumes={"alpha-cache": ConnectionError("eof")},
+        )
+
+    assert caught.value.details["fields"] == ["Mounts"]
+    assert caught.value.retryable is False

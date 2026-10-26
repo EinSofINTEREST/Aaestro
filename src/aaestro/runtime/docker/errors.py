@@ -86,10 +86,11 @@ def network_mismatch(
     )
 
 
-def hardening_mismatch(agent: str, image: str, fields: list[str]) -> AaestroError:
-    """컨테이너의 경화 설정이 runtime 과 다르다 — 재부착은 기동을 거치지 않으므로 여기서 거른다.
+def hardening_mismatch(agent: str, image: str, fields: list[str], **details: Any) -> AaestroError:
+    """컨테이너의 경화 설정이 runtime 과 다르다 — 기동 직후와 재부착이 같은 판정으로 거른다.
 
-    어긋난 필드 이름만 싣는다 — 값은 싣지 않는다.
+    어긋난 필드 이름만 싣는다 — 값은 싣지 않는다. 같은 호스트에서 다시 만들어도 같은 결과라
+    재시도 불가다.
     """
     return runtime_error(
         ErrorCode.RT_001,
@@ -98,6 +99,7 @@ def hardening_mismatch(agent: str, image: str, fields: list[str]) -> AaestroErro
         image=image,
         kind="hardening",
         fields=fields,
+        **details,
     )
 
 
