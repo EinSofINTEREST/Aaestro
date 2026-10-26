@@ -420,6 +420,46 @@ async def test_a_failed_restart_does_not_stop_the_same_container_twice():
     await agents.stop_all()
 
 
+async def test_a_failed_removal_is_retried_by_the_next_restart():
+    """#491 — 제거가 실패한 원래 컨테이너는 "정지함" 으로 표시되지 않고 다음 재시도가 다시 지운다.
+
+    `engine.stop` 은 제거 실패를 로그만 남긴다 — 정지를 시도했다는 이유로 건너뛰면 제거되지
+    않은 컨테이너가 미아로 남는다.
+    """
+    client = FakeDockerClient(remove_failures=1)
+    clock = FakeClock()
+    waits = ClockedSleep(clock, client, heal_after=2)
+    agents = launcher(client, waits, health_interval_s=None)
+    launched, _ = await start_sick(agents)
+    launched.lifecycle.restart_policy = RestartPolicy(clock=clock)
+    original_id = launched.handle.container_id
+    break_restarts(client)
+
+    await restart_now(agents, launched)
+
+    assert len(waits.waits) == 3
+    assert [cid for cid in client.removed if cid == original_id] == [original_id]
+    await agents.stop_all()
+
+
+async def test_stop_retries_a_removal_that_failed_during_a_restart():
+    """#491 — 교체가 제거에 실패하고 되돌린 레플리카를 정지가 다시 지운다."""
+    client = FakeDockerClient(remove_failures=1)
+    waits = HangOnSecondSleep()
+    agents = launcher(client, waits)
+    launched, _ = await start_sick(agents)
+    original_id = launched.handle.container_id
+    break_restarts(client)
+    launched.lifecycle.record_health(healthy=False, threshold=1)
+    agents._schedule_restart(launched)
+    await until(lambda: len(waits.waits) == 2)
+    assert original_id not in client.removed
+
+    await agents.stop_all()
+
+    assert [cid for cid in client.removed if cid == original_id] == [original_id]
+
+
 async def test_restarts_that_keep_failing_end_in_failed():
     """02 Rule 6 — 재기동 실패도 창 안의 재시작으로 센다: 상한을 넘으면 Failed + 알림."""
     client = FakeDockerClient()
@@ -639,7 +679,7 @@ async def test_stop_restart_scheduled_while_stopping_another_replica_leaves_no_o
         if handle is first.handle:
             stop_entered.set()
             await stop_release.wait()
-        await engine_stop(handle, *args, **kwargs)
+        return await engine_stop(handle, *args, **kwargs)
 
     monkeypatch.setattr(agents.engine, "stop", held_stop)
     stopping = asyncio.create_task(agents.stop("echo"))

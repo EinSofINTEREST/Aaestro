@@ -491,12 +491,16 @@ class DockerEngine:
                 )
             await sleeper(poll_s)
 
-    async def stop(self, handle: ContainerHandle, *, remove: bool = True) -> None:
+    async def stop(self, handle: ContainerHandle, *, remove: bool = True) -> bool:
         """Stop a container, SIGTERM then SIGKILL.
 
         컨테이너를 정지합니다 — SIGTERM 후 유예 시간이 지나면 SIGKILL.
         정지 경로는 실패해도 진행합니다: 남은 컨테이너가 유령으로 쌓이는 편이
         더 나쁩니다.
+
+        Returns:
+            True if the container was removed. 제거 실패는 예외가 아니라 False 다 —
+            호출자가 같은 handle 로 다시 지울지 정한다. ``remove=False`` 면 False.
         """
         try:
             await asyncio.to_thread(
@@ -511,8 +515,9 @@ class DockerEngine:
                 error=type(err).__name__,
             )
 
-        if remove:
-            await self._discard(handle.container_id, agent=handle.agent, image=handle.image)
+        removed = remove and await self._discard(
+            handle.container_id, agent=handle.agent, image=handle.image
+        )
 
         self.started.pop(handle.agent, None)
         log.info(
@@ -521,9 +526,10 @@ class DockerEngine:
             container_id=handle.short_id,
             image=handle.image,
         )
+        return removed
 
-    async def _discard(self, container_id: str, *, agent: str, image: str) -> None:
-        """컨테이너를 제거한다 — 실패는 로그만 남긴다.
+    async def _discard(self, container_id: str, *, agent: str, image: str) -> bool:
+        """컨테이너를 제거한다 — 실패는 로그만 남기고 False 를 돌려준다.
 
         제거 실패 로그에도 소유자와 이미지를 남긴다: 여러 이미지가 함께 도는
         환경에서 이 필드가 없으면 사고 추적이 끊긴다 (05 필수 필드).
@@ -538,6 +544,8 @@ class DockerEngine:
                 image=image,
                 error=type(err).__name__,
             )
+            return False
+        return True
 
 
 __all__ = [

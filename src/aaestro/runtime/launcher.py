@@ -59,8 +59,9 @@ class LaunchedAgent:
     """할당받은 A2A 포트 — 배포 기록이 재시작 뒤 같은 포트를 돌려줘야 한다 (#243)."""
     """재기동에 필요한 인자 — 컨테이너를 새로 만들려면 원래 선언이 있어야 한다."""
     stopped: bool = False
-    """이 handle 의 컨테이너를 이미 정지·제거했다 — 실패한 교체가 되돌린 레플리카를
-    다음 재시도가 또 정지시켜 이미 없는 컨테이너에 대한 거짓 WARN 을 남기지 않게 막는다."""
+    """이 handle 의 컨테이너를 이미 **제거했다** — 실패한 교체가 되돌린 레플리카를
+    다음 재시도가 또 정지시켜 이미 없는 컨테이너에 대한 거짓 WARN 을 남기지 않게 막는다.
+    제거가 실패했으면 False 로 남아 다음 재시도 · 정지가 다시 지운다 (미아 방지)."""
 
     async def aclose(self) -> None:
         """클라이언트 연결을 정리한다."""
@@ -426,12 +427,12 @@ class AgentLauncher:
         실패한 `_replace` 가 되돌린 레플리카는 같은 handle 로 다시 `_restart` 재시도나
         `stop()` 을 거칠 수 있다 — 이미 없는 컨테이너에 또 `engine.stop` 을 보내면
         `client.stop`/`client.remove` 가 매번 실패해 거짓 WARN 만 쌓인다 (#491).
+        표시는 **제거가 성공했을 때만** 한다 — 제거가 실패한 컨테이너를 건너뛰면 미아로 남는다.
         """
         if launched.stopped:
             return
         await launched.aclose()
-        await self.engine.stop(launched.handle)
-        launched.stopped = True
+        launched.stopped = await self.engine.stop(launched.handle)
 
     async def _replace(self, launched: LaunchedAgent) -> None:
         """정지한 자리에 같은 선언으로 컨테이너를 다시 세운다.

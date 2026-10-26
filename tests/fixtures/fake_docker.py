@@ -21,6 +21,7 @@ class FakeDockerClient:
         start_error: Exception | None = None,
         stop_error: Exception | None = None,
         remove_error: Exception | None = None,
+        remove_failures: int = 0,
         build_error: Exception | None = None,
         state: dict[str, Any] | None = None,
         host_port: int = 49152,
@@ -33,6 +34,8 @@ class FakeDockerClient:
         self._start_error = start_error
         self._stop_error = stop_error
         self._remove_error = remove_error
+        # 처음 N 번의 remove 만 실패한다 — 다음 시도가 제거를 다시 하는지 보는 용도
+        self._remove_failures = remove_failures
         self._build_error = build_error
         self._state = state or {"Running": True, "ExitCode": 0, "OOMKilled": False}
         self._host_port = host_port
@@ -96,6 +99,9 @@ class FakeDockerClient:
     def remove(self, container_id: str) -> None:
         if self._remove_error is not None:
             raise self._remove_error
+        if self._remove_failures > 0:
+            self._remove_failures -= 1
+            raise RuntimeError("removal of container is already in progress")
         self.removed.append(container_id)
 
     def build(self, context: str, tag: str, *, buildargs: dict[str, str] | None = None) -> str:

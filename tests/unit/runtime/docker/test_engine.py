@@ -403,7 +403,7 @@ async def test_stop_sends_the_grace_period():
     docker = engine(client)
     handle = await docker.start(spec())
 
-    await docker.stop(handle)
+    assert await docker.stop(handle) is True
 
     assert client.stopped == [(handle.container_id, 30.0)]
     assert client.removed == [handle.container_id]
@@ -424,7 +424,8 @@ async def test_stop_survives_a_failing_stop():
     docker = engine(client)
     handle = await docker.start(spec())
 
-    await docker.stop(handle)
+    # 정지가 실패해도 제거가 됐으면 제거됨이다 — 호출자는 제거 결과만 본다
+    assert await docker.stop(handle) is True
 
     assert client.removed == [handle.container_id]
 
@@ -434,7 +435,8 @@ async def test_stop_survives_a_failing_removal():
     docker = engine(client)
     handle = await docker.start(spec())
 
-    await docker.stop(handle)
+    # 제거 실패는 삼키되 False 로 알린다 — 호출자가 같은 handle 로 다시 지울 수 있게 (#491)
+    assert await docker.stop(handle) is False
 
     assert docker.started == {}
 
@@ -444,7 +446,7 @@ async def test_stop_can_keep_the_container():
     docker = engine(client)
     handle = await docker.start(spec())
 
-    await docker.stop(handle, remove=False)
+    assert await docker.stop(handle, remove=False) is False
 
     assert client.removed == []
 
