@@ -7,7 +7,9 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from itertools import count
 from pathlib import Path
 
 import httpx
@@ -18,7 +20,7 @@ from aaestro.access.client import DecisionSource, Verdict
 from aaestro.catalog import Catalog
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 from aaestro.memory.client import HttpMemoryAccess
-from aaestro.memory.entry import MemoryEntry, MemorySource
+from aaestro.memory.entry import MemoryDraft, MemoryEntry, MemorySource
 from aaestro.memory.gate import RegistryGate
 from aaestro.memory.http import TokenRegistry, create_app
 from aaestro.memory.index import IndexRegistry
@@ -53,6 +55,17 @@ def fact(
     )
 
 
+def draft(content: str, *, supersedes: str | None = None) -> MemoryDraft:
+    """append 의 내용 — id · 시각 · 출처는 서비스가 발급한다 (#456)."""
+    return MemoryDraft(kind=MemoryKind.FACT, content=content, supersedes=supersedes)
+
+
+def daily_clock() -> Callable[[], datetime]:
+    """T0 부터 하루씩 가는 시계 — 서비스가 쓰는 항목의 시각을 저장소에 직접 넣는 항목과 맞춘다."""
+    days = count()
+    return lambda: T0 + timedelta(days=next(days))
+
+
 def org_token(agent: str, *, writers: tuple[str, ...] = ()) -> AccessToken:
     return build_token(
         agent=agent, group=None, local=[("longterm", agent)], global_spaces=[("org", writers)]
@@ -76,7 +89,7 @@ def store():
 
 @pytest.fixture
 def service(store):
-    return MemoryService(store=store)
+    return MemoryService(store=store, clock=daily_clock())
 
 
 def legacy_foreign_correction(store, target: str, *, day: int) -> MemoryEntry:
@@ -97,7 +110,7 @@ def legacy_foreign_correction(store, target: str, *, day: int) -> MemoryEntry:
 
 def test_latest_ignores_a_correction_stored_in_another_space(service, store):
     """형제인 검색 경로 (`superseded(space, ids)`) 는 이 정정을 무시한다 — latest 도 같다."""
-    policy = service.append(LIBRARIAN, "org", fact("policy v1", agent="librarian"))
+    policy = service.append(LIBRARIAN, "org", draft("policy v1"))
     legacy_foreign_correction(store, policy.entry_id, day=1)
     assert store.superseded(ORG, [policy.entry_id]) == set(), "검색 경로는 넘지 않는다"
 
@@ -109,10 +122,8 @@ def test_latest_ignores_a_correction_stored_in_another_space(service, store):
 
 
 def test_latest_prefers_the_same_space_correction_over_a_newer_foreign_one(service, store):
-    v1 = service.append(LIBRARIAN, "org", fact("policy v1", agent="librarian"))
-    service.append(
-        LIBRARIAN, "org", fact("policy v2", agent="librarian", supersedes=v1.entry_id, day=1)
-    )
+    v1 = service.append(LIBRARIAN, "org", draft("policy v1"))
+    service.append(LIBRARIAN, "org", draft("policy v2", supersedes=v1.entry_id))
     legacy_foreign_correction(store, v1.entry_id, day=2)
 
     latest = service.latest(VICTIM, "org", v1.entry_id)
@@ -122,10 +133,8 @@ def test_latest_prefers_the_same_space_correction_over_a_newer_foreign_one(servi
 
 
 def test_latest_ignores_a_foreign_correction_on_the_tail_of_the_chain(service, store):
-    v1 = service.append(LIBRARIAN, "org", fact("policy v1", agent="librarian"))
-    v2 = service.append(
-        LIBRARIAN, "org", fact("policy v2", agent="librarian", supersedes=v1.entry_id, day=1)
-    )
+    v1 = service.append(LIBRARIAN, "org", draft("policy v1"))
+    v2 = service.append(LIBRARIAN, "org", draft("policy v2", supersedes=v1.entry_id))
     legacy_foreign_correction(store, v2.entry_id, day=2)
 
     latest = service.latest(VICTIM, "org", v1.entry_id)
@@ -137,7 +146,7 @@ def test_latest_ignores_a_foreign_correction_on_the_tail_of_the_chain(service, s
 def test_latest_does_not_start_a_chain_from_another_space(service, store):
     """남의 space 의 id 에서 시작해 내 space 로 넘어오면 없는 id 와 답이 달라 존재 여부가 샌다."""
     writer = build_token(agent="writer", group=None, local=[("longterm", "writer")])
-    secret = service.append(writer, "longterm", fact("secret", agent="writer"))
+    secret = service.append(writer, "longterm", draft("secret"))
     legacy_foreign_correction(store, secret.entry_id, day=1)
 
     assert service.latest(ATTACKER, "longterm", "no-such-entry") is None
@@ -149,7 +158,7 @@ async def test_latest_over_http_ignores_a_correction_stored_in_another_space(ser
     app = create_app(service, Recall(indexes={}, store=store), tokens)
     http = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=BASE_URL)
     victim = HttpMemoryAccess(base_url=BASE_URL, token=tokens.issue(VICTIM), client=http)
-    policy = service.append(LIBRARIAN, "org", fact("policy v1", agent="librarian"))
+    policy = service.append(LIBRARIAN, "org", draft("policy v1"))
     legacy_foreign_correction(store, policy.entry_id, day=1)
 
     latest = await victim.latest("org", policy.entry_id)
@@ -167,7 +176,7 @@ def broken(tmp_path):
     path = tmp_path / "memory.db"
     opened = SqliteMemoryStore(path=str(path))
     service = MemoryService(store=opened)
-    stored = service.append(RESEARCHER, "longterm", fact("qq fact"))
+    stored = service.append(RESEARCHER, "longterm", draft("qq fact"))
     indexer = IndexRegistry()
     indexer.submit(stored, ChunkSpec())
     indexer.drain()
@@ -194,7 +203,7 @@ def _search(_service, recall, stored):
 
 
 def _append_correction(service, _recall, stored):
-    return service.append(RESEARCHER, "longterm", fact("v2", supersedes=stored.entry_id))
+    return service.append(RESEARCHER, "longterm", draft("v2", supersedes=stored.entry_id))
 
 
 @pytest.mark.parametrize("call", [_read, _latest, _search, _append_correction])
@@ -243,7 +252,7 @@ async def test_storage_failure_on_a_read_route_answers_with_a_structured_payload
 
 def test_every_audit_record_carries_decision_source(service):
     """09 Access Enforcement 6 — 감사 줄의 필수 필드에 `decision_source` 가 있다."""
-    stored = service.append(RESEARCHER, "longterm", fact("one"))
+    stored = service.append(RESEARCHER, "longterm", draft("one"))
     service.read(RESEARCHER, "longterm")
     service.latest(RESEARCHER, "longterm", stored.entry_id)
     service.record_search(RESEARCHER, ["longterm"])
@@ -301,7 +310,7 @@ async def test_operations_counter_names_one_space_with_one_label(store):
     recall = Recall(indexes=indexer.indexes, store=store, metrics=metrics)
     access = ServiceMemoryAccess(service=service, token=RESEARCHER, recall=recall)
 
-    stored = await access.append("longterm", entry=fact("qq fact"))
+    stored = await access.append("longterm", kind=MemoryKind.FACT, content="qq fact")
     indexer.submit(stored, ChunkSpec())
     indexer.drain()
     await access.read("longterm")
@@ -319,8 +328,8 @@ def test_operations_counter_keeps_two_spaces_with_the_same_alias_apart(store):
     service = MemoryService(store=store, metrics=metrics)
     writer = build_token(agent="writer", group=None, local=[("longterm", "writer")])
 
-    service.append(RESEARCHER, "longterm", fact("mine"))
-    service.append(writer, "longterm", fact("theirs", agent="writer"))
+    service.append(RESEARCHER, "longterm", draft("mine"))
+    service.append(writer, "longterm", draft("theirs"))
 
     assert len(operation_spaces(metrics)["append"]) == 2
 
@@ -338,11 +347,11 @@ def attacker_over_http(service, store):
 
 async def test_client_keeps_the_validation_code_the_service_answered(attacker_over_http, service):
     """서버는 `VAL_002` (400) 로 답한다 — 클라이언트가 `MEM_004` (검색 실패) 로 바꾼다."""
-    policy = service.append(LIBRARIAN, "org", fact("policy v1", agent="librarian"))
+    policy = service.append(LIBRARIAN, "org", draft("policy v1"))
 
     with pytest.raises(AaestroError) as exc_info:
         await attacker_over_http.append(
-            "longterm", entry=fact("hide it", agent="attacker", supersedes=policy.entry_id)
+            "longterm", kind=MemoryKind.FACT, content="hide it", supersedes=policy.entry_id
         )
 
     assert exc_info.value.code == ErrorCode.VAL_002
@@ -364,13 +373,9 @@ async def test_client_reports_a_rejected_request_body_as_validation(attacker_ove
 
 
 def test_latest_still_follows_a_same_space_chain_to_its_end(service):
-    v1 = service.append(LIBRARIAN, "org", fact("policy v1", agent="librarian"))
-    v2 = service.append(
-        LIBRARIAN, "org", fact("policy v2", agent="librarian", supersedes=v1.entry_id, day=1)
-    )
-    v3 = service.append(
-        LIBRARIAN, "org", fact("policy v3", agent="librarian", supersedes=v2.entry_id, day=2)
-    )
+    v1 = service.append(LIBRARIAN, "org", draft("policy v1"))
+    v2 = service.append(LIBRARIAN, "org", draft("policy v2", supersedes=v1.entry_id))
+    v3 = service.append(LIBRARIAN, "org", draft("policy v3", supersedes=v2.entry_id))
 
     for start in (v1, v2, v3):
         latest = service.latest(VICTIM, "org", start.entry_id)
@@ -382,7 +387,7 @@ def test_unknown_and_foreign_ids_get_the_same_latest_answer_and_differ_only_in_t
     service, store
 ):
     writer = build_token(agent="writer", group=None, local=[("longterm", "writer")])
-    secret = service.append(writer, "longterm", fact("secret", agent="writer"))
+    secret = service.append(writer, "longterm", draft("secret"))
 
     assert service.latest(ATTACKER, "longterm", "no-such-entry") is None
     unknown = service.audit_log[-1]["status"]
@@ -420,7 +425,7 @@ def test_write_failure_is_audited_as_failed_and_keeps_mem_002(tmp_path):
     outside.close()
     try:
         with pytest.raises(AaestroError) as exc_info:
-            service.append(RESEARCHER, "longterm", fact("one"))
+            service.append(RESEARCHER, "longterm", draft("one"))
     finally:
         opened.close()
 
@@ -789,8 +794,11 @@ async def test_a_correction_gets_the_same_refusal_for_a_corrupt_foreign_target(c
     post, bad = corrupted
 
     async def probe(target: str) -> httpx.Response:
-        forged_entry = fact("hide it", agent="attacker", supersedes=target)
-        body = {"space": "longterm", "entry": forged_entry.model_dump(mode="json")}
+        # 지금 계약의 모양 — 옛 형태 (완성된 항목) 면 둘 다 모르는 키로 거절돼 헛통과한다
+        body = {
+            "space": "longterm",
+            "entry": {"kind": "fact", "content": "x", "supersedes": target},
+        }
         return await post(ATTACKER, "/v1/append", body)
 
     foreign, unknown = await probe(bad.entry_id), await probe("no-such")
@@ -897,7 +905,7 @@ async def test_a_successful_task_recall_is_counted_ok_once(store):
     metrics = Metrics(registry=CollectorRegistry())
     service = MemoryService(store=store)
     indexer = IndexRegistry()
-    stored = service.append(RESEARCHER, "longterm", fact("qq fact"))
+    stored = service.append(RESEARCHER, "longterm", draft("qq fact"))
     indexer.submit(stored, ChunkSpec())
     indexer.drain()
     recall = Recall(indexes=indexer.indexes, store=store, metrics=metrics)

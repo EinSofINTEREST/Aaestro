@@ -906,6 +906,10 @@ In registry mode:
 - **Searching without naming spaces skips spaces that are not allowed now**, rather than failing
   the whole search. `GET /v1/spaces` lists what is allowed, with the mode actually permitted.
 - **The identity outlives a Memory Service restart.** It lives in the control plane.
+- **Identity is checked before the request body is read.** Without a recognised identity every
+  route answers the same `401` with `MEM_001`, whatever the body contains. The only route open
+  without identity is `GET /v1/health` (liveness only); the API documentation paths are not served.
+  Unknown routes and methods (`404` / `405`) are answered before identity, in the typed error shape.
 - **While the registry is unreachable**, decisions already cached keep working and anything not
   yet decided is denied. A cached decision is still dropped at its `valid_until`.
 

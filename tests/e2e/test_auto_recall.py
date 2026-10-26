@@ -97,12 +97,8 @@ def remember(content: str) -> None:
         "/v1/append",
         {
             "space": "longterm",
-            "entry": {
-                "space": "longterm",
-                "kind": "fact",
-                "content": content,
-                "source": {"agent": "researcher"},
-            },
+            # id · 시각 · 출처는 서비스가 발급한다 (#456) — 요청은 내용만 싣는다
+            "entry": {"kind": "fact", "content": content},
         },
         token=token,
         port=MEMORY_PORT,

@@ -21,6 +21,7 @@ from a2a.utils.errors import A2AError, UnsupportedOperationError
 
 from aaestro.core.agent import TaskConfig, TaskRequest, TaskStatus, TraceContext
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.core.identifiers import MAX_IDENTIFIER_CHARS, identifier_problem
 from aaestro.protocols.a2a.errors import depth_exceeded, not_allowed
 from aaestro.protocols.a2a.sdk import CALLER_HEADER, TOKEN_HEADER
 
@@ -43,11 +44,6 @@ _STATE_OF = {
 DEFAULT_MAX_DEPTH = 3
 """위임 체인 깊이 상한 — 초과 시 ``A2A_005`` (03 Rule 5)."""
 
-MAX_IDENTIFIER_CHARS = 128
-"""peer 본문이 싣는 식별자(task · run · node · trace id, 그래프 이름)의 길이 상한.
-
-프레임워크가 만드는 값은 UUID(36자)나 ``run-<uuid>`` 수준이다. 식별자는 로그 · 메트릭 · 메모리
-출처 · 멱등 캐시 키로 그대로 흘러가므로 상한이 없으면 peer 가 그 크기를 정한다."""
 
 log = structlog.get_logger(__name__)
 
@@ -101,23 +97,10 @@ def read_task(text: str) -> TaskRequest:
 
 
 def _identifier(found: object, field: str) -> str:
-    """peer 가 고른 식별자를 **성질로** 검증한다 — 값 목록이 아니라.
-
-    문자열 · 비어 있지 않음 · 상한 · 출력 가능 · 앞뒤 공백 없음. 제어 문자는 로그 줄을 위조하고,
-    앞뒤 공백은 같아 보이는 다른 키를 만든다. 보이지 않지만 출력 가능한 문자(U+FE0F 등)는 둔다 —
-    줄을 나누지 못한다.
-    """
-    if not isinstance(found, str):
-        # 숫자 · 객체를 str() 로 접으면 서로 다른 본문이 같은 id 가 된다
-        raise _malformed(field, "not_string")
-    if not found:
-        raise _malformed(field, "empty")
-    if len(found) > MAX_IDENTIFIER_CHARS:
-        raise _malformed(field, "too_long")
-    if not found.isprintable():
-        raise _malformed(field, "unprintable_characters")
-    if found != found.strip():
-        raise _malformed(field, "surrounding_whitespace")
+    """peer 가 고른 식별자를 **성질로** 검증한다 — 규칙은 ``core.identifiers`` 하나다."""
+    problem = identifier_problem(found)
+    if problem is not None or not isinstance(found, str):
+        raise _malformed(field, problem.value if problem is not None else "not_string")
     return found
 
 
@@ -484,6 +467,7 @@ def encode_result(result: TaskResult) -> str:
 
 __all__ = [
     "DEFAULT_MAX_DEPTH",
+    "MAX_IDENTIFIER_CHARS",
     "GuardedExecutor",
     "GuardedRequestHandler",
     "InboundGuard",

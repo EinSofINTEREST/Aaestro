@@ -10,7 +10,6 @@
 
 from __future__ import annotations
 
-import json
 import time
 import urllib.error
 import urllib.request
@@ -106,7 +105,7 @@ def test_the_service_starts_as_a_container(service):
 @requires_docker
 def test_agents_reach_it_over_http(service):
     """09 는 HTTP 를 경로로 규정한다 — 붙을 상대가 실제로 있어야 한다."""
-    assert status_of("/openapi.json") == 200
+    assert status_of("/v1/health") == 200
 
 
 @requires_docker
@@ -134,11 +133,7 @@ def test_no_store_credentials_reach_an_agent_image(service):
 
 
 @requires_docker
-def test_the_service_serves_the_declared_surface(service):
-    """09 Retrieval API 의 창구가 전부 열려 있어야 에이전트가 쓸 수 있다."""
-    with urllib.request.urlopen(  # noqa: S310
-        f"http://127.0.0.1:{PORT}/openapi.json", timeout=10
-    ) as response:
-        paths = set(json.load(response)["paths"])
-
-    assert {"/v1/append", "/v1/search", "/v1/read", "/v1/latest", "/v1/spaces"} <= paths
+def test_the_service_does_not_publish_its_schema(service):
+    """무인증 호출자가 스키마를 열거하지 못한다 (#450) — 인증 없이 열리는 것은 health 뿐이다."""
+    assert status_of("/openapi.json") == 404
+    assert status_of("/docs") == 404

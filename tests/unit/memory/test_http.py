@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import httpx
 import pytest
 
@@ -20,6 +22,7 @@ from aaestro.memory.store import SqliteMemoryStore
 from aaestro.modules.memoryset import MemoryKind
 
 BASE_URL = "http://memory.test"
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 @pytest.fixture
@@ -43,7 +46,13 @@ def served():
         store.close()
 
 
+def fact(content: str, **extra) -> dict:
+    """append 인자 — 내용만. id 와 출처는 서비스가 발급한다 (#456)."""
+    return {"kind": MemoryKind.FACT, "content": content, **extra}
+
+
 def entry(space: str, content: str) -> MemoryEntry:
+    """저장소에 직접 넣는 완성된 항목 — append 검사를 우회하는 경로의 재료."""
     return MemoryEntry(
         space=space,
         kind=MemoryKind.FACT,
@@ -58,9 +67,7 @@ def entry(space: str, content: str) -> MemoryEntry:
 async def test_append_then_search_round_trips(served):
     """색인은 **서비스가** 한다 — 테스트가 대신 색인하면 배선을 지워도 통과한다."""
     access, _service, _token, space_id, indexer, _tokens = served
-    item = entry(space_id, "mcp sidecar 는 이미지 태그 고정이 필요하다")
-
-    await access.append("longterm", entry=item)
+    item = await access.append("longterm", **fact("mcp sidecar 는 이미지 태그 고정이 필요하다"))
     indexer.drain()  # 09 Write Path — 색인은 비동기다
     found = await access.search("sidecar")
 
@@ -159,8 +166,8 @@ async def test_read_returns_the_space_newest_first(served):
     """검색 없이 훑는 창구가 없으면 클라이언트가 space 를 읽을 방법이 없다."""
     access, _service, _token, space_id, _indexer, _tokens = served
 
-    first = await access.append("longterm", entry=entry(space_id, "먼저"))
-    second = await access.append("longterm", entry=entry(space_id, "나중"))
+    first = await access.append("longterm", **fact("먼저"))
+    second = await access.append("longterm", **fact("나중"))
 
     found = await access.read("longterm")
 
@@ -170,7 +177,7 @@ async def test_read_returns_the_space_newest_first(served):
 async def test_read_honours_the_limit(served):
     access, _service, _token, space_id, _indexer, _tokens = served
     for text in ("하나", "둘", "셋"):
-        await access.append("longterm", entry=entry(space_id, text))
+        await access.append("longterm", **fact(text))
 
     found = await access.read("longterm", limit=2)
 
@@ -190,15 +197,8 @@ async def test_read_rejects_an_undeclared_space(served):
 async def test_latest_follows_a_correction_chain(served):
     """정정된 기억을 그대로 읽으면 모델이 틀린 사실을 본다 (09 Rule 4)."""
     access, _service, _token, space_id, _indexer, _tokens = served
-    original = await access.append("longterm", entry=entry(space_id, "포트는 8000 이다"))
-    correction = MemoryEntry(
-        space=space_id,
-        kind=MemoryKind.FACT,
-        content="포트는 8080 이다",
-        source=MemorySource(agent="researcher"),
-        supersedes=original.entry_id,
-    )
-    await access.append("longterm", entry=correction)
+    original = await access.append("longterm", **fact("포트는 8000 이다"))
+    await access.append("longterm", **fact("포트는 8080 이다", supersedes=original.entry_id))
 
     found = await access.latest("longterm", original.entry_id)
 
@@ -320,7 +320,7 @@ def test_the_advertised_mode_matches_what_append_actually_does():
             advertised = mode_of(client.get("/v1/spaces", headers=headers).json(), "org")
             written = client.post(
                 "/v1/append",
-                json={"space": "org", "entry": entry("org", "x").model_dump(mode="json")},
+                json={"space": "org", "entry": {"kind": "fact", "content": "x"}},
                 headers=headers,
             )
     finally:
@@ -366,14 +366,12 @@ async def test_search_refuses_spaces_this_token_does_not_declare(served, target)
 async def _fill_with_a_correction(served):
     """원본과 정정 뒤에 filler 를 쌓는다 — 둘 다 어떤 최근 N건 창에도 들지 않는다."""
     access, service, token, space_id, indexer, _tokens = served
-    old = entry(space_id, "the port is 9000 for the sidecar")
-    new = entry(space_id, "the port is 9100 for the sidecar").model_copy(
-        update={"supersedes": old.entry_id}
+    old = await access.append("longterm", **fact("the port is 9000 for the sidecar"))
+    new = await access.append(
+        "longterm", **fact("the port is 9100 for the sidecar", supersedes=old.entry_id)
     )
-    for item in (old, new):
-        await access.append("longterm", entry=item)
     for i in range(30):
-        await access.append("longterm", entry=entry(space_id, f"filler record {i} about nothing"))
+        await access.append("longterm", **fact(f"filler record {i} about nothing"))
     indexer.drain()
     return old, new
 
@@ -421,7 +419,7 @@ async def test_http_auto_recall_injects_only_the_correction(served):
 
 async def test_a_successful_search_is_audited_per_space(served):
     access, service, *_ = served
-    await access.append("longterm", entry=entry(served[3], "mcp sidecar 는 태그 고정이 필요하다"))
+    await access.append("longterm", **fact("mcp sidecar 는 태그 고정이 필요하다"))
     served[4].drain()
 
     await access.search("sidecar")
@@ -456,16 +454,13 @@ def org_stack(served):
 
 async def test_a_read_only_agent_cannot_hide_a_shared_memory_with_a_correction(org_stack):
     librarian, attacker, victim, indexer = org_stack
-    org = await librarian.append("org", entry=entry("global:global:org", "qqorg policy approved"))
+    org = await librarian.append("org", **fact("qqorg policy approved"))
     indexer.drain()
     seen = await attacker.search("qqorg policy", spaces=["org"])
     assert [s.entry.entry_id for s in seen] == [org.entry_id], "공격자는 id 를 읽을 수 있다"
 
-    forged = entry("local:attacker:longterm", "hide it").model_copy(
-        update={"supersedes": org.entry_id}
-    )
     with pytest.raises(AaestroError) as exc_info:
-        await attacker.append("longterm", entry=forged)
+        await attacker.append("longterm", **fact("hide it", supersedes=org.entry_id))
 
     refused = exc_info.value
     assert refused.code == ErrorCode.VAL_002
@@ -480,7 +475,7 @@ async def test_a_correction_stored_out_of_band_is_ignored_by_search(org_stack, s
     """append 검사를 우회해 저장소에 들어간 교차 space 정정도 검색은 무시한다."""
     librarian, _attacker, victim, indexer = org_stack
     _access, service, *_ = served
-    org = await librarian.append("org", entry=entry("global:global:org", "qqorg policy approved"))
+    org = await librarian.append("org", **fact("qqorg policy approved"))
     indexer.drain()
     service.store.append(
         entry("local:attacker:longterm", "hide it").model_copy(update={"supersedes": org.entry_id})
@@ -494,15 +489,14 @@ async def test_a_correction_stored_out_of_band_is_ignored_by_search(org_stack, s
 async def test_unknown_and_foreign_correction_targets_get_the_same_response(org_stack):
     """없는 id 와 다른 space 의 id 에 같은 응답을 줘야 다른 space 의 id 존재 여부가 새지 않는다."""
     librarian, attacker, _victim, _indexer = org_stack
-    org = await librarian.append("org", entry=entry("global:global:org", "qqorg policy approved"))
+    org = await librarian.append("org", **fact("qqorg policy approved"))
 
     async def probe(target: str) -> httpx.Response:
-        forged = entry("local:attacker:longterm", "hide it").model_copy(
-            update={"supersedes": target}
-        )
+        # 지금 계약의 모양 (내용 + supersedes) — 옛 형태면 둘 다 모르는 키로 거절돼 헛통과한다
+        draft = {"kind": "fact", "content": "hide it", "supersedes": target}
         return await attacker.client.post(
             f"{BASE_URL}/v1/append",
-            json={"space": "longterm", "entry": forged.model_dump(mode="json")},
+            json={"space": "longterm", "entry": draft},
             headers={"authorization": f"Bearer {attacker.token}"},
         )
 
@@ -542,3 +536,206 @@ async def test_http_search_rejects_an_oversized_k_as_val_002(served):
     assert body["code"] == "VAL_002"
     assert body["details"]["errors"][0]["field"] == "body.k"
     assert str(MAX_SEARCH_K + 1) not in str(body["details"])
+
+
+# --- 인증은 본문 파싱보다 먼저 (#450) -------------------------------------------
+
+HEALTH_PATH = "/v1/health"
+AUTH_FIRST_BODIES = {
+    "malformed_shape": b'{"query": 5, "space": 5, "k": "x", "entry": 1, "limit": "z"}',
+    "broken_json": b"{not json",
+    "broken_utf8": b"\xff\xfe\xfd",
+    "empty": b"",
+    # 어느 라우트에도 형식이 맞는 본문은 없다 — 라우트별로 맞는 본문은 아래 WELL_FORMED
+}
+WELL_FORMED = {
+    "/v1/search": b'{"query": "q"}',
+    "/v1/append": (
+        b'{"space": "longterm", "entry": {"space": "longterm", "kind": "fact", "content": "c",'
+        b' "source": {"agent": "researcher"}}}'
+    ),
+    "/v1/read": b'{"space": "longterm"}',
+    "/v1/latest": b'{"space": "longterm", "entry_id": "e"}',
+    "/v1/spaces": b"",
+}
+BAD_CREDENTIALS = {"no_token": {}, "wrong_token": {"authorization": "Bearer not-issued"}}
+
+
+def _api_routes(app) -> list[tuple[str, str]]:
+    """인증이 걸린 라우트 — 무인증 `/v1/health` 는 의도된 예외라 뺀다 (아래 전용 테스트)."""
+    from fastapi.routing import APIRoute
+
+    return sorted(
+        (method, route.path)
+        for route in app.routes
+        if isinstance(route, APIRoute)
+        for method in route.methods
+        if route.path != HEALTH_PATH
+    )
+
+
+def _auth_first_app(*, gate=None):
+    store = SqliteMemoryStore()
+    indexer = IndexRegistry()
+    tokens = TokenRegistry()
+    app = create_app(
+        MemoryService(store=store),
+        Recall(indexes=indexer.indexes, store=store),
+        None if gate else tokens,
+        indexer=indexer,
+        gate=gate,
+    )
+    return app, tokens, store
+
+
+@pytest.mark.parametrize("body", [*AUTH_FIRST_BODIES, "well_formed"])
+@pytest.mark.parametrize("credentials", list(BAD_CREDENTIALS))
+async def test_every_route_refuses_without_identity_before_reading_the_body(credentials, body):
+    app, _, store = _auth_first_app()
+    routes = _api_routes(app)
+    # 라우트가 추가되면 이 목록이 자동으로 따라온다 — 빠진 라우트는 같은 표 안에서 실패한다
+    assert len(routes) >= 5
+    client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=BASE_URL)
+    try:
+        for method, path in routes:
+            response = await client.request(
+                method,
+                path,
+                content=WELL_FORMED[path] if body == "well_formed" else AUTH_FIRST_BODIES[body],
+                headers={"content-type": "application/json", **BAD_CREDENTIALS[credentials]},
+            )
+            payload = response.json()
+            assert (response.status_code, payload["code"]) == (401, "MEM_001"), (path, payload)
+            # 필드 경로나 받은 값이 응답에 없다 — 본문을 보지 않았다는 증거
+            assert payload["details"] == {}, (path, payload)
+            expected = "required" if credentials == "no_token" else "not recognised"
+            assert expected in payload["message"], (path, payload)
+    finally:
+        await client.aclose()
+        store.close()
+
+
+@pytest.mark.parametrize("body", ["malformed_shape", "broken_json", "broken_utf8", "empty"])
+async def test_a_valid_token_with_a_bad_body_still_gets_a_validation_refusal(body):
+    app, tokens, store = _auth_first_app()
+    secret = tokens.issue(build_token(agent="researcher", group=None, local=[("longterm", "r")]))
+    client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=BASE_URL)
+    try:
+        response = await client.post(
+            "/v1/search",
+            content=AUTH_FIRST_BODIES[body],
+            headers={"content-type": "application/json", "authorization": f"Bearer {secret}"},
+        )
+        assert response.status_code == 400, response.text
+        assert response.json()["code"] in {"VAL_001", "VAL_002"}
+        assert "detail" not in response.json()
+    finally:
+        await client.aclose()
+        store.close()
+
+
+async def test_registry_mode_refuses_an_unknown_identity_before_reading_the_body():
+    from aaestro.access.client import DecisionSource
+    from aaestro.catalog import Catalog
+    from aaestro.memory.gate import RegistryGate
+
+    class UnknownIdentity:
+        async def identify(self, credential):
+            return None, DecisionSource.FRESH
+
+    gate = RegistryGate(client=UnknownIdentity(), catalog=Catalog.under(Path()))  # type: ignore[arg-type]
+    app, _, store = _auth_first_app(gate=gate)
+    client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=BASE_URL)
+    try:
+        for method, path in _api_routes(app):
+            response = await client.request(
+                method,
+                path,
+                content=AUTH_FIRST_BODIES["malformed_shape"],
+                headers={"content-type": "application/json", "authorization": "Bearer who"},
+            )
+            assert (response.status_code, response.json()["code"]) == (401, "MEM_001"), path
+            assert response.json()["details"] == {}
+    finally:
+        await client.aclose()
+        store.close()
+
+
+async def test_identity_is_checked_once_per_request():
+    from aaestro.access.client import DecisionSource, Verdict
+    from aaestro.catalog import Catalog
+    from aaestro.memory.gate import RegistryGate
+
+    class Counting:
+        identified = 0
+
+        async def identify(self, credential):
+            self.identified += 1
+            return "researcher", DecisionSource.FRESH
+
+        async def decide(self, credential, kind, target, mode=None):
+            return Verdict("researcher", True, "operator", DecisionSource.FRESH)
+
+    counting = Counting()
+    gate = RegistryGate(client=counting, catalog=Catalog.under(REPO_ROOT))  # type: ignore[arg-type]
+    app, _, store = _auth_first_app(gate=gate)
+    client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=BASE_URL)
+    try:
+        response = await client.post(
+            "/v1/read", json={"space": "longterm"}, headers={"authorization": "Bearer who"}
+        )
+        assert response.status_code == 200, response.text
+        assert counting.identified == 1
+    finally:
+        await client.aclose()
+        store.close()
+
+
+async def test_health_is_the_only_route_open_without_identity():
+    app, _, store = _auth_first_app()
+    client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=BASE_URL)
+    try:
+        response = await client.get(HEALTH_PATH)
+        assert (response.status_code, response.json()) == (200, {"status": "ok"})
+        # 문서 경로는 열지 않는다 — 스키마(필드 · 상한)를 열거하지 못하게
+        for path in ("/openapi.json", "/docs", "/redoc"):
+            assert (await client.get(path)).status_code == 404, path
+    finally:
+        await client.aclose()
+        store.close()
+
+
+async def test_unknown_routes_and_methods_get_a_typed_refusal_without_values():
+    app, _, store = _auth_first_app()
+    client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=BASE_URL)
+    try:
+        missing = await client.get("/v1/nope")
+        assert missing.status_code == 404
+        assert (missing.json()["category"], missing.json()["code"]) == ("not_found", "NF_001")
+        wrong = await client.get("/v1/search")
+        assert wrong.status_code == 405
+        assert (wrong.json()["category"], wrong.json()["code"]) == ("validation", "VAL_002")
+        assert "detail" not in missing.json() and "detail" not in wrong.json()
+    finally:
+        await client.aclose()
+        store.close()
+
+
+async def test_slash_variants_of_routes_are_not_redirected_but_refused_as_unroutable():
+    app, _, store = _auth_first_app()
+    client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=BASE_URL)
+    try:
+        # 인증 없이 slash 변형을 불러도 정식 경로가 있다는 사실이 리다이렉트로 드러나면 안 된다
+        for method, path in (
+            ("POST", "/v1/search/"),
+            ("POST", "/v1/append/"),
+            ("GET", "/v1/health/"),
+        ):
+            response = await client.request(method, path, json={})
+            assert response.status_code == 404, (path, response.status_code)
+            assert "location" not in response.headers, path
+            body = response.json()
+            assert (body["category"], body["code"]) == ("not_found", "NF_001"), path
+    finally:
+        await client.aclose()
+        store.close()
