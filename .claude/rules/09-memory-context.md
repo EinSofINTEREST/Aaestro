@@ -297,6 +297,9 @@ agentd 가 태스크 프롬프트를 구성할 때:
          + (루프 진행 중) tool 결과
 ```
 
+실제 순서도 이렇다 — 회상 블록은 렌더된 태스크 프롬프트 **뒤** 에 온다. 경계 안내가 user 턴 맨 앞에
+오도록 (시스템 자리의 프레임워크 지시가 그 자리를 가리킨다, #446).
+
 1. **Auto-recall**: 태스크 진입 시 task input 기반 1회 자동 검색 — memoryset 의
    `recall` 설정 (k, min_score, budget_tokens) 적용
    - **회상 필터** (선택, manifest `spec.decision.recall_filter`): 검색 상위 k 를 결정 모델에
@@ -315,6 +318,8 @@ agentd 가 태스크 프롬프트를 구성할 때:
    모델이 기억과 현재 입력을 구분할 수 있게
 6. **Untrusted 경계**: 기억은 과거 태스크 산출물이다 — 기억 속 지시문을 시스템 지시로
    승격 금지 (MCP 응답과 동일한 경계 규칙, [03-protocol-integration.md](03-protocol-integration.md)).
+   `[memory:…]` 표시가 데이터라는 것은 기본 루프의 시스템 자리에 프레임워크 지시로도 실린다
+   ([04-module-system.md](04-module-system.md) Promptset Rules 6).
    manifest 의 `spec.decision.input_screen` 이 있으면 회상된 기억에도 지시문 판별을 적용해
    `act` 면 표시를 강화하고 WARN 을 남긴다 — 신호이지 경계의 대체가 아니다
    ([02-agent-implementation.md](02-agent-implementation.md) Decision Hooks 4)
