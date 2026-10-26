@@ -9,6 +9,26 @@ import pathlib
 from typing import Any
 
 
+def inspect_mounts(kwargs: dict[str, Any]) -> dict[str, Any]:
+    """생성 인자의 마운트를 `docker inspect` 가 보고하는 모양으로 — `Mounts` 와 `HostConfig.Tmpfs`.
+
+    키가 경로면 바인드, 아니면 이름 있는 볼륨이다 (Docker SDK 의 `volumes` 해석과 같다).
+    """
+    mounts = []
+    for source, target in (kwargs.get("volumes") or {}).items():
+        named = not source.startswith("/")
+        mounts.append(
+            {
+                "Type": "volume" if named else "bind",
+                "Name": source if named else "",
+                "Source": f"/var/lib/docker/volumes/{source}/_data" if named else source,
+                "Destination": target["bind"],
+                "RW": target["mode"] == "rw",
+            }
+        )
+    return {"Mounts": mounts, "Tmpfs": dict(kwargs.get("tmpfs") or {})}
+
+
 class FakeDockerClient:
     """스크립트된 Docker 동작을 돌려주는 대역."""
 
@@ -28,6 +48,7 @@ class FakeDockerClient:
         address: str = "172.30.0.7",
         attached: tuple[str, ...] | None = None,
         hardening: dict[str, Any] | None = None,
+        volumes: dict[str, dict[str, Any] | Exception] | None = None,
     ) -> None:
         self._image_error = image_error
         self._network_error = network_error
@@ -43,6 +64,8 @@ class FakeDockerClient:
         self._address = address
         self._attached = attached
         self._hardening = hardening
+        # 볼륨 이름 → `docker volume inspect` 값 (또는 던질 예외). 없는 이름은 일반 local 볼륨이다
+        self._volumes = volumes or {}
 
         self.images: list[str] = []
         self.networks: list[str] = []
@@ -85,8 +108,15 @@ class FakeDockerClient:
                     "PidsLimit": kwargs.get("pids_limit"),
                     "User": kwargs.get("user"),
                     "NetworkMode": kwargs.get("network_mode"),
+                    **inspect_mounts(kwargs),
                 }
         raise LookupError(container_id)
+
+    def volume_of(self, name: str) -> dict[str, Any]:
+        found = self._volumes.get(name, {"Driver": "local", "Options": {}})
+        if isinstance(found, Exception):
+            raise found
+        return dict(found)
 
     def address_of(self, container_id: str, network: str) -> str:
         self.addressed.append((container_id, network))

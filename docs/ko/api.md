@@ -948,8 +948,13 @@ manifest 가 `env_allowlist` 에 올려도 실 키는 프록시에만 있다. �
   사용자 `1000:1000`, PID limit (`DEFAULT_PID_LIMIT`, 256), 키별 유효값이 스펙과 같은
   `security_opt` — 항목을 더하거나 뒤에서 덮으면 거절)이 그대로이며 그것을 무력화하는 설정
   (privileged, 추가 capability, 호스트 PID · IPC · user · 네트워크 네임스페이스, 비어 있는
-  `MaskedPaths` 또는 `ReadonlyPaths`)이 없을 때만
-  재부착한다. 아니면 배포는 `lost`("network isolation mismatch", 경화는 어긋난 필드 이름이 붙은
+  `MaskedPaths` 또는 `ReadonlyPaths`)이 없고, 마운트가 기동 스펙이 건 것(읽기 전용 선언 마운트, 선언한
+  볼륨, `tmpfs` 경로)과 정확히 같을 때만 재부착한다. 스펙이 선언하지 않은 바인드(호스트 경로,
+  `/var/run/docker.sock`), 쓰기 가능으로 바뀌거나 다른 곳을 가리키는 선언 마운트, 더하거나 빠진 `tmpfs`
+  는 거절된다 (`Mounts` / `Tmpfs` — 사유에는 필드 이름만 싣고 경로는 싣지 않는다). 경로는 정규화해
+  비교한다 (`/cache/` 는 `/cache`). 예외는 이미지가 `VOLUME` 으로 선언한 경로에 Docker 가 만든 익명 볼륨
+  하나다. 선언했든 익명이든 모든 볼륨은 일반 `local` 볼륨이어야 한다 — 같은 이름으로 `device` · `bind`
+  옵션을 붙여 다시 만든 볼륨은 호스트 경로를 열므로 거절되고, inspect 하지 못한 볼륨도 거절된다. 아니면 배포는 `lost`("network isolation mismatch", 경화는 어긋난 필드 이름이 붙은
   "container hardening mismatch")가 되고
   아무것도 붙이지 않으며 그 에이전트 신원을 회수한다 — 외부 경로가 남은 컨테이너는 메모리·peer·모델에
   닿지 못한다. 컨테이너는 원인을 보고 해체하도록 남겨 둔다. PID limit 을 걸 수 없는 호스트 (pids
@@ -1097,7 +1102,7 @@ runtime 이 에이전트보다 먼저 `aaestro-<agent>--mcp-<server>` 라는 이
 - **평문 http, 사설 주소만.** 사이드카는 자격을 싣지 않으므로(사이드카에는 `auth` 를 선언할 수 없다) 프록시는
   `http` 로 부르고, 사설 주소로 풀릴 때만 보낸다.
 - **재시작.** 오류로 끝난 사이드카는 Docker 가 다섯 번까지 다시 띄운다. control plane 이 재시작하면 재부착이
-  사라지거나 멈춘 사이드카를 되살리고, 되살리지 못하면 배포를 `lost` 로 표시한다. agentd 는 아직 뜨는 중인
+  사라지거나 멈췄거나 기동 인자(경화 · 네트워크 · 마운트)와 어긋난 사이드카를 새로 세우고, 되살리지 못하면 배포를 `lost` 로 표시한다. agentd 는 아직 뜨는 중인
   사이드카를 10초쯤 기다린다 — 원격 서버는 기다리지 않는다.
 
 ### A2A 강제

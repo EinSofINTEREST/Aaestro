@@ -160,7 +160,16 @@ class SdkDockerClient:
         return {
             **{field: host.get(field) for field in HARDENING_FIELDS},
             "User": container.attrs["Config"].get("User"),
+            # 바인드 · 볼륨 · `--mount type=tmpfs` 는 `Mounts`, `--tmpfs` 는 `HostConfig.Tmpfs` 에만
+            "Mounts": container.attrs.get("Mounts") or [],
+            "Tmpfs": host.get("Tmpfs") or {},
+            # 이미지가 `VOLUME` 으로 선언한 경로 — 거기 생긴 익명 볼륨은 생성 인자 밖이어도 정상이다
+            "Volumes": container.attrs["Config"].get("Volumes") or {},
         }
+
+    def volume_of(self, name: str) -> dict[str, Any]:
+        attrs = self._sdk.volumes.get(name).attrs
+        return {"Driver": attrs.get("Driver"), "Options": attrs.get("Options") or {}}
 
     def address_of(self, container_id: str, network: str) -> str:
         container = self._sdk.containers.get(container_id)

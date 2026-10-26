@@ -216,6 +216,10 @@ def test_hardening_is_read_under_the_inspect_field_names(client, container):
     assert found["ReadonlyPaths"]
     assert not found["Privileged"]
     assert not found["CapAdd"]
+    # 마운트 대조가 읽는 모양 (#488) — `--tmpfs` 는 `Mounts` 가 아니라 `Tmpfs` 에 있다
+    assert found["Mounts"] == []
+    assert set(found["Tmpfs"]) == {"/tmp", "/workspace"}  # noqa: S108 — 컨테이너 안 경로다
+    assert set(found["Volumes"]) == {"/tmp", "/workspace"}  # noqa: S108 — base 이미지의 VOLUME
 
 
 async def test_a_container_built_from_the_spec_passes_the_engine_check(client, echo_image):  # noqa: F811
@@ -237,3 +241,110 @@ async def test_a_container_built_from_the_spec_passes_the_engine_check(client, e
         )
     finally:
         client.remove(container_id)
+
+
+async def verdict(client, image, kwargs, expected) -> list[str]:
+    """kwargs 로 실제 컨테이너를 만들어 재부착 대조를 돌린다 — 어긋난 필드 이름, 통과면 [].
+
+    익명 볼륨이 생길 수 있어 `-v` 로 함께 지운다 (`SdkDockerClient.remove` 는 볼륨을 남긴다).
+    """
+    from aaestro.core.errors import AaestroError
+    from aaestro.runtime.docker.engine import DockerEngine
+
+    docker("rm", "-f", "-v", kwargs["name"], check=False)
+    container_id = client.create(**kwargs)
+    try:
+        await DockerEngine(client=client, network=NETWORK).verify_isolation(
+            "echo", image, container_id, expected
+        )
+    except AaestroError as err:
+        return list(err.details["fields"])
+    finally:
+        docker("rm", "-f", "-v", container_id, check=False)
+    return []
+
+
+def mounted_echo_spec(image: str, mounts):
+    from tests.integration.runtime.test_docker_lifecycle import echo_spec
+
+    return echo_spec(image=image, network=NETWORK, mounts=mounts)
+
+
+async def test_reattach_refuses_a_bind_the_spec_did_not_declare(client, echo_image, tmp_path):  # noqa: F811
+    """선언 마운트를 가진 실제 컨테이너는 붙고, docker.sock 을 더 건 컨테이너는 거절된다 (#488).
+
+    선언은 끝 `/` · `//` 를 섞어 쓴다 — daemon 이 정규화해 보고하는 값과 같게 읽는지도 본다.
+    """
+    client.ensure_image(echo_image)
+    client.ensure_network(NETWORK)
+    declaration = tmp_path / "declaration"
+    declaration.mkdir()
+    spec = mounted_echo_spec(
+        echo_image,
+        [{"name": f"{declaration}/", "mount_path": "/opt//declared/", "read_only": True}],
+    )
+    kwargs = spec.to_docker_kwargs()
+    sock = {"/var/run/docker.sock": {"bind": "/var/run/docker.sock", "mode": "rw"}}
+
+    assert await verdict(client, echo_image, kwargs, spec.hardening_kwargs()) == []
+    socked = {**kwargs, "volumes": {**kwargs["volumes"], **sock}}
+    assert await verdict(client, echo_image, socked, spec.hardening_kwargs()) == ["Mounts"]
+
+
+async def test_reattach_refuses_tmpfs_the_spec_did_not_declare(client, echo_image):  # noqa: F811
+    """실 daemon 의 `HostConfig.Tmpfs` 를 읽는다 — tmpfs 를 빼거나 더한 컨테이너는 거절된다."""
+    client.ensure_image(echo_image)
+    client.ensure_network(NETWORK)
+    spec = mounted_echo_spec(echo_image, [])
+    kwargs = spec.to_docker_kwargs()
+    added = {**kwargs, "tmpfs": {**kwargs["tmpfs"], "/extra": "mode=1777"}}
+    # /workspace 를 빼면 base 이미지의 VOLUME 이 익명 볼륨을 만든다 — 허용되고 Tmpfs 만 걸린다
+    dropped = {**kwargs, "tmpfs": {"/tmp": "mode=1777"}}  # noqa: S108 — 컨테이너 안 경로다
+
+    assert await verdict(client, echo_image, added, spec.hardening_kwargs()) == ["Tmpfs"]
+    assert await verdict(client, echo_image, dropped, spec.hardening_kwargs()) == ["Tmpfs"]
+
+
+async def test_reattach_accepts_an_image_volume(client, echo_image, tmp_path):  # noqa: F811
+    """이미지의 `VOLUME ["/data"]` 가 만든 익명 볼륨 때문에 정상 컨테이너가 lost 가 되지 않는다."""
+    tag = "aaestro/contract-image-volume:0.0.1"
+    context = tmp_path / "context"
+    context.mkdir()
+    (context / "Dockerfile").write_text(f'FROM {echo_image}\nVOLUME ["/data"]\n', encoding="utf-8")
+    docker("build", "-q", "-t", tag, str(context))
+    try:
+        client.ensure_network(NETWORK)
+        spec = mounted_echo_spec(tag, [])
+        kwargs = spec.to_docker_kwargs()
+        docker("rm", "-f", "-v", kwargs["name"], check=False)
+        container_id = client.create(**kwargs)
+        try:
+            mounts = client.hardening_of(container_id)["Mounts"]
+            assert [m["Destination"] for m in mounts if m["Type"] == "volume"] == ["/data"]
+        finally:
+            docker("rm", "-f", "-v", container_id, check=False)
+        assert await verdict(client, tag, kwargs, spec.hardening_kwargs()) == []
+    finally:
+        docker("rmi", "-f", tag, check=False)
+
+
+async def test_reattach_refuses_a_volume_recreated_onto_a_host_path(client, echo_image, tmp_path):  # noqa: F811
+    """같은 이름이어도 `--opt o=bind` 로 다시 만든 볼륨은 호스트 경로를 연다 — 거절 (#488 QA)."""
+    client.ensure_image(echo_image)
+    client.ensure_network(NETWORK)
+    name = f"aaestro-contract-cache-{type(client).__name__.lower()}"
+    host = tmp_path / "host"
+    host.mkdir()
+    spec = mounted_echo_spec(
+        echo_image, [{"name": name, "mount_path": "/cache", "read_only": False}]
+    )
+    kwargs = spec.to_docker_kwargs()
+    try:
+        docker("volume", "create", name)
+        assert await verdict(client, echo_image, kwargs, spec.hardening_kwargs()) == []
+        docker("volume", "rm", name)
+        docker("volume", "create", "--opt", "type=none", "--opt", f"device={host}",
+               "--opt", "o=bind", name)  # fmt: skip
+        assert await verdict(client, echo_image, kwargs, spec.hardening_kwargs()) == ["Mounts"]
+    finally:
+        docker("volume", "rm", "-f", name, check=False)
