@@ -14,9 +14,13 @@ Aaestro 의 Python/uv 툴체인과 문서 정책에 맞게 발전시켰습니다
 ### 1.1 필수 요구사항
 - **Required status checks**: 이름은 [status-checks.md](status-checks.md) 의 테이블과
   완전 일치.
-- **Required reviews**: 최소 1명, CODEOWNERS 등록 후 `Require review from Code Owners`
+- **Required approving reviews**: Ruleset 은 승인 **0** 건을 요구한다
+  (`required_approving_review_count: 0`). CODEOWNERS 등록 후 `Require review from Code Owners`
   활성화.
-- **Conversation resolution**: 모든 리뷰 코멘트 해결 후에만 머지 가능.
+- **리뷰 존재**: 리뷰 (봇 리뷰 포함) 가 최소 1개임은 대신 `Review Presence` 체크가 보장한다
+  ([status-checks.md](status-checks.md#review-presence)) — Ruleset 의 필수 체크로 등록된 뒤 기준.
+- **Conversation resolution**: 모든 리뷰 코멘트 해결 후에만 머지 가능
+  (`required_review_thread_resolution: true`).
 - **Merge commit 만 허용** (squash/rebase 비활성): per-TODO 커밋이 `main` 에 그대로 보존되고
   PR 마다 merge 노드 1개가 추가됨 — PR 단위 이력은 `git log --first-parent` 로 조회.
   merge 커밋은 PR 제목/본문을 사용하므로 `git log --first-parent main` 이 곧 PR 목록이 된다.
@@ -76,6 +80,7 @@ timeline 이벤트의 actor 를 메인테이너 allowlist (현재 `juhy0987`) �
 | `ci-quality.yml` | 코드 품질 (PR gate) | `Lint`, `Type Check`, `Test`, `Integration Test` |
 | `ci-convention.yml` | PR/커밋 메타데이터 형식 | `Commit Lint`, `PR Title Lint`, `Linked Issue Check`, `Branch Name Lint` |
 | `ci-docs.yml` | 문서 정책 | `Docs Sync Check` |
+| `ci-review.yml` | 리뷰 존재 (PR 게이트, commit status) | `Review Presence` |
 | `ci-nightly.yml` | 스케줄 전체 스택 검증 | `E2E Test` |
 
 - 각 job 은 독립 병렬 실행 (빠른 피드백). 유일한 의존은 `ci-quality.yml` 의 경량

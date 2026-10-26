@@ -25,6 +25,7 @@ Closes #
 - [ ] PR Title Lint (`[카테고리#이슈번호] 제목`)
 - [ ] Linked Issue Check (closing reference)
 - [ ] Docs Sync Check (docs/en ↔ docs/ko 동기화)
+- [ ] Review Presence (작성자 외 신뢰 계정 — 저장소 멤버 · 리뷰 봇 allowlist — 의 리뷰 최소 1개. 봇 본문만 있는 리뷰 · 👀 는 불인정)
 
 ## 변경 영향 범위 + 위험도
 
