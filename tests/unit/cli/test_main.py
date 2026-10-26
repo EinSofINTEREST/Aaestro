@@ -500,14 +500,12 @@ def test_package_entry_point_runs_without_warnings():
 
     CLI 가 설치되지 않은 환경(smoke.sh fallback)에서 그 경고가 그대로 노출된다.
     """
-    import subprocess
     import sys
 
-    result = subprocess.run(  # noqa: S603
+    from tests.fixtures.subprocesses import assert_returncode, run_process
+
+    result = run_process(
         [sys.executable, "-W", "error::RuntimeWarning", "-m", "aaestro.cli", "status"],
-        capture_output=True,
-        text=True,
-        check=False,
         cwd=REPO_ROOT,
         # timeout 이 없으면 status 의 회귀나 I/O 대기가 테스트 실행 전체를 멈춘다
         timeout=60,
@@ -515,7 +513,7 @@ def test_package_entry_point_runs_without_warnings():
 
     # -W error::RuntimeWarning 이 경고를 예외로 승격하므로 종료 코드가 곧 판정이다.
     # 문자열 매칭을 더하면 새로운 경고 종류를 놓치는 검사로 되돌아간다
-    assert result.returncode == 0, result.stderr
+    assert_returncode(result, 0)
 
 
 # --- CLI 가 Control API 토큰을 싣는가 -------------------------------------------
@@ -762,6 +760,8 @@ def test_validation_reads_the_state_artifact_root_from_the_config(workspace, tmp
     import subprocess
     import sys
 
+    from tests.fixtures.subprocesses import describe, run_process
+
     graph = _service_graph(workspace, SUMMARIZE_NOTES)
     configured = _config_dir(
         tmp_path, f"orchestrator:\n  state_artifact_root: {tmp_path}/originals\n"
@@ -770,7 +770,7 @@ def test_validation_reads_the_state_artifact_root_from_the_config(workspace, tmp
     environment = {k: v for k, v in os.environ.items() if not k.startswith("AAESTRO_")}
 
     def run(*extra: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(  # noqa: S603 — 고정된 인자로 자기 인터프리터를 부른다
+        return run_process(
             [
                 sys.executable,
                 "-m",
@@ -781,11 +781,8 @@ def test_validation_reads_the_state_artifact_root_from_the_config(workspace, tmp
                 *target,
                 *extra,
             ],
-            capture_output=True,
-            text=True,
             env=environment,
             cwd=tmp_path / "elsewhere",
-            check=False,
         )
 
     (tmp_path / "elsewhere").mkdir()
@@ -793,9 +790,9 @@ def test_validation_reads_the_state_artifact_root_from_the_config(workspace, tmp
     without = run()
     with_config = run("--config-dir", configured)
 
-    assert without.returncode == EXIT_FAILED
+    assert without.returncode == EXIT_FAILED, describe(without)
     assert "orchestrator.state_artifact_root" in without.stdout
-    assert with_config.returncode == EXIT_OK, with_config.stdout + with_config.stderr
+    assert with_config.returncode == EXIT_OK, describe(with_config)
 
 
 def test_the_three_commands_resolve_the_artifact_root_the_same_way(tmp_path):

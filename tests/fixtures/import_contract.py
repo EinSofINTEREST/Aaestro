@@ -6,10 +6,11 @@
 
 from __future__ import annotations
 
-import subprocess
 import sys
 import textwrap
 from pathlib import Path
+
+from tests.fixtures.subprocesses import assert_returncode, run_process
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -35,10 +36,5 @@ def assert_no_forbidden_imports(
     """
     script = _SCRIPT.format(body=textwrap.dedent(body), forbidden=forbidden)
     # -I: cwd 와 PYTHONPATH 를 무시해 현재 프로세스가 아닌 깨끗한 import 그래프를 본다
-    result = subprocess.run(  # noqa: S603 — 고정 인자, 격리 모드 인터프리터
-        [sys.executable, "-I", "-c", script, str(repo_root)],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 0, result.stderr
+    result = run_process([sys.executable, "-I", "-c", script, str(repo_root)])
+    assert_returncode(result, 0)
