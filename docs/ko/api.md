@@ -953,7 +953,9 @@ manifest 가 `env_allowlist` 에 올려도 실 키는 프록시에만 있다. �
   `/var/run/docker.sock`), 쓰기 가능으로 바뀌거나 다른 곳을 가리키는 선언 마운트, 더하거나 빠진 `tmpfs`
   는 거절된다 (`Mounts` / `Tmpfs` — 사유에는 필드 이름만 싣고 경로는 싣지 않는다). 경로는 정규화해
   비교한다 (`/cache/` 는 `/cache`). 예외는 이미지가 `VOLUME` 으로 선언한 경로에 Docker 가 만든 익명 볼륨
-  하나다. 선언했든 익명이든 모든 볼륨은 일반 `local` 볼륨이어야 한다 — 같은 이름으로 `device` · `bind`
+  하나다 — 그 경로는 컨테이너의 `Config.Volumes`(생성 때 더한 볼륨도 들어간다)가 아니라 이미지에서
+  읽고, 이미지를 inspect 하지 못하면 예외가 없다. 선언했든 익명이든 모든 볼륨은 일반 `local` 볼륨이어야
+  한다 — 같은 이름으로 `device` · `bind`
   옵션을 붙여 다시 만든 볼륨은 호스트 경로를 열므로 거절되고, inspect 하지 못한 볼륨도 거절된다. 아니면 배포는 `lost`("network isolation mismatch", 경화는 어긋난 필드 이름이 붙은
   "container hardening mismatch")가 되고
   아무것도 붙이지 않으며 그 에이전트 신원을 회수한다 — 외부 경로가 남은 컨테이너는 메모리·peer·모델에

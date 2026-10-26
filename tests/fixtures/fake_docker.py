@@ -49,6 +49,7 @@ class FakeDockerClient:
         attached: tuple[str, ...] | None = None,
         hardening: dict[str, Any] | None = None,
         volumes: dict[str, dict[str, Any] | Exception] | None = None,
+        image_volumes: dict[str, set[str] | Exception] | None = None,
     ) -> None:
         self._image_error = image_error
         self._network_error = network_error
@@ -66,6 +67,8 @@ class FakeDockerClient:
         self._hardening = hardening
         # 볼륨 이름 → `docker volume inspect` 값 (또는 던질 예외). 없는 이름은 일반 local 볼륨이다
         self._volumes = volumes or {}
+        # 이미지 id → 이미지 `VOLUME` 경로 (또는 던질 예외). 없는 id 는 VOLUME 없는 이미지다
+        self._image_volumes = image_volumes or {}
 
         self.images: list[str] = []
         self.networks: list[str] = []
@@ -108,9 +111,16 @@ class FakeDockerClient:
                     "PidsLimit": kwargs.get("pids_limit"),
                     "User": kwargs.get("user"),
                     "NetworkMode": kwargs.get("network_mode"),
+                    "Image": kwargs.get("image"),
                     **inspect_mounts(kwargs),
                 }
         raise LookupError(container_id)
+
+    def image_volumes(self, image_id: str) -> set[str]:
+        found = self._image_volumes.get(image_id, set())
+        if isinstance(found, Exception):
+            raise found
+        return set(found)
 
     def volume_of(self, name: str) -> dict[str, Any]:
         found = self._volumes.get(name, {"Driver": "local", "Options": {}})

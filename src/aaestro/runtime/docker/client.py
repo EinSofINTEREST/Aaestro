@@ -163,9 +163,13 @@ class SdkDockerClient:
             # 바인드 · 볼륨 · `--mount type=tmpfs` 는 `Mounts`, `--tmpfs` 는 `HostConfig.Tmpfs` 에만
             "Mounts": container.attrs.get("Mounts") or [],
             "Tmpfs": host.get("Tmpfs") or {},
-            # 이미지가 `VOLUME` 으로 선언한 경로 — 거기 생긴 익명 볼륨은 생성 인자 밖이어도 정상이다
-            "Volumes": container.attrs["Config"].get("Volumes") or {},
+            # 이미지 VOLUME 경로는 컨테이너 Config.Volumes 가 아니라 이 이미지에서 읽는다 (#488)
+            "Image": container.attrs.get("Image"),
         }
+
+    def image_volumes(self, image_id: str) -> set[str]:
+        config = self._sdk.images.get(image_id).attrs.get("Config") or {}
+        return set(config.get("Volumes") or {})
 
     def volume_of(self, name: str) -> dict[str, Any]:
         attrs = self._sdk.volumes.get(name).attrs

@@ -99,11 +99,10 @@ class CliDockerClient:
         raw = docker(
             "inspect",
             "-f",
-            "{{json .HostConfig}}\n{{json .Config.User}}\n"
-            "{{json .Mounts}}\n{{json .Config.Volumes}}",
+            "{{json .HostConfig}}\n{{json .Config.User}}\n{{json .Mounts}}\n{{json .Image}}",
             container_id,
         )
-        host_json, user_json, mounts_json, volumes_json = raw.splitlines()
+        host_json, user_json, mounts_json, image_json = raw.splitlines()
         host = json.loads(host_json)
         # SdkDockerClient 와 같은 모양 — 마운트 대조가 두 구현에서 같은 값을 읽는다 (#488)
         return {
@@ -111,8 +110,12 @@ class CliDockerClient:
             "User": json.loads(user_json),
             "Mounts": json.loads(mounts_json) or [],
             "Tmpfs": host.get("Tmpfs") or {},
-            "Volumes": json.loads(volumes_json) or {},
+            "Image": json.loads(image_json),
         }
+
+    def image_volumes(self, image_id: str) -> set[str]:
+        raw = docker("image", "inspect", "-f", "{{json .Config.Volumes}}", image_id)
+        return set(json.loads(raw) or {})
 
     def volume_of(self, name: str) -> dict[str, Any]:
         attrs = json.loads(docker("volume", "inspect", "-f", "{{json .}}", name))
@@ -148,8 +151,14 @@ class CliDockerClient:
         for path, options in kwargs.get("tmpfs", {}).items():
             args.append(f"--tmpfs={path}:{options}" if options else f"--tmpfs={path}")
         # SDK 의 `volumes` 와 같은 뜻 — 참조 구현이 마운트를 버리면 대조를 검증하지 못한다 (#488)
-        for source, target in kwargs.get("volumes", {}).items():
-            args.extend(["-v", f"{source}:{target['bind']}:{target['mode']}"])
+        volumes = kwargs.get("volumes", {})
+        # SDK 처럼 목록 형태도 받는다 — `"/extra"` 하나면 익명 볼륨이다
+        if isinstance(volumes, list):
+            for entry in volumes:
+                args.extend(["-v", entry])
+        else:
+            for source, target in volumes.items():
+                args.extend(["-v", f"{source}:{target['bind']}:{target['mode']}"])
         for key, value in kwargs.get("environment", {}).items():
             args.extend(["-e", f"{key}={value}"])
         for key, value in kwargs.get("labels", {}).items():

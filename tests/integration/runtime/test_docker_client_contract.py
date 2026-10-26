@@ -219,7 +219,8 @@ def test_hardening_is_read_under_the_inspect_field_names(client, container):
     # 마운트 대조가 읽는 모양 (#488) — `--tmpfs` 는 `Mounts` 가 아니라 `Tmpfs` 에 있다
     assert found["Mounts"] == []
     assert set(found["Tmpfs"]) == {"/tmp", "/workspace"}  # noqa: S108 — 컨테이너 안 경로다
-    assert set(found["Volumes"]) == {"/tmp", "/workspace"}  # noqa: S108 — base 이미지의 VOLUME
+    # 이미지 VOLUME 은 컨테이너가 아니라 그 이미지에서 읽는다 — base 이미지의 VOLUME
+    assert client.image_volumes(found["Image"]) == {"/tmp", "/workspace"}  # noqa: S108
 
 
 async def test_a_container_built_from_the_spec_passes_the_engine_check(client, echo_image):  # noqa: F811
@@ -348,3 +349,15 @@ async def test_reattach_refuses_a_volume_recreated_onto_a_host_path(client, echo
         assert await verdict(client, echo_image, kwargs, spec.hardening_kwargs()) == ["Mounts"]
     finally:
         docker("volume", "rm", "-f", name, check=False)
+
+
+async def test_reattach_refuses_an_anonymous_volume_the_caller_added(client, echo_image):  # noqa: F811
+    """`-v /extra` 로 익명 볼륨을 더한 컨테이너는 거절된다 — 컨테이너 `Config.Volumes` 에 그 경로가
+    복사되어도 이미지가 선언하지 않았다 (#488 리뷰).
+    """
+    client.ensure_image(echo_image)
+    client.ensure_network(NETWORK)
+    spec = mounted_echo_spec(echo_image, [])
+    kwargs = {**spec.to_docker_kwargs(), "volumes": ["/extra"]}
+
+    assert await verdict(client, echo_image, kwargs, spec.hardening_kwargs()) == ["Mounts"]

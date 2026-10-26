@@ -143,7 +143,8 @@ def mount_gaps(found: Mapping[str, Any], expected: Mapping[str, Any]) -> list[st
 
     집합이 같아야 한다: 생성 인자 밖의 바인드(호스트 경로, `/var/run/docker.sock`), 다른 출처로
     바뀐 마운트, 읽기 전용에서 쓰기 가능으로 바뀐 선언 마운트가 모두 걸린다. 예외는 이미지가
-    `VOLUME` 으로 선언한 경로(`Config.Volumes`)의 익명 볼륨 하나다. 볼륨은 이름만으로 믿지 않는다 —
+    `VOLUME` 으로 선언한 경로(`ImageVolumes` — 컨테이너가 아니라 **이미지** 의 `Config.Volumes`)의
+    익명 볼륨 하나다. 볼륨은 이름만으로 믿지 않는다 —
     `inspect_hardening` 이 붙인 볼륨 inspect 값(`Volume`)이 `_plain_volume` 을 통과해야 한다.
     `--tmpfs` 는 `Mounts` 에 보이지 않고 `HostConfig.Tmpfs` 에만 있고, `--mount type=tmpfs` 는
     `Mounts` 에 보인다 — 둘을 합쳐 tmpfs 경로 집합으로 본다. 경로는 정규화해 비교한다(`_clean`).
@@ -156,7 +157,7 @@ def mount_gaps(found: Mapping[str, Any], expected: Mapping[str, Any]) -> list[st
         (_clean(target["bind"]), _clean(source), target["mode"] == "rw")
         for source, target in volumes.items()
     }
-    images = {_clean(path) for path in found.get("Volumes") or {}}
+    images = {_clean(path) for path in found.get("ImageVolumes") or ()}
     binds = [mount for mount in mounts if mount.get("Type") != "tmpfs"]
     have = {_mount_key(mount) for mount in binds if not _image_volume(mount, volumes, images)}
     unsafe = any(
@@ -180,6 +181,7 @@ def inspect_hardening(client: DockerClient, container_id: str, *, agent: str) ->
     볼륨은 통과시키지 않는다.
     """
     found = client.hardening_of(container_id)
+    images = _image_volumes(client, str(found.get("Image") or ""), agent=agent)
     mounts = []
     for mount in found.get("Mounts") or ():
         if mount.get("Type") == "volume":
@@ -195,7 +197,23 @@ def inspect_hardening(client: DockerClient, container_id: str, *, agent: str) ->
                 volume = None
             mount = {**mount, "Volume": volume}
         mounts.append(mount)
-    return {**found, "Mounts": mounts}
+    return {**found, "Mounts": mounts, "ImageVolumes": images}
+
+
+def _image_volumes(client: DockerClient, image_id: str, *, agent: str) -> set[str]:
+    """컨테이너를 만든 이미지가 `VOLUME` 으로 선언한 경로 — 확인하지 못하면 빈 집합.
+
+    컨테이너의 `Config.Volumes` 는 쓰지 않는다: 생성 때 넘긴 볼륨 목적지도 그리로 복사되어
+    (docker-py `_create_container_args`), `-v /extra` 를 더한 컨테이너가 "이미지 선언" 으로 보인다.
+    빈 집합은 이미지 VOLUME 예외를 없애는 쪽 — 닫는 쪽이다.
+    """
+    if not image_id:
+        return set()
+    try:
+        return client.image_volumes(image_id)
+    except Exception as err:  # noqa: BLE001 — 예외를 닫는 쪽으로 바뀐다; 원인 종류는 로그로 남긴다
+        log.warning("image inspect failed", agent=agent, error=type(err).__name__)
+        return set()
 
 
 def hardening_gaps(found: Mapping[str, Any], expected: Mapping[str, Any]) -> list[str]:
@@ -281,6 +299,10 @@ class DockerClient(Protocol):
 
     def volume_of(self, name: str) -> dict[str, Any]:
         """`docker volume inspect` 의 `Driver` · `Options` — 없으면 예외."""
+        ...
+
+    def image_volumes(self, image_id: str) -> set[str]:
+        """이미지 `Config.Volumes` 의 경로들 — 이미지가 `VOLUME` 으로 선언한 것. 없으면 예외."""
         ...
 
     def address_of(self, container_id: str, network: str) -> str:

@@ -1008,7 +1008,8 @@ outside address fails. The proxy is the only way out.
   writable or pointed elsewhere, and an extra or missing `tmpfs` are refused (`Mounts` / `Tmpfs`;
   the reason names the field, never the path). Paths are compared normalized (`/cache/` is
   `/cache`). The one exception is the anonymous volume Docker creates for a path the image declares
-  with `VOLUME`. Every volume, declared or anonymous, must also be a plain `local` volume: one
+  with `VOLUME` — read from the image itself, not from the container's `Config.Volumes`, which also
+  lists volumes added at creation; if the image cannot be inspected there is no exception. Every volume, declared or anonymous, must also be a plain `local` volume: one
   recreated under the same name with a `device` or `bind` option opens a host path and is refused,
   and so is a volume that cannot be inspected. Otherwise
   the deployment becomes `lost` ("network isolation mismatch", or "container hardening mismatch"

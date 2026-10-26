@@ -539,8 +539,10 @@ def empty_opt_expected():
     return {**spec().hardening_kwargs(), "security_opt": []}
 
 
-async def verify(hardening, *, internal: bool = False, expected=None, volumes=None) -> None:
-    client = FakeDockerClient(hardening=hardening, volumes=volumes)
+async def verify(
+    hardening, *, internal: bool = False, expected=None, volumes=None, images=None
+) -> None:
+    client = FakeDockerClient(hardening=hardening, volumes=volumes, image_volumes=images)
     engine = DockerEngine(client=client, network="agents", internal=internal)
     wanted = spec().hardening_kwargs() if expected is None else expected
     await engine.verify_isolation("alpha", "img:1", "container-0001", wanted)
@@ -810,31 +812,59 @@ def anonymous(destination, name=ANONYMOUS):
     return {"Type": "volume", "Name": name, "Destination": destination, "RW": True}
 
 
+IMAGE_ID = "sha256:" + "b" * 64
+DATA_IMAGE = {IMAGE_ID: {"/data"}}
+"""`VOLUME ["/data"]` 를 선언한 이미지 — 컨테이너 inspect 의 `Image` 가 이 id 를 가리킨다."""
+
+
+def from_image(**found):
+    return {**GOOD_HARDENING, "Image": IMAGE_ID, **found}
+
+
 async def test_verify_isolation_accepts_an_anonymous_volume_the_image_declared():
     """이미지의 `VOLUME ["/data"]` 에 Docker 가 만든 익명 볼륨은 생성 인자 밖이어도 정상이다."""
-    await verify({**GOOD_HARDENING, "Volumes": {"/data": {}}, "Mounts": [anonymous("/data")]})
+    await verify(from_image(Mounts=[anonymous("/data")]), images=DATA_IMAGE)
 
 
 @pytest.mark.parametrize(
-    ("label", "found", "volumes"),
+    ("label", "found", "volumes", "images"),
     [
-        ("outside the image volumes", {"Volumes": {"/data": {}}, "Mounts": [anonymous("/other")]},
-         None),
-        ("no image volumes", {"Mounts": [anonymous("/data")]}, None),
-        ("named volume at an image volume path", {"Volumes": {"/data": {}},
-                                                  "Mounts": [anonymous("/data", "beta-cache")]},
-         None),
-        ("anonymous volume opened onto the host", {"Volumes": {"/data": {}},
-                                                   "Mounts": [anonymous("/data")]},
+        ("outside the image volumes", from_image(Mounts=[anonymous("/other")]), None, DATA_IMAGE),
+        ("image declares no volumes", from_image(Mounts=[anonymous("/data")]), None, None),
+        ("no image reported", {**GOOD_HARDENING, "Mounts": [anonymous("/data")]}, None,
+         DATA_IMAGE),
+        ("named volume at an image volume path",
+         from_image(Mounts=[anonymous("/data", "beta-cache")]), None, DATA_IMAGE),
+        ("anonymous volume opened onto the host", from_image(Mounts=[anonymous("/data")]),
          {ANONYMOUS: {"Driver": "local", "Options": {"type": "none", "device": "/",
-                                                     "o": "bind"}}}),
+                                                     "o": "bind"}}}, DATA_IMAGE),
+        # 확인하지 못한 이미지는 VOLUME 예외를 닫는다 — 이미지 VOLUME 익명 볼륨도 거절된다
+        ("image inspect failed", from_image(Mounts=[anonymous("/data")]), None,
+         {IMAGE_ID: RuntimeError("image gone")}),
     ],
 )  # fmt: skip
-async def test_verify_isolation_refuses_volumes_the_image_did_not_declare(label, found, volumes):
+async def test_verify_isolation_refuses_volumes_the_image_did_not_declare(
+    label, found, volumes, images
+):
     with pytest.raises(AaestroError) as caught:
-        await verify({**GOOD_HARDENING, **found}, volumes=volumes)
+        await verify(found, volumes=volumes, images=images)
 
     assert caught.value.details["fields"] == ["Mounts"], label
+
+
+async def test_verify_isolation_refuses_an_anonymous_volume_the_caller_added():
+    """생성 때 넘긴 `-v /extra` 도 컨테이너 `Config.Volumes` 에 복사된다 — 허용 근거는 이미지다.
+
+    일반 local 옵션의 64-hex 익명 볼륨이라 이름 · 드라이버로는 이미지 VOLUME 과 구분되지 않는다.
+    """
+    found = from_image(
+        Volumes={"/data": {}, "/extra": {}},  # 컨테이너 Config.Volumes — 대조가 읽지 않는다
+        Mounts=[anonymous("/data"), anonymous("/extra", "c" * 64)],
+    )
+    with pytest.raises(AaestroError) as caught:
+        await verify(found, images=DATA_IMAGE)
+
+    assert caught.value.details["fields"] == ["Mounts"]
 
 
 @pytest.mark.parametrize(
