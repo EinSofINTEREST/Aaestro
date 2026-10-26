@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from fastapi.exceptions import RequestValidationError
+    from starlette.exceptions import HTTPException as StarletteHTTPException
 
 CODE_STATUS: Mapping[str, int] = {
     # 없는 리소스를 400 으로 답하면 호출자가 "요청이 틀렸나" 를 먼저 의심한다
@@ -120,11 +121,41 @@ def request_validation_error(
     )
 
 
+FRAMEWORK_BODY_PARSE_DETAIL = "There was an error parsing the body"
+"""FastAPI 가 본문 해독 실패 (JSON 이 아닌 예외 — 깨진 UTF-8 등) 에 싣는 ``detail``.
+
+400 을 typed 로 옮기는 **판별 근거**다. 상태 코드만 보면 앱 코드가 일부러 낸 400 까지 "본문을
+읽지 못했다" 로 바뀐다. FastAPI 가 문구를 바꾸면 깨진 UTF-8 테스트가 기본 모양을 보고 실패한다.
+"""
+
+
+def unroutable_problem(err: StarletteHTTPException) -> AaestroError | None:
+    """The typed form of a framework refusal, or None to keep the default handling.
+
+    프레임워크가 라우팅 · 본문 해독에서 내는 거절을 typed 에러로 옮깁니다 — 기본 ``{"detail"}`` 이
+    아니게. 대상은 둘뿐입니다: 틀린 메서드 405 와, FastAPI 가 만든 본문 해독 실패 400
+    (``FRAMEWORK_BODY_PARSE_DETAIL``). 메시지는 고정 문구이고 경로 · 본문을 싣지 않습니다.
+
+    404 는 **없다** — 라우트 부재의 404 는 코드 없는 기본 응답으로 둔다. UI · CLI · runtime 이
+    "코드 없는 404 = 그 표면이 없다" 로 읽고, ``NF_001`` 은 "그 리소스가 없다" 로 읽는다 (#462).
+    그 밖의 400 · 401 등도 None — 호출자가 기본 처리에 맡깁니다.
+    """
+    if err.status_code == HTTPStatus.METHOD_NOT_ALLOWED:
+        message = "method not allowed"
+    elif err.status_code == HTTPStatus.BAD_REQUEST and err.detail == FRAMEWORK_BODY_PARSE_DETAIL:
+        message = "request body could not be read"
+    else:
+        return None
+    return AaestroError(category=ErrorCategory.VALIDATION, code=ErrorCode.VAL_002, message=message)
+
+
 __all__ = [
     "CATEGORY_STATUS",
     "CODE_STATUS",
     "DEFAULT_STATUS",
+    "FRAMEWORK_BODY_PARSE_DETAIL",
     "RETRYABLE_STATUS",
     "request_validation_error",
     "status_for",
+    "unroutable_problem",
 ]

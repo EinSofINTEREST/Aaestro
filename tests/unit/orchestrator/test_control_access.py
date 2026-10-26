@@ -140,8 +140,12 @@ async def test_grants_refuse_anyone_but_a_permission_agent(api, registry, who):
 
     response = await api.post("/v1/access/grants", json=GRANT, headers=headers)
 
-    assert response.status_code == 403
-    assert response.json()["error"]["code"] in {ErrorCode.ACC_001, ErrorCode.ACC_003}
+    if who in ("none", "enforcer"):
+        # 에이전트 경로에 닿는 자격이 아니면 라우팅 전에 401 이다 — 라우트 표를 열거 못 하게 (#462)
+        assert response.status_code == 401
+    else:
+        assert response.status_code == 403
+        assert response.json()["error"]["code"] in {ErrorCode.ACC_001, ErrorCode.ACC_003}
     assert registry.rules("worker") == []
 
 
@@ -263,7 +267,9 @@ async def test_without_a_registry_the_routes_do_not_exist():
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://cp"
     ) as client:
-        assert (await client.post("/v1/access/grants", json=GRANT)).status_code == 404
+        # 운영자 토큰을 가진 쪽에게 코드 없는 404 — 토큰 없이는 라우팅 전에 401 이다 (#462)
+        response = await client.post("/v1/access/grants", json=GRANT, headers=bearer(CONTROL))
+        assert response.status_code == 404
 
 
 # --- A2A 호출 표 (#281) ---------------------------------------------------------
@@ -300,6 +306,10 @@ async def test_ticket_routes_take_only_an_agent_identity(api, path, body, token)
     """운영자 토큰도 강제 지점 토큰도 에이전트 신원이 아니다."""
     response = await api.post(path, json=body, headers=bearer(token))
 
+    if token in ("made-up", ENFORCER):
+        # 에이전트 경로에 닿는 청중의 자격이 아니면 라우팅 전에 401 이다 (#462)
+        assert response.status_code == 401
+        return
     assert response.status_code == 403
     assert response.json()["error"]["code"] == "ACC_001"
 

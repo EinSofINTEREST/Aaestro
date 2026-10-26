@@ -14,17 +14,20 @@
 from __future__ import annotations
 
 import hmac
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated, Any, ClassVar
 
-from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Query, Request, status
+from fastapi import APIRouter, Body, FastAPI, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from aaestro.access.model import Mode, ResourceKind, Rule, mode_problem
 from aaestro.core.errors import AaestroError, ErrorCode
-from aaestro.http_auth import presented_token, require_token
+from aaestro.http_auth import admit_first, presented_token, require_token
 from aaestro.orchestrator.bodies import parsed
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from aaestro.access.registry import AccessRegistry
 
 MAX_WAIT_S = 30.0
@@ -105,26 +108,43 @@ def rule_view(rule: Rule) -> dict[str, Any]:
     }
 
 
+@dataclass(frozen=True)
+class AccessAudiences:
+    """운영자가 아닌 두 청중이 닿는 경로 — 라우팅 전 검사가 청중을 좁히는 근거 (#462).
+
+    라우터에 등록된 라우트에서 **만들어진다** — 손으로 쓴 목록이면 라우트를 더할 때 한쪽만 바뀐다.
+    """
+
+    enforcer: frozenset[str]
+    agent: frozenset[str]
+
+
 def mount_access(
     app: FastAPI, operator: APIRouter, registry: AccessRegistry, *, enforcer_token: str | None
-) -> None:
+) -> AccessAudiences:
     """Attach the three audiences' routes.
 
     ``operator`` 는 이미 control plane 토큰이 걸린 라우터다. 권한 에이전트와 강제 지점의 라우트는
-    그 토큰을 요구하지 않으므로 앱에 따로 붙인다.
+    그 토큰을 요구하지 않으므로 앱에 따로 붙인다. 세 라우터 모두 자격을 **본문을 읽기 전에**
+    확인한다 (#462) — 자격이 없으면 본문이 무엇이든 같은 거절이다.
     """
     _mount_operator(operator, registry)
 
-    steward = APIRouter()
+    # 에이전트 신원인지만 먼저 본다 — 표의 주인인지는 본문이 필요하므로 레지스트리가 라우트 안에서
+    # 다시 판정한다
+    agents = APIRouter(route_class=admit_first(_live_agent(registry)))
+    # 부여는 권한 에이전트만 — 본문을 읽기 전에 좁힌다. 작업 에이전트는 깨진 본문으로도 ACC_003 과
+    # 거절 기록 (WARN · 메트릭) 을 피하지 못한다 (#462)
+    stewards_only = APIRouter(route_class=admit_first(_permission_agent(registry)))
 
-    @steward.post("/v1/access/a2a/tickets", status_code=status.HTTP_201_CREATED)
+    @agents.post("/v1/access/a2a/tickets", status_code=status.HTTP_201_CREATED)
     async def ticket(request: Request, body: Annotated[Any, Body()]) -> dict[str, Any]:
         """호출 표 — 자격은 **호출하려는 에이전트 자신의** 신원이다 (03 Enforcement)."""
         asked = parsed(body, TicketRequest)
         issued, expires_at = registry.issue_ticket(presented_token(request) or "", asked.callee)
         return {"ticket": issued, "callee": asked.callee, "expires_at": expires_at}
 
-    @steward.post("/v1/access/a2a/verify")
+    @agents.post("/v1/access/a2a/verify")
     async def verify(request: Request, body: Annotated[Any, Body()]) -> dict[str, Any]:
         """받은 표 확인 — 자격은 **피호출자 자신의** 신원이다. 남의 표는 거부 판정으로 답한다."""
         asked = parsed(body, VerifyRequest)
@@ -137,7 +157,7 @@ def mount_access(
             "valid_until": decision.valid_until,
         }
 
-    @steward.post("/v1/access/grants", status_code=status.HTTP_201_CREATED)
+    @stewards_only.post("/v1/access/grants", status_code=status.HTTP_201_CREATED)
     async def grant(request: Request, body: Annotated[Any, Body()]) -> dict[str, Any]:
         """부여 — 자격은 **호출한 권한 에이전트 자신의** 신원이다."""
         asked = parsed(body, GrantRequest)
@@ -154,7 +174,7 @@ def mount_access(
         return rule_view(rule)
 
     enforcer = APIRouter(
-        dependencies=[Depends(require_token(enforcer_token, realm="access enforcer token"))]
+        route_class=admit_first(require_token(enforcer_token, realm="access enforcer token"))
     )
 
     @enforcer.post("/v1/access/decisions")
@@ -199,7 +219,7 @@ def mount_access(
             agent = None
         return {"agent": agent, "version": registry.version()}
 
-    feed = APIRouter(dependencies=[Depends(_enforcer_or_agent(registry, enforcer_token))])
+    feed = APIRouter(route_class=admit_first(_enforcer_or_agent(registry, enforcer_token)))
 
     @feed.get("/v1/access/changes")
     async def changes(
@@ -212,9 +232,36 @@ def mount_access(
         """
         return {"version": await registry.wait_for_change(after, timeout_s=wait_s)}
 
-    app.include_router(steward)
+    app.include_router(agents)
+    app.include_router(stewards_only)
     app.include_router(enforcer)
     app.include_router(feed)
+    return AccessAudiences(
+        enforcer=_paths(enforcer, feed),
+        agent=_paths(agents, stewards_only, feed),
+    )
+
+
+def _paths(*routers: APIRouter) -> frozenset[str]:
+    return frozenset(route.path for router in routers for route in router.routes)  # type: ignore[attr-defined]
+
+
+def _live_agent(registry: AccessRegistry) -> Callable[[Request], None]:
+    """살아 있는 에이전트 신원 — 아니면 레지스트리의 ``ACC_001`` (본문이 맞을 때와 같은 거절)."""
+
+    def check(request: Request) -> None:
+        registry.identify(presented_token(request) or "")
+
+    return check
+
+
+def _permission_agent(registry: AccessRegistry) -> Callable[[Request], None]:
+    """권한 에이전트 신원 — 아니면 ``ACC_001`` (모르는 자격) / ``ACC_003`` (기록되는 부여 거절)."""
+
+    def check(request: Request) -> None:
+        registry.admit_grant_caller(presented_token(request) or "")
+
+    return check
 
 
 def _enforcer_or_agent(registry: AccessRegistry, enforcer_token: str | None) -> Any:

@@ -13,9 +13,15 @@ from http import HTTPStatus
 import pytest
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, ValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
-from aaestro.http_errors import request_validation_error, status_for
+from aaestro.http_errors import (
+    FRAMEWORK_BODY_PARSE_DETAIL,
+    request_validation_error,
+    status_for,
+    unroutable_problem,
+)
 
 
 def error(category: ErrorCategory, code: str, *, retryable: bool = False) -> AaestroError:
@@ -144,3 +150,31 @@ def test_request_validation_error_can_always_answer_val_002():
 
 def test_request_validation_error_with_no_errors_is_a_format_error():
     assert request_validation_error(RequestValidationError([])).code == ErrorCode.VAL_002
+
+
+# --- 프레임워크 거절 (#462) -------------------------------------------------------------
+
+
+def test_a_wrong_method_becomes_a_typed_validation_error():
+    problem = unroutable_problem(StarletteHTTPException(405, headers={"Allow": "POST"}))
+
+    assert problem is not None
+    assert problem.code == ErrorCode.VAL_002
+
+
+def test_the_framework_body_parse_failure_becomes_a_typed_validation_error():
+    problem = unroutable_problem(StarletteHTTPException(400, detail=FRAMEWORK_BODY_PARSE_DETAIL))
+
+    assert problem is not None
+    assert problem.code == ErrorCode.VAL_002
+
+
+def test_another_400_is_left_alone():
+    """상태 코드만 보면 앱이 일부러 낸 400 까지 "본문을 읽지 못했다" 로 바뀐다."""
+    assert unroutable_problem(StarletteHTTPException(400, detail="something else")) is None
+
+
+@pytest.mark.parametrize("status_code", [401, 403, 404, 409, 500])
+def test_other_statuses_are_left_to_the_default_handling(status_code):
+    """404 도 여기 든다 — 코드 없는 404 가 "그 표면이 없다" 는 약속이다 (UI · CLI · runtime)."""
+    assert unroutable_problem(StarletteHTTPException(status_code)) is None

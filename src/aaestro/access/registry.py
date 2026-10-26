@@ -48,6 +48,14 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
+UNKNOWN_RESOURCE = "unknown"
+"""본문을 읽기 전에 거절해 자원 종류를 알 수 없는 부여 거절의 ``resource`` 라벨 (#462).
+
+호출자가 고른 값을 라벨로 쓰지 않는다 — 깨진 본문에는 종류가 없고, 있어도 신뢰하지 않는다."""
+
+UNKNOWN_TARGET = "unknown"
+"""같은 거절의 ``target`` 로그 필드 — 대상도 본문에 있다 (05 의 access 필수 필드)."""
+
 DEFAULT_OUTCOME_SOURCE = "default"
 """어느 규칙에도 해당하지 않아 거부된 판정의 출처."""
 
@@ -384,6 +392,41 @@ class AccessRegistry:
 
     # --- 권한 에이전트: 넓히기 ---------------------------------------------------
 
+    def admit_grant_caller(self, credential: str) -> str:
+        """Admit a grant request's caller before its body is read.
+
+        부여 요청의 호출자를 본문을 읽기 **전에** 확인합니다. 권한 에이전트가 아니면 본문과 무관하게
+        ``ACC_003`` 이고, 거절은 ``grant`` 의 거절과 같이 기록됩니다 (WARN + ``op="refuse"``) —
+        깨진 본문으로 거절 기록과 ``AccessGrantRefusalsSpike`` 를 피하지 못하게. 자원 종류는 아직
+        모르므로 ``resource`` · ``target`` 은 ``unknown`` 이고, 받은 값은 싣지 않습니다.
+
+        로그 메시지는 ``grant`` 의 거절과 구분한다 (``access grant refused before body``): 여기서
+        ``agent`` 는 부여 **대상** 이 아니라 **호출자** 다 (대상은 본문에 있어 아직 모른다).
+        ``decided_by`` 도 호출자다 — ``grant`` 의 거절과 같은 뜻 (거절을 부른 쪽).
+
+        Returns:
+            The permission agent's name.
+
+        Raises:
+            AaestroError: FORBIDDEN/``ACC_001`` unknown credential,
+                FORBIDDEN/``ACC_003`` the caller is not a permission agent.
+        """
+        caller = self.identify(credential)
+        if caller in self.stewards:
+            return caller
+        err = _refused("only a permission agent may grant", caller=caller)
+        self._count_grant_refusal(UNKNOWN_RESOURCE, caller)
+        log.warning(
+            "access grant refused before body",
+            agent=caller,
+            resource=UNKNOWN_RESOURCE,
+            target=UNKNOWN_TARGET,
+            decided_by=caller,
+            error_code=str(err.code),
+            reason="caller is not a permission agent",
+        )
+        raise err
+
     def grant(
         self,
         steward_credential: str,
@@ -609,9 +652,15 @@ class AccessRegistry:
             ).inc()
 
     def _count_grant(self, kind: ResourceKind, op: str, decided_by: str) -> None:
+        self._count_grant_resource(kind.value, op, decided_by)
+
+    def _count_grant_refusal(self, resource: str, decided_by: str) -> None:
+        self._count_grant_resource(resource, "refuse", decided_by)
+
+    def _count_grant_resource(self, resource: str, op: str, decided_by: str) -> None:
         if self.metrics is not None:
             self.metrics.counter("aaestro_access_grants_total").labels(
-                resource=kind.value, op=op, decided_by=decided_by
+                resource=resource, op=op, decided_by=decided_by
             ).inc()
 
 
