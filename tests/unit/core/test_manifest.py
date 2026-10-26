@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import pytest
+import yaml
 from pydantic import ValidationError
 
-from aaestro.core.errors import field_problems
+from aaestro.catalog import parse_declaration
+from aaestro.core.errors import AaestroError, field_problems
 from aaestro.core.manifest import (
     RESERVED_GLOBAL_GROUP,
     AgentManifest,
@@ -354,6 +356,55 @@ def test_rejected_volume_source_is_not_echoed():
         VolumeSpec(name="/secret-host-dir", mount_path="/data")
 
     assert all("secret-host-dir" not in p["problem"] for p in field_problems(exc.value))
+
+
+@pytest.mark.parametrize(
+    ("volumes", "what"),
+    [
+        (
+            [{"name": "work", "mount_path": "/a"}, {"name": "work", "mount_path": "/b"}],
+            "name",
+        ),
+        (
+            [{"name": "one", "mount_path": "/a"}, {"name": "two", "mount_path": "/a"}],
+            "mount path",
+        ),
+    ],
+)
+def test_duplicate_volume_declarations_are_rejected(volumes, what):
+    with pytest.raises(ValidationError, match=f"duplicate volume {what} at index"):
+        make_manifest(spec=_spec_with(runtime={"volumes": volumes}))
+
+
+def test_distinct_volumes_are_accepted():
+    manifest = make_manifest(
+        spec=_spec_with(
+            runtime={
+                "volumes": [
+                    {"name": "one", "mount_path": "/a"},
+                    {"name": "two", "mount_path": "/b"},
+                ]
+            }
+        )
+    )
+
+    assert len(manifest.spec.runtime.volumes) == 2
+
+
+def test_duplicate_volume_is_val_002_without_echoing_values(tmp_path):
+    path = tmp_path / "manifest.yaml"
+    vols = [
+        {"name": "secretvol", "mount_path": "/secret-a"},
+        {"name": "secretvol", "mount_path": "/secret-b"},
+    ]
+    path.write_text(yaml.safe_dump(manifest_dict(spec={"runtime": {"volumes": vols}})))
+
+    with pytest.raises(AaestroError) as exc:
+        parse_declaration(path, AgentManifest)
+
+    assert exc.value.code == "VAL_002"
+    assert "secretvol" not in repr(exc.value.payload())
+    assert "secretvol" not in str(exc.value)
 
 
 @pytest.mark.parametrize("cpu", ["one", "1.0.0", "-1", ""])
