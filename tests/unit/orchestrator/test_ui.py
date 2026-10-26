@@ -126,6 +126,21 @@ def test_the_graph_editor_saves_over_the_declaration_of_its_own_name():
     assert "graphDocument(" not in (submit + validate).replace("currentGraphDocument(", "")
 
 
+def test_a_degraded_deployment_is_still_a_run_target_and_can_be_torn_down():
+    """degraded 는 저장된 ready 의 보기다 (#487) — 화면이 ready 만 보면 그 배포를 잃는다."""
+    source = (UI_ROOT / "app.js").read_text(encoding="utf-8")
+    deployments = source.split("async function loadDeployments()")[1].split("\n}")[0]
+    targets = source.split("async function loadRunTargets(items)")[1].split("\n}")[0]
+    css = (UI_ROOT / "app.css").read_text(encoding="utf-8")
+
+    assert 'new Set(["ready", "degraded"])' in source
+    assert "LIVE_DEPLOYMENT.has(d.status)" in deployments  # 해체 버튼
+    assert "a.state" in deployments  # 레플리카 셀
+    assert "RUNNABLE_DEPLOYMENT.has(d.status)" in targets
+    assert '=== "ready"' not in deployments + targets
+    assert ".status-degraded" in css
+
+
 # --- 이름 입력 pattern (#397) ---------------------------------------------------------------
 # 브라우저는 pattern 을 `^(?:…)$` 로 감싸 `v` 플래그로 컴파일한다. Python `re` 에는 `v` 가 없어
 # 구문 검사는 정적이다 (클래스 안 특수문자 · 클래스 밖 `\-`). 실제 컴파일은 브라우저 E2E 가 본다.

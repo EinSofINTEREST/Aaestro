@@ -27,7 +27,7 @@ button.danger { color: #b00020; }
 .status-ready, .status-completed { color: #0a7d32; font-weight: 600; }
 .status-failed, .status-lost, .status-halted { color: #b00020; font-weight: 600; }
 #image-log { white-space: pre-wrap; }
-.status-starting, .status-running { color: #b26a00; font-weight: 600; }
+.status-starting, .status-running, .status-degraded { color: #b26a00; font-weight: 600; }
 td textarea { width: 100%; box-sizing: border-box; min-height: 5rem; font-family: ui-monospace, monospace; }
 .status-building { color: #b26a00; font-weight: 600; }
 .status-built { color: #0a7d32; font-weight: 600; }

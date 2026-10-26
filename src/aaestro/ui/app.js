@@ -605,14 +605,18 @@ async function checkDeployable() {
 }
 $("#deploy-graph").addEventListener("change", checkDeployable);
 
+// degraded 는 저장된 ready 의 보기다 (#487) — 서버는 여전히 run 을 받고 해체를 한다
+const RUNNABLE_DEPLOYMENT = new Set(["ready", "degraded"]);
+const LIVE_DEPLOYMENT = new Set([...RUNNABLE_DEPLOYMENT, "lost"]);
+
 async function loadDeployments() {
   const { items } = await api.deployments();
   $("#deployments tbody").replaceChildren(...items.map((d) => el("tr", {}, [
     el("td", { textContent: d.deployment_id }),
     el("td", { textContent: `${d.graph}@${d.version}` }),
     el("td", { textContent: d.status, className: `status-${d.status}` }),
-    el("td", { textContent: d.agents.map((a) => `${a.name}#${a.replica} (${a.container_id})`).join(", ") || (d.error || "") }),
-    el("td", {}, d.status === "ready" || d.status === "lost" ? [el("button", { textContent: "해체", className: "danger", onclick: async () => {
+    el("td", { textContent: d.agents.map((a) => `${a.name}#${a.replica} (${a.container_id})${a.state ? ` ${a.state}` : ""}`).join(", ") || (d.error || "") }),
+    el("td", {}, LIVE_DEPLOYMENT.has(d.status) ? [el("button", { textContent: "해체", className: "danger", onclick: async () => {
       try { await api.teardown(d.deployment_id); status(`해체됨: ${d.deployment_id}`); await Promise.all([loadDeployments(), loadRunTargets()]); } catch (err) { report(err); }
     } })] : []),
   ])));
@@ -627,7 +631,7 @@ $("#deploy-form").addEventListener("submit", async (event) => {
 });
 
 async function loadRunTargets(items) {
-  const ready = (items || (await api.deployments()).items).filter((d) => d.status === "ready");
+  const ready = (items || (await api.deployments()).items).filter((d) => RUNNABLE_DEPLOYMENT.has(d.status));
   fillSelect("#run-deployment", ready.map((d) => [d.deployment_id, `${d.deployment_id} — ${d.graph}@${d.version}`]));
 }
 

@@ -441,7 +441,8 @@ a fallback equal to the primary is refused.
   "model_overrides": {},
   "agents": [
     {"name": "planner", "replica": 0, "container_id": "0f2edbe1aa5a",
-     "image": "aaestro/agent-base:0.1.0", "control_port": 32852, "a2a_port": 9100}
+     "image": "aaestro/agent-base:0.1.0", "control_port": 32852, "a2a_port": 9100,
+     "state": "ready"}
   ]
 }
 ```
@@ -455,9 +456,31 @@ reference graph. Per-agent tokens are never in a response.
 |---|---|
 | `starting` | containers are coming up |
 | `ready` | every agent passed a health check and accepts tasks |
+| `degraded` | the deployment is `ready`, but at least one replica is not right now (see `state` below) |
 | `failed` | a step failed; **everything this deployment started was stopped again** |
 | `stopped` | torn down through `DELETE` |
 | `lost` | after a restart, at least one container was gone |
+
+`degraded` is never stored. It is computed when the deployment is read, from the supervision
+state of its replicas, and turns back into `ready` by itself once they recover. Everything that
+acts on a deployment still sees `ready`: runs are accepted, its agents stay held (`RT_010`), and
+`DELETE` stops its containers. A `lost` deployment stays `lost` — it is not shown as `degraded`.
+
+Each entry in `agents` carries the replica's `state`, read the same way:
+
+| State | Meaning |
+|---|---|
+| `ready` | accepts tasks — it has passed a health check, and fewer than 3 health checks in a row have failed since (a single failed check does not take it out) |
+| `starting` | up but not yet healthy — a replacement container coming up, or a container re-attached after a control plane restart before its first health check |
+| `unhealthy` | failed health checks; supervision is restarting it |
+| `draining` | stopped taking new tasks and is waiting for the ones in flight before it stops |
+| `failed` | the restart limit was hit; supervision gave up. Tear the deployment down and deploy again |
+| `absent` | no replica is held for this slot — its container is being replaced, or it was stopped by a teardown or cleanup that did not finish. Which one is not told apart; if it does not come back, tear the deployment down |
+| `null` | unknown — supervision is off in this assembly, the deployment is not `ready` or `lost`, or the deployment is being torn down. Then every replica is `null` and the status is the stored one |
+
+`null` means "unknown" and nothing else; every other value is a fact about the replica, and any
+value other than `ready` makes a `ready` deployment `degraded`. With supervision off nothing
+updates the replica state, so the deployment shows its stored status rather than guessing.
 
 Failures leave no ghost containers. What you get back tells you which kind it was:
 
@@ -529,6 +552,9 @@ nobody:
 
 `mode` comes from the graph, not from the caller. Optional fields: `run_id` to choose the id,
 `mode` to assert the graph's mode (a mismatch is `400`).
+
+A `degraded` deployment accepts runs — it is `ready` underneath, and requests are routed to the
+replicas that are ready. A node whose agent has no ready replica fails with `RT_009`.
 
 Refusals: `404` (`NF_001`) when the deployment is unknown or not `ready`; `400` (`VAL_002`)
 when the graph on disk has been edited to a different version than the one deployed —

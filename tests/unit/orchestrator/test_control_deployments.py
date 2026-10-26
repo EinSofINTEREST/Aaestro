@@ -9,7 +9,12 @@ from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 from aaestro.core.manifest import ModelOverride
 from aaestro.orchestrator.control import create_app
 from aaestro.orchestrator.runstore import InMemoryRunStore
-from aaestro.runtime.deployments import DeployedAgent, DeploymentRecord, DeploymentStatus
+from aaestro.runtime.deployments import (
+    DeployedAgent,
+    DeploymentRecord,
+    DeploymentStatus,
+    ObservedDeployment,
+)
 
 
 class FakeManager:
@@ -98,6 +103,10 @@ class FakeManager:
 
     def in_use(self, kind: str, name: str) -> bool:
         return False
+
+    def observe(self, record: DeploymentRecord) -> ObservedDeployment:
+        # 관측 계산은 runtime 단위 테스트 소관 — 라우트는 그 결과를 싣기만 한다
+        return ObservedDeployment(record, record.status, (None,) * len(record.agents))
 
     async def reattach(self):
         self.reattached += 1

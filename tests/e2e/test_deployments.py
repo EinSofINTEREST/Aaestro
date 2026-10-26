@@ -36,7 +36,9 @@ def test_deploy_reattach_and_teardown(plane):
     # --- 배포: 선언을 실은 base 이미지 컨테이너가 health 를 지나 Ready 가 된다
     status, record = api("POST", "/v1/deployments", {"graph": GRAPH})
     assert status == 201, record
-    assert record["status"] == "ready"
+    # 배포는 모든 레플리카가 Ready 가 된 뒤에 답한다 — 응답의 관측도 그 순간이다 (#487)
+    assert record["status"] == "ready", record
+    assert {a["state"] for a in record["agents"]} == {"ready"}, record
     assert sorted(a["name"] for a in record["agents"]) == sorted(AGENTS)
     assert all(a["image"] == "aaestro/agent-base:0.1.0" for a in record["agents"])
 
@@ -133,8 +135,13 @@ def test_deploy_reattach_and_teardown(plane):
     stop(plane["process"])
     plane["process"] = start_plane(plane["config_dir"], plane["tokens_path"])
     until(plane_healthy, what="restarted control plane health")
-    status, again = api("GET", f"/v1/deployments/{record['deployment_id']}")
-    assert status == 200 and again["status"] == "ready", again
+
+    # 재부착한 레플리카는 첫 health 전까지 starting 이라 배포는 degraded 로 보인다 (#487) — 기다린다
+    def reattached() -> dict | None:
+        status, current = api("GET", f"/v1/deployments/{record['deployment_id']}")
+        return current if status == 200 and current["status"] == "ready" else None
+
+    again = until(reattached, what="reattached deployment ready")
     assert [a["container_id"] for a in again["agents"]] == [
         a["container_id"] for a in record["agents"]
     ]
@@ -216,6 +223,7 @@ def test_a_graph_made_in_the_ui_can_be_deployed_run_and_destroyed(plane):
         assert status == 201, deployment
         deployment_id = deployment["deployment_id"]
         assert deployment["status"] == "ready", deployment
+        assert [a["state"] for a in deployment["agents"]] == ["ready"], deployment
         assert [a["name"] for a in deployment["agents"]] == ["planner"]
         assert sorted(deployed_containers()) == ["aaestro-planner-0"]
 
