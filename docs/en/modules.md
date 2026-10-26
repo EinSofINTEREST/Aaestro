@@ -182,6 +182,17 @@ Answer it.
   and `| random` are removed from the environment for that reason). If the id does appear inside
   a value it is replaced with `invalid-id`. The notice is written first, outside the fence,
   and only when something was fenced.
+- **Other data in the conversation cannot take the framework's notation either.** Recalled
+  memory, tool results (skillset and MCP), `memory_search` results and peer answers
+  (`ask_peer`) are not rendered through a template, so they carry no fence. Before they enter
+  the conversation the marker prefixes `<<untrusted-input` / `<<end-untrusted-input` become
+  `‹‹untrusted-input` / `‹‹end-untrusted-input`, and the bracket headers `[aaestro]`,
+  `[operator steer]`, `[tool error]` and `[memory:` become `[aaestro-quoted]`,
+  `[operator steer-quoted]`, `[tool error-quoted]` and `[memory-quoted:`. Variants that read
+  the same are caught too: case, spaces inside and around the brackets, full-width brackets and
+  look-alike angle brackets. A recalled memory's second and later lines are indented under its
+  `[memory:…]` line, so a memory cannot start a line that looks like another memory. Only the
+  real notation has the real shape. Promptset values keep the id rule above.
 - **Syntax that bypasses the fence is refused**, when the promptset is loaded (`MOD_003` — the
   module was published broken, like a missing template file) and again on every render
   (`MOD_004`). The load-time check goes as far as parsing (syntax and refused statements); what

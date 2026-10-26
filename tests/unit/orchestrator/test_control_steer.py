@@ -13,11 +13,12 @@ import httpx
 import pytest
 import structlog
 
-from aaestro.agentd.executor import STEER_HEADER, Executor, UserTurn
+from aaestro.agentd.executor import Executor, UserTurn
 from aaestro.agentd.server import AgentRuntime
 from aaestro.agentd.server import create_app as create_agent_app
 from aaestro.core.agent import TaskStatus
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.core.markers import STEER_HEADER
 from aaestro.core.topology import NodeSpec
 from aaestro.orchestrator import control as control_module
 from aaestro.orchestrator.control import create_app

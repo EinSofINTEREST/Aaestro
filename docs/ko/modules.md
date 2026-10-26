@@ -167,6 +167,15 @@ Answer it.
   뒤의 값) 에서 유도하므로 값을 쓴 쪽은 id 를 미리 알 수 없고, 같은 입력은 언제나 같은 프롬프트로
   렌더됩니다 (그래서 난수를 쓰는 `lipsum()` 과 `| random` 은 환경에서 뺐습니다). 값 안에 id 가
   나타나면 `invalid-id` 로 바꿉니다. 안내문은 경계 밖 맨 앞에, 경계를 친 것이 있을 때만 씁니다.
+- **대화의 다른 데이터도 프레임워크 표기의 모양을 가질 수 없습니다.** 회상 기억 · 도구 결과 (skillset
+  · MCP) · `memory_search` 결과 · peer 응답 (`ask_peer`) 은 템플릿으로 렌더되지 않아 경계가 없습니다.
+  대화에 들어가기 전에 표시 접두 `<<untrusted-input` / `<<end-untrusted-input` 은
+  `‹‹untrusted-input` / `‹‹end-untrusted-input` 으로, 괄호 머리말 `[aaestro]` · `[operator steer]` ·
+  `[tool error]` · `[memory:` 는 `[aaestro-quoted]` · `[operator steer-quoted]` ·
+  `[tool error-quoted]` · `[memory-quoted:` 로 바뀝니다. 같은 표기로 읽히는 변형 — 대소문자, 괄호
+  안팎의 공백, 전각 괄호, 유사 꺾쇠 — 도 잡습니다. 회상 기억의 둘째 줄부터는 그 기억의 `[memory:…]`
+  줄 아래로 들여 써서, 기억이 다른 기억처럼 보이는 줄을 시작하지 못합니다. 진짜 표기만 진짜 모양을
+  갖습니다. promptset 값은 위의 id 규칙을 그대로 따릅니다.
 - **경계를 우회하는 구문은 거절합니다.** promptset 을 로드할 때 (`MOD_003` — 템플릿 파일이 없는
   것과 같이 모듈이 잘못 게시된 것), 그리고 렌더할 때마다 다시 (`MOD_004`) 검사합니다. 로드 시점
   검사는 파싱 (문법과 거절 구문) 까지입니다. 없는 필터 · 제거된 전역처럼 컴파일 · 실행에서 드러나는
