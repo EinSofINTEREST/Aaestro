@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from fastapi import FastAPI
 
     from aaestro.access.client import AccessClient
+    from aaestro.catalog import Catalog
     from aaestro.config import AaestroConfig
     from aaestro.core.manifest import AgentManifest, GroupManifest
     from aaestro.memory.entry import MemoryEntry
@@ -100,6 +101,47 @@ def _embedding_source(
     return embedding, chunk
 
 
+def _relative(path: str, root: Path) -> str:
+    """저장소 루트 기준 상대 경로 — 루트 밖이면 파일 이름만 (절대 경로를 싣지 않는다)."""
+    found = Path(path)
+    for base in (root, root.resolve()):
+        if found.is_relative_to(base):
+            return found.relative_to(base).as_posix()
+    return found.name
+
+
+def _refuse_run_scope(catalog: Catalog, root: Path) -> None:
+    """Refuse to start in token mode when a graph declares run scope spaces.
+
+    토큰 모드에서 run scope space 를 선언한 그래프가 있으면 기동을 거부한다.
+
+    토큰은 run 없이 발급돼 run space 가 토큰에 실리지 않는다 — 그대로 뜨면 그래프가 선언한
+    space 가 조용히 빠지고 에이전트는 호출 시점에야 MEM_001 을 만난다. run 단위 판정은
+    레지스트리 모드에서만 성립한다 (09 Access Enforcement). 배포 여부는 이 프로세스가 알 수
+    없으므로 카탈로그의 그래프를 기준으로 한다: 선언만 있어도 배포될 수 있다.
+    읽지 못한 그래프도 거부한다 — 그 안에 run scope 선언이 없다는 것을 증명할 수 없다.
+    기동 때 한 번만 본다: 뜬 뒤에 저장된 그래프는 이 검사가 모른다 (배포 검증의 몫).
+    에러에는 그래프 이름 · 별칭과 읽지 못한 선언의 저장소 기준 상대 위치만 싣는다.
+    """
+    listing = catalog.graphs()
+    offenders = [
+        {"graph": graph.metadata.name, "alias": space.alias}
+        for graph in listing.items.values()
+        for space in graph.spec.memory.spaces
+    ]
+    if not offenders and not listing.problems:
+        return
+    raise AaestroError(
+        category=ErrorCategory.CONFIG,
+        code=ErrorCode.CFG_001,
+        message="run scope memory spaces require registry mode",
+        details={
+            "run_scope_spaces": offenders,
+            "unreadable_graphs": [_relative(p.path, root) for p in listing.problems],
+        },
+    )
+
+
 def build_deployment(
     config: AaestroConfig,
     *,
@@ -124,7 +166,8 @@ def build_deployment(
     """
     from aaestro.catalog import Catalog
 
-    catalog = Catalog.under(root)
+    # control plane 과 같은 루트 해석 — 설정된 graphs 위치가 기본과 달라도 같은 선언을 본다
+    catalog = Catalog.from_config(config.registry.roots, base=root)
     agents, groups_found = catalog.agents(), catalog.groups()
     problems = [*agents.problems, *groups_found.problems]
     if problems:
@@ -140,6 +183,8 @@ def build_deployment(
                 ]
             },
         )
+    if access is None:
+        _refuse_run_scope(catalog, root)
     manifests = agents.items
     groups = groups_found.items
     loader = MemorysetLoader(ModuleRegistry.under(root))

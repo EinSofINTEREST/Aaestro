@@ -7,7 +7,9 @@ bootstrap 경로를 실제로 탄 뒤에 검사한다.
 
 from __future__ import annotations
 
-from tests.fixtures.import_contract import assert_no_forbidden_imports
+from pathlib import Path
+
+from tests.fixtures.import_contract import REPO_ROOT, assert_no_forbidden_imports
 
 # 새 import 가 생기면 이 상수를 고치는 것이 곧 결정이다
 FORBIDDEN = (
@@ -38,16 +40,16 @@ config = load_config("dev", config_dir=root / "configs", environ={{}})
 """
 
 
-def _run(body: str) -> None:
-    assert_no_forbidden_imports(BOOTSTRAP.format(body=body), FORBIDDEN)
+def _run(body: str, root: Path = REPO_ROOT) -> None:
+    assert_no_forbidden_imports(BOOTSTRAP.format(body=body), FORBIDDEN, repo_root=root)
 
 
 def test_main_import_pulls_no_control_plane_modules() -> None:
     assert_no_forbidden_imports("import aaestro.memory.__main__", FORBIDDEN)
 
 
-def test_token_bootstrap_path_pulls_no_control_plane_modules() -> None:
-    _run("build_deployment(config, root=root)")
+def test_token_bootstrap_path_pulls_no_control_plane_modules(token_root: Path) -> None:
+    _run("build_deployment(config, root=root)", token_root)
 
 
 def test_registry_bootstrap_path_pulls_no_control_plane_modules() -> None:

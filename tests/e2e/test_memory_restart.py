@@ -34,6 +34,8 @@ def memory(stack) -> Iterator[None]:
         "--read-only", "--tmpfs", "/tmp:size=16m",  # noqa: S108 — 컨테이너 안 tmpfs
         "--user", "1000:1000", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
         "-v", f"{REPO_ROOT}:/repo:ro",
+        # 토큰 모드는 run scope 를 선언한 그래프가 있으면 기동을 거부한다 (#469)
+        "--tmpfs", "/repo/graphs:size=1m",
         # /tokens 는 이미지가 uid 1000 소유로 만든다 — named volume 이 그 소유권을 물려받아
         # 재시작을 넘는 쓰기 자리가 된다. 저장소 파일도 여기 둔다
         "-v", f"{VOLUME}:/tokens",

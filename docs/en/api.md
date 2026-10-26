@@ -924,6 +924,15 @@ In registry mode:
 The service follows the change feed while it runs. When the feed is lost but the registry still
 answers, cached decisions older than two seconds are asked again.
 
+**Run scope needs registry mode.** A token-mode Memory Service issues its tokens without a run, so
+run-scope spaces cannot be carried. If any graph in the catalog declares `spec.memory.spaces`, a
+token-mode Memory Service refuses to start (`CFG_001`; the error names only graphs and space
+aliases, plus the repository-relative location of any unreadable declaration) instead of coming up
+with those spaces silently missing. A graph that cannot be read is refused too: nothing proves it
+declares no run scope. The check runs once at startup — a graph saved later through
+`PUT /v1/graphs` is not seen by a running service; blocking token-mode deployments belongs to
+deployment validation (after PR #471).
+
 **Turn both sides on together.** A control plane with `access_store` injects identities as memory
 tokens; a Memory Service still in token mode does not know them and refuses every agent. The
 reverse — a registry-mode Memory Service with a control plane that has no registry — refuses

@@ -68,6 +68,10 @@ services:
       - memory-tokens:/tokens
     tmpfs:
       - /tmp:size=16m
+      # 토큰 모드는 run scope 를 선언한 그래프가 있으면 기동을 거부한다 (#469, 09 Access
+      # Enforcement) — 그래프 선언을 가려 run scope 없는 스택으로 띄운다. run scope 는
+      # 레지스트리 모드 e2e (test_memory_access) 가 검증한다
+      - /repo/graphs:size=1m
     depends_on:
       fake-provider:
         condition: service_healthy
