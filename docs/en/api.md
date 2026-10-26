@@ -43,17 +43,38 @@ a token (`CFG_001`), and it logs a warning when it starts without one. Set a tok
 anything but a single-operator machine.
 
 Two routes are unauthenticated by design even with a token set: `GET /v1/health` (Docker
-healthchecks call it) and the static UI under `/ui` (the page holds no data of its own).
+healthchecks call it) and the static UI under `/ui` (the page holds no data of its own). Only `GET` is open on them —
+any other method (`HEAD` included) gets the same `401` as a closed path.
 
 A missing or wrong token is `401` — and that response is **not** the error envelope below.
 It is FastAPI's own `{"detail": "invalid control plane token"}` with a `WWW-Authenticate`
-header, because the check runs as a dependency before any route.
+header. **The check runs before the request body is read**, so without a valid credential the
+answer is the same whatever the body holds — broken JSON, broken UTF-8, a wrong shape or no body
+at all. The access routes check their own credential (enforcer token, agent identity) the same
+way. The API documentation paths (`/docs`, `/redoc`, `/openapi.json`) are not served, and a
+trailing slash is not redirected to the real route.
+
+**A credential is checked before the request is routed, and it only opens its own audience's
+paths.** The control plane token reaches every path; the enforcer token reaches the enforcer
+routes (decisions, identities, change feed); a live agent identity reaches the routes agents
+use (change feed, tickets, verify, grants). Outside `GET /v1/health`, `GET /` and `GET /ui`, any other
+request — no credential, an unknown one, or a valid one outside its audience — gets the `401`
+above whatever the path or method: a route that exists, one that does not, a wrong method and a
+trailing slash all answer alike, so the route table cannot be enumerated. The refusal text is
+the same for every audience. Each route then narrows further to its own caller.
+
+With a valid credential, a path that matches no route stays FastAPI's plain `404`
+`{"detail": "Not Found"}` with **no** code — unchanged, and on purpose: a codeless `404` means
+"this surface is absent" (the UI and the CLI read it that way), while `NF_001` means "that run or
+resource does not exist". A wrong method (`405`) and a body FastAPI cannot decode (`400`, e.g.
+broken UTF-8) are `VAL_002` in the envelope below.
 
 ## Errors
 
 Failures raised by the control plane share one envelope, and the `code` is the stable part —
-match on it rather than on the message. Two responses do **not** use it: `401` (above) and the
-`501` from the run routes (a control plane that drives no runs, or an agent executor that cannot
+match on it rather than on the message. Three responses do **not** use it: `401` (above), the
+codeless `404` for a path that matches no route (above, credentialed callers only), and the `501`
+from the run routes (a control plane that drives no runs, or an agent executor that cannot
 be steered), which carries a flatter legacy shape.
 
 ```json
@@ -457,9 +478,14 @@ Failures leave no ghost containers. What you get back tells you which kind it wa
   deploy never builds for you. After the image tag rule changes, rebuild custom agents built
   earlier. Nothing was started and no deployment was recorded. Agents without materials run on
   the base image and are never gated.
-- `409` (`RT_010`) — an agent of this graph is already running under another deployment. Tear
-  that one down first; a graph and its agents deploy as a unit, so two live deployments
-  cannot share an agent.
+- `409` (`RT_010`) — an agent of this graph belongs to another deployment that is `starting`,
+  `ready` or `lost`, or to one being started or torn down right now. For this refusal
+  `details.agents` names the agents and `details.deployments` the deployments holding them (the
+  launcher's own `RT_010` for a single replica carries `details.replica` instead). Tear that
+  deployment down first; a graph and its agents deploy as a unit, so two live deployments cannot
+  share an agent. A deployment left `starting` by a crashed control plane keeps holding its
+  agents until it is torn down. The check runs before anything is touched: the other deployment
+  keeps its MCP sidecars and A2A ports, nothing was started and no deployment was recorded.
 - `503` (`RT_002`) — an agent never became healthy before the deadline. Marked retryable:
   the containers were rolled back, so a second attempt is safe.
 
@@ -475,6 +501,9 @@ crash, the record shows the new id and port.
 Drains each agent, waits for in-flight tasks, then stops and removes the containers. Returns
 the record with `status: "stopped"`; the record stays so the history remains readable. A
 deployment already `stopped` or `failed` is returned unchanged.
+A second request for a deployment that is still being torn down (a retry, a double click)
+joins the teardown in progress and gets the same record — the agents are drained and stopped
+once. A caller that gives up (client timeout) does not stop the teardown; it runs to the end.
 
 ## Runs
 
@@ -724,8 +753,11 @@ A refusal is `403` with `ACC_003`, and it is logged and counted
 (`aaestro_access_grants_total{op="refuse"}`). It is refused when the caller is not listed in
 `access_stewards`, grants to itself, names a memory permission without a mode, exceeds the
 ceiling or its `max_ttl_s`, or asks for something an operator revoked — only an operator
-undoes a revocation. An unknown or revoked identity is `403` with `ACC_001`; an unknown agent
-is `404`.
+undoes a revocation. A caller with no credential of an audience that reaches this route
+(unknown, revoked, or the enforcer token) is refused before routing with the `401` of
+[Authentication](#authentication); an unknown agent is `404`. A caller that is not a permission agent is refused **before the body is read**, so it
+is `ACC_003` whatever it sends, and the refusal is still logged and counted — with
+`resource="unknown"`, because the body that names the resource is never read.
 
 ### The permission agent
 
@@ -906,11 +938,24 @@ In registry mode:
 - **Searching without naming spaces skips spaces that are not allowed now**, rather than failing
   the whole search. `GET /v1/spaces` lists what is allowed, with the mode actually permitted.
 - **The identity outlives a Memory Service restart.** It lives in the control plane.
+- **Identity is checked before the request body is read.** Without a recognised identity every
+  route answers the same `401` with `MEM_001`, whatever the body contains. The only route open
+  without identity is `GET /v1/health` (liveness only); the API documentation paths are not served.
+  Unknown routes and methods (`404` / `405`) are answered before identity, in the typed error shape.
 - **While the registry is unreachable**, decisions already cached keep working and anything not
   yet decided is denied. A cached decision is still dropped at its `valid_until`.
 
 The service follows the change feed while it runs. When the feed is lost but the registry still
 answers, cached decisions older than two seconds are asked again.
+
+**Run scope needs registry mode.** A token-mode Memory Service issues its tokens without a run, so
+run-scope spaces cannot be carried. If any graph in the catalog declares `spec.memory.spaces`, a
+token-mode Memory Service refuses to start (`CFG_001`; the error names only graphs and space
+aliases, plus the repository-relative location of any unreadable declaration) instead of coming up
+with those spaces silently missing. A graph that cannot be read is refused too: nothing proves it
+declares no run scope. The check runs once at startup — a graph saved later through
+`PUT /v1/graphs` is not seen by a running service; blocking token-mode deployments belongs to
+deployment validation (after PR #471).
 
 **Turn both sides on together.** A control plane with `access_store` injects identities as memory
 tokens; a Memory Service still in token mode does not know them and refuses every agent. The
@@ -985,10 +1030,19 @@ outside address fails. The proxy is the only way out.
   not retryable) instead of reusing it: a network with a route out would let agents bypass the proxy.
   Remove or recreate that network.
 - **Reattaching checks isolation too.** After a restart, a deployment is reattached only when the
-  agent network is internal and each of its containers is attached to that network alone. Otherwise
-  the deployment becomes `lost` ("network isolation mismatch"), nothing is attached, and its agent
+  agent network is internal and each of its containers is attached to that network alone, and the
+  container still carries the hardening the start spec sets (`CapDrop` has `ALL`, a read-only root
+  filesystem, user `1000:1000`, the PID limit (`DEFAULT_PID_LIMIT`, 256), and a `security_opt` whose
+  effective value per key equals the spec's — adding an entry or overriding one later is refused)
+  and nothing that voids it (privileged, added capabilities, host PID / IPC / user / network
+  namespaces, an empty `MaskedPaths` or `ReadonlyPaths`). Otherwise
+  the deployment becomes `lost` ("network isolation mismatch", or "container hardening mismatch"
+  with the field names), nothing is attached, and its agent
   identities are revoked, so containers with a route out lose their memory, peer and model access.
-  The containers are left running for you to inspect and tear down.
+  The containers are left running for you to inspect and tear down. On a host that cannot set a PID
+  limit (no pids cgroup), reattaching is refused; a check at start time is a follow-up.
+  A deployment that cannot be rebuilt from its declarations (a manifest is gone, or a node left the
+  graph) also becomes `lost` ("cannot rebuild from declarations") and its identities are revoked.
 - **Agents publish no ports.** Ports cannot be published from an internal network, so the control
   plane reaches each agent's Control API at the container's address on that network, and reattaching
   after a restart looks the address up again. The control plane must be able to reach that
@@ -1132,8 +1186,11 @@ URL.
   the runtime attaches it to each sidecar network under the host name of `connect_url`. A graph with a
   sidecar behind the proxy is refused without this setting (`CFG_001`), because joining the agent to its
   sidecar directly would leave the tool decisions to a check inside the agent's container.
-- **Hardened like an agent.** uid 1000, a read-only root filesystem with a writable `/tmp` (also
-  `HOME`), `cap-drop ALL`, `no-new-privileges`, a PID limit, and no published ports. Undeclared
+- **Hardened like an agent.** Agents and sidecars take the same hardening set from one place
+  (`runtime/spec.py`): uid 1000, a read-only root filesystem with a writable `/tmp` (also
+  `HOME`), `cap-drop ALL`, `no-new-privileges`, and a PID limit. Networking differs: the agent's
+  own control and optional A2A ports bind to loopback, while a sidecar has no port mapping at all.
+  Undeclared
   resources default to the agent default (1 CPU, 1Gi), and each sidecar counts toward the group quota
   once, whatever the replica count.
 - **Environment.** Only the server's `env_allowlist`, plus the owning agent's `HTTPS_PROXY` when the
@@ -1199,7 +1256,9 @@ With or without a registry, an agent's A2A port answers two things only: the age
 
 `201` with `{"ticket": "...", "callee": "planner", "expires_at": 1789381500.0}`. A ticket is proof
 of identity, not permission: it is issued even for a revoked connection, and the callee refuses
-the call. An unknown or revoked identity is `403` (`ACC_001`); an unknown callee is `404`.
+the call. A bearer that is not a live agent identity (unknown, revoked, or the enforcer token) is
+refused before routing with the `401` of [Authentication](#authentication); the control plane
+token reaches the route and is `403` (`ACC_001`). An unknown callee is `404`.
 
 ### `POST /v1/access/a2a/verify` — the callee
 
@@ -1214,7 +1273,8 @@ the call. An unknown or revoked identity is `403` (`ACC_001`); an unknown callee
 
 A ticket that is not for this callee, expired, forged, or from a revoked caller is `200` with
 `"agent": null, "decision": "deny", "decided_by": "invalid-ticket"`. The bearer must be a live
-agent identity — `403` (`ACC_001`) otherwise.
+agent identity — otherwise the `401` of [Authentication](#authentication) before routing, or
+`403` (`ACC_001`) for the control plane token.
 
 ## Operational notes
 

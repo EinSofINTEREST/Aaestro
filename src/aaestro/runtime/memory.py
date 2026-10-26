@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from aaestro.core.errors import AaestroError
+from aaestro.memory.entry import draft_from
 from aaestro.memory.recall import AutoRecall, render_context
 
 if TYPE_CHECKING:
@@ -105,12 +106,19 @@ class ServiceMemoryAccess:
         self.service.record_search(self.token, aliases, op="recall")
         return render_context(selected)
 
-    async def append(self, space: str, **kwargs: Any) -> Any:
-        """Append one entry to a writable space.
+    async def append(self, space: str, **kwargs: Any) -> MemoryEntry:
+        """Append one entry to a writable space — the service issues the id and provenance.
 
-        rw 권한이 있는 space 에만 추가합니다 — 아니면 ``MEM_001``.
+        rw 권한이 있는 space 에만 추가합니다 — 아니면 ``MEM_001``. 인자는 HTTP 클라이언트와
+        같은 초안 검증을 지납니다 (형제 — 같은 입력은 같은 결과).
         """
-        return self.service.append(self.token, space, kwargs["entry"])
+        try:
+            draft = draft_from(kwargs, agent=self.token.agent)
+        except AaestroError:
+            # 신원이 있는 경로다 — 형식 거절도 감사에 남긴다 (HTTP 는 인증 전에 본문을 검증한다)
+            self.service.record_failure(self.token, space, op="append")
+            raise
+        return self.service.append(self.token, space, draft)
 
     async def latest(self, space: str, entry_id: str) -> MemoryEntry | None:
         """정정 체인의 최신 항목 — 대체된 기억을 다시 믿지 않게 한다."""

@@ -79,9 +79,25 @@ def network_mismatch(
         "agent network isolation does not match the runtime",
         agent=agent,
         image=image,
+        kind="network",
         network=err.name,
         reason=str(err),
         **details,
+    )
+
+
+def hardening_mismatch(agent: str, image: str, fields: list[str]) -> AaestroError:
+    """컨테이너의 경화 설정이 runtime 과 다르다 — 재부착은 기동을 거치지 않으므로 여기서 거른다.
+
+    어긋난 필드 이름만 싣는다 — 값은 싣지 않는다.
+    """
+    return runtime_error(
+        ErrorCode.RT_001,
+        "container hardening does not match the runtime",
+        agent=agent,
+        image=image,
+        kind="hardening",
+        fields=fields,
     )
 
 

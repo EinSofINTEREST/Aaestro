@@ -7,10 +7,11 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from aaestro.core.errors import AaestroError, ErrorCategory
 from aaestro.core.manifest import MemoryMode
-from aaestro.memory.entry import MemoryEntry, MemorySource
+from aaestro.memory.entry import DraftSource, MemoryDraft
 from aaestro.memory.service import AccessToken, MemoryService, MemorySpace, build_token
 from aaestro.memory.store import SqliteMemoryStore
 from aaestro.modules.memoryset import MemoryKind, MemoryScope
@@ -25,15 +26,14 @@ def service():
         store.close()
 
 
-def entry(**overrides) -> MemoryEntry:
+def entry(**overrides) -> MemoryDraft:
     base = {
-        "space": "placeholder",
         "kind": MemoryKind.FACT,
         "content": "사실 하나",
-        "source": MemorySource(agent="researcher", run_id="run-1"),
+        "source": DraftSource(task_id="task-1"),
     }
     base.update(overrides)
-    return MemoryEntry(**base)
+    return MemoryDraft(**base)
 
 
 def token(**overrides) -> AccessToken:
@@ -117,7 +117,7 @@ def test_global_space_is_read_only_by_default(service):
 def test_declared_writer_can_write_global(service):
     librarian = build_token(agent="librarian", group=None, global_spaces=[("org", ("librarian",))])
 
-    stored = service.append(librarian, "org", entry(source=MemorySource(agent="librarian")))
+    stored = service.append(librarian, "org", entry())
 
     assert stored.space == "global:global:org"
 
@@ -255,7 +255,7 @@ def test_two_agents_local_spaces_do_not_collide(service):
     b = build_token(agent="writer", group=None, local=[("longterm", "writer")])
 
     service.append(a, "longterm", entry(content="mine"))
-    service.append(b, "longterm", entry(content="theirs", source=MemorySource(agent="writer")))
+    service.append(b, "longterm", entry(content="theirs"))
 
     assert [e.content for e in service.read(a, "longterm")] == ["mine"]
     assert [e.content for e in service.read(b, "longterm")] == ["theirs"]
@@ -300,11 +300,11 @@ def test_run_alias_outranks_group_and_global(service):
 
 
 def test_entry_cannot_claim_a_space_it_lacks_access_to(service):
-    """항목이 space 를 스스로 주장해도 해석된 id 로 덮어쓴다 — space 위조 차단."""
-    tok = token()
-    forged = entry(space="global:global:org")
+    """space 는 초안에 없다 — 저장되는 space 는 언제나 별칭이 해석된 id 다 (space 위조 차단)."""
+    with pytest.raises(ValidationError):
+        entry(space="global:global:org")
 
-    stored = service.append(tok, "longterm", forged)
+    stored = service.append(token(), "longterm", entry())
 
     assert stored.space == "local:researcher:longterm"
 
@@ -322,9 +322,7 @@ def test_global_space_defaults_to_read_only():
 def test_latest_does_not_cross_space_boundaries(service):
     """entry_id 만으로 체인을 따라가면 id 를 아는 것만으로 남의 기억을 읽는다."""
     victim = build_token(agent="writer", group=None, local=[("longterm", "writer")])
-    secret = service.append(
-        victim, "longterm", entry(content="기밀", source=MemorySource(agent="writer"))
-    )
+    secret = service.append(victim, "longterm", entry(content="기밀"))
     attacker = build_token(agent="researcher", group=None, local=[("longterm", "researcher")])
 
     assert service.latest(attacker, "longterm", secret.entry_id) is None
@@ -332,9 +330,7 @@ def test_latest_does_not_cross_space_boundaries(service):
 
 def test_cross_space_latest_is_audited_as_denied(service):
     victim = build_token(agent="writer", group=None, local=[("longterm", "writer")])
-    secret = service.append(
-        victim, "longterm", entry(content="기밀", source=MemorySource(agent="writer"))
-    )
+    secret = service.append(victim, "longterm", entry(content="기밀"))
     attacker = build_token(agent="researcher", group=None, local=[("longterm", "researcher")])
 
     service.latest(attacker, "longterm", secret.entry_id)
@@ -439,20 +435,16 @@ def test_append_refuses_a_correction_that_points_into_another_space():
     org_entry = service.append(
         librarian,
         "org",
-        MemoryEntry(
-            space="x", kind=MemoryKind.FACT, content="org policy", source=MemorySource(agent="l")
-        ),
+        MemoryDraft(kind=MemoryKind.FACT, content="org policy"),
     )
 
     with pytest.raises(AaestroError) as exc_info:
         service.append(
             attacker,
             "longterm",
-            MemoryEntry(
-                space="x",
+            MemoryDraft(
                 kind=MemoryKind.FACT,
                 content="hide it",
-                source=MemorySource(agent="attacker"),
                 supersedes=org_entry.entry_id,
             ),
         )
@@ -472,9 +464,7 @@ def test_append_refuses_a_correction_whose_target_is_gone_with_the_same_error():
     org_entry = service.append(
         librarian,
         "org",
-        MemoryEntry(
-            space="x", kind=MemoryKind.FACT, content="org policy", source=MemorySource(agent="l")
-        ),
+        MemoryDraft(kind=MemoryKind.FACT, content="org policy"),
     )
 
     def attempt(target: str) -> AaestroError:
@@ -482,11 +472,9 @@ def test_append_refuses_a_correction_whose_target_is_gone_with_the_same_error():
             service.append(
                 attacker,
                 "longterm",
-                MemoryEntry(
-                    space="x",
+                MemoryDraft(
                     kind=MemoryKind.FACT,
                     content="correction",
-                    source=MemorySource(agent="attacker"),
                     supersedes=target,
                 ),
             )
@@ -511,19 +499,15 @@ def test_append_allows_a_correction_inside_the_same_space():
     first = service.append(
         attacker,
         "longterm",
-        MemoryEntry(
-            space="x", kind=MemoryKind.FACT, content="old", source=MemorySource(agent="attacker")
-        ),
+        MemoryDraft(kind=MemoryKind.FACT, content="old"),
     )
 
     stored = service.append(
         attacker,
         "longterm",
-        MemoryEntry(
-            space="x",
+        MemoryDraft(
             kind=MemoryKind.FACT,
             content="new",
-            source=MemorySource(agent="attacker"),
             supersedes=first.entry_id,
         ),
     )

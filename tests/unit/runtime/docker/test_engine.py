@@ -7,6 +7,7 @@ Docker 그 자체가 아니다.
 from __future__ import annotations
 
 import asyncio
+import threading
 
 import pytest
 
@@ -21,6 +22,7 @@ from aaestro.runtime.docker.engine import (
 from aaestro.runtime.spec import build_container_spec
 from tests.fixtures.builders import make_manifest
 from tests.fixtures.fake_docker import FakeDockerClient
+from tests.fixtures.waiting import until
 
 
 def spec(**overrides):
@@ -208,6 +210,86 @@ async def test_start_failure_discards_the_half_built_container():
     assert len(client.removed) == 1
 
 
+class GatedClient(FakeDockerClient):
+    """지정한 단계를 스레드 안에서 문 앞에 붙잡는다 — 취소돼도 스레드는 문이 열리면 끝까지 간다."""
+
+    def __init__(self, step: str) -> None:
+        super().__init__()
+        self.step = step
+        self.gate = threading.Event()
+        self.entered = threading.Event()
+
+    def _hold(self, step: str) -> None:
+        if step == self.step:
+            self.entered.set()
+            self.gate.wait(5.0)
+
+    def create(self, **kwargs):
+        self._hold("create")
+        return super().create(**kwargs)
+
+    def start(self, container_id: str) -> None:
+        self._hold("start")
+        super().start(container_id)
+
+
+@pytest.mark.parametrize("step", ["create", "start"])
+async def test_a_cancelled_start_discards_the_container_its_thread_built(step: str):
+    """#482 — 취소는 스레드를 멈추지 못한다: 끝까지 만든 컨테이너를 아무도 지우지 않았다."""
+    client = GatedClient(step)
+    docker = engine(client)
+    starting = asyncio.create_task(docker.start(spec()))
+    await until(client.entered.is_set)
+
+    starting.cancel()
+    await asyncio.sleep(0)
+    assert not starting.done(), "기동이 스레드를 기다리지 않고 취소를 올렸다"
+    client.gate.set()
+    with pytest.raises(asyncio.CancelledError):
+        await starting
+
+    assert len(client.created) == 1
+    assert client.removed == ["container-0001" + "0" * 20]
+    assert docker.started == {}
+
+
+async def test_a_cancelled_start_hands_a_hung_cleanup_to_the_engine():
+    """#482 — 걸린 Docker 호출을 그 자리에서 끝없이 기다리면 정지가 묶인다: 상한을 넘기면 넘긴다."""
+    client = GatedClient("create")
+    docker = DockerEngine(client=client, cancel_wait_s=0.01)
+    starting = asyncio.create_task(docker.start(spec()))
+    await until(client.entered.is_set)
+
+    try:
+        starting.cancel()
+        await until(starting.done, timeout_s=1.0)
+        assert starting.cancelled()
+        assert docker._cleanups, "넘긴 정리를 엔진이 쥐지 않았다"
+    finally:
+        client.gate.set()
+
+    await docker.settle_cleanups()
+    assert client.removed == ["container-0001" + "0" * 20]
+    assert not docker._cleanups
+
+
+async def test_settling_abandons_a_cleanup_that_never_finishes():
+    """종료는 끝없이 기다리지 않는다 — 상한을 넘긴 정리는 끊고 넘어간다."""
+    client = GatedClient("create")
+    docker = DockerEngine(client=client, cancel_wait_s=0.01)
+    starting = asyncio.create_task(docker.start(spec()))
+    await until(client.entered.is_set)
+
+    try:
+        starting.cancel()
+        await until(starting.done, timeout_s=1.0)
+        await docker.settle_cleanups(timeout_s=0.01)
+        assert not docker._cleanups
+        assert client.removed == []
+    finally:
+        client.gate.set()
+
+
 async def test_failed_start_is_not_tracked():
     client = FakeDockerClient(start_error=RuntimeError("boom"))
     docker = engine(client)
@@ -321,7 +403,7 @@ async def test_stop_sends_the_grace_period():
     docker = engine(client)
     handle = await docker.start(spec())
 
-    await docker.stop(handle)
+    assert await docker.stop(handle) is True
 
     assert client.stopped == [(handle.container_id, 30.0)]
     assert client.removed == [handle.container_id]
@@ -342,7 +424,8 @@ async def test_stop_survives_a_failing_stop():
     docker = engine(client)
     handle = await docker.start(spec())
 
-    await docker.stop(handle)
+    # 정지가 실패해도 제거가 됐으면 제거됨이다 — 호출자는 제거 결과만 본다
+    assert await docker.stop(handle) is True
 
     assert client.removed == [handle.container_id]
 
@@ -352,7 +435,8 @@ async def test_stop_survives_a_failing_removal():
     docker = engine(client)
     handle = await docker.start(spec())
 
-    await docker.stop(handle)
+    # 제거 실패는 삼키되 False 로 알린다 — 호출자가 같은 handle 로 다시 지울 수 있게 (#491)
+    assert await docker.stop(handle) is False
 
     assert docker.started == {}
 
@@ -362,7 +446,7 @@ async def test_stop_can_keep_the_container():
     docker = engine(client)
     handle = await docker.start(spec())
 
-    await docker.stop(handle, remove=False)
+    assert await docker.stop(handle, remove=False) is False
 
     assert client.removed == []
 
@@ -433,3 +517,278 @@ async def test_drain_success_log_includes_the_image(monkeypatch):
 
     assert recorded[-1]["image"] == handle.image
     assert recorded[-1]["container_id"] == handle.short_id
+
+
+DEFAULT_MASKED_PATHS = ["/proc/kcore", "/proc/keys", "/sys/firmware"]
+DEFAULT_READONLY_PATHS = ["/proc/bus", "/proc/sys"]
+
+GOOD_HARDENING = {
+    "CapDrop": ["ALL"],
+    "ReadonlyRootfs": True,
+    "User": "1000:1000",
+    "SecurityOpt": ["no-new-privileges:true"],  # 에이전트 기본 스펙이 싣는 HARDENED_SECURITY_OPT
+    "PidsLimit": 256,
+}
+
+
+def empty_opt_expected():
+    """security_opt 를 싣지 않는 스펙의 기대값 — 빈 기대값 성질을 명시적으로 검사한다."""
+    return {**spec().hardening_kwargs(), "security_opt": []}
+
+
+async def verify(hardening, *, internal: bool = False, expected=None) -> None:
+    client = FakeDockerClient(hardening=hardening)
+    engine = DockerEngine(client=client, network="agents", internal=internal)
+    wanted = spec().hardening_kwargs() if expected is None else expected
+    await engine.verify_isolation("alpha", "img:1", "container-0001", wanted)
+
+
+async def test_verify_isolation_accepts_a_hardened_container():
+    await verify(GOOD_HARDENING)
+    await verify(GOOD_HARDENING, internal=True)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("CapDrop", None),
+        ("CapDrop", ["NET_RAW"]),
+        ("ReadonlyRootfs", False),
+        ("User", ""),
+        ("User", "0:0"),
+    ],
+)
+@pytest.mark.parametrize("internal", [False, True])
+async def test_verify_isolation_refuses_a_container_that_lost_its_hardening(field, value, internal):
+    with pytest.raises(AaestroError) as caught:
+        await verify({**GOOD_HARDENING, field: value}, internal=internal)
+
+    assert caught.value.code == "RT_001"
+    assert caught.value.retryable is False
+    assert caught.value.details["fields"] == [field]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("Privileged", True),
+        ("CapAdd", ["SYS_ADMIN"]),
+        ("PidMode", "host"),
+        ("IpcMode", "host"),
+        ("UsernsMode", "host"),
+        ("NetworkMode", "host"),
+        ("PidMode", "container:abc123"),
+        ("IpcMode", "container:abc123"),
+        ("NetworkMode", "container:abc123"),
+        ("UsernsMode", "container:abc123"),
+        # systempaths=unconfined 는 SecurityOpt 가 아니라 여기에 드러난다 (#489 QA 실측)
+        ("MaskedPaths", []),
+        ("ReadonlyPaths", []),
+    ],
+)
+@pytest.mark.parametrize("internal", [False, True])
+async def test_verify_isolation_refuses_settings_that_void_the_hardening(field, value, internal):
+    """CapDrop 이 ALL 이어도 privileged 면 모든 capability 가 주어진다 — 부류로 거절한다."""
+    with pytest.raises(AaestroError) as caught:
+        await verify({**GOOD_HARDENING, field: value}, internal=internal)
+
+    assert caught.value.details["fields"] == [field]
+
+
+async def test_verify_isolation_accepts_the_values_docker_reports_for_a_plain_container():
+    await verify(
+        {
+            **GOOD_HARDENING,
+            "Privileged": False,
+            "CapAdd": None,
+            "PidMode": "",
+            "IpcMode": "private",
+            "UsernsMode": "",
+            "NetworkMode": "agents",
+            "MaskedPaths": DEFAULT_MASKED_PATHS,
+            "ReadonlyPaths": DEFAULT_READONLY_PATHS,
+        }
+    )
+
+
+@pytest.mark.parametrize("security_opt", [None, [], ["seccomp=unconfined"]])
+async def test_verify_isolation_refuses_a_container_missing_a_security_opt_the_spec_now_sets(
+    security_opt,
+):
+    """에이전트 기본 스펙이 싣는 no-new-privileges 가 빠진 컨테이너는 거절된다."""
+    with pytest.raises(AaestroError) as caught:
+        await verify({**GOOD_HARDENING, "SecurityOpt": security_opt})
+
+    assert caught.value.details["fields"] == ["SecurityOpt"]
+    # 그 값을 실은 정상 컨테이너는 붙는다
+    await verify({**GOOD_HARDENING, "SecurityOpt": ["no-new-privileges:true"]})
+
+
+async def test_verify_isolation_refuses_default_no_new_privileges_overridden_to_false():
+    with pytest.raises(AaestroError) as caught:
+        await verify({**GOOD_HARDENING, "SecurityOpt": ["no-new-privileges:false"]})
+
+    assert caught.value.details["fields"] == ["SecurityOpt"]
+
+
+@pytest.mark.parametrize("security_opt", [None, []])
+async def test_verify_isolation_accepts_no_security_opt_while_the_spec_sets_none(security_opt):
+    await verify({**GOOD_HARDENING, "SecurityOpt": security_opt}, expected=empty_opt_expected())
+
+
+@pytest.mark.parametrize(
+    "security_opt",
+    [
+        ["no-new-privileges:true"],  # 기대 () 에 더해진 항목 — 기대 밖 키
+        ["seccomp=unconfined"],
+        ['seccomp={"defaultAction":"SCMP_ACT_ALLOW"}'],  # 허용 정책 프로필 — unconfined 가 아니다
+        ["apparmor=unconfined"],
+        ["label=disable"],
+    ],
+)
+async def test_verify_isolation_refuses_a_security_opt_the_spec_did_not_set(security_opt):
+    with pytest.raises(AaestroError) as caught:
+        await verify({**GOOD_HARDENING, "SecurityOpt": security_opt}, expected=empty_opt_expected())
+
+    assert caught.value.details["fields"] == ["SecurityOpt"]
+
+
+SIDECAR_OPTS = ["no-new-privileges:true"]
+
+
+@pytest.mark.parametrize(
+    "security_opt",
+    [
+        ["no-new-privileges:true", "no-new-privileges:false"],  # Docker 는 마지막 값을 쓴다
+        ["no-new-privileges:true", "seccomp=unconfined"],
+        ["no-new-privileges:true", 'seccomp={"defaultAction":"SCMP_ACT_ALLOW"}'],
+        ["no-new-privileges:false"],
+        [],
+    ],
+)
+async def test_verify_isolation_refuses_a_security_opt_whose_effective_value_differs(
+    security_opt,
+):
+    expected = {**spec().hardening_kwargs(), "security_opt": SIDECAR_OPTS}
+    with pytest.raises(AaestroError) as caught:
+        await verify({**GOOD_HARDENING, "SecurityOpt": security_opt}, expected=expected)
+
+    assert caught.value.details["fields"] == ["SecurityOpt"]
+
+
+@pytest.mark.parametrize(
+    "security_opt",
+    [
+        ["no-new-privileges:true"],
+        ["no-new-privileges=true"],  # 구분자 표기만 다르다
+        ["no-new-privileges:false", "no-new-privileges:true"],  # 마지막 값이 기대와 같다
+    ],
+)
+async def test_verify_isolation_accepts_the_same_effective_security_opt(security_opt):
+    expected = {**spec().hardening_kwargs(), "security_opt": SIDECAR_OPTS}
+    await verify({**GOOD_HARDENING, "SecurityOpt": security_opt}, expected=expected)
+
+
+async def test_verify_isolation_accepts_security_opts_in_any_order():
+    opts = ["no-new-privileges:true", "apparmor=docker-default"]
+    expected = {**spec().hardening_kwargs(), "security_opt": opts}
+    await verify({**GOOD_HARDENING, "SecurityOpt": list(reversed(opts))}, expected=expected)
+
+
+@pytest.mark.parametrize("pids_limit", [None, 0, -1, 4096])
+async def test_verify_isolation_refuses_a_container_that_lost_its_pid_limit(pids_limit):
+    """PID limit 이 빠지거나 바뀐 컨테이너는 fork bomb 방어를 잃은 것이다 (02 Resources)."""
+    with pytest.raises(AaestroError) as caught:
+        await verify({**GOOD_HARDENING, "PidsLimit": pids_limit})
+
+    assert caught.value.code == "RT_001"
+    assert caught.value.details["fields"] == ["PidsLimit"]
+
+
+def inspect_shape(kwargs):
+    """생성 인자를 `docker inspect` 가 보고하는 모양으로 — 정상 컨테이너가 이렇게 보인다."""
+    return {
+        "CapDrop": kwargs["cap_drop"],
+        "ReadonlyRootfs": kwargs["read_only"],
+        "User": kwargs["user"],
+        "SecurityOpt": kwargs.get("security_opt"),
+        "PidsLimit": kwargs["pids_limit"],
+        "MaskedPaths": DEFAULT_MASKED_PATHS,
+        "ReadonlyPaths": DEFAULT_READONLY_PATHS,
+    }
+
+
+HARDENING_KEYS = ("pids_limit", "user", "read_only", "cap_drop", "security_opt")
+
+
+@pytest.mark.parametrize("filled", [(), ("no-new-privileges:true",)])
+def test_the_start_kwargs_carry_exactly_the_spec_hardening(monkeypatch, filled):
+    """기대값은 기동 kwargs 의 사본이 아니라 그 출처다 — 둘이 갈라지지 않는다."""
+    from aaestro.runtime import spec as spec_module
+    from aaestro.runtime.docker.engine import hardening_gaps
+
+    monkeypatch.setattr(spec_module, "HARDENED_SECURITY_OPT", filled)
+    built = spec()
+    kwargs = built.to_docker_kwargs()
+
+    assert {key: kwargs[key] for key in HARDENING_KEYS} == built.hardening_kwargs()
+    assert hardening_gaps(inspect_shape(kwargs), built.hardening_kwargs()) == []
+    assert kwargs["security_opt"] == list(filled)
+
+
+def test_a_non_default_pid_limit_spec_still_reattaches_its_own_container():
+    """스펙의 PID limit 이 기본값이 아니어도 자기 kwargs 로 만든 컨테이너는 통과한다."""
+    import dataclasses
+
+    from aaestro.runtime.docker.engine import hardening_gaps
+
+    custom = dataclasses.replace(spec(), pids_limit=128)
+    kwargs = custom.to_docker_kwargs()
+
+    assert kwargs["pids_limit"] == 128
+    assert hardening_gaps(inspect_shape(kwargs), custom.hardening_kwargs()) == []
+    assert hardening_gaps(inspect_shape(kwargs), spec().hardening_kwargs()) == ["PidsLimit"]
+
+
+@pytest.mark.parametrize("filled", [(), ("no-new-privileges:true",)])
+def test_a_container_built_from_the_sidecar_kwargs_has_no_hardening_gaps(monkeypatch, filled):
+    from aaestro.runtime import spec as spec_module
+    from aaestro.runtime.docker.engine import hardening_gaps
+    from aaestro.runtime.sidecars import sidecar_kwargs
+    from tests.unit.runtime.test_sidecars import SEARCH, with_servers
+
+    monkeypatch.setattr(spec_module, "HARDENED_SECURITY_OPT", filled)
+    manifest = with_servers(SEARCH)
+    kwargs = sidecar_kwargs("researcher", manifest.spec.mcp.servers[0], {}, "net")
+
+    assert hardening_gaps(inspect_shape(kwargs), kwargs) == []
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("SecurityOpt", ["no-new-privileges:true", "no-new-privileges:false"]),
+        ("SecurityOpt", ["no-new-privileges:true", "seccomp=unconfined"]),
+        ("PidsLimit", None),
+        ("MaskedPaths", []),
+    ],
+)
+async def test_sidecar_reattach_replaces_a_weakened_sidecar(field, value):
+    """사이드카 재부착(`McpSidecars._sound`)도 같은 대조를 거친다 — 배선까지 본다."""
+    from aaestro.runtime.sidecars import McpSidecars
+    from tests.unit.runtime.test_sidecars import SEARCH, with_servers
+
+    docker = FakeDockerClient()
+    sidecars = McpSidecars(docker)
+    manifest = with_servers(SEARCH)
+    await sidecars.start(manifest, {})
+    first = docker.find("aaestro-researcher--mcp-search")
+    sound = {**inspect_shape(docker.created[-1]), "NetworkMode": None}
+
+    docker._hardening = sound
+    await sidecars.start(manifest, {}, reuse=True)
+    assert docker.find("aaestro-researcher--mcp-search") == first  # 정상이면 그대로 붙는다
+
+    docker._hardening = {**sound, field: value}
+    await sidecars.start(manifest, {}, reuse=True)
+    assert first in docker.removed

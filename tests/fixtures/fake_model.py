@@ -28,9 +28,7 @@ class FakeModel:
         messages = tuple(messages)
         self.requests.append((system, messages, tuple(tools)))
         opening = messages[0]
-        self.calls.append(
-            (opening.parts[-1] if isinstance(opening, UserTurn) else "", tuple(tools))
-        )
+        self.calls.append((opening.parts[0] if isinstance(opening, UserTurn) else "", tuple(tools)))
         index = min(len(self.calls) - 1, len(self._responses) - 1)
         item = self._responses[index]
         if isinstance(item, Exception):

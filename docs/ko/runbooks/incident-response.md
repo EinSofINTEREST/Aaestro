@@ -49,12 +49,17 @@ Aaestro 알림이 울렸을 때의 대응 절차. 규범 규칙:
 
 10분 내 재시작 5회 초과.
 
-1. `aaestro_container_restarts_total` 의 `reason` 을 확인한다. `RT_003` 은 OOM —
-   `runtime.resources.memory` 를 올리거나 동시성을 낮춘다.
-2. `RT_001` 반복은 대개 이미지나 entrypoint 문제다 — 컨테이너가 health 를 보고할
-   지점까지 도달하지 못한다.
-3. 10분 내 5회를 넘기면 runtime 이 에이전트를 **Failed** 로 전환하고 재시도를
-   멈춘다. 원인을 고친 뒤 재배포한다.
+1. `aaestro_container_restarts_total` 의 `reason` 을 확인한다: `unhealthy` (health 실패로
+   교체됨), `failed` (교체 컨테이너가 기동하지 못함 — 다음 backoff 뒤 다시 시도), `gave_up`
+   (상한 도달). OOM 은 아직 따로 분류하지 않는다 — runtime 은 재시작할 때 `RT_003` 을 남기지
+   않고 교체된 컨테이너는 지워진다 — 그래서 메모리 부족도 `unhealthy` 로 보인다.
+   `docker events --filter event=oom` 에 `oom` 이 있으면 `runtime.resources.memory` 를 올리거나
+   동시성을 낮춘다.
+2. `RT_001` 과 함께 `failed` 가 반복되면 대개 이미지나 entrypoint 문제다 — 컨테이너가
+   health 를 보고할 지점까지 도달하지 못한다. 재시도 동안 그 레플리카는 **Unhealthy** 로
+   남고 태스크를 받지 않는다.
+3. 기동에 실패한 재시작도 센다. 10분 내 5회를 넘기면 runtime 이 에이전트를 **Failed** 로
+   전환하고 재시도를 멈춘다. 원인을 고친 뒤 재배포한다.
 4. **기동 중에** 재시작되는 에이전트(한 번도 healthy 인 적 없이 `interval_s × unhealthy_threshold`
    에서 재시작)는 에이전트 문제가 아니라 기동 유예가 짧은 것이다.
    `runtime.health_check.startup_grace_s` 와 `orchestrator.deployment_ready_timeout_s` 를 함께

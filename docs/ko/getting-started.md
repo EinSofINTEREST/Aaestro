@@ -159,7 +159,7 @@ curl -X POST http://127.0.0.1:18081/v1/invoke \
        "input":{"msg":"hello"},"trace":{"trace_id":"tr-1"}}'
 ```
 
-Control API 는 에이전트별 토큰을 요구합니다. `/v1/health` 만 무인증입니다
+Control API 는 에이전트별 토큰을 요구합니다. `GET /v1/health` 만 무인증입니다
 (Docker healthcheck 가 직접 호출하므로). 운영에서는 runtime 이 에이전트마다
 난수 토큰을 발급해 주입하며, 개발 스택은 같은 코드 경로를 유지하려고 고정
 placeholder 를 씁니다.

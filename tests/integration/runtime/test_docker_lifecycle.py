@@ -95,6 +95,17 @@ class CliDockerClient:
         raw = docker("inspect", "-f", "{{json .NetworkSettings.Networks}}", container_id)
         return tuple(json.loads(raw))
 
+    def hardening_of(self, container_id: str) -> dict[str, Any]:
+        raw = docker(
+            "inspect",
+            "-f",
+            "{{json .HostConfig}}\n{{json .Config.User}}",
+            container_id,
+        )
+        host_json, user_json = raw.splitlines()
+        host = json.loads(host_json)
+        return {**host, "User": json.loads(user_json)}
+
     def address_of(self, container_id: str, network: str) -> str:
         raw = docker("inspect", "-f", "{{json .NetworkSettings.Networks}}", container_id)
         address = (json.loads(raw).get(network) or {}).get("IPAddress") or ""
@@ -298,6 +309,10 @@ async def test_full_lifecycle_start_health_invoke_stop(engine):
 
     handle = await docker_engine.start(echo_spec())
     assert isinstance(handle, ContainerHandle)
+
+    # no-new-privileges 를 켠 채로 agentd 가 정상 기동해야 한다 (#475)
+    security_opt = docker("inspect", "-f", "{{json .HostConfig.SecurityOpt}}", handle.container_id)
+    assert json.loads(security_opt) == ["no-new-privileges:true"]
 
     monitor = HealthMonitor(
         agent="echo",

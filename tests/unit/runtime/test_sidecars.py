@@ -205,6 +205,26 @@ async def test_reattach_replaces_a_sidecar_attached_to_another_network():
     assert first in docker.removed
 
 
+@pytest.mark.parametrize(
+    "hardening",
+    [
+        {"CapDrop": None, "ReadonlyRootfs": True, "User": "1000:1000"},
+        {"CapDrop": ["ALL"], "ReadonlyRootfs": True, "User": "1000:1000", "Privileged": True},
+    ],
+)
+async def test_reattach_replaces_a_sidecar_that_lost_its_hardening(hardening):
+    docker = FakeDockerClient()
+    sidecars = McpSidecars(docker)
+    manifest = with_servers(SEARCH)
+    await sidecars.start(manifest, {})
+    first = docker.find("aaestro-researcher--mcp-search")
+    docker._hardening = hardening
+
+    await sidecars.start(manifest, {}, reuse=True)
+
+    assert first in docker.removed
+
+
 async def test_a_sidecar_that_fails_to_start_is_removed_and_reported():
     docker = FakeDockerClient(start_error=RuntimeError("boom"))
 

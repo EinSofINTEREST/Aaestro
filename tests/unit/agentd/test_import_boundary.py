@@ -7,14 +7,25 @@
 
 from __future__ import annotations
 
-import subprocess
-import sys
-import textwrap
-from pathlib import Path
+from tests.fixtures.import_contract import REPO_ROOT, assert_no_forbidden_imports
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-
+# 서버 · control plane 쪽 모듈 — 새 import 가 생기면 이 상수를 고치는 것이 곧 결정이다
 FORBIDDEN = (
+    # aaestro
+    "aaestro.orchestrator",
+    "aaestro.runtime",
+    "aaestro.cli",
+    "aaestro.ui",
+    "aaestro.deploy",
+    "aaestro.authoring",
+    "aaestro.materials",
+    "aaestro.catalog",
+    "aaestro.config",
+    "aaestro.access.registry",
+    "aaestro.access.store",
+    "aaestro.access.baselines",
+    "aaestro.egress",
+    # memory 서버 모듈
     "aaestro.memory.store",
     "aaestro.memory.service",
     "aaestro.memory.gate",
@@ -23,29 +34,16 @@ FORBIDDEN = (
     "aaestro.memory.bootstrap",
     "aaestro.memory.index",
     "aaestro.memory.compaction",
-    "aaestro.runtime",
-    "aaestro.access.registry",
-    "aaestro.access.store",
-    "aaestro.access.baselines",
+    # 서드파티
+    "docker",
+    "langgraph",
+    "langchain_core",
+    "psycopg",
 )
-
-_CHECK = """
-import os, sys
-{body}
-bad = sorted(m for m in sys.modules if m.startswith({forbidden!r}))
-assert not bad, bad
-"""
 
 
 def _run(body: str) -> None:
-    code = _CHECK.format(body=textwrap.dedent(body), forbidden=FORBIDDEN)
-    result = subprocess.run(  # noqa: S603 — 고정 인자, 격리 모드 인터프리터
-        [sys.executable, "-I", "-c", code],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 0, result.stderr
+    assert_no_forbidden_imports(body, FORBIDDEN)
 
 
 def test_import_agentd_main_loads_no_server_module() -> None:

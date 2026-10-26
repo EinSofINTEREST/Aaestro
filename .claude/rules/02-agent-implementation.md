@@ -253,6 +253,7 @@ spec:
    - MUST NOT bake secrets into images (빌드 arg 로도 금지)
    - SHOULD use read-only root filesystem + 명시적 writable volume (`/workspace`, `/tmp`)
    - Capability drop: `--cap-drop=ALL` 기본, 필요 capability 만 manifest 로 선언
+   - `--security-opt=no-new-privileges:true` 기본 — setuid 바이너리로 권한을 되찾는 길을 막는다 (사이드카와 같은 경화 집합)
 
 4. **Resources**
    - CPU/Memory limit 필수 (manifest `runtime.resources`)
@@ -339,7 +340,8 @@ Runtime layer →  env_allowlist 각 키를 local > group > global 순으로 해
 4. **Drain**: 새 태스크 수락 중지 → 진행 중 태스크 완료 대기 (기본 30s) → 종료
 5. **Stop**: SIGTERM → 30s grace → SIGKILL. `shutdown()` 에서 MCP/A2A 세션 정리
 6. **Restart Policy**: Unhealthy 시 exponential backoff 재시작 (1s → 2s → 4s... max 60s),
-   10분 내 5회 초과 시 Failed 로 전환하고 알림
+   10분 내 5회 초과 시 Failed 로 전환하고 알림. 재기동(컨테이너 기동) 자체가 실패해도 한 번의
+   재시작으로 세고 다음 backoff 로 다시 시도한다 — 그 동안 레플리카는 Unhealthy 로 남는다
 
 ### Hot Reload
 
@@ -376,8 +378,13 @@ POST /v1/drain           # graceful drain 개시
    장시간 태스크는 `/stream` 사용
 3. 인증: runtime 이 발급한 per-agent token 을 `Authorization` 헤더로 요구.
    토큰 없이는 기동하지 않는다 (`CFG_001`) — 무인증은 `AAESTRO_ALLOW_UNAUTHENTICATED=1` opt-in
-   이면서 loopback 바인드일 때만 (`http_auth.resolve_required_token`)
-4. `/health` 는 무인증 — Docker healthcheck 가 직접 호출
+   이면서 loopback 바인드일 때만 (`http_auth.resolve_required_token`).
+   토큰은 **본문을 읽기 전에** 본다 (`http_auth.admit_first`) — `Depends` 는 본문 파싱보다 늦어
+   깨진 JSON · UTF-8 본문이 인증보다 먼저 거절된다 (#462). 토큰이 없으면 본문과 무관하게 같은 401 이다.
+   라우팅보다도 먼저 본다 (`http_auth.AdmitBeforeRouting`) — 토큰이 없으면 없는 경로 · 틀린 메서드도
+   같은 401 이라 404 · 405 + `Allow` 로 라우트 표가 새지 않는다
+4. `GET /health` 는 무인증 — Docker healthcheck 가 직접 호출. 검사하는 라우터 밖에 둔 유일한 라우트이고,
+   API 문서 경로는 열지 않는다. 다른 메서드(`HEAD` 포함)는 닫힌 경로와 같은 401 이다
 5. `/steer` 의 `queued` 는 **접수이지 반영이 아니다** (Execution Loop — Steering). 진행 중이
    아닌(끝났거나 모르는) 태스크는 `NF_001` (404), 상한 초과는 `VAL_002` (400). steer 를
    구현하지 않은 실행기(커스텀 entrypoint, echo)는 `/reload` 와 같은 `unsupported` 본문을
@@ -417,6 +424,8 @@ async def execute(self, task: TaskRequest) -> TaskResult:
 6. **Model Failover**: 모델 호출의 재시도가 소진되면 `spec.model.fallbacks` 중 실패 부류가
    `on` 에 든 다음 모델로 같은 턴을 보낸다 — 전환 주체는 agentd (05 Retry Layering).
    circuit open 인 모델은 건너뛴다
+7. **System Prefix**: 모델 호출의 시스템 자리는 프레임워크의 고정 경계 지시가 promptset `system`
+   렌더보다 먼저 온다 ([04](04-module-system.md) Promptset Rules 6) — 매 턴 같은 문자열이다
 
 ### Steering — 턴 경계의 운영자 지시
 
