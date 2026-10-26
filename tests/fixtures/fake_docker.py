@@ -79,6 +79,7 @@ class FakeDockerClient:
                     "CapDrop": kwargs.get("cap_drop"),
                     "ReadonlyRootfs": kwargs.get("read_only"),
                     "SecurityOpt": kwargs.get("security_opt"),
+                    "PidsLimit": kwargs.get("pids_limit"),
                     "User": kwargs.get("user"),
                     "NetworkMode": kwargs.get("network_mode"),
                 }

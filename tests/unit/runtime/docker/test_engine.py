@@ -435,18 +435,23 @@ async def test_drain_success_log_includes_the_image(monkeypatch):
     assert recorded[-1]["container_id"] == handle.short_id
 
 
+DEFAULT_MASKED_PATHS = ["/proc/kcore", "/proc/keys", "/sys/firmware"]
+DEFAULT_READONLY_PATHS = ["/proc/bus", "/proc/sys"]
+
 GOOD_HARDENING = {
     "CapDrop": ["ALL"],
     "ReadonlyRootfs": True,
     "User": "1000:1000",
-    "SecurityOpt": ["no-new-privileges:true"],
+    "SecurityOpt": None,  # 에이전트 스펙은 security_opt 를 싣지 않는다 — Docker 는 null 로 보고
+    "PidsLimit": 256,
 }
 
 
-async def verify(hardening, *, internal: bool = False) -> None:
+async def verify(hardening, *, internal: bool = False, expected=None) -> None:
     client = FakeDockerClient(hardening=hardening)
     engine = DockerEngine(client=client, network="agents", internal=internal)
-    await engine.verify_isolation("alpha", "img:1", "container-0001")
+    wanted = spec().hardening_kwargs() if expected is None else expected
+    await engine.verify_isolation("alpha", "img:1", "container-0001", wanted)
 
 
 async def test_verify_isolation_accepts_a_hardened_container():
@@ -487,6 +492,9 @@ async def test_verify_isolation_refuses_a_container_that_lost_its_hardening(fiel
         ("IpcMode", "container:abc123"),
         ("NetworkMode", "container:abc123"),
         ("UsernsMode", "container:abc123"),
+        # systempaths=unconfined 는 SecurityOpt 가 아니라 여기에 드러난다 (#489 QA 실측)
+        ("MaskedPaths", []),
+        ("ReadonlyPaths", []),
     ],
 )
 @pytest.mark.parametrize("internal", [False, True])
@@ -508,6 +516,8 @@ async def test_verify_isolation_accepts_the_values_docker_reports_for_a_plain_co
             "IpcMode": "private",
             "UsernsMode": "",
             "NetworkMode": "agents",
+            "MaskedPaths": DEFAULT_MASKED_PATHS,
+            "ReadonlyPaths": DEFAULT_READONLY_PATHS,
         }
     )
 
@@ -524,11 +534,82 @@ async def test_verify_isolation_refuses_a_container_missing_a_security_opt_the_s
         await verify({**GOOD_HARDENING, "SecurityOpt": security_opt})
 
     assert caught.value.details["fields"] == ["SecurityOpt"]
-    await verify(GOOD_HARDENING)  # 켜진 뒤에도 정상 컨테이너는 붙는다
+    # 켜진 뒤에도 그 값을 실은 정상 컨테이너는 붙는다
+    await verify({**GOOD_HARDENING, "SecurityOpt": ["no-new-privileges:true"]})
 
 
-async def test_verify_isolation_ignores_security_opt_while_the_spec_sets_none():
-    await verify({**GOOD_HARDENING, "SecurityOpt": None})
+@pytest.mark.parametrize("security_opt", [None, []])
+async def test_verify_isolation_accepts_no_security_opt_while_the_spec_sets_none(security_opt):
+    await verify({**GOOD_HARDENING, "SecurityOpt": security_opt})
+
+
+@pytest.mark.parametrize(
+    "security_opt",
+    [
+        ["no-new-privileges:true"],  # 기대 () 에 더해진 항목 — 기대 밖 키
+        ["seccomp=unconfined"],
+        ['seccomp={"defaultAction":"SCMP_ACT_ALLOW"}'],  # 허용 정책 프로필 — unconfined 가 아니다
+        ["apparmor=unconfined"],
+        ["label=disable"],
+    ],
+)
+async def test_verify_isolation_refuses_a_security_opt_the_spec_did_not_set(security_opt):
+    with pytest.raises(AaestroError) as caught:
+        await verify({**GOOD_HARDENING, "SecurityOpt": security_opt})
+
+    assert caught.value.details["fields"] == ["SecurityOpt"]
+
+
+SIDECAR_OPTS = ["no-new-privileges:true"]
+
+
+@pytest.mark.parametrize(
+    "security_opt",
+    [
+        ["no-new-privileges:true", "no-new-privileges:false"],  # Docker 는 마지막 값을 쓴다
+        ["no-new-privileges:true", "seccomp=unconfined"],
+        ["no-new-privileges:true", 'seccomp={"defaultAction":"SCMP_ACT_ALLOW"}'],
+        ["no-new-privileges:false"],
+        [],
+    ],
+)
+async def test_verify_isolation_refuses_a_security_opt_whose_effective_value_differs(
+    security_opt,
+):
+    expected = {**spec().hardening_kwargs(), "security_opt": SIDECAR_OPTS}
+    with pytest.raises(AaestroError) as caught:
+        await verify({**GOOD_HARDENING, "SecurityOpt": security_opt}, expected=expected)
+
+    assert caught.value.details["fields"] == ["SecurityOpt"]
+
+
+@pytest.mark.parametrize(
+    "security_opt",
+    [
+        ["no-new-privileges:true"],
+        ["no-new-privileges=true"],  # 구분자 표기만 다르다
+        ["no-new-privileges:false", "no-new-privileges:true"],  # 마지막 값이 기대와 같다
+    ],
+)
+async def test_verify_isolation_accepts_the_same_effective_security_opt(security_opt):
+    expected = {**spec().hardening_kwargs(), "security_opt": SIDECAR_OPTS}
+    await verify({**GOOD_HARDENING, "SecurityOpt": security_opt}, expected=expected)
+
+
+async def test_verify_isolation_accepts_security_opts_in_any_order():
+    opts = ["no-new-privileges:true", "apparmor=docker-default"]
+    expected = {**spec().hardening_kwargs(), "security_opt": opts}
+    await verify({**GOOD_HARDENING, "SecurityOpt": list(reversed(opts))}, expected=expected)
+
+
+@pytest.mark.parametrize("pids_limit", [None, 0, -1, 4096])
+async def test_verify_isolation_refuses_a_container_that_lost_its_pid_limit(pids_limit):
+    """PID limit 이 빠지거나 바뀐 컨테이너는 fork bomb 방어를 잃은 것이다 (02 Resources)."""
+    with pytest.raises(AaestroError) as caught:
+        await verify({**GOOD_HARDENING, "PidsLimit": pids_limit})
+
+    assert caught.value.code == "RT_001"
+    assert caught.value.details["fields"] == ["PidsLimit"]
 
 
 def inspect_shape(kwargs):
@@ -538,19 +619,42 @@ def inspect_shape(kwargs):
         "ReadonlyRootfs": kwargs["read_only"],
         "User": kwargs["user"],
         "SecurityOpt": kwargs.get("security_opt"),
+        "PidsLimit": kwargs["pids_limit"],
+        "MaskedPaths": DEFAULT_MASKED_PATHS,
+        "ReadonlyPaths": DEFAULT_READONLY_PATHS,
     }
 
 
+HARDENING_KEYS = ("pids_limit", "user", "read_only", "cap_drop", "security_opt")
+
+
 @pytest.mark.parametrize("filled", [(), ("no-new-privileges:true",)])
-def test_a_container_built_from_the_agent_spec_has_no_hardening_gaps(monkeypatch, filled):
+def test_the_start_kwargs_carry_exactly_the_spec_hardening(monkeypatch, filled):
+    """기대값은 기동 kwargs 의 사본이 아니라 그 출처다 — 둘이 갈라지지 않는다."""
     from aaestro.runtime import spec as spec_module
     from aaestro.runtime.docker.engine import hardening_gaps
 
     monkeypatch.setattr(spec_module, "HARDENED_SECURITY_OPT", filled)
-    kwargs = spec().to_docker_kwargs()
+    built = spec()
+    kwargs = built.to_docker_kwargs()
 
-    assert hardening_gaps(inspect_shape(kwargs), spec_module.hardening_kwargs()) == []
+    assert {key: kwargs[key] for key in HARDENING_KEYS} == built.hardening_kwargs()
+    assert hardening_gaps(inspect_shape(kwargs), built.hardening_kwargs()) == []
     assert kwargs["security_opt"] == list(filled)
+
+
+def test_a_non_default_pid_limit_spec_still_reattaches_its_own_container():
+    """스펙의 PID limit 이 기본값이 아니어도 자기 kwargs 로 만든 컨테이너는 통과한다."""
+    import dataclasses
+
+    from aaestro.runtime.docker.engine import hardening_gaps
+
+    custom = dataclasses.replace(spec(), pids_limit=128)
+    kwargs = custom.to_docker_kwargs()
+
+    assert kwargs["pids_limit"] == 128
+    assert hardening_gaps(inspect_shape(kwargs), custom.hardening_kwargs()) == []
+    assert hardening_gaps(inspect_shape(kwargs), spec().hardening_kwargs()) == ["PidsLimit"]
 
 
 @pytest.mark.parametrize("filled", [(), ("no-new-privileges:true",)])
@@ -565,3 +669,33 @@ def test_a_container_built_from_the_sidecar_kwargs_has_no_hardening_gaps(monkeyp
     kwargs = sidecar_kwargs("researcher", manifest.spec.mcp.servers[0], {}, "net")
 
     assert hardening_gaps(inspect_shape(kwargs), kwargs) == []
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("SecurityOpt", ["no-new-privileges:true", "no-new-privileges:false"]),
+        ("SecurityOpt", ["no-new-privileges:true", "seccomp=unconfined"]),
+        ("PidsLimit", None),
+        ("MaskedPaths", []),
+    ],
+)
+async def test_sidecar_reattach_replaces_a_weakened_sidecar(field, value):
+    """사이드카 재부착(`McpSidecars._sound`)도 같은 대조를 거친다 — 배선까지 본다."""
+    from aaestro.runtime.sidecars import McpSidecars
+    from tests.unit.runtime.test_sidecars import SEARCH, with_servers
+
+    docker = FakeDockerClient()
+    sidecars = McpSidecars(docker)
+    manifest = with_servers(SEARCH)
+    await sidecars.start(manifest, {})
+    first = docker.find("aaestro-researcher--mcp-search")
+    sound = {**inspect_shape(docker.created[-1]), "NetworkMode": None}
+
+    docker._hardening = sound
+    await sidecars.start(manifest, {}, reuse=True)
+    assert docker.find("aaestro-researcher--mcp-search") == first  # 정상이면 그대로 붙는다
+
+    docker._hardening = {**sound, field: value}
+    await sidecars.start(manifest, {}, reuse=True)
+    assert first in docker.removed

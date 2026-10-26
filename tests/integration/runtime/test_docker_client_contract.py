@@ -209,6 +209,10 @@ def test_hardening_is_read_under_the_inspect_field_names(client, container):
     assert found["ReadonlyRootfs"] is True
     assert found["User"] == "1000:1000"
     assert not found["SecurityOpt"]  # 이 스펙은 security_opt 를 싣지 않는다
+    assert found["PidsLimit"] == 256  # 재부착 대조가 기대하는 DEFAULT_PID_LIMIT
+    # systempaths=unconfined 는 SecurityOpt 가 아니라 이 둘을 비운다 — 기본은 비어 있지 않다
+    assert found["MaskedPaths"]
+    assert found["ReadonlyPaths"]
     assert not found["Privileged"]
     assert not found["CapAdd"]
 
@@ -228,7 +232,7 @@ async def test_a_container_built_from_the_spec_passes_the_engine_check(client, e
     container_id = client.create(**spec.to_docker_kwargs())
     try:
         await DockerEngine(client=client, network=NETWORK).verify_isolation(
-            "echo", echo_image, container_id
+            "echo", echo_image, container_id, spec.hardening_kwargs()
         )
     finally:
         client.remove(container_id)

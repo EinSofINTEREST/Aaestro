@@ -21,23 +21,10 @@ DEFAULT_CONTROL_PORT: Final = 8080
 HARDENED_USER = "1000:1000"
 HARDENED_CAP_DROP: tuple[str, ...] = ("ALL",)
 HARDENED_SECURITY_OPT: tuple[str, ...] = ()
-"""에이전트 컨테이너가 싣는 security_opt — `to_docker_kwargs` 와 재부착 대조가 같은 값을 쓴다."""
-
-
-def hardening_kwargs() -> dict[str, Any]:
-    """에이전트 컨테이너의 경화 생성 인자 — 기동 스펙과 재부착 대조의 공통 출처.
-
-    `to_docker_kwargs` 가 이 값을 싣고, `engine.hardening_gaps` 가 같은 값을 기대한다.
-    """
-    return {
-        "user": HARDENED_USER,
-        "read_only": True,
-        "cap_drop": list(HARDENED_CAP_DROP),
-        "security_opt": list(HARDENED_SECURITY_OPT),
-    }
-
-
+"""에이전트 컨테이너가 싣는 security_opt — `build_container_spec` 이 스펙에 싣는다."""
 DEFAULT_PID_LIMIT: Final = 256
+
+
 DEFAULT_BASE_IMAGE: Final = "aaestro/agent-base:0.1.0"
 
 A2A_PORT_ENV: Final = "AAESTRO_A2A_PORT"
@@ -112,6 +99,22 @@ class ContainerSpec:
     extra_networks: tuple[str, ...] = ()
     """기동 전에 더 붙는 네트워크 — 이그레스 프록시 없는 배포의 자기 사이드카 네트워크 (#304).
     SDK 의 생성 인자는 네트워크를 하나만 받으므로 엔진이 따로 붙인다."""
+    security_opt: tuple[str, ...] = ()
+
+    def hardening_kwargs(self) -> dict[str, Any]:
+        """이 컨테이너의 경화 생성 인자 — 기동 kwargs 와 재부착 대조의 단일 출처.
+
+        `to_docker_kwargs` 가 이것을 그대로 싣고, 재부착은 같은 매니페스트로 스펙을 다시 만들어
+        이것을 기대값으로 쓴다 (`engine.hardening_gaps`). 값은 한 방향으로만 흐른다 — 검사 쪽에
+        사본을 두면 스펙이 바뀔 때 정상 컨테이너가 전부 거절된다.
+        """
+        return {
+            "pids_limit": self.pids_limit,
+            "user": self.user,
+            "read_only": self.read_only_rootfs,
+            "cap_drop": list(self.cap_drop),
+            "security_opt": list(self.security_opt),
+        }
 
     def to_docker_kwargs(self) -> dict[str, Any]:
         """Render arguments for the Docker SDK.
@@ -127,11 +130,7 @@ class ContainerSpec:
             "ports": {f"{p.container_port}/tcp": (LOOPBACK, None) for p in self.ports},
             "nano_cpus": round(self.cpu_cores * 1_000_000_000),
             "mem_limit": self.memory_bytes,
-            "pids_limit": self.pids_limit,
-            "user": self.user,
-            "read_only": self.read_only_rootfs,
-            "cap_drop": list(self.cap_drop),
-            "security_opt": list(HARDENED_SECURITY_OPT),
+            **self.hardening_kwargs(),
             "tmpfs": dict.fromkeys(self.tmpfs, TMPFS_OPTIONS),
             "volumes": {
                 volume["name"]: {
@@ -243,6 +242,7 @@ def build_container_spec(
         user=HARDENED_USER,
         read_only_rootfs=True,
         cap_drop=HARDENED_CAP_DROP,
+        security_opt=HARDENED_SECURITY_OPT,
         tmpfs=_WRITABLE_TMPFS,
         volumes=volumes,
         labels={

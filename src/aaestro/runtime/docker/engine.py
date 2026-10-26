@@ -8,12 +8,12 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import structlog
 
-from aaestro.runtime import spec as spec_module
 from aaestro.runtime.docker.errors import (
     OOM_EXIT_CODE,
     NetworkIsolationError,
@@ -28,7 +28,7 @@ from aaestro.runtime.docker.errors import (
 from aaestro.runtime.spec import LOOPBACK, ContainerSpec
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Callable, Iterable, Mapping
 
 DEFAULT_NETWORK = "aaestro-net"
 DEFAULT_STOP_GRACE_S = 30.0
@@ -68,16 +68,37 @@ def control_port_of(spec: ContainerSpec) -> int:
 SHARED_NAMESPACE_FIELDS = ("PidMode", "IpcMode", "UsernsMode", "NetworkMode")
 HOST_NAMESPACE = "host"
 CONTAINER_NAMESPACE_PREFIX = "container:"
+SECURITY_OPT_SEPARATOR = re.compile(r"[=:]")
+UNMASKED_PATH_FIELDS = ("MaskedPaths", "ReadonlyPaths")
+
+
+def security_opt_map(options: Iterable[str] | None) -> dict[str, str | None]:
+    """`security_opt` 항목을 키 → 유효값으로 — 생성 인자와 `docker inspect` 를 같은 모양으로 읽는다.
+
+    Docker 는 같은 키가 여럿이면 **마지막 값** 을 쓴다 (`no-new-privileges:true` 뒤의
+    `no-new-privileges:false` 는 `NoNewPrivs: 0` — #489 QA 실측). 그래서 집합이 아니라 맵으로
+    비교한다: 항목을 더하거나 뒤에서 덮는 것은 같은 맵이 되지 않는다. 구분자는 `=` 와 옛 `:` 중
+    먼저 나오는 것이고 (seccomp 프로필 JSON 안의 `:` 는 값에 남는다), 구분자 없는 항목은 키만이다.
+    """
+    parsed: dict[str, str | None] = {}
+    for option in options or ():
+        key, *value = SECURITY_OPT_SEPARATOR.split(option, maxsplit=1)
+        parsed[key] = value[0] if value else None
+    return parsed
 
 
 def hardening_gaps(found: Mapping[str, Any], expected: Mapping[str, Any]) -> list[str]:
     """`docker inspect` 값에서 경화가 어긋난 필드 이름 — 없으면 빈 목록.
 
-    ``expected`` 는 그 컨테이너를 만든 생성 인자(user · cap_drop · read_only · security_opt)다 —
-    에이전트는 `spec.hardening_kwargs()`, 사이드카는 `sidecar_kwargs`. 필드 목록이 아니라 부류를
-    본다: 생성 인자가 건 설정이 빠진 것, 그리고 걸려 있어도 뜻을 잃게 만드는 설정(privileged 는
-    CapDrop 과 무관하게 모든 capability 를 주고, 호스트 · 다른 컨테이너와 공유하는 네임스페이스도
-    같다).
+    ``expected`` 는 그 컨테이너를 만든 생성 인자(user · cap_drop · read_only · security_opt ·
+    pids_limit)다 — 에이전트는 `ContainerSpec.hardening_kwargs()`, 사이드카는 `sidecar_kwargs`.
+    필드 목록이 아니라 부류를 본다: 생성 인자가 건 설정이 빠진 것, 그리고 걸려 있어도 뜻을 잃게
+    만드는 설정(privileged 는 CapDrop 과 무관하게 모든 capability 를 주고, 호스트 · 다른 컨테이너와
+    공유하는 네임스페이스도 같다). `security_opt` 는 키별 유효값이 생성 인자와 같아야 한다 —
+    더한 항목(`seccomp=unconfined`, 허용 정책 프로필)과 뒤에서 덮은 항목이 모두 걸린다.
+    `MaskedPaths` · `ReadonlyPaths` 가 빈 목록이면 `/proc` · `/sys` 가림이 꺼진 것이다
+    (`systempaths=unconfined` 는 `SecurityOpt` 에 남지 않고 여기에만 드러난다). `None` 은 그 필드를
+    보고하지 않는 옛 daemon 이라 불일치로 보지 않는다 — 비었다는 증거가 아니다.
     """
     wrong: list[str] = []
     if not set(expected.get("cap_drop") or ()) <= set(found.get("CapDrop") or ()):
@@ -86,8 +107,12 @@ def hardening_gaps(found: Mapping[str, Any], expected: Mapping[str, Any]) -> lis
         wrong.append("ReadonlyRootfs")
     if found.get("User") != expected.get("user"):
         wrong.append("User")
-    if not set(expected.get("security_opt") or ()) <= set(found.get("SecurityOpt") or ()):
+    if security_opt_map(found.get("SecurityOpt")) != security_opt_map(expected.get("security_opt")):
         wrong.append("SecurityOpt")
+    wrong.extend(field for field in UNMASKED_PATH_FIELDS if found.get(field) == [])
+    # 0 · None · 음수는 무제한이다 — 기대값과 같아야 fork bomb 방어가 남아 있다
+    if "pids_limit" in expected and found.get("PidsLimit") != expected["pids_limit"]:
+        wrong.append("PidsLimit")
     if found.get("Privileged"):
         wrong.append("Privileged")
     if found.get("CapAdd"):
@@ -320,17 +345,20 @@ class DockerEngine:
         port = await asyncio.to_thread(self.client.port_of, container_id, container_port)
         return LOOPBACK, port
 
-    async def verify_isolation(self, agent: str, image: str, container_id: str) -> None:
+    async def verify_isolation(
+        self, agent: str, image: str, container_id: str, expected: Mapping[str, Any]
+    ) -> None:
         """Refuse a container that is not isolated the way this engine runs agents.
 
         재부착은 기동을 거치지 않는다 — 프록시를 켜기 전에 일반 네트워크로 뜬 컨테이너, 누가 외부
         네트워크를 더 붙인 컨테이너를 그대로 붙이면 외부 경로가 남은 채 "격리됨" 으로 다뤄진다.
+        ``expected`` 는 그 컨테이너를 만든 스펙의 `ContainerSpec.hardening_kwargs()` 다.
 
         Raises:
             AaestroError: RUNTIME/``RT_001`` (재시도 불가) — 네트워크가 내부가 아니거나, 컨테이너가
                 에이전트 네트워크 말고 다른 네트워크에도 붙어 있거나, 경화 설정이 어긋남.
         """
-        await self._verify_hardening(agent, image, container_id)
+        await self._verify_hardening(agent, image, container_id, expected)
         if not self.internal:
             return
         try:
@@ -346,10 +374,12 @@ class DockerEngine:
                 attached=sorted(attached),
             )
 
-    async def _verify_hardening(self, agent: str, image: str, container_id: str) -> None:
+    async def _verify_hardening(
+        self, agent: str, image: str, container_id: str, expected: Mapping[str, Any]
+    ) -> None:
         """기동 스펙의 경화 설정이 실제로 걸려 있는지 대조한다 (02 Docker Isolation 3)."""
         found = await asyncio.to_thread(self.client.hardening_of, container_id)
-        wrong = hardening_gaps(found, spec_module.hardening_kwargs())
+        wrong = hardening_gaps(found, expected)
         if wrong:
             raise hardening_mismatch(agent, image, wrong)
 

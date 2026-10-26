@@ -41,6 +41,7 @@ from aaestro.runtime.spec import (
     A2A_PEERS_ENV,
     A2A_SECRET_ENV,
     DEFAULT_CONTROL_PORT,
+    build_container_spec,
     container_name,
 )
 
@@ -549,8 +550,10 @@ class DeploymentManager:
                 # 선언이나 secrets 가 사라졌으면 다시 세울 수 없다 — 붙지 않고
                 # 운영자에게 보인다. 조용히 붙이면 첫 재시작에서 넘어진다
                 self._mark_lost(record, f"cannot rebuild from declarations: {err.message}", touched)
+                # 격리를 대조하지 못한 컨테이너도 신원으로 메모리·peer·모델에 닿지 못하게 한다
+                self._revoke_orphaned_identities(record)
                 continue
-            if not await self._isolated(record, touched):
+            if not await self._isolated(record, restart_args, touched):
                 continue
             unready = await self._resume_sidecars(restart_args)
             if unready:
@@ -579,14 +582,34 @@ class DeploymentManager:
                 touched.append(self._refresh(record))
         return touched
 
-    async def _isolated(self, record: DeploymentRecord, touched: list[DeploymentRecord]) -> bool:
+    async def _isolated(
+        self,
+        record: DeploymentRecord,
+        restart_args: Mapping[str, Mapping[str, Any]],
+        touched: list[DeploymentRecord],
+    ) -> bool:
         """재부착 전에 배포의 모든 컨테이너가 runtime 의 격리대로 서 있는지 본다 (#280).
+
+        경화 기대값은 같은 선언(``restart_args``)으로 기동 스펙을 다시 만들어 얻는다 — 기동이 쓴
+        출처와 같아야 스펙이 바뀌어도 정상 컨테이너를 거절하지 않는다 (#483).
 
         하나라도 아니면 아무것도 붙이지 않고 lost 로 두며 그 배포의 신원을 회수한다 — 외부 경로가
         남은 컨테이너가 신원으로 메모리·peer·모델에 계속 닿지 못하게. 컨테이너는 지우지 않는다:
         운영자가 원인을 보고 해체한다.
         """
         engine = self.launcher.engine
+        dropped = sorted({agent.name for agent in record.agents} - set(restart_args))
+        if dropped:
+            # restart_args 는 **지금** 그래프의 노드로 만든다 — 배포 뒤 빠진 노드의 컨테이너는
+            # 기대값을 유도할 선언이 없다. 대조의 KeyError 는 "확인 불가" 와 섞이므로 먼저 가른다
+            self._bind_log(record).error(
+                "deployment not reattached — agent is no longer in the graph", agent=dropped[0]
+            )
+            self._mark_lost(
+                record, "cannot rebuild from declarations: agent is no longer in the graph", touched
+            )
+            self._revoke_orphaned_identities(record)
+            return False
         for agent in record.agents:
             try:
                 container_id = await asyncio.to_thread(
@@ -594,7 +617,12 @@ class DeploymentManager:
                 )
                 if container_id is None:
                     continue  # 없는 컨테이너는 아래 대조가 missing 으로 보고한다
-                await engine.verify_isolation(agent.name, agent.image, container_id)
+                await engine.verify_isolation(
+                    agent.name,
+                    agent.image,
+                    container_id,
+                    self._expected_hardening(agent, restart_args),
+                )
             except AaestroError as err:
                 # 경화 불일치는 어긋난 필드 이름을 함께 남긴다 — 값은 싣지 않는다
                 fields = err.details.get("fields")
@@ -895,6 +923,21 @@ class DeploymentManager:
                         "build_error": record.error,
                     },
                 )
+
+    def _expected_hardening(
+        self, agent: DeployedAgent, restart_args: Mapping[str, Mapping[str, Any]]
+    ) -> dict[str, Any]:
+        """그 레플리카를 다시 세울 스펙의 경화 생성 인자 — launcher 의 기동과 같은 빌더."""
+        args = restart_args[agent.name]
+        spec = build_container_spec(
+            args["manifest"],
+            replica=agent.replica,
+            network=self.launcher.engine.network,
+            mounts=args["mounts"],
+            image=args["image"],
+            extra_networks=args["networks"],
+        )
+        return spec.hardening_kwargs()
 
     def _restart_args_of(self, record: DeploymentRecord) -> dict[str, dict[str, Any]]:
         """기록된 배포의 컨테이너를 같은 선언으로 다시 세우는 데 필요한 것 전부."""

@@ -6,6 +6,7 @@ import asyncio
 from pathlib import Path
 
 import pytest
+import structlog.testing
 import yaml
 
 from aaestro.access.model import ACCESS_CREDENTIAL_ENV
@@ -655,8 +656,17 @@ async def test_reattach_refuses_containers_that_are_not_isolated(
             registry.identify(agent.access_credential)  # 외부 경로가 남은 컨테이너의 신원은 회수
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("Privileged", True),
+        # 기록 → 기대값 유도 고리: 기대값에서 pids_limit 이 빠지면 이 케이스가 붙어 버린다
+        ("PidsLimit", None),
+        ("SecurityOpt", ["seccomp=unconfined"]),
+    ],
+)
 async def test_reattach_marks_a_deployment_with_lost_hardening_lost_and_moves_on(
-    workspace, healthy, caplog
+    workspace, healthy, field, value
 ):
     """경화가 풀린 컨테이너는 붙지 않고 신원이 회수되며, 사유에 필드 이름이 남는다 (#483)."""
     catalog = Catalog.under(workspace)
@@ -684,13 +694,16 @@ async def test_reattach_marks_a_deployment_with_lost_hardening_lost_and_moves_on
     await first.launcher.stop_all()
     write(workspace / "agents" / "gamma" / "manifest.yaml", agent_doc("gamma"))
     write(workspace / "graphs" / "other.yaml", graph_doc("other", ["gamma"]))
-    healthy_record = await manager_with(first_docker).deploy("other")
+    # 같은 레지스트리로 띄워야 정상 배포의 신원이 재부착 뒤에도 남는지 볼 수 있다
+    healthy_manager = manager_with(first_docker)
+    healthy_manager.access = registry
+    healthy_record = await healthy_manager.deploy("other")
 
     class Loosened(TrackingDocker):
         def hardening_of(self, container_id: str) -> dict:
             found = super().hardening_of(container_id)
             if container_id == self.find("aaestro-alpha-0"):
-                found["Privileged"] = True
+                found[field] = value
             return found
 
     later = Loosened(attached=("agents",))
@@ -701,12 +714,111 @@ async def test_reattach_marks_a_deployment_with_lost_hardening_lost_and_moves_on
     touched = {r.deployment_id: r for r in await second.reattach()}
 
     assert touched[broken.deployment_id].status == DeploymentStatus.LOST
-    assert touched[broken.deployment_id].error == "container hardening mismatch: alpha (Privileged)"
+    assert touched[broken.deployment_id].error == f"container hardening mismatch: alpha ({field})"
     with pytest.raises(AaestroError):
         registry.identify(broken.agents[0].access_credential)
     assert touched[healthy_record.deployment_id].status == DeploymentStatus.READY
     assert sorted(second.launcher.launched) == [("gamma", 0)]
+    for agent in healthy_record.agents:
+        # 정상으로 재부착된 배포의 신원은 유지된다 — 회수는 lost 배포에만
+        assert registry.identify(agent.access_credential) == agent.name
     await second.launcher.stop_all()
+
+
+async def test_reattach_marks_a_deployment_whose_agent_left_the_graph_lost(workspace, healthy):
+    """배포 뒤 그래프에서 빠진 노드는 기대값을 유도할 선언이 없다 — 확인 불가가 아니라 재구성 불가.
+
+    `_mark_lost` 의 사유와 로그로 가른다: KeyError 가 광역 except 로 새면 "unverifiable" 이 된다.
+    """
+    catalog = Catalog.under(workspace)
+    store = InMemoryDeploymentStore()
+    first_docker = TrackingDocker()
+
+    def manager(docker) -> DeploymentManager:
+        return DeploymentManager(
+            catalog=catalog,
+            author=Author(catalog=catalog),
+            store=store,
+            secrets_env={"ANTHROPIC_API_KEY": "k"},
+            launcher=AgentLauncher(
+                engine=DockerEngine(client=docker, network="agents", internal=True),
+                health_interval_s=10.0,
+                health_sleep=Tick(),
+            ),
+            ready_poll_s=0.0,
+            sleep=NoSleep(),
+        )
+
+    first = manager(first_docker)
+    registry = with_access(first)
+    record = await first.deploy("two")
+    await first.launcher.stop_all()
+    write(workspace / "graphs" / "two.yaml", graph_doc("two", ["alpha"]))
+    # 컨테이너는 남아 있다 — 대조까지 가야 빠진 노드의 기대값 유도가 문제가 된다
+    later = TrackingDocker(attached=("agents",))
+    later.created = list(first_docker.created)
+    second = manager(later)
+    second.access = registry
+
+    with structlog.testing.capture_logs() as logs:
+        touched = await second.reattach()
+
+    assert [(r.status, r.error) for r in touched] == [
+        (
+            DeploymentStatus.LOST,
+            "cannot rebuild from declarations: agent is no longer in the graph",
+        )
+    ]
+    dropped = [e for e in logs if e["event"].endswith("agent is no longer in the graph")]
+    assert [e["agent"] for e in dropped] == ["beta"]
+    assert not [e for e in logs if e.get("error_code") == "KeyError"]
+    assert touched[0].deployment_id == record.deployment_id
+    assert second.launcher.launched == {}
+    for agent in record.agents:
+        with pytest.raises(AaestroError):
+            registry.identify(agent.access_credential)  # 대조를 거치지 못한 컨테이너의 신원도 회수
+
+
+async def test_reattach_revokes_a_deployment_whose_manifest_is_gone(workspace, healthy):
+    """선언으로 다시 만들 수 없는 배포는 lost 가 되고, 떠 있는 컨테이너의 신원은 회수된다."""
+    catalog = Catalog.under(workspace)
+    store = InMemoryDeploymentStore()
+    first_docker = TrackingDocker()
+
+    def manager(docker) -> DeploymentManager:
+        return DeploymentManager(
+            catalog=catalog,
+            author=Author(catalog=catalog),
+            store=store,
+            secrets_env={"ANTHROPIC_API_KEY": "k"},
+            launcher=AgentLauncher(
+                engine=DockerEngine(client=docker, network="agents", internal=True),
+                health_interval_s=10.0,
+                health_sleep=Tick(),
+            ),
+            ready_poll_s=0.0,
+            sleep=NoSleep(),
+        )
+
+    first = manager(first_docker)
+    registry = with_access(first)
+    record = await first.deploy("two")
+    await first.launcher.stop_all()
+    (workspace / "agents" / "beta" / "manifest.yaml").unlink()
+    later = TrackingDocker(attached=("agents",))
+    later.created = list(first_docker.created)
+    second = manager(later)
+    second.access = registry
+
+    touched = await second.reattach()
+
+    assert [r.status for r in touched] == [DeploymentStatus.LOST]
+    assert touched[0].deployment_id == record.deployment_id
+    assert touched[0].error.startswith("cannot rebuild from declarations: ")
+    assert second.launcher.launched == {}
+    for agent in record.agents:
+        with pytest.raises(AaestroError):
+            registry.identify(agent.access_credential)
 
 
 class VanishingDocker(TrackingDocker):

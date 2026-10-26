@@ -935,12 +935,17 @@ manifest 가 `env_allowlist` 에 올려도 실 키는 프록시에만 있다. �
   경로가 있는 네트워크라면 에이전트가 프록시를 우회할 수 있다. 그 네트워크를 지우거나 다시 만든다.
 - **재부착도 격리를 확인한다.** 재시작 뒤 배포는 에이전트 네트워크가 내부 네트워크이고 각 컨테이너가 그
   네트워크에만 붙어 있고, 기동 스펙이 거는 경화 설정(`CapDrop` 에 `ALL`, 읽기 전용 루트 파일시스템,
-  사용자 `1000:1000`, 스펙이 싣는 모든 `security_opt`)이 그대로이며 그것을 무력화하는 설정
-  (privileged, 추가 capability, 호스트 PID · IPC · user · 네트워크 네임스페이스)이 없을 때만
+  사용자 `1000:1000`, PID limit (`DEFAULT_PID_LIMIT`, 256), 키별 유효값이 스펙과 같은
+  `security_opt` — 항목을 더하거나 뒤에서 덮으면 거절)이 그대로이며 그것을 무력화하는 설정
+  (privileged, 추가 capability, 호스트 PID · IPC · user · 네트워크 네임스페이스, 비어 있는
+  `MaskedPaths` 또는 `ReadonlyPaths`)이 없을 때만
   재부착한다. 아니면 배포는 `lost`("network isolation mismatch", 경화는 어긋난 필드 이름이 붙은
   "container hardening mismatch")가 되고
   아무것도 붙이지 않으며 그 에이전트 신원을 회수한다 — 외부 경로가 남은 컨테이너는 메모리·peer·모델에
-  닿지 못한다. 컨테이너는 원인을 보고 해체하도록 남겨 둔다.
+  닿지 못한다. 컨테이너는 원인을 보고 해체하도록 남겨 둔다. PID limit 을 걸 수 없는 호스트 (pids
+  cgroup 없음) 에서는 재부착이 거절된다 — 기동 시점 검사는 후속이다.
+  선언으로 다시 만들 수 없는 배포 (매니페스트가 없거나 그래프에서 노드가 빠짐) 도 `lost`("cannot
+  rebuild from declarations")가 되고 신원이 회수된다.
 - **에이전트는 포트를 게시하지 않는다.** 내부 네트워크에서는 포트를 게시할 수 없으므로 control plane 은
   그 네트워크에서의 컨테이너 주소로 Control API 에 닿고, 재시작 뒤 재부착도 주소를 다시 구한다. control
   plane 이 그 주소에 닿아야 한다: 에이전트 네트워크 안에서 돌리거나, 그 네트워크의 브리지를 가진 Linux
