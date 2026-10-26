@@ -22,9 +22,9 @@ USER 1000:1000
 
 EXPOSE 8090
 
-# 무인증 경로가 없으므로 openapi 문서로 liveness 를 본다 — 이미지에 curl 을
+# 무인증 /v1/health 로 liveness 를 본다 — 이미지에 curl 을
 # 넣지 않기 위해 표준 라이브러리로 확인한다
 HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=3 \
-    CMD ["python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8090/openapi.json', timeout=3).status == 200 else 1)"]
+    CMD ["python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8090/v1/health', timeout=3).status == 200 else 1)"]
 
 ENTRYPOINT ["python", "-m", "aaestro.memory"]

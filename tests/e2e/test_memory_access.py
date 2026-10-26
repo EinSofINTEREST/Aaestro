@@ -45,11 +45,11 @@ ORG = "global:global:org"
 # 컨테이너 안에서 agentd 가 받은 env 로 Memory Service 를 부른다 — 상태 코드만 출력한다
 CALL = """
 import json, os, sys, urllib.error, urllib.request
-op, alias, space = sys.argv[1:4]
+op, alias, _space_id = sys.argv[1:4]
 body = {"space": alias}
 if op == "append":
-    source = {"agent": "researcher"}
-    body["entry"] = {"space": space, "kind": "fact", "content": "e2e", "source": source}
+    # 내용만 싣는다 — id · 시각 · 출처의 신원은 서비스가 발급한다 (#456)
+    body["entry"] = {"kind": "fact", "content": "e2e"}
 request = urllib.request.Request(
     os.environ["AAESTRO_MEMORY_URL"] + "/v1/" + op,
     data=json.dumps(body).encode(),

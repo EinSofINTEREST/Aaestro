@@ -16,7 +16,7 @@ import httpx
 from pydantic import ValidationError
 
 from aaestro.core.errors import AaestroError, AaestroErrorPayload, ErrorCategory, ErrorCode
-from aaestro.memory.entry import MemoryEntry
+from aaestro.memory.entry import MemoryEntry, draft_from
 from aaestro.memory.recall import (
     ScoredEntry,
     apply_budget,
@@ -298,10 +298,25 @@ class HttpMemoryAccess:
         return render_context(selected)
 
     async def append(self, space: str, **kwargs: Any) -> MemoryEntry:
-        """rw 권한이 있는 space 에만 추가합니다 — 아니면 ``MEM_001``."""
-        entry: MemoryEntry = kwargs["entry"]
+        """Append to a writable space — the service issues the id and provenance.
+
+        rw 권한이 있는 space 에만 추가합니다 — 아니면 ``MEM_001``.
+
+        Args:
+            space: The space alias to write to.
+            **kwargs: ``MemoryDraft`` 의 필드 — ``kind`` · ``content`` · ``tags`` ·
+                ``importance`` · ``supersedes`` · ``source`` (run · task · node).
+
+        Returns:
+            The stored entry, with the id the service issued.
+
+        Raises:
+            AaestroError: VALIDATION/``VAL_002`` before any request if a field is unknown
+                (``entry_id`` 포함) or malformed.
+        """
+        draft = draft_from(kwargs, agent=self.agent)
         stored = await self._post(
-            "/v1/append", {"space": space, "entry": entry.model_dump(mode="json")}
+            "/v1/append", {"space": space, "entry": draft.model_dump(mode="json")}
         )
         return MemoryEntry.model_validate(stored)
 

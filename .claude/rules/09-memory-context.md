@@ -78,9 +78,24 @@ class MemoryEntry(BaseModel):
 1. **Append-only**: 항목 수정/삭제 금지 — 정정은 `supersedes` 로 새 항목 작성.
    삭제는 retention 정책(시스템)만 수행
 2. **Kind 는 고정 enum**: 자유 문자열 금지 — 검색 필터의 일관성 보장
-3. **대용량 금지**: `content` 상한 (기본 8KB) — 초과분은 artifact 저장소에 두고
-   `artifact_ref` 항목으로 참조
-4. **Provenance 필수**: `source` 없는 항목 저장 불가 — 모든 기억은 출처 추적 가능
+3. **대용량 금지**: `content` 상한 (8KB, UTF-8 바이트 — `MAX_CONTENT_BYTES`) — 초과분은 artifact
+   저장소에 두고 `artifact_ref` 항목으로 참조. 넘는 append 는 초안 단계의 `VAL_002` 다 (저장 장애가 아니다).
+   태그는 식별자와 같은 성질 (비어 있지 않음 · 출력 가능 · 앞뒤 공백 없음) 에 64자 · 32개 상한
+   (`MAX_TAG_CHARS` · `MAX_TAGS`), `importance` 는 0.0~1.0 의 수 (문자열 · 불리언 거절) — 어기면 `VAL_002`
+4. **Provenance 필수**: `source` 없는 항목 저장 불가 — 모든 기억은 출처 추적 가능.
+   출처의 신원 (`source.agent`) 은 **서비스가 토큰에서 채운다** — 호출자가 고르면 다른 에이전트의
+   기억으로 위조된다. `source.run_id` 도 **토큰이 아는 run** 이다: run 에 속한 토큰
+   (`issue_token(run_id=…)`, run space 가 있는 토큰) 이면 서비스가 그 run 으로 채우고, 호출자가 실은
+   값은 그 run 과 같을 때만 받는다. 다른 run 이거나, run 을 모르는 토큰 (direct 태스크 · 에이전트 단위
+   토큰) 이 run 을 실으면 `VAL_002` (값은 싣지 않는다). `task_id` · `node_id` 는 호출자 문맥이고 식별자
+   형식 (문자열 · 비어 있지 않음 · 128자 이하 · 출력 가능한 문자만 · 앞뒤 공백 없음,
+   [03](03-protocol-integration.md) A2A Client Rules 8, `core/identifiers.py`) 을 지나야 한다 — 어기면 `VAL_002`
+5. **id 와 시각은 서비스가 발급한다** (#456): append 요청은 내용 (`kind` · `content` · `tags` ·
+   `importance` · `supersedes` · `source` 의 문맥) 만 싣는다. `entry_id` (UUID4) 와 `created_at`
+   (서비스 시계 — UTC 로 정규화하고 직전 발급보다 뒤로 가지 않는다) 은 서비스가 정하고, 저장된 항목을 응답으로 돌려준다 — 정정은 그 id 로 한다.
+   `entry_id` 는 space 를 넘는 전역 키라, 호출자가 고르면 다른 space 의 id 존재가 응답으로 드러나고
+   남이 쓸 id 를 선점할 수 있다. 요청에 `entry_id` · `created_at` · `space` · `source.agent` 를 실으면
+   조용히 버리지 않고 모르는 키로 `VAL_002` 다 (받은 값은 싣지 않는다)
 
 ## Memoryset Modules
 
@@ -252,14 +267,16 @@ results = await ctx.memory.search(
 )
 # results: list[ScoredEntry] — entry + score + space (provenance 포함)
 
-# 저장
-await ctx.memory.append(
+# 저장 — 내용만 싣는다. id · 시각 · 출처의 신원은 서비스가 발급한다 (Entry Rules 4 · 5)
+stored = await ctx.memory.append(
     space="longterm",
     kind=MemoryKind.FACT,
     content="mcp sidecar 는 이미지 태그 미고정 시 재기동 후 tool 목록이 달라질 수 있음",
     tags=["mcp", "sidecar"],
     importance=0.7,
+    source={"task_id": task.task_id, "node_id": task.node_id},   # 선택 — run 은 토큰이 정한다
 )
+# stored: MemoryEntry — 정정은 stored.entry_id 를 supersedes 로
 ```
 
 ### Access Enforcement
@@ -285,6 +302,10 @@ Agent 컨테이너 (agentd) ──HTTP──▶ Memory Service (강제 지점) �
    거부 (`denied`) 와 실패 (`failed` — 저장소 장애, 검증 거절) 도 한 줄씩 남는다 (검색 · 회상 포함). `decision_source` 는
    그 접근을 허용 · 거부한 레지스트리 판정의 출처이고, space 판정을 묻지 않은 거부 (미선언 별칭) 는
    신원 확인의 출처다. 레지스트리가 없는 토큰 모드는 `token`
+7. **신원 확인이 본문 파싱보다 먼저다**: 토큰이 없거나 통하지 않으면 본문이 어떻든 같은 `MEM_001` (401) 이다 —
+   검증 거절의 필드 경로가 인증 전에 나가지 않는다. space 별 판정은 본문의 space 목록이 필요하므로 그 뒤에 온다.
+   무인증은 `GET /v1/health` (liveness 만) 뿐이고 API 문서 경로는 열지 않는다. 없는 라우트 · 메서드(404 · 405)는
+   라우트 매칭에서 나므로 인증보다 먼저이며 typed 로 답한다 — 드러나는 것은 라우트 존재뿐이다
 
 ### Context Assembly — 프롬프트 주입 규칙
 
@@ -296,6 +317,9 @@ agentd 가 태스크 프롬프트를 구성할 때:
          + recalled memory   ← 여기에만 예산/규칙 적용
          + (루프 진행 중) tool 결과
 ```
+
+실제 순서도 이렇다 — 회상 블록은 렌더된 태스크 프롬프트 **뒤** 에 온다. 경계 안내가 user 턴 맨 앞에
+오도록 (시스템 자리의 프레임워크 지시가 그 자리를 가리킨다, #446).
 
 1. **Auto-recall**: 태스크 진입 시 task input 기반 1회 자동 검색 — memoryset 의
    `recall` 설정 (k, min_score, budget_tokens) 적용
@@ -319,6 +343,8 @@ agentd 가 태스크 프롬프트를 구성할 때:
    `[memory:`) 는 대화에 들어가기 전에 무력화되고 (`render_context` 가 `core.markers.defang` 을
    지난다), 본문의 둘째 줄부터는 들여 써서 그 기억의 출처 표시 줄 아래에 가둔다 — 기억 본문은
    출처 표시로 시작하는 줄을 만들 수 없다. 진짜 표기만 그 모양을 갖는다.
+   `[memory:…]` 표시가 데이터라는 것은 기본 루프의 시스템 자리에 프레임워크 지시로도 실린다
+   ([04-module-system.md](04-module-system.md) Promptset Rules 6).
    manifest 의 `spec.decision.input_screen` 이 있으면 회상된 기억에도 지시문 판별을 적용해
    `act` 면 표시를 강화하고 WARN 을 남긴다 — 신호이지 경계의 대체가 아니다
    ([02-agent-implementation.md](02-agent-implementation.md) Decision Hooks 4)

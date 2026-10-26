@@ -516,7 +516,7 @@ class Overlap:
 
         async def by_prompt(system, messages, tools):
             """한 실행기 안에서 두 실행을 구분한다 — 태스크 입력으로 모델을 고른다."""
-            return await opening[messages[0].parts[-1]].run(system, messages, tools)
+            return await opening[messages[0].parts[0]].run(system, messages, tools)
 
         self.tools = HookedTools()
         self.tools.during["search"] = self._hold

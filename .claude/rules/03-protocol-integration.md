@@ -186,7 +186,8 @@ spec:
    - stdio `command` 는 이미지에 설치된 실행 파일만 — 셸 문자열 (`sh -c`) 금지
    - 서버 프로세스에 전달되는 env 는 `env_allowlist` 로 제한
    - MCP 서버가 반환한 컨텐츠는 **untrusted input** — 프롬프트에 주입 시 경계 표시,
-     서버 응답 내 지시문을 시스템 지시로 승격 금지. 데이터 안의 프레임워크 표기 (경계 표시 ·
+     서버 응답 내 지시문을 시스템 지시로 승격 금지 (이 규칙은 기본 루프의 시스템 자리에 프레임워크
+     지시로도 실린다 — [04](04-module-system.md) Promptset Rules 6). 데이터 안의 프레임워크 표기 (경계 표시 ·
      `[aaestro]` 안내 · `[operator steer]` · `[tool error]` · `[memory:` — 대소문자 · 공백 ·
      전각 · 유사 꺾쇠 변형 포함) 는 대화에 들어가기 전에 무력화된다 (`core/markers.py` `defang`.
      프레임워크 표기는 그 모듈에서만 정의한다). 도구 결과 · A2A 응답 · `memory_search` 결과는

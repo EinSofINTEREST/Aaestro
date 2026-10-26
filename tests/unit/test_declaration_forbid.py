@@ -87,7 +87,6 @@ NOT_FORBIDDEN = {
     "ParsedModuleRef": "ref 문자열을 파싱한 내부 값",
     "ModulePath": "레지스트리가 만든 내부 값",
     # 미결 — 이슈 #404 로 분리됨. 결정이 나면 forbid 를 켜고 여기서 뺀다
-    "AppendRequest": "미결 (#404): Memory Service 요청 본문",
     "LatestRequest": "미결 (#404): Memory Service 요청 본문",
     "ReadRequest": "미결 (#404): Memory Service 요청 본문",
     "SearchRequest": "미결 (#404): Memory Service 요청 본문",
