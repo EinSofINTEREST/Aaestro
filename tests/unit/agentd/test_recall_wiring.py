@@ -90,6 +90,15 @@ async def test_empty_recall_leaves_the_prompt_untouched():
     assert executor._chain.links[0].model.calls[0][0] == "prompt:planner"  # type: ignore[attr-defined]
 
 
+async def test_nonempty_recall_keeps_the_rendered_prompt_as_the_recorded_task():
+    """회상이 있어도 FakeModel 이 기록하는 태스크 텍스트는 렌더된 프롬프트여야 한다 (#446 순서)."""
+    executor = make_executor([text("done")], recall=CountingRecall(context=RECALLED))
+
+    await executor.execute(make_task())
+
+    assert executor._chain.links[0].model.calls[0][0] == "prompt:planner"  # type: ignore[attr-defined]
+
+
 async def test_execution_works_without_recall():
     """memory 가 붙지 않은 에이전트도 그대로 동작해야 한다."""
     executor = make_executor([text("done")])
