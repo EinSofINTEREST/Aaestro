@@ -36,6 +36,7 @@ def spec_kwargs(image: str, name: str) -> dict[str, Any]:
         "user": "1000:1000",
         "read_only": True,
         "cap_drop": ["ALL"],
+        "security_opt": ["no-new-privileges:true"],  # 에이전트 기본 스펙의 HARDENED_SECURITY_OPT
         "tmpfs": {"/tmp": "size=64m", "/workspace": "size=64m"},  # noqa: S108 — 컨테이너 안 경로다
         "volumes": {},
         "labels": {"aaestro.contract": "1"},
@@ -197,5 +198,42 @@ def test_sidecar_hardening_reaches_the_container(client, echo_image):  # noqa: F
             container_id,
         )  # fmt: skip
         assert raw.split() == ['["no-new-privileges:true"]', "on-failure", "5"]
+    finally:
+        client.remove(container_id)
+
+
+def test_hardening_is_read_under_the_inspect_field_names(client, container):
+    """재부착 대조가 읽는 필드 이름이 `docker inspect` 와 맞는지 — 틀리면 전부 LOST (#483)."""
+    found = client.hardening_of(container)
+
+    assert found["CapDrop"] == ["ALL"]
+    assert found["ReadonlyRootfs"] is True
+    assert found["User"] == "1000:1000"
+    assert found["SecurityOpt"] == ["no-new-privileges:true"]
+    assert found["PidsLimit"] == 256  # 재부착 대조가 기대하는 DEFAULT_PID_LIMIT
+    # systempaths=unconfined 는 SecurityOpt 가 아니라 이 둘을 비운다 — 기본은 비어 있지 않다
+    assert found["MaskedPaths"]
+    assert found["ReadonlyPaths"]
+    assert not found["Privileged"]
+    assert not found["CapAdd"]
+
+
+async def test_a_container_built_from_the_spec_passes_the_engine_check(client, echo_image):  # noqa: F811
+    """기동 스펙(`build_container_spec`)이 만든 컨테이너를 대조가 거절하지 않는다 (#483).
+
+    손으로 쓴 kwargs 가 아니라 실제 스펙이어야 스펙과 대조의 어긋남(표기 · 빈 값)이 드러난다.
+    """
+    from aaestro.runtime.docker.engine import DockerEngine
+    from tests.integration.runtime.test_docker_lifecycle import echo_spec
+
+    client.ensure_image(echo_image)
+    client.ensure_network(NETWORK)
+    spec = echo_spec(image=echo_image, network=NETWORK)
+    docker("rm", "-f", spec.name, check=False)
+    container_id = client.create(**spec.to_docker_kwargs())
+    try:
+        await DockerEngine(client=client, network=NETWORK).verify_isolation(
+            "echo", echo_image, container_id, spec.hardening_kwargs()
+        )
     finally:
         client.remove(container_id)

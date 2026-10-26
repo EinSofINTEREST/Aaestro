@@ -21,11 +21,13 @@ class FakeDockerClient:
         start_error: Exception | None = None,
         stop_error: Exception | None = None,
         remove_error: Exception | None = None,
+        remove_failures: int = 0,
         build_error: Exception | None = None,
         state: dict[str, Any] | None = None,
         host_port: int = 49152,
         address: str = "172.30.0.7",
         attached: tuple[str, ...] | None = None,
+        hardening: dict[str, Any] | None = None,
     ) -> None:
         self._image_error = image_error
         self._network_error = network_error
@@ -33,11 +35,14 @@ class FakeDockerClient:
         self._start_error = start_error
         self._stop_error = stop_error
         self._remove_error = remove_error
+        # 처음 N 번의 remove 만 실패한다 — 다음 시도가 제거를 다시 하는지 보는 용도
+        self._remove_failures = remove_failures
         self._build_error = build_error
         self._state = state or {"Running": True, "ExitCode": 0, "OOMKilled": False}
         self._host_port = host_port
         self._address = address
         self._attached = attached
+        self._hardening = hardening
 
         self.images: list[str] = []
         self.networks: list[str] = []
@@ -66,6 +71,22 @@ class FakeDockerClient:
 
     def networks_of(self, container_id: str) -> tuple[str, ...]:
         return self._attached if self._attached is not None else tuple(self.networks[-1:])
+
+    def hardening_of(self, container_id: str) -> dict[str, Any]:
+        """지정한 값이 있으면 그것, 없으면 만들 때 받은 스펙대로 걸린 것으로 본다."""
+        if self._hardening is not None:
+            return dict(self._hardening)
+        for index, kwargs in enumerate(self.created, start=1):
+            if container_id == f"container-{index:04d}" + "0" * 20:
+                return {
+                    "CapDrop": kwargs.get("cap_drop"),
+                    "ReadonlyRootfs": kwargs.get("read_only"),
+                    "SecurityOpt": kwargs.get("security_opt"),
+                    "PidsLimit": kwargs.get("pids_limit"),
+                    "User": kwargs.get("user"),
+                    "NetworkMode": kwargs.get("network_mode"),
+                }
+        raise LookupError(container_id)
 
     def address_of(self, container_id: str, network: str) -> str:
         self.addressed.append((container_id, network))
@@ -96,6 +117,9 @@ class FakeDockerClient:
     def remove(self, container_id: str) -> None:
         if self._remove_error is not None:
             raise self._remove_error
+        if self._remove_failures > 0:
+            self._remove_failures -= 1
+            raise RuntimeError("removal of container is already in progress")
         self.removed.append(container_id)
 
     def build(self, context: str, tag: str, *, buildargs: dict[str, str] | None = None) -> str:

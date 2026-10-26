@@ -457,9 +457,14 @@ Failures leave no ghost containers. What you get back tells you which kind it wa
   deploy never builds for you. After the image tag rule changes, rebuild custom agents built
   earlier. Nothing was started and no deployment was recorded. Agents without materials run on
   the base image and are never gated.
-- `409` (`RT_010`) — an agent of this graph is already running under another deployment. Tear
-  that one down first; a graph and its agents deploy as a unit, so two live deployments
-  cannot share an agent.
+- `409` (`RT_010`) — an agent of this graph belongs to another deployment that is `starting`,
+  `ready` or `lost`, or to one being started or torn down right now. For this refusal
+  `details.agents` names the agents and `details.deployments` the deployments holding them (the
+  launcher's own `RT_010` for a single replica carries `details.replica` instead). Tear that
+  deployment down first; a graph and its agents deploy as a unit, so two live deployments cannot
+  share an agent. A deployment left `starting` by a crashed control plane keeps holding its
+  agents until it is torn down. The check runs before anything is touched: the other deployment
+  keeps its MCP sidecars and A2A ports, nothing was started and no deployment was recorded.
 - `503` (`RT_002`) — an agent never became healthy before the deadline. Marked retryable:
   the containers were rolled back, so a second attempt is safe.
 
@@ -475,6 +480,9 @@ crash, the record shows the new id and port.
 Drains each agent, waits for in-flight tasks, then stops and removes the containers. Returns
 the record with `status: "stopped"`; the record stays so the history remains readable. A
 deployment already `stopped` or `failed` is returned unchanged.
+A second request for a deployment that is still being torn down (a retry, a double click)
+joins the teardown in progress and gets the same record — the agents are drained and stopped
+once. A caller that gives up (client timeout) does not stop the teardown; it runs to the end.
 
 ## Runs
 
@@ -998,10 +1006,19 @@ outside address fails. The proxy is the only way out.
   not retryable) instead of reusing it: a network with a route out would let agents bypass the proxy.
   Remove or recreate that network.
 - **Reattaching checks isolation too.** After a restart, a deployment is reattached only when the
-  agent network is internal and each of its containers is attached to that network alone. Otherwise
-  the deployment becomes `lost` ("network isolation mismatch"), nothing is attached, and its agent
+  agent network is internal and each of its containers is attached to that network alone, and the
+  container still carries the hardening the start spec sets (`CapDrop` has `ALL`, a read-only root
+  filesystem, user `1000:1000`, the PID limit (`DEFAULT_PID_LIMIT`, 256), and a `security_opt` whose
+  effective value per key equals the spec's — adding an entry or overriding one later is refused)
+  and nothing that voids it (privileged, added capabilities, host PID / IPC / user / network
+  namespaces, an empty `MaskedPaths` or `ReadonlyPaths`). Otherwise
+  the deployment becomes `lost` ("network isolation mismatch", or "container hardening mismatch"
+  with the field names), nothing is attached, and its agent
   identities are revoked, so containers with a route out lose their memory, peer and model access.
-  The containers are left running for you to inspect and tear down.
+  The containers are left running for you to inspect and tear down. On a host that cannot set a PID
+  limit (no pids cgroup), reattaching is refused; a check at start time is a follow-up.
+  A deployment that cannot be rebuilt from its declarations (a manifest is gone, or a node left the
+  graph) also becomes `lost` ("cannot rebuild from declarations") and its identities are revoked.
 - **Agents publish no ports.** Ports cannot be published from an internal network, so the control
   plane reaches each agent's Control API at the container's address on that network, and reattaching
   after a restart looks the address up again. The control plane must be able to reach that
@@ -1145,8 +1162,11 @@ URL.
   the runtime attaches it to each sidecar network under the host name of `connect_url`. A graph with a
   sidecar behind the proxy is refused without this setting (`CFG_001`), because joining the agent to its
   sidecar directly would leave the tool decisions to a check inside the agent's container.
-- **Hardened like an agent.** uid 1000, a read-only root filesystem with a writable `/tmp` (also
-  `HOME`), `cap-drop ALL`, `no-new-privileges`, a PID limit, and no published ports. Undeclared
+- **Hardened like an agent.** Agents and sidecars take the same hardening set from one place
+  (`runtime/spec.py`): uid 1000, a read-only root filesystem with a writable `/tmp` (also
+  `HOME`), `cap-drop ALL`, `no-new-privileges`, and a PID limit. Networking differs: the agent's
+  own control and optional A2A ports bind to loopback, while a sidecar has no port mapping at all.
+  Undeclared
   resources default to the agent default (1 CPU, 1Gi), and each sidecar counts toward the group quota
   once, whatever the replica count.
 - **Environment.** Only the server's `env_allowlist`, plus the owning agent's `HTTPS_PROXY` when the

@@ -26,6 +26,22 @@ if TYPE_CHECKING:
 
 BRIDGE = "bridge"
 
+HARDENING_FIELDS = (
+    "CapDrop",
+    "CapAdd",
+    "ReadonlyRootfs",
+    "SecurityOpt",
+    "PidsLimit",
+    "MaskedPaths",
+    "ReadonlyPaths",
+    "Privileged",
+    "PidMode",
+    "IpcMode",
+    "UsernsMode",
+    "NetworkMode",
+)
+"""`HostConfig` 에서 읽는 경화 필드 — `engine.hardening_gaps` 가 같은 이름으로 대조한다."""
+
 MAX_LOG_CHARS = 8000
 """빌드 로그의 상한 — 원인은 보통 끝에 있다. 전체를 실으면 응답과 기록이 로그 덤프가 된다."""
 
@@ -136,6 +152,15 @@ class SdkDockerClient:
         container = self._sdk.containers.get(container_id)
         container.reload()
         return tuple(container.attrs["NetworkSettings"]["Networks"])
+
+    def hardening_of(self, container_id: str) -> dict[str, Any]:
+        container = self._sdk.containers.get(container_id)
+        container.reload()
+        host = container.attrs["HostConfig"]
+        return {
+            **{field: host.get(field) for field in HARDENING_FIELDS},
+            "User": container.attrs["Config"].get("User"),
+        }
 
     def address_of(self, container_id: str, network: str) -> str:
         container = self._sdk.containers.get(container_id)

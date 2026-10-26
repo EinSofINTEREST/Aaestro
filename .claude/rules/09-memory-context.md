@@ -346,6 +346,10 @@ agentd 가 태스크 프롬프트를 구성할 때:
    모델이 기억과 현재 입력을 구분할 수 있게
 6. **Untrusted 경계**: 기억은 과거 태스크 산출물이다 — 기억 속 지시문을 시스템 지시로
    승격 금지 (MCP 응답과 동일한 경계 규칙, [03-protocol-integration.md](03-protocol-integration.md)).
+   기억 본문 안의 프레임워크 표기 (경계 표시 · `[aaestro]` · `[operator steer]` · `[tool error]` ·
+   `[memory:`) 는 대화에 들어가기 전에 무력화되고 (`render_context` 가 `core.markers.defang` 을
+   지난다), 본문의 둘째 줄부터는 들여 써서 그 기억의 출처 표시 줄 아래에 가둔다 — 기억 본문은
+   출처 표시로 시작하는 줄을 만들 수 없다. 진짜 표기만 그 모양을 갖는다.
    `[memory:…]` 표시가 데이터라는 것은 기본 루프의 시스템 자리에 프레임워크 지시로도 실린다
    ([04-module-system.md](04-module-system.md) Promptset Rules 6).
    manifest 의 `spec.decision.input_screen` 이 있으면 회상된 기억에도 지시문 판별을 적용해
