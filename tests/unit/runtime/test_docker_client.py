@@ -106,3 +106,19 @@ def test_the_address_is_read_from_the_named_network():
     )
     with pytest.raises(LookupError):
         SdkDockerClient(handle=_Sdk(container=container)).address_of("c", "missing")
+
+
+def test_remove_deletes_anonymous_volumes_with_the_container():
+    """`v=True` 가 빠지면 이미지 VOLUME 의 익명 볼륨이 매번 남는다 (#511)."""
+    calls: list[dict] = []
+
+    class _Removable:
+        def remove(self, **kwargs) -> None:
+            calls.append(kwargs)
+
+    class _Handle:
+        containers = _Containers(_Removable())
+
+    SdkDockerClient(handle=_Handle()).remove("c")
+
+    assert calls == [{"v": True, "force": True}]

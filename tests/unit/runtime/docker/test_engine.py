@@ -1037,3 +1037,16 @@ async def test_sidecar_reattach_replaces_a_weakened_sidecar(field, value):
     docker._hardening = {**sound, field: value}
     await sidecars.start(manifest, {}, reuse=True)
     assert first in docker.removed
+
+
+async def test_stop_removes_the_anonymous_volumes_but_not_a_tmpfs_covered_path():
+    """익명 볼륨이 컨테이너와 함께 지워진다 — tmpfs 가 덮은 경로는 볼륨이 아니다 (#511)."""
+    image = spec().image
+    client = FakeDockerClient(image_volumes={image: {"/data", "/tmp"}})  # noqa: S108
+    docker = engine(client)
+    handle = await docker.start(spec())
+    assert client.anonymous_volumes[handle.container_id] == {"/data"}
+
+    await docker.stop(handle)
+
+    assert client.anonymous_volumes[handle.container_id] == set()
