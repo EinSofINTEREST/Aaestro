@@ -456,6 +456,6 @@ def test_cli_validate_does_not_log_a_pass_when_it_fails_on_the_catalog(tmp_path:
     output = result.stdout + result.stderr
     assert result.returncode == 1
     assert "spec.zz_unknown" in result.stdout
-    # 그 단계는 통과했다 (이 시나리오가 맞다는 확인) — 그러나 "검증 통과" 라고는 말하지 않는다
-    assert "graph and agent checks passed" in output
+    # 최종 판정이 실패면 어떤 단계의 통과도 말하지 않는다 (#472)
+    assert "graph and agent checks passed" not in output
     assert "validation passed" not in output
