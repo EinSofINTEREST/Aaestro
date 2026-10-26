@@ -290,6 +290,32 @@ async def test_a_fresh_sidecar_whose_hardening_cannot_be_read_is_a_retryable_fai
     assert docker.removed == ["container-0001" + "0" * 20]
 
 
+@pytest.mark.parametrize(
+    "malformed", [{"Mounts": ["/var/run/docker.sock"]}, {"CapDrop": 5}], ids=["mounts", "capdrop"]
+)
+async def test_a_fresh_sidecar_with_malformed_inspect_is_removed_and_retryable(malformed):
+    """정리는 예외 종류에 의존하지 않는다 — 판정 중 예외도 지우고 재시도 가능하게 올린다."""
+    docker = FakeDockerClient()
+    created = docker.create
+
+    def malformed_create(**kwargs):
+        container_id = created(**kwargs)
+        docker.hardening_by_id[container_id] = {**docker.hardening_of(container_id), **malformed}
+        return container_id
+
+    docker.create = malformed_create
+
+    with pytest.raises(AaestroError) as caught:
+        await McpSidecars(docker).start(with_servers(SEARCH), {})
+
+    assert caught.value.code == ErrorCode.RT_001
+    assert caught.value.retryable is True
+    assert caught.value.details.get("kind") is None
+    assert caught.value.details["mcp_server"] == "search"
+    assert docker.started == []
+    assert docker.removed == ["container-0001" + "0" * 20]
+
+
 async def test_a_missing_sidecar_image_is_rt_004():
     docker = FakeDockerClient(image_error=RuntimeError("pull denied"))
 

@@ -245,21 +245,24 @@ def verify_started_hardening(
     재시도 가능한 `start_failed` 로 올린다 (#501).
 
     Raises:
-        AaestroError: RUNTIME/``RT_001`` — 조회 실패면 재시도 가능 (reason 은 예외 종류 이름),
-            경화 불일치면 재시도 불가 (``kind=hardening``, 필드 이름만).
+        AaestroError: RUNTIME/``RT_001`` — 조회 실패 · 판정 중 예외면 재시도 가능 (reason 은 예외
+            종류 이름), 경화 불일치면 재시도 불가 (``kind=hardening``, 필드 이름만).
     """
     short_id = container_id[:12]
     try:
         found = inspect_hardening(client, container_id, agent=agent)
+        failures = found[INSPECT_FAILURES]
+        wrong = [] if failures else hardening_gaps(found, expected)
+    except AaestroError:
+        raise
     except Exception as err:
+        # 판정 단계의 어떤 예외든 (예상과 다른 inspect 모양 포함) 분류된 기동 실패로 — 호출자는
+        # AaestroError 에서만 컨테이너를 지운다
         raise start_failed(
             agent, image, container_id=short_id, reason=type(err).__name__, **details
         ) from err
-    if found[INSPECT_FAILURES]:
-        raise start_failed(
-            agent, image, container_id=short_id, reason=found[INSPECT_FAILURES][0], **details
-        )
-    wrong = hardening_gaps(found, expected)
+    if failures:
+        raise start_failed(agent, image, container_id=short_id, reason=failures[0], **details)
     if wrong:
         raise hardening_mismatch(agent, image, wrong, container_id=short_id, **details)
 

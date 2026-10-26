@@ -1182,3 +1182,26 @@ async def test_reattach_still_refuses_a_volume_it_could_not_inspect():
 
     assert caught.value.details["fields"] == ["Mounts"]
     assert caught.value.retryable is False
+
+
+MALFORMED_INSPECT = [
+    {**GOOD_HARDENING, "Mounts": ["/var/run/docker.sock"]},  # 원소가 dict 가 아님 — 조회 단계
+    {**GOOD_HARDENING, "CapDrop": 5},  # 판정 단계 (`hardening_gaps`) 에서 TypeError
+]
+
+
+@pytest.mark.parametrize("found", MALFORMED_INSPECT, ids=["mounts", "capdrop"])
+async def test_start_malformed_inspect_is_a_retryable_failure_and_leaves_no_container(found):
+    """정리는 예외 종류에 의존하지 않는다 — 어떤 대조 예외든 지우고 분류해서 올린다."""
+    client = FakeDockerClient(hardening=found)
+
+    with pytest.raises(AaestroError) as caught:
+        await engine(client).start(spec())
+
+    assert caught.value.code == "RT_001"
+    assert caught.value.retryable is True
+    assert caught.value.details.get("kind") is None
+    assert caught.value.__cause__ is not None
+    assert "/var/run" not in str(caught.value) + str(caught.value.details)
+    assert client.started == []
+    assert client.removed == [f"container-{1:04d}" + "0" * 20]
