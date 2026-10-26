@@ -33,6 +33,10 @@ if TYPE_CHECKING:
 DEFAULT_NETWORK = "aaestro-net"
 DEFAULT_STOP_GRACE_S = 30.0
 DEFAULT_DRAIN_TIMEOUT_S = 30.0
+CANCELLED_START_WAIT_S = 5.0
+"""취소된 기동이 만든 컨테이너를 그 자리에서 기다려 지우는 상한 — 넘기면 정리를 넘겨받는다.
+
+정지 · 재배포가 걸린 Docker 호출 (SDK 기본 timeout 은 호출당 60초) 에 묶이지 않게 한다 (#482)."""
 
 log = structlog.get_logger(__name__)
 
@@ -251,6 +255,10 @@ class DockerEngine:
     않고 control plane 은 네트워크 안 주소로 닿는다 — 외부로 나가는 길은 이그레스 프록시뿐이다."""
     stop_grace_s: float = DEFAULT_STOP_GRACE_S
     started: dict[str, ContainerHandle] = field(default_factory=dict)
+    cancel_wait_s: float = CANCELLED_START_WAIT_S
+    """취소된 기동을 그 자리에서 기다리는 상한 — 넘기면 `_cleanups` 가 이어받는다."""
+    _cleanups: set[asyncio.Task[None]] = field(default_factory=set, init=False, repr=False)
+    """상한을 넘긴 정리 — 엔진이 쥐고, 종료가 `settle_cleanups` 로 끝까지 기다리거나 끊는다."""
 
     async def start(self, spec: ContainerSpec) -> ContainerHandle:
         """Create and start one agent container.
@@ -299,22 +307,14 @@ class DockerEngine:
             # 내부 네트워크에는 게시가 먹지 않는다 — 남겨 두면 닿지 않는 주소를 믿게 된다
             kwargs["ports"] = {}
 
+        # create · start 는 스레드에서 끝까지 간다 — 기다리던 쪽이 취소돼도 스레드는 멈추지 않고
+        # 컨테이너를 만든다. 그래서 취소는 그 끝을 기다린 뒤에 정리하고 다시 올린다 (#482)
+        creating = asyncio.create_task(self._create_and_start(spec, kwargs, container_control_port))
         try:
-            container_id = await asyncio.to_thread(self.client.create, **kwargs)
-        except Exception as err:
-            raise start_failed(agent, spec.image, reason=type(err).__name__) from err
-
-        try:
-            for extra in spec.extra_networks:
-                await asyncio.to_thread(self.client.connect, extra, container_id)
-            await asyncio.to_thread(self.client.start, container_id)
-            host, port = await self.control_address(container_id, container_control_port)
-        except Exception as err:
-            # 반쯤 만들어진 컨테이너를 남기면 유령 컨테이너가 쌓인다
-            await self._discard(container_id, agent=agent, image=spec.image)
-            raise start_failed(
-                agent, spec.image, container_id=container_id[:12], reason=type(err).__name__
-            ) from err
+            container_id, host, port = await asyncio.shield(creating)
+        except asyncio.CancelledError:
+            await self._discard_after_cancel(creating, agent=agent, image=spec.image)
+            raise
 
         handle = ContainerHandle(
             agent=agent,
@@ -332,6 +332,110 @@ class DockerEngine:
             port=port,
         )
         return handle
+
+    async def _create_and_start(
+        self, spec: ContainerSpec, kwargs: dict[str, Any], container_port: int
+    ) -> tuple[str, str, int]:
+        """컨테이너를 만들고 띄워 (id, host, port) 를 돌려준다 — 반쯤 만든 것은 지운다."""
+        agent = agent_of(spec)
+        try:
+            container_id: str = await asyncio.to_thread(self.client.create, **kwargs)
+        except Exception as err:
+            raise start_failed(agent, spec.image, reason=type(err).__name__) from err
+
+        try:
+            for extra in spec.extra_networks:
+                await asyncio.to_thread(self.client.connect, extra, container_id)
+            await asyncio.to_thread(self.client.start, container_id)
+            host, port = await self.control_address(container_id, container_port)
+        except Exception as err:
+            # 반쯤 만들어진 컨테이너를 남기면 유령 컨테이너가 쌓인다
+            await self._discard(container_id, agent=agent, image=spec.image)
+            raise start_failed(
+                agent, spec.image, container_id=container_id[:12], reason=type(err).__name__
+            ) from err
+        return container_id, host, port
+
+    async def _discard_after_cancel(
+        self, creating: asyncio.Task[tuple[str, str, int]], *, agent: str, image: str
+    ) -> None:
+        """취소된 기동이 끝나길 잠깐 기다렸다가 만들어진 컨테이너를 지운다.
+
+        Docker 호출은 스레드에서 끝까지 간다 — 걸리면 호출마다 SDK timeout (기본 60초) 까지다.
+        그래서 그 자리에서는 `cancel_wait_s` 까지만 기다리고, 넘기거나 기다리는 쪽이 또 취소되면
+        정리를 **엔진이 쥔** 태스크로 넘긴다. 손을 놓으면 그 컨테이너는 소유자가 없다.
+        """
+        try:
+            done, _ = await asyncio.wait({creating}, timeout=self.cancel_wait_s)
+        except asyncio.CancelledError:
+            self._hand_off_cleanup(creating, agent=agent, image=image)
+            raise
+        if not done:
+            self._hand_off_cleanup(creating, agent=agent, image=image)
+            return
+        await self._discard_started(creating, agent=agent, image=image)
+
+    def _hand_off_cleanup(
+        self, creating: asyncio.Task[tuple[str, str, int]], *, agent: str, image: str
+    ) -> None:
+        """정리를 엔진이 쥔 태스크로 넘긴다 — 아직 만들어지는 중이라 id 는 모른다."""
+        log.warning(
+            "cancelled agent container start is still running; cleanup continues in background",
+            agent=agent,
+            container_id=None,
+            image=image,
+            timeout_s=self.cancel_wait_s,
+        )
+        cleanup = asyncio.create_task(self._discard_when_done(creating, agent=agent, image=image))
+        self._cleanups.add(cleanup)
+        cleanup.add_done_callback(self._cleanups.discard)
+
+    async def _discard_when_done(
+        self, creating: asyncio.Task[tuple[str, str, int]], *, agent: str, image: str
+    ) -> None:
+        """걸린 기동이 끝나면 만들어진 컨테이너를 지운다."""
+        try:
+            await asyncio.wait({creating})
+        except asyncio.CancelledError:
+            log.warning(
+                "cleanup of a cancelled agent container start abandoned; container may remain",
+                agent=agent,
+                container_id=None,
+                image=image,
+            )
+            raise
+        await self._discard_started(creating, agent=agent, image=image)
+
+    async def _discard_started(
+        self, creating: asyncio.Task[tuple[str, str, int]], *, agent: str, image: str
+    ) -> None:
+        """끝난 기동이 만든 컨테이너를 지운다 — 실패한 기동은 `_create_and_start` 가 이미 지웠다."""
+        if creating.cancelled() or creating.exception() is not None:
+            return
+        container_id, _, _ = creating.result()
+        log.warning(
+            "agent container start cancelled; discarding the container",
+            agent=agent,
+            container_id=container_id[:12],
+            image=image,
+        )
+        await self._discard(container_id, agent=agent, image=image)
+
+    async def settle_cleanups(self, *, timeout_s: float | None = None) -> None:
+        """Finish the cleanups handed off by cancelled starts, or abandon them loudly.
+
+        넘겨받은 정리를 끝까지 기다린다 — 상한 (기본 `stop_grace_s`) 을 넘기면 끊고, 끊긴
+        정리는 남았을 수 있는 컨테이너를 WARN 으로 알린다. 종료 경로가 부른다.
+        """
+        pending = set(self._cleanups)
+        if not pending:
+            return
+        limit = self.stop_grace_s if timeout_s is None else timeout_s
+        _, still = await asyncio.wait(pending, timeout=limit)
+        for task in still:
+            task.cancel()
+        if still:
+            await asyncio.gather(*still, return_exceptions=True)
 
     async def control_address(self, container_id: str, container_port: int) -> tuple[str, int]:
         """Where the control plane reaches this container's Control API — (host, port).
@@ -467,12 +571,16 @@ class DockerEngine:
                 )
             await sleeper(poll_s)
 
-    async def stop(self, handle: ContainerHandle, *, remove: bool = True) -> None:
+    async def stop(self, handle: ContainerHandle, *, remove: bool = True) -> bool:
         """Stop a container, SIGTERM then SIGKILL.
 
         컨테이너를 정지합니다 — SIGTERM 후 유예 시간이 지나면 SIGKILL.
         정지 경로는 실패해도 진행합니다: 남은 컨테이너가 유령으로 쌓이는 편이
         더 나쁩니다.
+
+        Returns:
+            True if the container was removed. 제거 실패는 예외가 아니라 False 다 —
+            호출자가 같은 handle 로 다시 지울지 정한다. ``remove=False`` 면 False.
         """
         try:
             await asyncio.to_thread(
@@ -487,8 +595,9 @@ class DockerEngine:
                 error=type(err).__name__,
             )
 
-        if remove:
-            await self._discard(handle.container_id, agent=handle.agent, image=handle.image)
+        removed = remove and await self._discard(
+            handle.container_id, agent=handle.agent, image=handle.image
+        )
 
         self.started.pop(handle.agent, None)
         log.info(
@@ -497,9 +606,10 @@ class DockerEngine:
             container_id=handle.short_id,
             image=handle.image,
         )
+        return removed
 
-    async def _discard(self, container_id: str, *, agent: str, image: str) -> None:
-        """컨테이너를 제거한다 — 실패는 로그만 남긴다.
+    async def _discard(self, container_id: str, *, agent: str, image: str) -> bool:
+        """컨테이너를 제거한다 — 실패는 로그만 남기고 False 를 돌려준다.
 
         제거 실패 로그에도 소유자와 이미지를 남긴다: 여러 이미지가 함께 도는
         환경에서 이 필드가 없으면 사고 추적이 끊긴다 (05 필수 필드).
@@ -514,6 +624,8 @@ class DockerEngine:
                 image=image,
                 error=type(err).__name__,
             )
+            return False
+        return True
 
 
 __all__ = [

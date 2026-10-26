@@ -202,9 +202,9 @@ async def test_stopping_a_ready_agent_drains_before_the_container_stops():
 
     engine_stop = agents.engine.stop
 
-    async def stop(handle, **kwargs):
+    async def stop(handle, **kwargs) -> bool:
         order.append("stop")
-        await engine_stop(handle, **kwargs)
+        return await engine_stop(handle, **kwargs)
 
     launched.client.drain = drain  # type: ignore[method-assign]
     agents.engine.stop = stop  # type: ignore[method-assign]
