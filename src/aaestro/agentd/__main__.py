@@ -607,7 +607,7 @@ def _template_output_keys(result: Any, task: Any) -> tuple[str, ...]:
 
 
 def _system(manifest: AgentManifest, result: Any) -> str:
-    """promptset 의 ``system`` 템플릿 — 없거나 비어 있으면 기동 (과 리로드) 을 거절한다.
+    """시스템 자리의 글 — 프레임워크 지시 + promptset ``system``. 없거나 비면 기동을 거절한다.
 
     빈 지시로 조용히 뜨면 도구 결과를 믿지 말라는 운영자 지시가 모델에 닿지 않는다 (#445).
     이 바인딩은 기본 LLM 루프만 쓰므로 거절의 자리가 여기다 — 커스텀 entrypoint 와 echo 는 이
@@ -615,10 +615,15 @@ def _system(manifest: AgentManifest, result: Any) -> str:
     변수 없이 렌더한다: 운영자 지시는 태스크마다 바뀌는 입력이 아니다. 배포 검증은 템플릿 본문을
     읽지 않으므로 빈 렌더는 여기서만 잡힌다.
 
+    프레임워크의 고정 지시 (경계의 뜻) 를 promptset 지시 앞에 붙인다 (#446) — 경계 규칙은 모듈
+    작성자의 문구에 맡기지 않는다. 빈 렌더 검사는 붙이기 **전에** promptset 쪽에 한다: 붙인 뒤에
+    보면 빈 promptset 이 프레임워크 지시만으로 통과한다.
+
     Raises:
         AaestroError: MODULE/``MOD_002`` if ``system`` is not declared,
             ``MOD_003`` if it renders empty.
     """
+    from aaestro.modules.boundary import FRAMEWORK_INSTRUCTIONS
     from aaestro.modules.compatibility import check_system_template
     from aaestro.modules.promptset import SYSTEM_TEMPLATE
 
@@ -635,7 +640,7 @@ def _system(manifest: AgentManifest, result: Any) -> str:
             agent=manifest.name,
             details={"promptset": result.promptset.ref},
         )
-    return system
+    return f"{FRAMEWORK_INSTRUCTIONS}\n\n{system}"
 
 
 def _render(result: Any, task: Any) -> str:

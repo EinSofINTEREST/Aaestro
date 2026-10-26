@@ -100,6 +100,8 @@ def parse_bytes(value: str) -> int:
     return int(value[:-2]) * _BYTE_UNITS[value[-2:]]
 
 
+MEMORYSET_REF_PREFIX = "memorysets/"
+
 ModuleRefStr = Annotated[str, Field(pattern=_MODULE_REF_PATTERN.pattern)]
 """모듈 참조 문자열 — ``{type}/{name}@{version}``. ``latest`` 등 비고정 참조 금지."""
 
@@ -402,6 +404,17 @@ class MemorySpaceRef(BaseModel):
     alias: str = Field(alias="as")
     mode: MemoryMode = MemoryMode.RW
     writers: tuple[AgentName, ...] = ()
+
+    @field_validator("ref")
+    @classmethod
+    def _memoryset_ref(cls, value: str) -> str:
+        """space 는 memoryset 만 가리킨다 — 다른 타입은 부착 검사가 읽을 수 없는 ref 가 된다 (#467).
+
+        받은 값은 메시지에 싣지 않는다 (필드와 사유만).
+        """
+        if not value.startswith(MEMORYSET_REF_PREFIX):
+            raise ValueError(f"memory space ref must be a {MEMORYSET_REF_PREFIX}* reference")
+        return value
 
 
 class MemorySpec(BaseModel):

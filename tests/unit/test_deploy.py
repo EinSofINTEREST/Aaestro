@@ -529,11 +529,15 @@ def test_reference_deployment_passes_every_check():
     refs = {m.spec.promptset.ref for m in manifests.values()}
     refs |= {s.ref for m in manifests.values() for s in m.spec.skillsets}
     refs |= {s.ref for m in manifests.values() for s in m.spec.memory.spaces}
+    research = GroupManifest.model_validate(load("groups/research.yaml"))
+    # 그룹 · 그래프가 부착한 space 도 해석돼야 한다 (#467)
+    refs |= {s.ref for s in research.spec.memory.spaces}
+    refs |= {s.ref for t in topologies for s in t.spec.memory.spaces}
 
     report = validate_deployment(
         topologies,
         manifests=manifests,
-        groups={"research": GroupManifest.model_validate(load("groups/research.yaml"))},
+        groups={"research": research},
         resolvable_refs=refs,
         global_secrets={"ANTHROPIC_API_KEY"},
         a2a_port_range=(9100, 9199),

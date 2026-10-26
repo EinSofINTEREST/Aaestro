@@ -13,11 +13,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from aaestro.agentd.echo import EchoExecutor
-from aaestro.agentd.executor import MAX_STEER_CHARS, STEER_HEADER, Executor, UserTurn
+from aaestro.agentd.executor import MAX_STEER_CHARS, Executor, UserTurn
 from aaestro.agentd.server import AgentRuntime, create_app
 from aaestro.core.agent import ComponentHealth, HealthState, HealthStatus, TaskResult, TaskStatus
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 from aaestro.core.events import DoneEvent, TokenEvent
+from aaestro.core.markers import STEER_HEADER
 from tests.fixtures.builders import make_task
 from tests.fixtures.fake_model import FakeModel, FakeTools, calls, text
 

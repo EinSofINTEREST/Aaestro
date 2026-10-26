@@ -442,9 +442,14 @@ GOOD_HARDENING = {
     "CapDrop": ["ALL"],
     "ReadonlyRootfs": True,
     "User": "1000:1000",
-    "SecurityOpt": None,  # 에이전트 스펙은 security_opt 를 싣지 않는다 — Docker 는 null 로 보고
+    "SecurityOpt": ["no-new-privileges:true"],  # 에이전트 기본 스펙이 싣는 HARDENED_SECURITY_OPT
     "PidsLimit": 256,
 }
+
+
+def empty_opt_expected():
+    """security_opt 를 싣지 않는 스펙의 기대값 — 빈 기대값 성질을 명시적으로 검사한다."""
+    return {**spec().hardening_kwargs(), "security_opt": []}
 
 
 async def verify(hardening, *, internal: bool = False, expected=None) -> None:
@@ -524,23 +529,27 @@ async def test_verify_isolation_accepts_the_values_docker_reports_for_a_plain_co
 
 @pytest.mark.parametrize("security_opt", [None, [], ["seccomp=unconfined"]])
 async def test_verify_isolation_refuses_a_container_missing_a_security_opt_the_spec_now_sets(
-    monkeypatch, security_opt
+    security_opt,
 ):
-    """상수를 채우면 기동 스펙과 대조가 함께 바뀐다 — 빠진 컨테이너는 거절된다."""
-    from aaestro.runtime import spec as spec_module
-
-    monkeypatch.setattr(spec_module, "HARDENED_SECURITY_OPT", ("no-new-privileges:true",))
+    """에이전트 기본 스펙이 싣는 no-new-privileges 가 빠진 컨테이너는 거절된다."""
     with pytest.raises(AaestroError) as caught:
         await verify({**GOOD_HARDENING, "SecurityOpt": security_opt})
 
     assert caught.value.details["fields"] == ["SecurityOpt"]
-    # 켜진 뒤에도 그 값을 실은 정상 컨테이너는 붙는다
+    # 그 값을 실은 정상 컨테이너는 붙는다
     await verify({**GOOD_HARDENING, "SecurityOpt": ["no-new-privileges:true"]})
+
+
+async def test_verify_isolation_refuses_default_no_new_privileges_overridden_to_false():
+    with pytest.raises(AaestroError) as caught:
+        await verify({**GOOD_HARDENING, "SecurityOpt": ["no-new-privileges:false"]})
+
+    assert caught.value.details["fields"] == ["SecurityOpt"]
 
 
 @pytest.mark.parametrize("security_opt", [None, []])
 async def test_verify_isolation_accepts_no_security_opt_while_the_spec_sets_none(security_opt):
-    await verify({**GOOD_HARDENING, "SecurityOpt": security_opt})
+    await verify({**GOOD_HARDENING, "SecurityOpt": security_opt}, expected=empty_opt_expected())
 
 
 @pytest.mark.parametrize(
@@ -555,7 +564,7 @@ async def test_verify_isolation_accepts_no_security_opt_while_the_spec_sets_none
 )
 async def test_verify_isolation_refuses_a_security_opt_the_spec_did_not_set(security_opt):
     with pytest.raises(AaestroError) as caught:
-        await verify({**GOOD_HARDENING, "SecurityOpt": security_opt})
+        await verify({**GOOD_HARDENING, "SecurityOpt": security_opt}, expected=empty_opt_expected())
 
     assert caught.value.details["fields"] == ["SecurityOpt"]
 

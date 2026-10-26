@@ -27,6 +27,7 @@ from aaestro.agentd.executor import (
 )
 from aaestro.core.agent import ModelUsage
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.core.markers import TOOL_ERROR_MARK
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -55,7 +56,6 @@ HTTP_SERVER_ERROR = 500
 HTTP_MULTIPLE_CHOICES = 300
 
 FINISH_LENGTH = "length"
-TOOL_ERROR_MARK = "[tool error]"
 
 _OVERFLOW_CODES = frozenset({"context_length_exceeded", "string_above_max_length"})
 _OVERFLOW_PHRASES = (

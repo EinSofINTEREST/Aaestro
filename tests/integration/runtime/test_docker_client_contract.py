@@ -36,6 +36,7 @@ def spec_kwargs(image: str, name: str) -> dict[str, Any]:
         "user": "1000:1000",
         "read_only": True,
         "cap_drop": ["ALL"],
+        "security_opt": ["no-new-privileges:true"],  # 에이전트 기본 스펙의 HARDENED_SECURITY_OPT
         "tmpfs": {"/tmp": "size=64m", "/workspace": "size=64m"},  # noqa: S108 — 컨테이너 안 경로다
         "volumes": {},
         "labels": {"aaestro.contract": "1"},
@@ -208,7 +209,7 @@ def test_hardening_is_read_under_the_inspect_field_names(client, container):
     assert found["CapDrop"] == ["ALL"]
     assert found["ReadonlyRootfs"] is True
     assert found["User"] == "1000:1000"
-    assert not found["SecurityOpt"]  # 이 스펙은 security_opt 를 싣지 않는다
+    assert found["SecurityOpt"] == ["no-new-privileges:true"]
     assert found["PidsLimit"] == 256  # 재부착 대조가 기대하는 DEFAULT_PID_LIMIT
     # systempaths=unconfined 는 SecurityOpt 가 아니라 이 둘을 비운다 — 기본은 비어 있지 않다
     assert found["MaskedPaths"]

@@ -53,8 +53,8 @@ async def test_recalled_memory_is_appended_to_the_prompt():
     await executor.execute(make_task())
 
     _, conversation, _ = executor._chain.links[0].model.requests[0]  # type: ignore[attr-defined]
-    # 기억은 태스크 텍스트와 다른 블록 — 모델이 참고 자료와 지시를 구분할 수 있게
-    context, prompt = conversation[0].parts
+    # 기억은 태스크 텍스트와 다른 블록이고 그 뒤에 온다 — 경계 안내가 user 턴 맨 앞에 남게 (#446)
+    prompt, context = conversation[0].parts
     assert prompt.startswith("prompt:")
     assert RECALLED in context
 
@@ -84,6 +84,15 @@ async def test_streaming_recalls_once_too():
 async def test_empty_recall_leaves_the_prompt_untouched():
     """주입할 것이 없으면 빈 줄을 붙이지 않는다."""
     executor = make_executor([text("done")], recall=CountingRecall(context=""))
+
+    await executor.execute(make_task())
+
+    assert executor._chain.links[0].model.calls[0][0] == "prompt:planner"  # type: ignore[attr-defined]
+
+
+async def test_nonempty_recall_keeps_the_rendered_prompt_as_the_recorded_task():
+    """회상이 있어도 FakeModel 이 기록하는 태스크 텍스트는 렌더된 프롬프트여야 한다 (#446 순서)."""
+    executor = make_executor([text("done")], recall=CountingRecall(context=RECALLED))
 
     await executor.execute(make_task())
 

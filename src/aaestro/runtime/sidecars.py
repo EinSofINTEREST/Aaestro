@@ -34,6 +34,7 @@ from aaestro.runtime.docker.errors import (
 from aaestro.runtime.spec import (
     DEFAULT_PID_LIMIT,
     HARDENED_CAP_DROP,
+    HARDENED_SECURITY_OPT,
     HARDENED_USER,
     TMPFS_OPTIONS,
 )
@@ -109,7 +110,7 @@ def sidecar_kwargs(
         "user": HARDENED_USER,
         "read_only": True,
         "cap_drop": list(HARDENED_CAP_DROP),
-        "security_opt": ["no-new-privileges:true"],
+        "security_opt": list(HARDENED_SECURITY_OPT),
         "tmpfs": {SIDECAR_HOME: TMPFS_OPTIONS},
         "volumes": {},
         "labels": {AGENT_LABEL: agent, ROLE_LABEL: SIDECAR_ROLE, SIDECAR_LABEL: server.name},

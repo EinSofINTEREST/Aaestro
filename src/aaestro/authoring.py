@@ -25,11 +25,13 @@ from pydantic import BaseModel
 
 from aaestro.catalog import MODULE_TYPES, Catalog, Problem, not_found
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
-from aaestro.core.manifest import AgentManifest, agent_name
+from aaestro.core.manifest import AgentManifest, GroupManifest, agent_name
 from aaestro.core.topology import GraphTopology
 from aaestro.deploy import Finding, ValidationReport, validate_deployment
 from aaestro.materials import Materials, MaterialStore, check_files
+from aaestro.modules.memoryset import LoadedMemoryset, MemorysetLoader
 from aaestro.modules.promptset import PromptsetManifest
+from aaestro.modules.registry import ModuleRegistry
 
 log = structlog.get_logger(__name__)
 
@@ -160,6 +162,10 @@ class Author:
         drafted = {g.metadata.name for g in graphs}
         others = saved_graphs.items.items() if with_saved_graphs else ()
         topologies = [*graphs, *(g for n, g in others if n not in drafted)]
+        memorysets, unreadable = self._memorysets(
+            manifests.values(), saved_groups.items.values(), topologies
+        )
+        unloadable.extend(unreadable)
 
         report = validate_deployment(
             topologies,
@@ -167,6 +173,7 @@ class Author:
             groups=saved_groups.items,
             resolvable_refs=self.catalog.module_refs(),
             promptsets=promptsets,
+            memorysets=memorysets,
             global_secrets=(
                 frozenset(saved_groups.items["global"].spec.secrets)
                 if "global" in saved_groups.items
@@ -236,6 +243,46 @@ class Author:
                         details={"agent": manifest.name, "module_ref": ref},
                     )
                 )
+        return found, problems
+
+    def _memorysets(
+        self,
+        manifests: Iterable[AgentManifest],
+        groups: Iterable[GroupManifest],
+        topologies: Iterable[GraphTopology],
+    ) -> tuple[dict[str, LoadedMemoryset], list[Finding]]:
+        """부착된 memoryset 을 ref 로 모은다 (#467).
+
+        **게시된 ref 만** 읽는다 — 해석 실패는 배포 검증의 `MOD_001` 이, 깨진 문서는 catalog 가
+        보고하므로 여기서 다시 내면 한 결함이 finding 여럿이 된다. 게시됐는데도 읽지 못한 것
+        (catalog 와 loader 의 판정이 갈린 경우) 은 조용히 건너뛰면 부착 검사가 그 ref 에 대해
+        꺼진 채 통과하므로 부착 주체와 함께 finding 으로 남긴다.
+        """
+        owned = [
+            *((m.spec.memory.spaces, {"agent": m.name}) for m in manifests),
+            *((g.spec.memory.spaces, {"group": g.metadata.name}) for g in groups),
+            *((t.spec.memory.spaces, {"graph": t.metadata.name}) for t in topologies),
+        ]
+        published = self.catalog.module_refs()
+        loader = MemorysetLoader(ModuleRegistry(self.catalog.roots))
+        found: dict[str, LoadedMemoryset] = {}
+        problems: list[Finding] = []
+        for spaces, owner in owned:
+            for space in spaces:
+                ref = space.ref
+                if ref in found or ref not in published:
+                    continue
+                try:
+                    found[ref] = loader.load(ref)
+                except AaestroError as err:
+                    problems.append(
+                        Finding(
+                            check="memory_attachments",
+                            code=ErrorCode(err.code),
+                            message=f"memoryset could not be loaded: {err.message}",
+                            details={**owner, "module_ref": ref},
+                        )
+                    )
         return found, problems
 
     def save_graph(self, name: str, topology: GraphTopology) -> Path:

@@ -101,10 +101,14 @@ def workspace(tmp_path: Path) -> Path:
     )
     for name in ("alpha", "beta"):
         write(tmp_path / "agents" / name / "manifest.yaml", agent_doc(name))
-    write(
-        tmp_path / "groups" / "global.yaml",
-        yaml.safe_load((REPO_ROOT / "groups" / "global.yaml").read_text(encoding="utf-8")),
+    global_group = yaml.safe_load(
+        (REPO_ROOT / "groups" / "global.yaml").read_text(encoding="utf-8")
     )
+    # memory space 를 빼서 memorysets 루트가 없는 작업 공간으로 둔다 — 부착한 space 가 해석되지
+    # 않으면 배포 검증이 거절하고 (#467), 없는 모듈 루트를 걸지 않는 시험이 이 작업 공간을 쓴다
+    # memory 부착 배선은 test_deploy_memory 의 Author 시험이 지킨다
+    del global_group["spec"]["memory"]
+    write(tmp_path / "groups" / "global.yaml", global_group)
     write(tmp_path / "graphs" / "two.yaml", graph_doc("two", ["alpha", "beta"]))
     write(tmp_path / "graphs" / "twice.yaml", graph_doc("twice", ["alpha", "alpha"]))
     return tmp_path

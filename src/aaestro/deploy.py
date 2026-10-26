@@ -20,6 +20,7 @@ from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode, field_pr
 from aaestro.core.manifest import RESERVED_GLOBAL_GROUP, agent_name, agent_ref_parts
 from aaestro.core.topology import GraphMode, validate_topology
 from aaestro.modules.compatibility import check_promptset_templates, check_system_template
+from aaestro.modules.memoryset import LoadedMemoryset, MemoryScope, check_attachment_scope
 from aaestro.modules.promptset import LoadedPromptset
 from aaestro.orchestrator.compaction import (
     SUMMARIZE_INPUT_KEY,
@@ -34,7 +35,7 @@ from aaestro.runtime.quota import check_group_quota, check_host_capacity
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
 
-    from aaestro.core.manifest import AgentManifest, GroupManifest
+    from aaestro.core.manifest import AgentManifest, GroupManifest, MemorySpaceRef
     from aaestro.core.topology import GraphTopology, NodeSpec
     from aaestro.modules.promptset import PromptsetManifest
 
@@ -151,6 +152,12 @@ class DeployValidator:
     비어 있으면 그 검사는 아무 것도 보지 못한다 — 호출자가 반드시 채워야 하며,
     `Author.validate` 가 그 자리다 (#260).
     """
+    memorysets: Mapping[str, LoadedMemoryset] = field(default_factory=dict)
+    """memoryset ref → 로드된 정책. 부착 위치와 `spec.scope` 의 일치, service 의 compaction 을 본다.
+
+    비어 있으면 그 검사는 아무 것도 보지 못한다 — 호출자가 반드시 채워야 하며,
+    `Author.validate` 가 그 자리다 (#467).
+    """
     local_secrets: Mapping[str, frozenset[str]] = field(default_factory=dict)
     global_secrets: frozenset[str] = frozenset()
     host_cpu_cores: float | None = None
@@ -171,8 +178,9 @@ class DeployValidator:
     def validate(self, topologies: Sequence[GraphTopology]) -> ValidationReport:
         """Run every contract check across the graphs being deployed.
 
-        배포 대상 그래프 전체에 11항목 검증을 수행합니다 — 01 의 8항목에 노드 템플릿
-        (#260), 모델 provider (#358), 기본 루프 `system` 템플릿 (#445) 검사를 더한 것입니다.
+        배포 대상 그래프 전체에 12항목 검증을 수행합니다 — 01 의 8항목에 노드 템플릿
+        (#260), 모델 provider (#358), 기본 루프 `system` 템플릿 (#445), memory 부착 (#467)
+        검사를 더한 것입니다.
 
         Args:
             topologies: The graph topologies about to be deployed.
@@ -192,6 +200,7 @@ class DeployValidator:
             warnings.extend(self._warn_unbounded_state(topology))
 
         findings.extend(self._check_module_refs())
+        findings.extend(self._check_memory_attachments(topologies))
         findings.extend(self._check_system_templates())
         findings.extend(self._check_groups())
         findings.extend(self._check_env_allowlists())
@@ -516,6 +525,105 @@ class DeployValidator:
                     )
         return findings
 
+    def _check_memory_attachments(self, topologies: Sequence[GraphTopology]) -> list[Finding]:
+        """memory 부착 선언이 memoryset 정책과 맞는지 (#467, 09 Attachment 4 · Compaction 4).
+
+        - 그룹 · 그래프가 부착한 ref 가 해석되는지 (manifest 의 ref 는 module_refs 가 본다)
+        - 부착 위치 (local · group · global · run) 가 memoryset 의 `spec.scope` 와 같은지
+        - service 그래프가 부착한 run scope memoryset 이 compaction 을 선언하는지
+
+        해석되지 않은 ref 는 scope · compaction 검사를 건너뛴다 — 같은 결함을 두 번 보고하지 않는다.
+        """
+        findings: list[Finding] = []
+        for name, manifest in self.manifests.items():
+            spaces = manifest.spec.memory.spaces
+            findings.extend(
+                self._check_attachments(
+                    MemoryScope.LOCAL, spaces, {"agent": name}, report_unresolved=False
+                )
+            )
+        for group_name, group in self.groups.items():
+            scope = MemoryScope.GLOBAL if group_name == RESERVED_GLOBAL_GROUP else MemoryScope.GROUP
+            owner = {"group": group_name}
+            findings.extend(
+                self._check_attachments(
+                    scope, group.spec.memory.spaces, owner, report_unresolved=True
+                )
+            )
+        for topology in topologies:
+            owner = {"graph": topology.metadata.name}
+            spaces = topology.spec.memory.spaces
+            findings.extend(
+                self._check_attachments(MemoryScope.RUN, spaces, owner, report_unresolved=True)
+            )
+            if topology.spec.mode is GraphMode.SERVICE:
+                findings.extend(self._check_service_compaction(spaces, owner))
+        return findings
+
+    def _check_attachments(
+        self,
+        scope: MemoryScope,
+        spaces: Sequence[MemorySpaceRef],
+        owner: dict[str, str],
+        *,
+        report_unresolved: bool,
+    ) -> list[Finding]:
+        """한 부착 위치의 space 들을 본다. manifest 의 해석 실패는 module_refs 가 보고한다."""
+        findings = []
+        for space in spaces:
+            details = {**owner, "module_ref": space.ref}
+            if space.ref not in self.resolvable_refs:
+                if report_unresolved:
+                    findings.append(
+                        Finding(
+                            check="memory_attachments",
+                            code=ErrorCode.MOD_001,
+                            message=f"module ref cannot be resolved: {space.ref}",
+                            details=details,
+                        )
+                    )
+                continue
+            memoryset = self.memorysets.get(space.ref)
+            if memoryset is None:
+                continue  # 읽지 못한 선언은 호출자가 finding 으로 보고한다
+            try:
+                check_attachment_scope(memoryset, scope)
+            except AaestroError as err:
+                findings.append(
+                    Finding(
+                        check="memory_attachments",
+                        code=ErrorCode(err.code),
+                        message=err.message,
+                        details=details,
+                    )
+                )
+        return findings
+
+    def _check_service_compaction(
+        self, spaces: Sequence[MemorySpaceRef], owner: dict[str, str]
+    ) -> list[Finding]:
+        """상주 그래프의 run scope 는 compaction 없이는 무한 성장한다 (09 Compaction 4)."""
+        findings = []
+        for space in spaces:
+            memoryset = self.memorysets.get(space.ref)
+            # scope 가 다른 memoryset 은 부착 위치 검사가 이미 보고했다
+            if memoryset is None or memoryset.scope is not MemoryScope.RUN:
+                continue
+            if memoryset.declares_compaction:
+                continue
+            findings.append(
+                Finding(
+                    check="memory_attachments",
+                    code=ErrorCode.MOD_003,
+                    message=(
+                        "service graph attaches a run scope memoryset without compaction: "
+                        f"{space.ref}"
+                    ),
+                    details={**owner, "module_ref": space.ref},
+                )
+            )
+        return findings
+
     def _check_system_templates(self) -> list[Finding]:
         """`spec.entrypoint` 없는 에이전트의 promptset 이 ``system`` 을 선언하는지 (#445).
 
@@ -829,6 +937,7 @@ def validate_deployment(
     groups: Mapping[str, GroupManifest] | None = None,
     resolvable_refs: Iterable[str] = (),
     promptsets: Mapping[str, PromptsetManifest] | None = None,
+    memorysets: Mapping[str, LoadedMemoryset] | None = None,
     local_secrets: Mapping[str, frozenset[str]] | None = None,
     global_secrets: Iterable[str] = (),
     host_cpu_cores: float | None = None,
@@ -839,7 +948,7 @@ def validate_deployment(
 ) -> ValidationReport:
     """Validate a deployment against every contract check.
 
-    배포를 11항목 계약 검증으로 확인합니다.
+    배포를 12항목 계약 검증으로 확인합니다.
 
     Args:
         topologies: Graphs about to be deployed.
@@ -847,6 +956,7 @@ def validate_deployment(
         groups: Group name to manifest.
         resolvable_refs: Module refs the registry resolves.
         promptsets: Promptset ref to its declaration — 노드 id 템플릿 검사 입력.
+        memorysets: Memoryset ref to its loaded policy — memory 부착 검사 입력.
         local_secrets: Agent name to its locally available secret keys.
         global_secrets: Globally available secret keys.
         host_cpu_cores: Host CPU ceiling.
@@ -864,6 +974,7 @@ def validate_deployment(
         groups=dict(groups or {}),
         resolvable_refs=frozenset(resolvable_refs),
         promptsets=dict(promptsets or {}),
+        memorysets=dict(memorysets or {}),
         local_secrets=dict(local_secrets or {}),
         global_secrets=frozenset(global_secrets),
         host_cpu_cores=host_cpu_cores,

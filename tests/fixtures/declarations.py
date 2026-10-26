@@ -96,3 +96,14 @@ def _secret_manifest(tmp_path: Path) -> Path:
     doc = manifest_dict(spec={"runtime": {"env": {"API_KEY": MARKER}}})
     path.write_text(yaml.safe_dump(doc), encoding="utf-8")
     return path
+
+
+def publish_global_memorysets(root: Path) -> None:
+    """저장소의 `groups/global.yaml` 을 쓰는 작업 공간에 그 파일이 부착한 memoryset 을 게시한다.
+
+    부착한 space 가 해석되지 않는 그룹은 배포 검증이 거절한다 (#467).
+    """
+    name = "org-facts"
+    shutil.copytree(
+        REPO_ROOT / "modules" / "memorysets" / name, root / "modules" / "memorysets" / name
+    )

@@ -457,9 +457,14 @@ Failures leave no ghost containers. What you get back tells you which kind it wa
   deploy never builds for you. After the image tag rule changes, rebuild custom agents built
   earlier. Nothing was started and no deployment was recorded. Agents without materials run on
   the base image and are never gated.
-- `409` (`RT_010`) — an agent of this graph is already running under another deployment. Tear
-  that one down first; a graph and its agents deploy as a unit, so two live deployments
-  cannot share an agent.
+- `409` (`RT_010`) — an agent of this graph belongs to another deployment that is `starting`,
+  `ready` or `lost`, or to one being started or torn down right now. For this refusal
+  `details.agents` names the agents and `details.deployments` the deployments holding them (the
+  launcher's own `RT_010` for a single replica carries `details.replica` instead). Tear that
+  deployment down first; a graph and its agents deploy as a unit, so two live deployments cannot
+  share an agent. A deployment left `starting` by a crashed control plane keeps holding its
+  agents until it is torn down. The check runs before anything is touched: the other deployment
+  keeps its MCP sidecars and A2A ports, nothing was started and no deployment was recorded.
 - `503` (`RT_002`) — an agent never became healthy before the deadline. Marked retryable:
   the containers were rolled back, so a second attempt is safe.
 
@@ -475,6 +480,9 @@ crash, the record shows the new id and port.
 Drains each agent, waits for in-flight tasks, then stops and removes the containers. Returns
 the record with `status: "stopped"`; the record stays so the history remains readable. A
 deployment already `stopped` or `failed` is returned unchanged.
+A second request for a deployment that is still being torn down (a retry, a double click)
+joins the teardown in progress and gets the same record — the agents are drained and stopped
+once. A caller that gives up (client timeout) does not stop the teardown; it runs to the end.
 
 ## Runs
 
@@ -906,6 +914,10 @@ In registry mode:
 - **Searching without naming spaces skips spaces that are not allowed now**, rather than failing
   the whole search. `GET /v1/spaces` lists what is allowed, with the mode actually permitted.
 - **The identity outlives a Memory Service restart.** It lives in the control plane.
+- **Identity is checked before the request body is read.** Without a recognised identity every
+  route answers the same `401` with `MEM_001`, whatever the body contains. The only route open
+  without identity is `GET /v1/health` (liveness only); the API documentation paths are not served.
+  Unknown routes and methods (`404` / `405`) are answered before identity, in the typed error shape.
 - **While the registry is unreachable**, decisions already cached keep working and anything not
   yet decided is denied. A cached decision is still dropped at its `valid_until`.
 
@@ -1141,8 +1153,11 @@ URL.
   the runtime attaches it to each sidecar network under the host name of `connect_url`. A graph with a
   sidecar behind the proxy is refused without this setting (`CFG_001`), because joining the agent to its
   sidecar directly would leave the tool decisions to a check inside the agent's container.
-- **Hardened like an agent.** uid 1000, a read-only root filesystem with a writable `/tmp` (also
-  `HOME`), `cap-drop ALL`, `no-new-privileges`, a PID limit, and no published ports. Undeclared
+- **Hardened like an agent.** Agents and sidecars take the same hardening set from one place
+  (`runtime/spec.py`): uid 1000, a read-only root filesystem with a writable `/tmp` (also
+  `HOME`), `cap-drop ALL`, `no-new-privileges`, and a PID limit. Networking differs: the agent's
+  own control and optional A2A ports bind to loopback, while a sidecar has no port mapping at all.
+  Undeclared
   resources default to the agent default (1 CPU, 1Gi), and each sidecar counts toward the group quota
   once, whatever the replica count.
 - **Environment.** Only the server's `env_allowlist`, plus the owning agent's `HTTPS_PROXY` when the

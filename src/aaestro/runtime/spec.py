@@ -19,13 +19,15 @@ if TYPE_CHECKING:
 DEFAULT_NETWORK: Final = "aaestro-net"
 DEFAULT_CONTROL_PORT: Final = 8080
 HARDENED_USER = "1000:1000"
-HARDENED_CAP_DROP: tuple[str, ...] = ("ALL",)
-HARDENED_SECURITY_OPT: tuple[str, ...] = ()
-"""에이전트 컨테이너가 싣는 security_opt — `build_container_spec` 이 스펙에 싣는다."""
 DEFAULT_PID_LIMIT: Final = 256
 
 
 DEFAULT_BASE_IMAGE: Final = "aaestro/agent-base:0.1.0"
+
+# 에이전트와 사이드카가 함께 쓰는 경화 집합 — 한쪽만 고치면 둘이 갈라지므로 한 곳에 둔다.
+# cap-drop ALL 만으로는 setuid 바이너리 실행으로 얻는 권한을 막지 못한다 (#475)
+HARDENED_CAP_DROP: Final = ("ALL",)
+HARDENED_SECURITY_OPT: Final = ("no-new-privileges:true",)
 
 A2A_PORT_ENV: Final = "AAESTRO_A2A_PORT"
 """할당된 A2A 포트를 컨테이너에 알리는 키 — agentd 가 이것으로 서버를 띄운다."""

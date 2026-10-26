@@ -493,6 +493,7 @@ aaestro/
 │       │   ├── decision.py      # DecisionModel 계약, Question/Decision, 판정 구간(Band)
 │       │   ├── topology.py      # GraphTopology 스키마 + 검증 (pure — langgraph 무관, egress·memory 프로세스도 import)
 │       │   ├── compaction.py    # state 압축 정책 스키마 (pure) — topology 가 참조, 적용은 orchestrator/compaction.py
+│       │   ├── markers.py       # 프레임워크 표기 (경계 · 안내 · 머리말) 단일 정의 + 데이터 안 무력화 (defang) — jinja2 없이
 │       │   ├── errors.py        # AaestroError + ErrorCategory + 코드 상수
 │       │   └── events.py        # TaskEvent, 스트리밍 이벤트 모델
 │       │
@@ -804,6 +805,9 @@ observability:
 11. `spec.entrypoint` 없는 에이전트(기본 LLM 루프 — echo 이미지처럼 모델을 부르지 않는 실행기도
     배포 검증은 알 수 없어 포함된다)의 promptset 이 `system` 템플릿을 선언하는가 (`MOD_002`).
     템플릿 본문은 읽지 않는다 — 빈 렌더는 agentd 기동이 거절한다 (`MOD_003`)
+12. memory 부착 선언이 memoryset 정책과 맞는가 — 그룹 · 그래프가 부착한 ref 가 해석되고 (`MOD_001`),
+    부착 위치 (manifest · group · global · 그래프) 가 memoryset 의 `spec.scope` 와 같으며 (`MOD_003`),
+    service 그래프가 부착한 run scope memoryset 이 compaction 을 선언하는가 (`MOD_003`)
 
 ## Scalability Considerations
 
