@@ -78,12 +78,7 @@ def found() -> list[str]:
 
 
 def test_a_memory_survives_a_service_restart(memory):
-    entry = {
-        "space": "longterm",
-        "kind": "fact",
-        "content": FACT,
-        "source": {"agent": "researcher"},
-    }
+    entry = {"kind": "fact", "content": FACT}
     post("/v1/append", {"space": "longterm", "entry": entry})
     until(lambda: FACT in found(), what="the fact indexed before the restart")
 

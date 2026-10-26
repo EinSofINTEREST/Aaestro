@@ -72,6 +72,8 @@ def issue_token(
             for space in (global_spaces.spaces if global_spaces else ())
         ],
         run_spaces=run_declared,
+        # run space 를 선언하지 않은 그래프의 태스크도 자기 run 을 안다 — 기억의 출처가 그것이다
+        run_id=run_id,
     )
 
 
