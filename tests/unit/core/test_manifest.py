@@ -319,6 +319,53 @@ def test_sensitive_volume_mounts_are_rejected(path):
 
 
 @pytest.mark.parametrize(
+    "path",
+    [
+        "//etc",
+        "/var/../etc",
+        "/./etc",
+        "/etc/./passwd",
+        "/proc/../sys",
+        "/var/run/../run/docker.sock",
+        "/etc/",
+    ],
+)
+def test_sensitive_volume_mounts_are_rejected_after_normalization(path):
+    with pytest.raises(ValidationError) as err:
+        VolumeSpec(name="vol", mount_path=path)
+    assert path not in str(err.value.errors()[0]["msg"])
+
+
+@pytest.mark.parametrize("path", ["/etc\x00", "/data\n", "/da\tta", "/data\x7f"])
+def test_volume_mount_path_rejects_control_characters(path):
+    with pytest.raises(ValidationError) as err:
+        VolumeSpec(name="vol", mount_path=path)
+    assert "printable" in err.value.errors()[0]["msg"]
+    assert path not in err.value.errors()[0]["msg"]
+
+
+@pytest.mark.parametrize("path", ["etc", "data", "./data", "/..", "/a/../..", "/../etc"])
+def test_volume_mount_path_must_be_absolute_and_stay_under_root(path):
+    with pytest.raises(ValidationError):
+        VolumeSpec(name="vol", mount_path=path)
+
+
+@pytest.mark.parametrize(
+    ("path", "stored"),
+    [
+        ("/data", "/data"),
+        ("/workspace/x", "/workspace/x"),
+        ("/etcetera", "/etcetera"),
+        ("/rooted", "/rooted"),
+        ("//data/./x/", "/data/x"),
+        ("/a/../data", "/data"),
+    ],
+)
+def test_volume_mount_path_is_stored_normalized(path, stored):
+    assert VolumeSpec(name="vol", mount_path=path).mount_path == stored
+
+
+@pytest.mark.parametrize(
     "name",
     [
         "/var/run/docker.sock",

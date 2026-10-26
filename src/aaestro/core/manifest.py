@@ -7,6 +7,7 @@ Manifest 는 에이전트의 유일한 계약 소스이며, 코드에 하드코�
 
 from __future__ import annotations
 
+import posixpath
 import re
 from enum import StrEnum
 from pathlib import PurePosixPath
@@ -722,11 +723,30 @@ class VolumeSpec(BaseModel):
     @field_validator("mount_path")
     @classmethod
     def _reject_sensitive_paths(cls, value: str) -> str:
-        """호스트 민감 경로 마운트 절대 금지."""
+        """호스트 민감 경로 마운트 절대 금지 — 정규화한 경로로 판정한다.
+
+        Docker 가 목적지를 정리(`//etc`, `/a/../etc` → `/etc`)하므로 문자열 비교만으로는 우회된다.
+        정규화한 값을 저장해 런타임 마운트·재부착 대조(양쪽 정규화)와 같은 경로를 보게 한다.
+        """
+        # NUL·개행 같은 제어 문자는 Docker 가 그 앞에서 자르는 등 목적지가 문자열과 달라진다
+        if not value.isprintable():
+            raise ValueError("mount path must contain only printable characters")
+        if not value.startswith("/"):
+            raise ValueError("mount path must be absolute")
+        depth = 0
+        for part in value.split("/"):
+            if part == "..":
+                depth -= 1
+                # 루트 위로 올라가는 경로는 normpath 가 조용히 `/` 로 깎으므로 먼저 거절
+                if depth < 0:
+                    raise ValueError("mount path must not climb above the root")
+            elif part not in ("", "."):
+                depth += 1
+        clean = "/" + posixpath.normpath(value).lstrip("/")
         forbidden = ("/var/run/docker.sock", "/etc", "/root", "/proc", "/sys")
-        if any(value == p or value.startswith(f"{p}/") for p in forbidden):
+        if any(clean == p or clean.startswith(f"{p}/") for p in forbidden):
             raise ValueError("mounting sensitive host path is forbidden")
-        return value
+        return clean
 
 
 class RuntimeSpec(BaseModel):
