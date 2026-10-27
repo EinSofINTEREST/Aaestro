@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from aaestro.core.errors import field_problems
 from aaestro.core.manifest import (
+    MAX_VOLUME_NAME_LENGTH,
     RESERVED_GLOBAL_GROUP,
     AgentManifest,
     GroupManifest,
@@ -18,6 +19,7 @@ from aaestro.core.manifest import (
     ParsedModuleRef,
     ResourceSpec,
     VolumeSpec,
+    agent_volume_name,
     sidecar_host,
     sidecar_url,
 )
@@ -401,6 +403,59 @@ def test_rejected_volume_source_is_not_echoed():
         VolumeSpec(name="/secret-host-dir", mount_path="/data")
 
     assert all("secret-host-dir" not in p["problem"] for p in field_problems(exc.value))
+
+
+def _manifest_with_volume(agent: str, volume: str):
+    return make_manifest(
+        metadata={"name": agent},
+        spec={"runtime": {"volumes": [{"name": volume, "mount_path": "/data"}]}},
+    )
+
+
+def test_volume_name_fitting_after_the_agent_prefix_is_accepted():
+    """접두사를 붙여 정확히 255자인 이름은 통과한다 — 상한 검증이 정상 길이를 거절하지 않는다."""
+    agent = "a"
+    volume = "v" * (MAX_VOLUME_NAME_LENGTH - len(agent_volume_name(agent, "")))
+
+    manifest = _manifest_with_volume(agent, volume)
+
+    assert len(agent_volume_name(agent, volume)) == MAX_VOLUME_NAME_LENGTH
+    assert manifest.spec.runtime.volumes[0].name == volume
+
+
+def test_volume_name_too_long_after_the_agent_prefix_is_rejected_without_echo():
+    agent = "a"
+    volume = "secret" + "v" * (MAX_VOLUME_NAME_LENGTH - len(agent_volume_name(agent, "")) - 5)
+
+    with pytest.raises(ValidationError) as exc:
+        _manifest_with_volume(agent, volume)
+
+    problems = field_problems(exc.value)
+    assert any("prefixed with the agent name" in p["problem"] for p in problems)
+    assert all("secret" not in p["problem"] for p in problems)
+
+
+def test_volume_name_too_long_is_val_002_at_deploy_validation(tmp_path):
+    """배포 검증의 선언 파일 경로 (`parse_declaration`) 에서 VAL_002 — 이름은 싣지 않는다."""
+    import yaml
+
+    from aaestro.catalog import parse_declaration
+    from aaestro.core.errors import AaestroError
+
+    raw = manifest_dict(
+        metadata={"name": "a"},
+        spec={"runtime": {"volumes": [{"name": "secret" + "v" * 244, "mount_path": "/data"}]}},
+    )
+    # 단독으로는 VolumeSpec 상한 안 (250자), 접두사를 붙여야 넘는다 — 새 검증기를 지나는 경로
+    assert len(raw["spec"]["runtime"]["volumes"][0]["name"]) <= MAX_VOLUME_NAME_LENGTH
+    path = tmp_path / "manifest.yaml"
+    path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    with pytest.raises(AaestroError) as exc:
+        parse_declaration(path, AgentManifest)
+
+    assert exc.value.code == "VAL_002"
+    assert "secret" not in str(exc.value) + str(exc.value.details)
 
 
 @pytest.mark.parametrize("cpu", ["one", "1.0.0", "-1", ""])

@@ -361,3 +361,51 @@ async def test_reattach_refuses_an_anonymous_volume_the_caller_added(client, ech
     kwargs = {**spec.to_docker_kwargs(), "volumes": ["/extra"]}
 
     assert await verdict(client, echo_image, kwargs, spec.hardening_kwargs()) == ["Mounts"]
+
+
+async def test_two_agents_declaring_the_same_volume_get_separate_volumes(client, echo_image):  # noqa: F811
+    """두 에이전트가 같은 `work` 를 선언해도 실 daemon 에 서로 다른 볼륨이 마운트된다 (#513)."""
+    import yaml
+
+    from aaestro.core.manifest import AgentManifest
+    from aaestro.runtime.docker.engine import DockerEngine
+    from aaestro.runtime.spec import build_container_spec
+    from tests.integration.runtime.test_docker_lifecycle import ECHO_MANIFEST, TOKEN
+
+    client.ensure_image(echo_image)
+    client.ensure_network(NETWORK)
+    suffix = type(client).__name__.lower()
+    specs = []
+    for agent in (f"contract-a-{suffix}", f"contract-b-{suffix}"):
+        document = yaml.safe_load(ECHO_MANIFEST.read_text(encoding="utf-8"))
+        document["metadata"]["name"] = agent
+        document["spec"]["runtime"]["image"] = echo_image
+        document["spec"]["runtime"]["volumes"] = [{"name": "work", "mount_path": "/data"}]
+        specs.append(
+            build_container_spec(
+                AgentManifest.model_validate(document),
+                env={"AAESTRO_EXECUTOR": "echo", "AAESTRO_AGENT_TOKEN": TOKEN},
+                network=NETWORK,
+            )
+        )
+    volumes = {f"aaestro-{spec.labels['aaestro.agent']}.work" for spec in specs}
+    created: list[str] = []
+    try:
+        mounted = set()
+        for spec in specs:
+            docker("rm", "-f", spec.name, check=False)
+            container_id = client.create(**spec.to_docker_kwargs())
+            created.append(container_id)
+            mounts = client.hardening_of(container_id)["Mounts"]
+            mounted |= {m["Name"] for m in mounts if m.get("Destination") == "/data"}
+            # 새 이름이 재부착 대조의 기대값과도 맞는다 — 정상 컨테이너가 lost 가 되지 않는다
+            await DockerEngine(client=client, network=NETWORK).verify_isolation(
+                spec.labels["aaestro.agent"], echo_image, container_id, spec.hardening_kwargs()
+            )
+        assert mounted == volumes
+        assert len(mounted) == 2
+    finally:
+        for container_id in created:
+            docker("rm", "-f", container_id, check=False)
+        for name in volumes:
+            docker("volume", "rm", "-f", name, check=False)

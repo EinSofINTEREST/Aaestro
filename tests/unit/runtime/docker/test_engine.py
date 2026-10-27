@@ -778,6 +778,33 @@ async def test_verify_isolation_refuses_mounts_its_spec_did_not_declare(label, m
     assert "/home" not in str(caught.value) + str(caught.value.details)
 
 
+def volume_spec():
+    """매니페스트가 `work` 볼륨을 선언한 에이전트 `alpha` 의 스펙."""
+    manifest = make_manifest(
+        metadata={"name": "alpha"},
+        spec={"runtime": {"volumes": [{"name": "work", "mount_path": "/data"}]}},
+    )
+    return build_container_spec(manifest)
+
+
+async def test_verify_isolation_accepts_the_agent_namespaced_volume():
+    built = volume_spec()
+    found = {**GOOD_HARDENING, **inspect_mounts(built.to_docker_kwargs())}
+
+    await verify(found, expected=built.hardening_kwargs())
+
+
+async def test_verify_isolation_refuses_a_container_on_the_old_unprefixed_volume():
+    """접두사 없는 옛 이름 (`work`) 으로 마운트된 기존 컨테이너는 재부착 대조에서 걸린다 (#513)."""
+    built = volume_spec()
+    old = {**built.to_docker_kwargs(), "volumes": {"work": {"bind": "/data", "mode": "rw"}}}
+
+    with pytest.raises(AaestroError) as caught:
+        await verify({**GOOD_HARDENING, **inspect_mounts(old)}, expected=built.hardening_kwargs())
+
+    assert caught.value.details["fields"] == ["Mounts"]
+
+
 @pytest.mark.parametrize(
     ("label", "tmpfs", "extra"),
     [
