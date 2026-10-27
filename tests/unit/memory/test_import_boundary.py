@@ -9,23 +9,49 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tests.fixtures.import_contract import REPO_ROOT, assert_no_forbidden_imports
+from tests.fixtures.import_contract import (
+    REPO_ROOT,
+    assert_dependencies_classified,
+    assert_no_forbidden_imports,
+    modules_of,
+)
 
 # 새 import 가 생기면 이 상수를 고치는 것이 곧 결정이다
-FORBIDDEN = (
+FORBIDDEN_INTERNAL = (
     "aaestro.orchestrator",
     "aaestro.runtime",
     "aaestro.agentd",
     "aaestro.cli",
     "aaestro.ui",
-    "langgraph",
+    # 의존성 이름이 아닌 모듈 — pyproject 에 없어도 끌려오면 안 된다
     "langchain",
-    "langchain_core",
+)
+
+# 서드파티는 pyproject 의존성 이름으로 선언하고 모듈 이름은 유도한다 (#504)
+FORBIDDEN_DEPENDENCIES = (
+    "langgraph",
+    "langgraph-checkpoint-postgres",
+    "langgraph-checkpoint-redis",
+    "langchain-core",
     "docker",
-    "a2a",
+    "a2a-sdk",
     "mcp",
+    "httpx2",
     "anthropic",
 )
+ALLOWED_DEPENDENCIES = {
+    "pydantic": "core 계약",
+    "structlog": "로깅",
+    "prometheus-client": "메트릭",
+    "tenacity": "재시도",
+    "jinja2": "promptset 렌더 — core 와 함께 설치된다",
+    "pyyaml": "설정 로드",
+    "httpx": "판정 지점 호출",
+    "fastapi": "Memory Service 서버",
+    "uvicorn": "Memory Service 서버",
+    "psycopg": "postgres 백엔드",
+}
+FORBIDDEN = (*FORBIDDEN_INTERNAL, *modules_of(FORBIDDEN_DEPENDENCIES))
 
 BOOTSTRAP = """
 import sys
@@ -38,6 +64,10 @@ root = Path(sys.argv[1])
 config = load_config("dev", config_dir=root / "configs", environ={{}})
 {body}
 """
+
+
+def test_every_runtime_dependency_is_classified() -> None:
+    assert_dependencies_classified(FORBIDDEN_DEPENDENCIES, ALLOWED_DEPENDENCIES)
 
 
 def _run(body: str, root: Path = REPO_ROOT) -> None:
