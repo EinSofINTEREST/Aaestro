@@ -165,6 +165,14 @@ class CliDockerClient:
             args.extend(["--label", f"{key}={value}"])
         for option in kwargs.get("security_opt", ()):
             args.append(f"--security-opt={option}")
+        # SDK 의 `devices` 와 같은 뜻 — 버리면 디바이스 대조를 실 daemon 으로 검증하지 못한다 (#510)
+        for device in kwargs.get("devices") or ():
+            args.append(f"--device={device}")
+        for rule in kwargs.get("device_cgroup_rules") or ():
+            args.append(f"--device-cgroup-rule={rule}")
+        # `--gpus` 는 DeviceRequest 의 일부만 옮긴다 — 다르게 옮기느니 받지 않는다
+        if kwargs.get("device_requests"):
+            raise NotImplementedError("device_requests cannot be passed through the docker cli")
         policy = kwargs.get("restart_policy")
         if policy:
             retries = policy.get("MaximumRetryCount")

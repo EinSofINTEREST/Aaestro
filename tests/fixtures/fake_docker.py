@@ -111,6 +111,9 @@ class FakeDockerClient:
                     "PidsLimit": kwargs.get("pids_limit"),
                     "User": kwargs.get("user"),
                     "NetworkMode": kwargs.get("network_mode"),
+                    "Devices": kwargs.get("devices"),
+                    "DeviceRequests": kwargs.get("device_requests"),
+                    "DeviceCgroupRules": kwargs.get("device_cgroup_rules"),
                     "Image": kwargs.get("image"),
                     **inspect_mounts(kwargs),
                 }

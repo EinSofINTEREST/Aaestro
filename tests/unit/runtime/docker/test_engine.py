@@ -534,6 +534,13 @@ GOOD_HARDENING = {
 }
 
 
+QA_DEVICE = {"PathOnHost": "/dev/null", "PathInContainer": "/dev/qa", "CgroupPermissions": "rwm"}
+# SDK `DeviceRequest(count=1, capabilities=[["gpu"]])` 가 남기는 inspect 모양 (daemon 29.1 실측)
+QA_DEVICE_REQUEST = {
+    "Driver": "", "Count": 1, "DeviceIDs": [], "Capabilities": [["gpu"]], "Options": {}
+}  # fmt: skip
+
+
 def empty_opt_expected():
     """security_opt 를 싣지 않는 스펙의 기대값 — 빈 기대값 성질을 명시적으로 검사한다."""
     return {**spec().hardening_kwargs(), "security_opt": []}
@@ -589,6 +596,13 @@ async def test_verify_isolation_refuses_a_container_that_lost_its_hardening(fiel
         # systempaths=unconfined 는 SecurityOpt 가 아니라 여기에 드러난다 (#489 QA 실측)
         ("MaskedPaths", []),
         ("ReadonlyPaths", []),
+        # 생성 인자가 걸지 않은 디바이스 — `--device /dev/null:/dev/qa` 가 재부착을 통과했다 (#510)
+        ("Devices", [QA_DEVICE]),
+        ("DeviceRequests", [QA_DEVICE_REQUEST]),
+        ("DeviceCgroupRules", ["c 1:3 r"]),
+        # `container:` 를 받지 않는 네임스페이스 — `--uts host` · `--cgroupns host` (29.1 실측)
+        ("UTSMode", "host"),
+        ("CgroupnsMode", "host"),
     ],
 )
 @pytest.mark.parametrize("internal", [False, True])
@@ -598,6 +612,40 @@ async def test_verify_isolation_refuses_settings_that_void_the_hardening(field, 
         await verify({**GOOD_HARDENING, field: value}, internal=internal)
 
     assert caught.value.details["fields"] == [field]
+
+
+@pytest.mark.parametrize("empty", [None, []])
+async def test_verify_isolation_accepts_a_container_without_devices(empty):
+    """디바이스 없는 컨테이너를 daemon 은 `null` (SDK) 또는 `[]` (CLI) 로 보고한다 — 둘 다 통과."""
+    await verify({**GOOD_HARDENING, "Devices": empty, "DeviceRequests": empty,
+                  "DeviceCgroupRules": empty})  # fmt: skip
+
+
+async def test_verify_isolation_reads_a_device_declared_without_a_container_path():
+    """`"/dev/null"` 은 같은 경로에 건 것이다 — inspect 는 PathInContainer 를 채워 보고한다."""
+    expected = {**spec().hardening_kwargs(), "devices": ["/dev/null"]}
+    same_path = {**QA_DEVICE, "PathInContainer": "/dev/null"}
+    await verify({**GOOD_HARDENING, "Devices": [same_path]}, expected=expected)
+
+
+async def test_verify_isolation_ignores_the_order_devices_are_reported_in():
+    """같은 집합이면 순서가 달라도 통과한다 — daemon 의 보고 순서는 계약이 아니다."""
+    kmsg = {**QA_DEVICE, "PathOnHost": "/dev/kmsg", "PathInContainer": "/dev/kmsg"}
+    expected = {**spec().hardening_kwargs(), "devices": ["/dev/null:/dev/qa", "/dev/kmsg"]}
+    await verify({**GOOD_HARDENING, "Devices": [kmsg, QA_DEVICE]}, expected=expected)
+
+
+@pytest.mark.parametrize("declared", ["/dev/null:/dev/qa", "/dev/null:/dev/qa:rwm"])
+async def test_verify_isolation_follows_devices_the_spec_declares(declared):
+    """기대값은 생성 인자다 — 생성 인자가 건 디바이스는 통과하고, 더하거나 빠진 것은 걸린다."""
+    expected = {**spec().hardening_kwargs(), "devices": [declared]}
+    await verify({**GOOD_HARDENING, "Devices": [QA_DEVICE]}, expected=expected)
+
+    other = {**QA_DEVICE, "PathOnHost": "/dev/kmsg"}
+    for found in ([QA_DEVICE, other], [], [{**QA_DEVICE, "CgroupPermissions": "r"}]):
+        with pytest.raises(AaestroError) as caught:
+            await verify({**GOOD_HARDENING, "Devices": found}, expected=expected)
+        assert caught.value.details["fields"] == ["Devices"]
 
 
 async def test_verify_isolation_accepts_the_values_docker_reports_for_a_plain_container():
@@ -610,6 +658,8 @@ async def test_verify_isolation_accepts_the_values_docker_reports_for_a_plain_co
             "IpcMode": "private",
             "UsernsMode": "",
             "NetworkMode": "agents",
+            "UTSMode": "",
+            "CgroupnsMode": "private",
             "MaskedPaths": DEFAULT_MASKED_PATHS,
             "ReadonlyPaths": DEFAULT_READONLY_PATHS,
         }

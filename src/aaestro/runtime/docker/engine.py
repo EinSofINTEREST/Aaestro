@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import posixpath
 import re
 from dataclasses import dataclass, field
@@ -71,10 +72,19 @@ def control_port_of(spec: ContainerSpec) -> int:
 
 
 SHARED_NAMESPACE_FIELDS = ("PidMode", "IpcMode", "UsernsMode", "NetworkMode")
+# `container:` 를 받지 않는 네임스페이스 — daemon 29.1 CLI 가 `--uts container:x` 를 거절한다
+HOST_ONLY_NAMESPACE_FIELDS = ("UTSMode", "CgroupnsMode")
 HOST_NAMESPACE = "host"
 CONTAINER_NAMESPACE_PREFIX = "container:"
 SECURITY_OPT_SEPARATOR = re.compile(r"[=:]")
 UNMASKED_PATH_FIELDS = ("MaskedPaths", "ReadonlyPaths")
+DEVICE_FIELDS = {
+    "Devices": "devices",
+    "DeviceRequests": "device_requests",
+    "DeviceCgroupRules": "device_cgroup_rules",
+}
+"""`HostConfig` 의 디바이스 필드 → 그것을 거는 생성 인자 이름."""
+DEFAULT_DEVICE_PERMISSIONS = "rwm"
 
 
 def security_opt_map(options: Iterable[str] | None) -> dict[str, str | None]:
@@ -229,7 +239,11 @@ def hardening_gaps(found: Mapping[str, Any], expected: Mapping[str, Any]) -> lis
     `MaskedPaths` · `ReadonlyPaths` 가 빈 목록이면 `/proc` · `/sys` 가림이 꺼진 것이다
     (`systempaths=unconfined` 는 `SecurityOpt` 에 남지 않고 여기에만 드러난다). `None` 은 그 필드를
     보고하지 않는 옛 daemon 이라 불일치로 보지 않는다 — 비었다는 증거가 아니다.
-    마운트는 예외로 엄격하다(`mount_gaps`): 없음을 "마운트 없음" 으로 읽는다.
+    마운트는 예외로 엄격하다(`mount_gaps`): 없음을 "마운트 없음" 으로 읽는다. 디바이스
+    (`DEVICE_FIELDS`)도 그렇다 — daemon 29.1 은 디바이스 없는 컨테이너의 세 필드를 `null`
+    (SDK 생성) 또는 `[]` (CLI 생성) 로 보고하므로 둘 다 "디바이스 없음" 이고, 생성 인자와 같은
+    집합이어야 한다 (`--device` 는 CapDrop 이 막는 mknod 없이 호스트 디바이스 노드와 cgroup 을
+    연다).
     """
     wrong: list[str] = mount_gaps(found, expected)
     if not set(expected.get("cap_drop") or ()) <= set(found.get("CapDrop") or ()):
@@ -254,7 +268,36 @@ def hardening_gaps(found: Mapping[str, Any], expected: Mapping[str, Any]) -> lis
         if (mode := str(found.get(field) or ""))
         and (mode == HOST_NAMESPACE or mode.startswith(CONTAINER_NAMESPACE_PREFIX))
     )
+    wrong.extend(
+        field for field in HOST_ONLY_NAMESPACE_FIELDS if found.get(field) == HOST_NAMESPACE
+    )
+    wrong.extend(
+        field
+        for field, kwarg in DEVICE_FIELDS.items()
+        if _device_entries(field, found.get(field)) != _device_entries(field, expected.get(kwarg))
+    )
     return wrong
+
+
+def _device_entries(field: str, values: Iterable[Any] | None) -> list[str]:
+    """디바이스 항목을 inspect 모양으로 맞춘 정렬된 표기 — 생성 인자와 inspect 값을 같게 읽는다."""
+    return sorted(
+        json.dumps(_device_mapping(item) if field == "Devices" else item, sort_keys=True)
+        for item in values or ()
+    )
+
+
+def _device_mapping(item: Any) -> Any:
+    """docker-py 의 `"host[:container[:perms]]"` 표기를 inspect 의 `Devices` 항목 모양으로."""
+    if not isinstance(item, str):
+        return item
+    host, _, rest = item.partition(":")
+    container, _, permissions = rest.partition(":")
+    return {
+        "PathOnHost": host,
+        "PathInContainer": container or host,
+        "CgroupPermissions": permissions or DEFAULT_DEVICE_PERMISSIONS,
+    }
 
 
 @runtime_checkable

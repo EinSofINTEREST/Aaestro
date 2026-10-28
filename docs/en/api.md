@@ -1034,12 +1034,13 @@ outside address fails. The proxy is the only way out.
   container still carries the hardening the start spec sets (`CapDrop` has `ALL`, a read-only root
   filesystem, user `1000:1000`, the PID limit (`DEFAULT_PID_LIMIT`, 256), and a `security_opt` whose
   effective value per key equals the spec's — adding an entry or overriding one later is refused)
-  and nothing that voids it (privileged, added capabilities, host PID / IPC / user / network
-  namespaces, an empty `MaskedPaths` or `ReadonlyPaths`). Its mounts must be exactly the ones the
-  start spec sets: the read-only declaration mounts, the declared volumes and the `tmpfs` paths. A
-  bind the spec did not declare (a host path, `/var/run/docker.sock`), a declared mount made
-  writable or pointed elsewhere, and an extra or missing `tmpfs` are refused (`Mounts` / `Tmpfs`;
-  the reason names the field, never the path). Paths are compared normalized (`/cache/` is
+  and nothing that voids it (privileged, added capabilities, host PID / IPC / user / network /
+  UTS / cgroup namespaces, an empty `MaskedPaths` or `ReadonlyPaths`, and `Devices`,
+  `DeviceRequests` or `DeviceCgroupRules` the start spec did not set). Its mounts must be exactly
+  the ones the start spec sets: the read-only declaration mounts, the declared volumes and the
+  `tmpfs` paths. A bind the spec did not declare (a host path, `/var/run/docker.sock`), a declared
+  mount made writable or pointed elsewhere, and an extra or missing `tmpfs` are refused (`Mounts` /
+  `Tmpfs`; the reason names the field, never the path). Paths are compared normalized (`/cache/` is
   `/cache`). The one exception is the anonymous volume Docker creates for a path the image declares
   with `VOLUME` — read from the image itself, not from the container's `Config.Volumes`, which also
   lists volumes added at creation; if the image cannot be inspected there is no exception. Every volume, declared or anonymous, must also be a plain `local` volume: one
