@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import socket
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
+import httpx
 import pytest
 import structlog.testing
+import uvicorn
 import yaml
 
 from aaestro.access.model import ACCESS_CREDENTIAL_ENV
@@ -16,6 +21,9 @@ from aaestro.catalog import Catalog
 from aaestro.core.agent import HealthState, HealthStatus
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 from aaestro.core.manifest import ModelOverride
+from aaestro.orchestrator.__main__ import server_options
+from aaestro.orchestrator.control import create_app
+from aaestro.orchestrator.runstore import InMemoryRunStore
 from aaestro.runtime.control import ControlClient
 from aaestro.runtime.deployments import (
     DeploymentManager,
@@ -283,6 +291,62 @@ async def test_teardown_stops_every_agent_and_keeps_the_record(manager, docker):
     assert stopped.status == DeploymentStatus.STOPPED
     assert running(docker) == []
     assert manager.get(record.deployment_id).status == DeploymentStatus.STOPPED
+
+
+async def test_shutdown_lets_a_teardown_in_flight_finish_before_the_lifespan_ends(
+    manager, monkeypatch
+):
+    """#485 — 진입점의 uvicorn 설정은 요청을 끝까지 기다린 뒤 lifespan 을 닫는다.
+
+    해체를 붙잡은 DELETE 가 도는 중에 종료를 시작하고, 게이트는 uvicorn 이 요청을 기다리기
+    시작한 뒤에야 연다 — 종료가 요청을 끊는 설정이면 lifespan 이 READY 를 본다.
+    """
+    app = create_app(InMemoryRunStore(), deployments=manager)
+    entered, gate = asyncio.Event(), asyncio.Event()
+    at_lifespan_end: list[str] = []
+    original_stop, original_lifespan = manager.launcher.stop, app.router.lifespan_context
+
+    async def gated_stop(name: str) -> None:
+        entered.set()
+        await gate.wait()
+        await original_stop(name)
+
+    @asynccontextmanager
+    async def observed(app_: object) -> AsyncIterator[None]:
+        async with original_lifespan(app_):
+            yield
+        at_lifespan_end.extend(r.status for r in manager.deployments())
+
+    monkeypatch.setattr(manager.launcher, "stop", gated_stop)
+    app.router.lifespan_context = observed
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    server = uvicorn.Server(uvicorn.Config(app, **server_options("127.0.0.1", 0)))
+    waiting = server._wait_tasks_to_complete  # noqa: SLF001
+
+    async def open_gate_then_wait() -> None:
+        gate.set()
+        await waiting()
+
+    server._wait_tasks_to_complete = open_gate_then_wait  # type: ignore[method-assign]  # noqa: SLF001
+    serving = asyncio.create_task(server.serve(sockets=[sock]))
+    try:
+        await until(lambda: server.started)
+        record = await manager.deploy("two")
+        port = sock.getsockname()[1]
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as client:
+            delete = asyncio.create_task(client.delete(f"/v1/deployments/{record.deployment_id}"))
+            await entered.wait()
+            server.should_exit = True
+            await serving
+            response = await delete
+    finally:
+        gate.set()
+        server.should_exit = True
+        await serving
+
+    assert at_lifespan_end == [DeploymentStatus.STOPPED]
+    assert response.status_code == 200
 
 
 async def test_teardown_of_an_unknown_deployment_is_not_found(manager):
