@@ -22,7 +22,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 from urllib.parse import quote, urlsplit
 
 import structlog
@@ -35,6 +35,7 @@ from aaestro.protocols.mcp.transport import MCP_PROXY_URL_ENV
 from aaestro.runtime.docker.engine import AGENT_LABEL, ContainerHandle
 from aaestro.runtime.images import image_tag
 from aaestro.runtime.launcher import LaunchedAgent, MemoryEndpoint
+from aaestro.runtime.lifecycle import AgentState
 from aaestro.runtime.scope import ScopedSecrets
 from aaestro.runtime.sidecars import McpSidecars, sidecars_of
 from aaestro.runtime.spec import (
@@ -71,6 +72,44 @@ class DeploymentStatus(StrEnum):
     LOST = "lost"
     """재시작 후 일부/전부를 다시 붙이지 못했다 — 운영자가 알아야 하므로 지우지 않는다.
     붙은 컨테이너는 그대로 감시하며, 선언도 계속 보호한다. 정리는 teardown 이 한다."""
+
+
+DEGRADED: Final = "degraded"
+"""**보기 전용** 배포 상태 — 저장된 ``ready`` 배포의 레플리카 하나 이상이 Ready 가 아니다 (#487).
+
+`DeploymentStatus` 멤버가 아니다: 저장소에 쓰지 않으므로 저장값과 비교하면 항상 거짓이 되는
+조용한 결함이 된다. `DeploymentManager.observe` 만 만들고, 저장된 상태는 ``ready`` 그대로다 —
+런 게이트 · 점유 (`RT_010`) · 해체 · 재부착은 저장된 상태를 본다."""
+
+
+class ReplicaState(StrEnum):
+    """레플리카 하나의 관측 상태 — launcher 의 lifecycle 에서 읽을 때 계산한다 (#487).
+
+    값은 `AgentState` 와 같은 문자열이고, 실패는 ``failed`` 한 이름이다 (05 status 어휘).
+    "모른다" 는 이 어휘에 없다 — `ObservedDeployment.replicas` 의 ``None`` 이 맡는다.
+    """
+
+    READY = "ready"
+    STARTING = "starting"
+    UNHEALTHY = "unhealthy"
+    DRAINING = "draining"
+    FAILED = "failed"
+    ABSENT = "absent"
+    """이 자리에 launcher 가 쥔 레플리카가 없다 — 교체 중이거나, 실패한 해체 · 정리로 멈췄다.
+    어느 쪽인지는 launcher 만 알아서 추론하지 않는다."""
+
+
+# DECLARED · BUILT 는 없다: launcher 는 lifecycle 을 STARTING 으로 올린 **뒤에** `launched` 에
+# 넣는다 (`start` · `adopt`). 표에 없는 상태가 보이면 KeyError 로 드러난다 — 조용히 고르지 않는다
+_OBSERVED: Final[Mapping[AgentState, ReplicaState]] = {
+    AgentState.READY: ReplicaState.READY,
+    AgentState.STARTING: ReplicaState.STARTING,
+    AgentState.UNHEALTHY: ReplicaState.UNHEALTHY,
+    AgentState.DRAINING: ReplicaState.DRAINING,
+    AgentState.FAILED: ReplicaState.FAILED,
+    # 자리는 있는데 컨테이너가 멈춘 것 — 쥔 레플리카가 없다는 점에서 빈자리와 같다
+    AgentState.STOPPED: ReplicaState.ABSENT,
+}
 
 
 @dataclass(frozen=True)
@@ -113,6 +152,23 @@ class DeploymentRecord:
     model_overrides: dict[str, dict[str, Any]] = field(default_factory=dict)
     """배포 요청의 노드별 모델 override — ``exclude_unset`` 으로 덤프한 JSON 형태.
     run 이 토폴로지에 다시 입힐 때 "명시한 키만 덮는다" 가 유지되어야 한다."""
+
+
+@dataclass(frozen=True)
+class ObservedDeployment:
+    """배포 기록 + 읽은 순간의 레플리카 상태 — API 응답용 보기다. 저장하지 않는다.
+
+    Attributes:
+        record: 저장된 기록 그대로.
+        status: 저장된 상태, 또는 ``ready`` 기록의 레플리카가 다 Ready 가 아니면 `DEGRADED`.
+        replicas: ``record.agents`` 와 같은 순서의 레플리카 상태. ``None`` 은 "모른다" 에만
+            쓴다 — 감시가 꺼졌거나, 기록이 ready · lost 가 아니거나, 해체 중이다. 그때는 전부
+            ``None`` 이고, 아니면 하나도 ``None`` 이 아니다.
+    """
+
+    record: DeploymentRecord
+    status: str
+    replicas: tuple[ReplicaState, ...] | tuple[None, ...]
 
 
 @runtime_checkable
@@ -406,6 +462,34 @@ class DeploymentManager:
 
     def deployments(self) -> Sequence[DeploymentRecord]:
         return [self._refresh(r) for r in self.store.list()]
+
+    def observe(self, record: DeploymentRecord) -> ObservedDeployment:
+        """Compute what the deployment looks like right now, without writing anything.
+
+        레플리카 상태는 launcher 의 lifecycle 에서 계산한다 (#487) — 저장된 ``ready`` 는 기동이
+        끝난 순간의 사실일 뿐, 그 뒤의 Unhealthy · Failed 를 말하지 않는다. `DEGRADED` 는 ``ready``
+        기록에만 붙는다: ``lost`` 는 운영자가 이미 알아야 할 더 나쁜 상태라 덮지 않는다.
+        감시가 꺼진 조립은 lifecycle 이 갱신되지 않으므로 "모른다" (``None``) 로 둔다 —
+        `AgentLauncher.route` 와 같은 규칙이다. 해체 중인 배포의 draining 은 고장이 아니다.
+        """
+        unknown = ObservedDeployment(record, record.status, (None,) * len(record.agents))
+        if (
+            record.status not in (DeploymentStatus.READY, DeploymentStatus.LOST)
+            or self.launcher.health_interval_s is None
+            or record.deployment_id in self._teardowns
+        ):
+            return unknown
+        replicas = tuple(self._replica_state(agent) for agent in record.agents)
+        degraded = record.status == DeploymentStatus.READY and any(
+            state is not ReplicaState.READY for state in replicas
+        )
+        return ObservedDeployment(record, DEGRADED if degraded else record.status, replicas)
+
+    def _replica_state(self, agent: DeployedAgent) -> ReplicaState:
+        launched = self.launcher.launched.get((agent.name, agent.replica))
+        if launched is None:
+            return ReplicaState.ABSENT
+        return _OBSERVED[launched.lifecycle.state]
 
     def in_use(self, kind: str, name: str) -> bool:
         """authoring 이 묻는다 — 배포 중인 선언은 지우거나 덮어쓰지 못한다 (#242)."""
@@ -1310,12 +1394,15 @@ def _looks_secret(key: str) -> bool:
 
 
 __all__ = [
+    "DEGRADED",
     "DeployedAgent",
     "DeploymentManager",
     "DeploymentRecord",
     "DeploymentStatus",
     "DeploymentStore",
     "InMemoryDeploymentStore",
+    "ObservedDeployment",
+    "ReplicaState",
     "SqliteDeploymentStore",
     "not_deployed",
 ]

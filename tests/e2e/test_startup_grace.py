@@ -110,6 +110,8 @@ def test_a_slow_starting_agent_becomes_ready_without_being_restarted(patient):
 
     assert status == 201, record
     assert record["status"] == "ready", record
+    # 배포 응답은 모든 레플리카가 Ready 가 된 순간의 관측이다 (#487)
+    assert {a["state"] for a in record["agents"]} == {"ready"}, record
     # **처음 선 그 컨테이너**가 Ready 가 됐다 — 재시작이면 id 가 달라진다 (시간 비교로는 못 가른다)
     assert docker("inspect", "-f", "{{.Id}}", WRITER) == started, "기동 중에 컨테이너가 갈렸다"
     logs = docker("logs", "--tail", "60", WRITER, check=False)
