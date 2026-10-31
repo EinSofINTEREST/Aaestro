@@ -78,6 +78,8 @@ class FakeDockerClient:
         self.started: list[str] = []
         self.stopped: list[tuple[str, float]] = []
         self.removed: list[str] = []
+        # 컨테이너 id → 아직 남은 익명 볼륨 경로. remove 가 비운다 (#511)
+        self.anonymous_volumes: dict[str, set[str]] = {}
         self.built: list[tuple[str, str]] = []
         self.contexts: list[dict[str, str]] = []
         self.connected: list[tuple[str, str, tuple[str, ...]]] = []
@@ -136,7 +138,17 @@ class FakeDockerClient:
         if self._create_error is not None:
             raise self._create_error
         self.created.append(kwargs)
-        return f"container-{len(self.created):04d}" + "0" * 20
+        container_id = f"container-{len(self.created):04d}" + "0" * 20
+        # 익명 볼륨: 목록 형태 `-v /path` 와 tmpfs 가 덮지 않은 이미지 VOLUME 경로
+        volumes = kwargs.get("volumes") or {}
+        anonymous = set(volumes) if isinstance(volumes, list) else set()
+        anonymous |= self._image_volumes_of(kwargs.get("image")) - set(kwargs.get("tmpfs") or {})
+        self.anonymous_volumes[container_id] = anonymous
+        return container_id
+
+    def _image_volumes_of(self, image: str | None) -> set[str]:
+        found = self._image_volumes.get(image or "", set())
+        return set() if isinstance(found, Exception) else set(found)
 
     def start(self, container_id: str) -> None:
         if self._start_error is not None:
@@ -161,6 +173,8 @@ class FakeDockerClient:
             self._remove_failures -= 1
             raise RuntimeError("removal of container is already in progress")
         self.removed.append(container_id)
+        # 실 daemon 의 `remove(v=True)` 와 같다 — 컨테이너와 함께 익명 볼륨이 사라진다
+        self.anonymous_volumes[container_id] = set()
 
     def build(self, context: str, tag: str, *, buildargs: dict[str, str] | None = None) -> str:
         """조립된 컨텍스트를 기록만 한다 — 실제 빌드는 통합 테스트 소관."""

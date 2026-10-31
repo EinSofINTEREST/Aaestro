@@ -314,7 +314,7 @@ class DockerClient(Protocol):
         ...
 
     def remove(self, container_id: str) -> None:
-        """컨테이너를 제거한다."""
+        """컨테이너를 제거한다 — 전용 익명 볼륨도 함께, 이름 있는 볼륨은 남긴다 (#511)."""
         ...
 
     def build(self, context: str, tag: str, *, buildargs: Mapping[str, str] | None = None) -> str:

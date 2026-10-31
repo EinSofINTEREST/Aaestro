@@ -256,3 +256,16 @@ async def test_a_sidecar_network_that_is_not_internal_is_refused():
 
     assert caught.value.code == ErrorCode.RT_001
     assert docker.created == [] and docker.connected == []
+
+
+async def test_stop_removes_the_anonymous_volumes_of_the_sidecars_too():
+    """이미지 VOLUME 이 만든 익명 볼륨은 컨테이너와 함께 지워야 남지 않는다 (#511)."""
+    docker = FakeDockerClient(image_volumes={"mcp/playwright:1.2.0": {"/data"}})
+    sidecars = McpSidecars(docker, proxy=PROXY)
+    await sidecars.start(with_servers(BROWSER, env_allowlist=["BROWSER_KEY"]), AGENT_ENV)
+    (sidecar,) = sidecar_ids(docker)
+    assert docker.anonymous_volumes[sidecar] == {"/data"}
+
+    await sidecars.stop("researcher")
+
+    assert docker.anonymous_volumes[sidecar] == set()

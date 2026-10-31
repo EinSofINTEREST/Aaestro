@@ -6,6 +6,7 @@ E2E 는 통과하고 실제 배포는 다르게 동작한다 (#243). 같은 계�
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -247,7 +248,7 @@ async def test_a_container_built_from_the_spec_passes_the_engine_check(client, e
 async def verdict(client, image, kwargs, expected) -> list[str]:
     """kwargs 로 실제 컨테이너를 만들어 재부착 대조를 돌린다 — 어긋난 필드 이름, 통과면 [].
 
-    익명 볼륨이 생길 수 있어 `-v` 로 함께 지운다 (`SdkDockerClient.remove` 는 볼륨을 남긴다).
+    익명 볼륨이 생길 수 있어 `-v` 로 함께 지운다 (검사 자리에서 만든 컨테이너라 직접 지운다).
     """
     from aaestro.core.errors import AaestroError
     from aaestro.runtime.docker.engine import DockerEngine
@@ -361,3 +362,45 @@ async def test_reattach_refuses_an_anonymous_volume_the_caller_added(client, ech
     kwargs = {**spec.to_docker_kwargs(), "volumes": ["/extra"]}
 
     assert await verdict(client, echo_image, kwargs, spec.hardening_kwargs()) == ["Mounts"]
+
+
+def volume_names(container_id: str, *, named: bool) -> list[str]:
+    """컨테이너가 가진 볼륨 이름 — 이름 있는 것과 익명(64자 hex)을 가른다."""
+    raw = docker("inspect", "-f", "{{json .Mounts}}", container_id)
+    found = [m["Name"] for m in json.loads(raw) if m["Type"] == "volume"]
+    return [n for n in found if (len(n) != 64) == named]
+
+
+def volume_exists(name: str) -> bool:
+    return bool(docker("volume", "inspect", "-f", "{{.Name}}", name, check=False))
+
+
+def test_remove_deletes_anonymous_volumes_and_keeps_named_ones(client, echo_image):  # noqa: F811
+    """이미지 VOLUME 의 익명 볼륨은 컨테이너와 함께 지우고, 이름 있는 볼륨은 남긴다 (#511)."""
+    client.ensure_image(echo_image)
+    client.ensure_network(NETWORK)
+    name = f"contract-volumes-{type(client).__name__.lower()}"
+    cache = f"aaestro-contract-keep-{type(client).__name__.lower()}"
+    docker("rm", "-f", "-v", name, check=False)
+    # tmpfs 를 비워야 base 이미지의 VOLUME(/tmp, /workspace) 이 익명 볼륨이 된다
+    kwargs = {
+        **spec_kwargs(echo_image, name),
+        "tmpfs": {},
+        "volumes": {cache: {"bind": "/cache", "mode": "rw"}},
+    }
+    container_id = client.create(**kwargs)
+    anonymous: list[str] = []
+    try:
+        anonymous = volume_names(container_id, named=False)
+        assert len(anonymous) == 2  # 비어 있으면 아래 검증이 아무것도 보지 않는다
+        assert volume_names(container_id, named=True) == [cache]
+
+        client.remove(container_id)
+
+        assert not any(volume_exists(v) for v in anonymous)
+        assert volume_exists(cache)
+    finally:
+        docker("rm", "-f", "-v", container_id, check=False)
+        docker("volume", "rm", "-f", cache, check=False)
+        for volume in anonymous:
+            docker("volume", "rm", "-f", volume, check=False)
