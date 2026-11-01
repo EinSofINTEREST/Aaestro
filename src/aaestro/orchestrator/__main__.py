@@ -185,10 +185,15 @@ def _start(metrics: Metrics) -> None:
             access=access,
             enforcer_token=orchestrator.access_enforcer_token,
         ),
-        host=orchestrator.control_host,
-        port=orchestrator.control_port,
-        log_config=None,
+        **server_options(orchestrator.control_host, orchestrator.control_port),
     )
+
+
+def server_options(host: str, port: int) -> dict[str, Any]:
+    """The uvicorn settings the entrypoint serves with — shared with the shutdown test (#485)."""
+    # 진행 중인 해체는 uvicorn 의 graceful shutdown (요청 대기, 상한 없음) 이 끝까지 보낸다 —
+    # timeout_graceful_shutdown 을 주면 해체가 끊긴다 (#485)
+    return {"host": host, "port": port, "log_config": None}
 
 
 def _deployment_manager(

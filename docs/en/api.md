@@ -504,6 +504,11 @@ deployment already `stopped` or `failed` is returned unchanged.
 A second request for a deployment that is still being torn down (a retry, a double click)
 joins the teardown in progress and gets the same record — the agents are drained and stopped
 once. A caller that gives up (client timeout) does not stop the teardown; it runs to the end.
+Stopping the control plane also waits for teardowns in progress before it exits — shutdown
+waits, without a limit, for every request still being served, a teardown included. If the
+process is killed before they finish, the deployment is not recorded as `stopped`: after the
+restart it is reattached or shown as `lost`, and tearing it down again removes what is left —
+containers are found by their agent label.
 
 ## Runs
 

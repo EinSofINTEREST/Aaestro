@@ -330,8 +330,34 @@ async def test_teardown_of_an_interrupted_deployment_removes_its_orphan_containe
     assert agent_container in fake.removed
     assert orphans <= set(fake.removed)
     assert fake.labeled({AGENT_LABEL: "alpha"}) == ()
+    assert fake.find(SIDECAR) is None and SIDECAR_NET in fake.removed_networks
     assert revoked == ["dep-interrupted"]
     assert "alpha" not in manager._claimed  # noqa: SLF001
+    await first.launcher.stop_all()
+
+
+async def test_teardown_of_a_lost_deployment_removes_containers_the_launcher_never_adopted(planes):
+    """#485 — LOST 배포의 컨테이너는 launcher 밖에 있다 — 라벨로 찾아 사이드카 · 네트워크도 치운다.
+
+    기록은 기동한 쪽의 것을 LOST 로 바꿔 새 control plane 에 준다.
+    """
+    make, fake = planes
+    store = InMemoryDeploymentStore()
+    first = make(store)
+    record = await first.deploy("solo")
+    agent_container = fake.find(container_name("alpha", 0))
+    assert agent_container is not None and fake.find(SIDECAR) is not None
+    # 새 control plane 이 이 배포를 붙이지 못했다 — 컨테이너는 살아 있고 launcher 는 모른다
+    store.upsert(DeploymentRecord(**{**record.__dict__, "status": DeploymentStatus.LOST}))
+    restarted = make(store)
+    assert not restarted.launcher.replicas_of("alpha")
+
+    stopped = await restarted.teardown(record.deployment_id)
+
+    assert stopped.status == DeploymentStatus.STOPPED
+    assert agent_container in fake.removed
+    assert fake.labeled({AGENT_LABEL: "alpha"}) == ()
+    assert fake.find(SIDECAR) is None and SIDECAR_NET in fake.removed_networks
     await first.launcher.stop_all()
 
 
