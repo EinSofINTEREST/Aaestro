@@ -216,6 +216,9 @@ def test_hardening_is_read_under_the_inspect_field_names(client, container):
     assert found["ReadonlyPaths"]
     assert not found["Privileged"]
     assert not found["CapAdd"]
+    # 플래그 없이 만든 컨테이너의 실측값 — 이름이 틀리면 None 이 되어 대조가 조용히 통과한다
+    assert found["CgroupnsMode"] == "private"
+    assert found["UTSMode"] == ""
     # 마운트 대조가 읽는 모양 (#488) — `--tmpfs` 는 `Mounts` 가 아니라 `Tmpfs` 에 있다
     assert found["Mounts"] == []
     assert set(found["Tmpfs"]) == {"/tmp", "/workspace"}  # noqa: S108 — 컨테이너 안 경로다
@@ -304,6 +307,24 @@ async def test_reattach_refuses_tmpfs_the_spec_did_not_declare(client, echo_imag
 
     assert await verdict(client, echo_image, added, spec.hardening_kwargs()) == ["Tmpfs"]
     assert await verdict(client, echo_image, dropped, spec.hardening_kwargs()) == ["Tmpfs"]
+
+
+async def test_reattach_refuses_a_device_the_spec_did_not_set(client, echo_image):  # noqa: F811
+    """`--device /dev/null:/dev/qa` 를 더한 실제 컨테이너가 재부착을 통과했다 (#510 — #488 QA).
+
+    디바이스 없는 정상 컨테이너는 daemon 이 `null` (SDK) · `[]` (CLI) 로 보고한다 — 둘 다 통과한다.
+    """
+    client.ensure_image(echo_image)
+    client.ensure_network(NETWORK)
+    spec = mounted_echo_spec(echo_image, [])
+    kwargs = spec.to_docker_kwargs()
+    added = {**kwargs, "devices": ["/dev/null:/dev/qa"]}
+
+    assert await verdict(client, echo_image, kwargs, spec.hardening_kwargs()) == []
+    assert await verdict(client, echo_image, added, spec.hardening_kwargs()) == ["Devices"]
+    ruled = {**kwargs, "device_cgroup_rules": ["c 1:3 r"]}
+    expected = spec.hardening_kwargs()
+    assert await verdict(client, echo_image, ruled, expected) == ["DeviceCgroupRules"]
 
 
 async def test_reattach_accepts_an_image_volume(client, echo_image, tmp_path):  # noqa: F811

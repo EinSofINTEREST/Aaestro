@@ -976,9 +976,10 @@ manifest 가 `env_allowlist` 에 올려도 실 키는 프록시에만 있다. �
   네트워크에만 붙어 있고, 기동 스펙이 거는 경화 설정(`CapDrop` 에 `ALL`, 읽기 전용 루트 파일시스템,
   사용자 `1000:1000`, PID limit (`DEFAULT_PID_LIMIT`, 256), 키별 유효값이 스펙과 같은
   `security_opt` — 항목을 더하거나 뒤에서 덮으면 거절)이 그대로이며 그것을 무력화하는 설정
-  (privileged, 추가 capability, 호스트 PID · IPC · user · 네트워크 네임스페이스, 비어 있는
-  `MaskedPaths` 또는 `ReadonlyPaths`)이 없고, 마운트가 기동 스펙이 건 것(읽기 전용 선언 마운트, 선언한
-  볼륨, `tmpfs` 경로)과 정확히 같을 때만 재부착한다. 스펙이 선언하지 않은 바인드(호스트 경로,
+  (privileged, 추가 capability, 호스트 PID · IPC · user · 네트워크 · UTS · cgroup 네임스페이스,
+  비어 있는 `MaskedPaths` 또는 `ReadonlyPaths`, 기동 스펙이 걸지 않은 `Devices` · `DeviceRequests` ·
+  `DeviceCgroupRules`)이 없고, 마운트가 기동 스펙이 건 것(읽기 전용 선언 마운트, 선언한 볼륨,
+  `tmpfs` 경로)과 정확히 같을 때만 재부착한다. 스펙이 선언하지 않은 바인드(호스트 경로,
   `/var/run/docker.sock`), 쓰기 가능으로 바뀌거나 다른 곳을 가리키는 선언 마운트, 더하거나 빠진 `tmpfs`
   는 거절된다 (`Mounts` / `Tmpfs` — 사유에는 필드 이름만 싣고 경로는 싣지 않는다). 경로는 정규화해
   비교한다 (`/cache/` 는 `/cache`). 예외는 이미지가 `VOLUME` 으로 선언한 경로에 Docker 가 만든 익명 볼륨
