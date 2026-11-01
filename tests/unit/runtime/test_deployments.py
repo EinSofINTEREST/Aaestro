@@ -336,7 +336,7 @@ async def test_shutdown_lets_a_teardown_in_flight_finish_before_the_lifespan_end
         port = sock.getsockname()[1]
         async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as client:
             delete = asyncio.create_task(client.delete(f"/v1/deployments/{record.deployment_id}"))
-            await entered.wait()
+            await asyncio.wait_for(entered.wait(), timeout=10)
             server.should_exit = True
             await serving
             response = await delete
