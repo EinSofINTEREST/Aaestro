@@ -416,6 +416,10 @@ def test_rejected_volume_source_is_not_echoed():
             [{"name": "one", "mount_path": "/a"}, {"name": "two", "mount_path": "/a"}],
             "mount path",
         ),
+        (
+            [{"name": "one", "mount_path": "/data"}, {"name": "two", "mount_path": "/data/."}],
+            "mount path",
+        ),
     ],
 )
 def test_duplicate_volume_declarations_are_rejected(volumes, what):
