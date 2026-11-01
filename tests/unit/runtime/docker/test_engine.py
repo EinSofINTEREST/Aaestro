@@ -1009,7 +1009,7 @@ def inspect_shape(kwargs):
 
 
 HARDENING_KEYS = (
-    "pids_limit", "user", "read_only", "cap_drop", "security_opt", "tmpfs", "volumes"
+    "pids_limit", "user", "read_only", "cap_drop", "security_opt", "cgroupns", "tmpfs", "volumes"
 )  # fmt: skip
 
 
