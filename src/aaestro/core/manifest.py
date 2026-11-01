@@ -781,6 +781,19 @@ class RuntimeSpec(BaseModel):
                 raise ValueError("egress destination must be host or host:port without wildcards")
         return values
 
+    @field_validator("volumes")
+    @classmethod
+    def _unique_volumes(cls, value: tuple[VolumeSpec, ...]) -> tuple[VolumeSpec, ...]:
+        """name 중복은 마운트가 조용히 덮어써지고, mount_path 중복은 기동 때 거절된다."""
+        for what, values in (
+            ("name", [v.name for v in value]),
+            ("mount path", [v.mount_path for v in value]),
+        ):
+            repeated = repeated_positions(values)
+            if repeated:
+                raise ValueError(f"duplicate volume {what} at index {repeated}")
+        return value
+
     @field_validator("image")
     @classmethod
     def _reject_latest_tag(cls, value: str | None) -> str | None:
