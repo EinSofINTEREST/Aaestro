@@ -28,7 +28,7 @@ tests/
 - 마커: `@pytest.mark.integration`, `@pytest.mark.e2e`
 - `make test` 는 unit 만 실행; `make test-integration` / `make test-e2e` 는 분리 실행
 - E2E 는 CI 에서 nightly (`ci-nightly.yml`) — PR gate 아님
-- import 계약 테스트 (`tests/unit/{agentd,egress,memory}/test_import_boundary.py`) 는 각 진입점을 격리된 `python -I` 서브프로세스에서 import 해 금지 모듈 (control plane · 서버 모듈 · 무거운 서드파티) 이 `sys.modules` 에 없음을 단언한다. 금지 목록은 테스트 안의 상수다
+- import 계약 테스트 (`tests/unit/{agentd,egress,memory}/test_import_boundary.py`) 는 각 진입점을 격리된 `python -I` 서브프로세스에서 import 해 금지 모듈 (control plane · 서버 모듈 · 무거운 서드파티) 이 `sys.modules` 에 없음을 단언한다. `aaestro.*` 모듈은 모듈 이름으로, 서드파티는 pyproject 의존성 이름으로 선언하고 최상위 모듈 이름은 `importlib.metadata.packages_distributions()` 로 유도한다 (설치되지 않은 의존성은 실패). pyproject 의 모든 런타임 의존성은 각 테스트에서 "금지" 또는 "허용 (사유)" 로 분류돼야 하며, 분류 없이 추가되면 실패한다
 - 공용 E2E 스캐폴딩(compose 스택과 control plane 프로세스)은 `tests/e2e/conftest.py` 에 둔다 —
   테스트 모듈 사이에서 픽스처를 import 하면 이름이 조용히 가려진다
 
