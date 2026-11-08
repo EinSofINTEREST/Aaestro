@@ -365,6 +365,21 @@ def test_alerts_only_filter_on_status_values_the_code_emits():
     assert unknown == [], f"알림이 코드가 내지 않는 status 를 본다: {unknown}"
 
 
+def test_alerts_only_filter_on_restart_reasons_the_code_emits():
+    """status 와 같은 실패 방식 — `reason` 값이 어긋나면 Failed 알림이 침묵한다 (#520)."""
+    from aaestro.runtime.launcher import RESTART_REASONS
+
+    pattern = re.compile(r"aaestro_container_restarts_total\{[^}]*reason\s*=~?\s*\"([^\"]+)\"")
+    referenced = {
+        value
+        for alternation in pattern.findall(ALERTS.read_text(encoding="utf-8"))
+        for value in alternation.split("|")
+    }
+
+    assert referenced, "reason 필터를 찾지 못했다 — 검사가 비었다"
+    assert referenced <= set(RESTART_REASONS), sorted(referenced - set(RESTART_REASONS))
+
+
 def test_documented_memory_ops_match_what_the_code_emits():
     """05/09 가 나열한 ``op`` 값과 코드가 내는 값이 같아야 한다.
 

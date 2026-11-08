@@ -23,7 +23,7 @@ from aaestro.core.agent import HealthState, HealthStatus
 from aaestro.core.errors import AaestroError
 from aaestro.core.manifest import AgentManifest
 from aaestro.runtime.docker.engine import ContainerHandle, DockerEngine
-from aaestro.runtime.docker.errors import NetworkIsolationError
+from aaestro.runtime.docker.errors import ImageMissingError, NetworkIsolationError
 from aaestro.runtime.health import HealthMonitor
 from aaestro.runtime.lifecycle import AgentLifecycle, AgentState
 from aaestro.runtime.spec import build_container_spec
@@ -79,7 +79,7 @@ class CliDockerClient:
 
     def ensure_image(self, image: str) -> None:
         if not docker("images", "-q", image, check=False):
-            raise RuntimeError(f"image not built: {image}")
+            raise ImageMissingError(image)
 
     def ensure_network(self, name: str, *, internal: bool = False) -> None:
         """SdkDockerClient 와 같은 계약 — 없으면 만들고, 있는데 격리가 다르면 거부한다."""

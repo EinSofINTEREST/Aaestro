@@ -22,6 +22,7 @@ from aaestro.core.errors import AaestroError
 from aaestro.core.manifest import AgentManifest
 from aaestro.observability.metrics import Metrics
 from aaestro.runtime.docker.engine import DockerEngine
+from aaestro.runtime.docker.errors import ImageMissingError
 from aaestro.runtime.launcher import AgentLauncher
 from aaestro.runtime.lifecycle import AgentState, RestartPolicy
 from tests.fixtures.fake_docker import FakeDockerClient
@@ -482,6 +483,55 @@ async def test_restarts_that_keep_failing_end_in_failed():
     await agents.stop_all()
 
 
+async def test_a_restart_that_cannot_succeed_is_not_retried():
+    """#520 — 재시도 불가 기동 실패 (이미지 없음, `RT_004`) 를 상한까지 반복하지 않는다."""
+    client = FakeDockerClient()
+    clock = FakeClock()
+    metrics = Metrics(registry=CollectorRegistry())
+    waits = ClockedSleep(clock, client)
+    agents = launcher(client, waits, metrics=metrics, health_interval_s=None)
+    launched, _ = await start_sick(agents)
+    launched.lifecycle.restart_policy = RestartPolicy(clock=clock)
+    client._image_error = ImageMissingError("aaestro/agent-echo:0.1.0")
+
+    await restart_now(agents, launched)
+
+    assert waits.waits == [1.0], "재시도 불가 실패 뒤에 다시 기동을 시도했다"
+    assert launched.lifecycle.state is AgentState.FAILED
+    assert restart_count(metrics, "permanent") == 1.0
+    assert restart_count(metrics, "failed") == 0.0
+    assert restart_count(metrics, "gave_up") == 0.0
+    assert agents.replicas_of("echo") == [launched], "포기한 레플리카가 목록에서 사라졌다"
+    await agents.stop_all()
+
+
+async def test_a_permanent_restart_failure_logs_its_cause(monkeypatch: pytest.MonkeyPatch):
+    """원인 코드가 로그에 있어야 운영자가 crash-loop 와 설정 문제를 구분한다."""
+    import aaestro.runtime.launcher as launcher_module
+
+    logged: list[tuple[str, str, dict]] = []
+
+    class Capture:
+        def __getattr__(self, level: str):
+            return lambda event, **fields: logged.append((level, event, fields))
+
+    monkeypatch.setattr(launcher_module, "log", Capture())
+    client = FakeDockerClient()
+    agents = launcher(client, Recorder(), health_interval_s=None)
+    launched, _ = await start_sick(agents)
+    client._image_error = ImageMissingError("aaestro/agent-echo:0.1.0")
+
+    await restart_now(agents, launched)
+
+    failed = [(lvl, f) for lvl, event, f in logged if event == "agent restart failed permanently"]
+    assert len(failed) == 1
+    level, fields = failed[0]
+    assert level == "error"
+    assert fields["error_code"] == "RT_004"
+    assert fields["agent"] == "echo"
+    await agents.stop_all()
+
+
 async def test_a_replica_whose_restart_failed_stays_visible():
     """재기동 실패 뒤 레플리카가 목록에서 빠지면 배포는 READY 로만 보이고 정지도 못 한다."""
     client = FakeDockerClient()
@@ -579,7 +629,7 @@ async def test_restart_reasons_exist_before_the_first_restart():
 
     await agents.start(manifest())
 
-    for reason in ("unhealthy", "failed", "gave_up"):
+    for reason in ("unhealthy", "failed", "gave_up", "permanent"):
         sample = registry.get_sample_value(
             "aaestro_container_restarts_total", {"agent": "echo", "reason": reason}
         )

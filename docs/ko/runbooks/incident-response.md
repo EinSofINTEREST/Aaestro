@@ -51,19 +51,33 @@ Aaestro 알림이 울렸을 때의 대응 절차. 규범 규칙:
 
 1. `aaestro_container_restarts_total` 의 `reason` 을 확인한다: `unhealthy` (health 실패로
    교체됨), `failed` (교체 컨테이너가 기동하지 못함 — 다음 backoff 뒤 다시 시도), `gave_up`
-   (상한 도달). OOM 은 아직 따로 분류하지 않는다 — runtime 은 재시작할 때 `RT_003` 을 남기지
-   않고 교체된 컨테이너는 지워진다 — 그래서 메모리 부족도 `unhealthy` 로 보인다.
-   `docker events --filter event=oom` 에 `oom` 이 있으면 `runtime.resources.memory` 를 올리거나
-   동시성을 낮춘다.
-2. `RT_001` 과 함께 `failed` 가 반복되면 대개 이미지나 entrypoint 문제다 — 컨테이너가
-   health 를 보고할 지점까지 도달하지 못한다. 재시도 동안 그 레플리카는 **Unhealthy** 로
-   남고 태스크를 받지 않는다.
-3. 기동에 실패한 재시작도 센다. 10분 내 5회를 넘기면 runtime 이 에이전트를 **Failed** 로
-   전환하고 재시도를 멈춘다. 원인을 고친 뒤 재배포한다.
+   (상한 도달 — [AgentFailed](#agentfailed) 참고). OOM 은 아직 따로 분류하지 않는다 — runtime 은
+   재시작할 때 `RT_003` 을 남기지 않고 교체된 컨테이너는 지워진다 — 그래서 메모리 부족도
+   `unhealthy` 로 보인다. `docker events --filter event=oom` 에 `oom` 이 있으면
+   `runtime.resources.memory` 를 올리거나 동시성을 낮춘다.
+2. `failed` 가 반복되면 교체가 다시 시도하면 풀릴 수 있는 오류로 계속 실패하는 것이다 — 재시도
+   가능한 `RT_001` (컨테이너가 기동하지 못함) 이나 `RT_004` (daemon · 레지스트리가 답하지 않아
+   이미지를 가져오지 못함). 재시도 동안 그 레플리카는 **Unhealthy** 로 남고 태스크를 받지 않는다.
+   이미지가 없거나 runtime 이 거절하는 스펙은 아예 다시 시도하지 않는다 —
+   `reason="permanent"` 로 [AgentFailed](#agentfailed) 에 간다.
+3. 재시도 가능한 오류로 기동에 실패한 재시작도 센다. 10분 내 5회를 넘기면 runtime 이 에이전트를
+   **Failed** 로 전환하고 재시도를 멈춘다. 원인을 고친 뒤 재배포한다.
 4. **기동 중에** 재시작되는 에이전트(한 번도 healthy 인 적 없이 `interval_s × unhealthy_threshold`
    에서 재시작)는 에이전트 문제가 아니라 기동 유예가 짧은 것이다.
    `runtime.health_check.startup_grace_s` 와 `orchestrator.deployment_ready_timeout_s` 를 함께
    올린다 — 유예만 올리면 배포가 먼저 `RT_002` 로 끝난다.
+
+### AgentFailed
+
+레플리카의 재시작이 **Failed** 로 끝났다 — runtime 은 더 이상 재시작하지 않는다.
+
+1. `aaestro_container_restarts_total` 의 `reason` 을 확인한다: `gave_up` (10분 내 재시작 5회 —
+   원인은 [ContainerRestartLoop](#containerrestartloop)) 또는 `permanent` (교체가 재시도 불가
+   오류로 실패해 다시 시도하지 않음).
+2. `permanent` 면 `agent restart failed permanently` 로그의 `error_code` 를 본다. `RT_004` 는
+   이미지가 로컬에도 레지스트리에도 없다는 뜻이다 — 굽거나 push 한다. `RT_001` 은 컨테이너 스펙이나
+   에이전트 네트워크가 runtime 과 맞지 않는다는 뜻이다. 다시 시도해도 같은 실패다.
+3. 원인을 고친 뒤 재배포한다. Failed 레플리카는 태스크를 받지 않고 health 확인도 받지 않는다.
 
 ### ModelRateLimited
 

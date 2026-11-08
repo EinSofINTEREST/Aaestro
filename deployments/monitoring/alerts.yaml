@@ -37,6 +37,17 @@ groups:
           summary: "Agent {{ $labels.agent }} restart loop"
           runbook: "docs/en/runbooks/incident-response.md#containerrestartloop"
 
+      - alert: AgentFailed
+        # 재시작이 Failed 로 끝난 것 — 재시도 불가 실패는 한 번만 세어 ContainerRestartLoop 에 닿지 않는다 (#520)
+        expr: |
+          sum without (reason) (
+            increase(aaestro_container_restarts_total{reason=~"permanent|gave_up"}[10m])
+          ) > 0
+        labels: {severity: critical}
+        annotations:
+          summary: "Agent {{ $labels.agent }} restarts ended in Failed — the runtime stopped restarting it"
+          runbook: "docs/en/runbooks/incident-response.md#agentfailed"
+
       - alert: ModelRateLimited
         expr: |
           sum without (status) (

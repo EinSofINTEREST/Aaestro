@@ -19,6 +19,7 @@ from aaestro.runtime.docker.engine import (
     agent_of,
     control_port_of,
 )
+from aaestro.runtime.docker.errors import ImageMissingError
 from aaestro.runtime.spec import build_container_spec
 from tests.fixtures.builders import make_manifest
 from tests.fixtures.fake_docker import FakeDockerClient, inspect_mounts
@@ -168,8 +169,8 @@ async def test_a_network_with_the_wrong_isolation_is_refused_before_creating_any
 
 
 async def test_missing_image_is_rt_004():
-    """이미지 문제는 설정 문제 — 재시도해도 같다."""
-    client = FakeDockerClient(image_error=RuntimeError("not found"))
+    """이미지가 없는 것은 설정 문제 — 재시도해도 같다."""
+    client = FakeDockerClient(image_error=ImageMissingError("aaestro/absent:9.9.9"))
 
     with pytest.raises(AaestroError) as exc_info:
         await engine(client).start(spec())
@@ -178,6 +179,17 @@ async def test_missing_image_is_rt_004():
     assert exc_info.value.category is ErrorCategory.RUNTIME
     assert exc_info.value.retryable is False
     assert exc_info.value.details["image"]
+
+
+async def test_an_image_fetch_that_fails_for_another_reason_is_retryable():
+    """#520 — daemon 단절 · 레지스트리 장애까지 재시도 불가로 올리면 재시작이 곧장 Failed 다."""
+    client = FakeDockerClient(image_error=ConnectionError("daemon socket closed"))
+
+    with pytest.raises(AaestroError) as exc_info:
+        await engine(client).start(spec())
+
+    assert exc_info.value.code == "RT_004"
+    assert exc_info.value.retryable is True
 
 
 async def test_create_failure_is_retryable_rt_001():

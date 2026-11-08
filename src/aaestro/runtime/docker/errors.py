@@ -48,15 +48,30 @@ def runtime_error(
     )
 
 
-def image_unavailable(agent: str, image: str, **details: Any) -> AaestroError:
-    """이미지 pull/존재 확인 실패 — 설정 문제이므로 재시도해도 같다."""
+def image_unavailable(
+    agent: str, image: str, *, retryable: bool = False, **details: Any
+) -> AaestroError:
+    """이미지 확보 실패 — 이미지가 없으면 설정 문제라 재시도해도 같다 (기본).
+
+    daemon · 레지스트리 장애처럼 다시 시도하면 될 수 있는 실패는 호출자가 ``retryable`` 로
+    표시한다 — 재시작 경로가 재시도 불가 실패를 바로 Failed 로 보내기 때문이다 (#520).
+    """
     return runtime_error(
         ErrorCode.RT_004,
         f"agent image is unavailable: {image}",
         agent=agent,
+        retryable=retryable,
         image=image,
         **details,
     )
+
+
+class ImageMissingError(Exception):
+    """The image is neither stored locally nor found in its registry."""
+
+    def __init__(self, image: str) -> None:
+        super().__init__(f"image {image} does not exist")
+        self.image = image
 
 
 class NetworkIsolationError(Exception):
