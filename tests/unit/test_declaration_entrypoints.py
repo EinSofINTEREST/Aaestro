@@ -30,6 +30,7 @@ from aaestro.core.yamlio import NOT_UTF8, UNCONSTRUCTIBLE
 from aaestro.modules.registry import ModuleRegistry
 from aaestro.modules.skillset import SkillsetLoader
 from tests.fixtures.declarations import MARKER, REPO_ROOT, _edit, _repo_copy, _secret_manifest
+from tests.fixtures.subprocesses import assert_returncode, describe, run_process
 
 NOT_TEXT = b"token: \xff" + MARKER.encode() + b"\n"
 """UTF-8 이 아닌 바이트 뒤에 표식 — 디코딩 에러가 바이트 조각을 싣고 나오는지 본다."""
@@ -43,7 +44,7 @@ PROCESS_TIMEOUT_S = 60
 
 
 def _run(args: list[str], **env: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(  # noqa: S603
+    return run_process(
         [sys.executable, *args],
         # 메트릭 서버는 고정 포트 대신 임시 포트 (0) — 다른 테스트 · 프로세스와 부딪히지 않게.
         # agentd 는 토큰 판정 (#394) 이 선언 로드보다 먼저다 — 보려는 것은 선언 실패라 토큰은 준다
@@ -54,9 +55,6 @@ def _run(args: list[str], **env: str) -> subprocess.CompletedProcess[str]:
             AGENT_TOKEN_ENV: "issued-token",
             **env,
         },
-        capture_output=True,
-        text=True,
-        check=False,
         timeout=PROCESS_TIMEOUT_S,
         cwd=REPO_ROOT,
     )
@@ -88,8 +86,12 @@ def _startup_failure(name: str, tmp_path: Path, content: bytes) -> subprocess.Co
 
 def _critical_line(result: subprocess.CompletedProcess[str]) -> dict[str, Any]:
     lines = [json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")]
-    (critical,) = [line for line in lines if line.get("level") == "critical"]
-    return critical
+    criticals = [line for line in lines if line.get("level") == "critical"]
+    # 줄 수가 틀리면 원인 없는 ValueError 대신 몇 줄이었는지와 출력 꼬리를 싣는다
+    assert len(criticals) == 1, (
+        f"expected 1 critical line, got {len(criticals)}; {describe(result)}"
+    )
+    return criticals[0]
 
 
 # --- UTF-8 이 아닌 파일: 네 입구가 같은 처리 --------------------------------------------------
@@ -155,7 +157,7 @@ def test_deployment_validation_reports_a_non_utf8_module_instead_of_raising(tmp_
 def test_entrypoint_reports_a_non_utf8_file_without_a_traceback(name: str, tmp_path: Path):
     result = _startup_failure(name, tmp_path, NOT_TEXT)
 
-    assert result.returncode == 1
+    assert_returncode(result, 1)
     assert "Traceback" not in result.stdout + result.stderr
     assert MARKER not in result.stdout + result.stderr
     assert _critical_line(result)["details"]["reason"] == NOT_UTF8
@@ -238,7 +240,7 @@ def test_entrypoint_reports_unconstructible_yaml_without_a_traceback(
 
     result = _startup_failure(name, tmp_path, content)
 
-    assert result.returncode == 1
+    assert_returncode(result, 1)
     assert "Traceback" not in result.stdout + result.stderr
     assert MARKER not in result.stdout + result.stderr
     assert _critical_line(result)["details"]["reason"] == reason
@@ -253,7 +255,7 @@ def test_cli_reports_unconstructible_yaml_without_a_traceback(tmp_path: Path):
     validate = _cli(root, "--json", "validate")
 
     for result in (status, validate):
-        assert result.returncode == 1
+        assert_returncode(result, 1)
         assert reason in result.stdout
         assert "Traceback" not in result.stdout + result.stderr
         assert MARKER not in result.stdout + result.stderr
@@ -277,7 +279,7 @@ def test_agentd_reports_a_broken_module_declaration_with_its_field(tmp_path: Pat
     )
 
     line = _critical_line(result)
-    assert result.returncode == 1
+    assert_returncode(result, 1)
     assert line["event"] == "agent startup failed"
     assert line["error_code"] == "MOD_003"
     assert line["details"]["errors"] == [
@@ -294,7 +296,7 @@ def test_control_plane_reports_a_failure_after_the_config_load_in_the_same_shape
     )
 
     line = _critical_line(result)
-    assert result.returncode == 1
+    assert_returncode(result, 1)
     assert line["event"] == "control plane startup failed"
     assert line["error_code"] == "CFG_001"
     assert line["details"] == {"setting": "orchestrator.run_store"}
@@ -320,7 +322,7 @@ def test_missing_token_is_one_critical_line_without_a_traceback(name: str, tmp_p
         )
 
     line = _critical_line(result)
-    assert result.returncode == 1
+    assert_returncode(result, 1)
     assert "Traceback" not in result.stdout + result.stderr
     assert line["error_code"] == "CFG_001"
     if name == "agentd":
@@ -351,7 +353,7 @@ def test_bad_metrics_port_is_one_critical_line_without_a_traceback(
     result = _run(["-c", code], **env)
 
     line = _critical_line(result)
-    assert result.returncode == 1
+    assert_returncode(result, 1)
     assert "Traceback" not in result.stdout + result.stderr
     assert line["error_code"] == "CFG_001"
     assert "AAESTRO_METRICS_PORT" in json.dumps(line["details"])
@@ -361,7 +363,7 @@ def test_agentd_malformed_token_is_rejected_without_logging_its_value():
     result = _entrypoint("agentd", **{AGENT_TOKEN_ENV: BAD_TOKEN})
 
     line = _critical_line(result)
-    assert result.returncode == 1
+    assert_returncode(result, 1)
     assert line["error_code"] == "CFG_001"
     assert line["details"]["setting"] == AGENT_TOKEN_ENV
     assert "leaked-token-value" not in result.stdout + result.stderr
@@ -378,7 +380,7 @@ def test_startup_failure_is_one_json_line_of_the_same_shape_at_every_entrypoint(
         directory = tmp_path / name
         directory.mkdir()
         result = _startup_failure(name, directory, b"a: 1\na: 2\n")
-        assert result.returncode == 1
+        assert_returncode(result, 1)
         # 한 줄뿐이다 — JSON 이 아닌 줄 (기본 설정의 콘솔 렌더) 이 섞여 나오지 않는다
         assert [line for line in result.stdout.splitlines() if not line.startswith("{")] == []
         lines[name] = _critical_line(result)
@@ -401,7 +403,7 @@ def test_agentd_startup_failure_goes_through_the_masking_processor(tmp_path: Pat
     result = _entrypoint("agentd", **{MANIFEST_ENV: str(_secret_manifest(tmp_path))})
 
     line = _critical_line(result)
-    assert result.returncode == 1
+    assert_returncode(result, 1)
     assert line["event"] == "agent manifest rejected"
     assert "timestamp" in line  # 기본 설정 (PrintLogger) 에는 TimeStamper 가 없다
     assert MARKER not in result.stdout + result.stderr
@@ -417,7 +419,7 @@ def test_cli_status_reports_a_module_that_fails_its_schema(tmp_path: Path):
     result = _cli(root, "--json", "status")
 
     payload = json.loads(result.stdout)
-    assert result.returncode == 1
+    assert_returncode(result, 1)
     assert "skillsets/web-search@0.2.0" not in payload["modules"]
     (problem,) = payload["problems"]
     assert str((root / SKILLSET).parent) in problem
@@ -431,7 +433,7 @@ def test_cli_status_of_the_unmodified_repository_copy_is_clean(tmp_path: Path):
     result = _cli(_repo_copy(tmp_path), "--json", "status")
 
     payload = json.loads(result.stdout)
-    assert result.returncode == 0
+    assert_returncode(result, 0)
     assert "problems" not in payload
     assert "skillsets/web-search@0.2.0" in payload["modules"]
 
@@ -454,7 +456,7 @@ def test_cli_validate_does_not_log_a_pass_when_it_fails_on_the_catalog(tmp_path:
     result = _cli(root, "--json", "validate")
 
     output = result.stdout + result.stderr
-    assert result.returncode == 1
+    assert_returncode(result, 1)
     assert "spec.zz_unknown" in result.stdout
     # 최종 판정이 실패면 어떤 단계의 통과도 말하지 않는다 (#472)
     assert "graph and agent checks passed" not in output

@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import subprocess
 import sys
 import traceback
 from pathlib import Path
@@ -53,6 +52,7 @@ from tests.fixtures.declarations import (
     _repo_copy,
     _secret_manifest,
 )
+from tests.fixtures.subprocesses import assert_returncode, run_process
 from tests.fixtures.topologies import mission_dict
 
 
@@ -364,7 +364,7 @@ def test_agentd_process_exits_with_one_structured_line_and_no_value(tmp_path: Pa
     """진짜 별도 프로세스 — 기동 실패 한 줄이 stdout 에 나오고 traceback 은 없다."""
     manifest = _secret_manifest(tmp_path)
 
-    result = subprocess.run(  # noqa: S603
+    result = run_process(
         [sys.executable, "-c", "from aaestro.agentd.__main__ import main; main()"],
         # 로깅 · 메트릭 설정이 manifest 로드보다 먼저다 — 고정 포트와 부딪히지 않게 임시 포트 (0)
         env={
@@ -373,13 +373,10 @@ def test_agentd_process_exits_with_one_structured_line_and_no_value(tmp_path: Pa
             AGENT_TOKEN_ENV: "issued-token",
             "AAESTRO_METRICS_PORT": "0",
         },
-        capture_output=True,
-        text=True,
-        check=False,
         timeout=60,
     )
 
-    assert result.returncode == 1
+    assert_returncode(result, 1)
     assert "agent manifest rejected" in result.stdout
     assert "CFG_001" in result.stdout
     assert "spec.runtime.env" in result.stdout
@@ -534,17 +531,14 @@ def test_entrypoint_rejects_a_misspelled_config_key_with_one_log_line(
         "AAESTRO_METRICS_PORT": "0",
     }
 
-    result = subprocess.run(  # noqa: S603
+    result = run_process(
         [sys.executable, "-c", f"from {entrypoint} import main; main()"],
         env=env,
-        capture_output=True,
-        text=True,
-        check=False,
         timeout=60,
     )
 
     output = result.stdout + result.stderr
-    assert result.returncode == 1
+    assert_returncode(result, 1)
     assert "configuration rejected" in output
     assert "CFG_001" in output
     assert "runtime.bogus" in output
