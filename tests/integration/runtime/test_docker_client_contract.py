@@ -244,6 +244,61 @@ async def test_a_container_built_from_the_spec_passes_the_engine_check(client, e
         client.remove(container_id)
 
 
+async def test_engine_start_passes_its_own_hardening_check(client, echo_image, tmp_path):  # noqa: F811
+    """기동 직후 대조 (#501) 가 정상 스펙의 실 컨테이너를 거절하지 않는다 — 선언 마운트 포함.
+
+    거절하면 모든 기동이 실패한다. 손으로 쓴 kwargs 가 아니라 실제 스펙으로 `engine.start` 를 돈다.
+    """
+    from aaestro.runtime.docker.engine import DockerEngine
+    from tests.integration.runtime.test_docker_lifecycle import echo_spec
+
+    client.ensure_image(echo_image)
+    declaration = tmp_path / "declaration"
+    declaration.mkdir()
+    spec = echo_spec(
+        image=echo_image,
+        network=NETWORK,
+        mounts=[{"name": str(declaration), "mount_path": "/opt/declared", "read_only": True}],
+    )
+    docker("rm", "-f", "-v", spec.name, check=False)
+    engine = DockerEngine(client=client, network=NETWORK)
+    handle = await engine.start(spec)
+    try:
+        assert client.inspect(handle.container_id)["Running"] is True
+    finally:
+        docker("rm", "-f", "-v", handle.container_id, check=False)
+
+
+async def test_sidecar_start_passes_its_own_hardening_check(client, echo_image):  # noqa: F811
+    """사이드카 기동 직후 대조 (#501) 가 `sidecar_kwargs` 의 실 컨테이너를 거절하지 않는다.
+
+    에이전트 쪽 테스트의 짝이다. 이미지는 그 내용과 무관해 기존 통합 테스트의 echo 이미지를 쓴다 —
+    base 이미지의 `VOLUME` 이 만든 익명 볼륨까지 실제로 거친다.
+    """
+    from aaestro.core.manifest import sidecar_host
+    from aaestro.runtime.sidecars import McpSidecars
+    from tests.fixtures.builders import make_manifest
+
+    agent = f"contract-sidecar-{type(client).__name__.lower()}"
+    manifest = make_manifest(
+        metadata={"name": agent, "version": "0.1.0"},
+        spec={"mcp": {"servers": [{"name": "search", "transport": "streamable-http",
+                                    "sidecar": {"image": echo_image}}]}},
+    )  # fmt: skip
+    client.ensure_image(echo_image)
+    sidecars = McpSidecars(client)
+    name = sidecar_host(agent, "search")
+    docker("rm", "-f", "-v", name, check=False)
+    try:
+        await sidecars.start(manifest, {})
+        container_id = client.find(name)
+        assert container_id is not None
+        assert client.inspect(container_id)["Running"] is True
+    finally:
+        await sidecars.stop(agent)
+        docker("rm", "-f", "-v", name, check=False)
+
+
 async def verdict(client, image, kwargs, expected) -> list[str]:
     """kwargs 로 실제 컨테이너를 만들어 재부착 대조를 돌린다 — 어긋난 필드 이름, 통과면 [].
 

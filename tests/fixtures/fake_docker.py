@@ -48,6 +48,7 @@ class FakeDockerClient:
         address: str = "172.30.0.7",
         attached: tuple[str, ...] | None = None,
         hardening: dict[str, Any] | None = None,
+        hardening_error: Exception | None = None,
         volumes: dict[str, dict[str, Any] | Exception] | None = None,
         image_volumes: dict[str, set[str] | Exception] | None = None,
     ) -> None:
@@ -65,6 +66,9 @@ class FakeDockerClient:
         self._address = address
         self._attached = attached
         self._hardening = hardening
+        self._hardening_error = hardening_error
+        # 컨테이너 id → 그 컨테이너만의 경화 값 — 기존 것만 약해지고 새로 세운 것은 스펙대로인 경우
+        self.hardening_by_id: dict[str, dict[str, Any]] = {}
         # 볼륨 이름 → `docker volume inspect` 값 (또는 던질 예외). 없는 이름은 일반 local 볼륨이다
         self._volumes = volumes or {}
         # 이미지 id → 이미지 `VOLUME` 경로 (또는 던질 예외). 없는 id 는 VOLUME 없는 이미지다
@@ -100,6 +104,10 @@ class FakeDockerClient:
 
     def hardening_of(self, container_id: str) -> dict[str, Any]:
         """지정한 값이 있으면 그것, 없으면 만들 때 받은 스펙대로 걸린 것으로 본다."""
+        if self._hardening_error is not None:
+            raise self._hardening_error
+        if container_id in self.hardening_by_id:
+            return dict(self.hardening_by_id[container_id])
         if self._hardening is not None:
             return dict(self._hardening)
         for index, kwargs in enumerate(self.created, start=1):

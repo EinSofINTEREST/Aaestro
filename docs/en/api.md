@@ -1048,8 +1048,17 @@ outside address fails. The proxy is the only way out.
   the deployment becomes `lost` ("network isolation mismatch", or "container hardening mismatch"
   with the field names), nothing is attached, and its agent
   identities are revoked, so containers with a route out lose their memory, peer and model access.
-  The containers are left running for you to inspect and tear down. On a host that cannot set a PID
-  limit (no pids cgroup), reattaching is refused; a check at start time is a follow-up.
+  The containers are left running for you to inspect and tear down.
+  **Starting runs the same check.** Right after a container (agent or sidecar) is created, and
+  before it is started, the same comparison against the same start arguments runs. A mismatch
+  removes the container and fails the start with `RT_001` (`details.kind` is `hardening`,
+  `details.fields` names the fields, not retryable), so a host that silently drops a setting (no
+  pids cgroup, so no PID limit) fails at deploy time instead of turning every deployment `lost` at
+  the next control plane restart. A container, volume or image inspect that fails here is not a
+  mismatch: the container is removed and the start fails with a retryable `RT_001` whose reason is
+  the error type (reattaching still reads it as a mismatch). A restart that hits it counts as a
+  failed restart. Each start costs one more container inspect, plus one inspect per volume and one
+  for the image.
   A deployment that cannot be rebuilt from its declarations (a manifest is gone, or a node left the
   graph) also becomes `lost` ("cannot rebuild from declarations") and its identities are revoked.
 - **Agents publish no ports.** Ports cannot be published from an internal network, so the control
@@ -1209,8 +1218,9 @@ URL.
   sidecars), so the proxy calls it over `http`, and only at an address that resolves privately.
 - **Restarts.** Docker restarts a sidecar that exits with an error, up to five times. After a control
   plane restart, reattach brings back a sidecar that is gone or stopped, or that no longer matches
-  its start arguments (hardening, networks, mounts), and marks the deployment
-  `lost` if it cannot. agentd waits up to about ten seconds for a sidecar that is still starting; a
+  its start arguments (hardening, networks, mounts), and marks the deployment `lost` if it cannot.
+  A new sidecar is checked against its start arguments before it starts, the same way (`RT_001`,
+  `kind: hardening`). agentd waits up to about ten seconds for a sidecar that is still starting; a
   remote server is not waited for.
 
 ### A2A enforcement
