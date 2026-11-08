@@ -18,7 +18,7 @@ from typing import Any
 
 CONTEXT = "Review Presence"
 # 리뷰로 인정하는 봇 — 이 목록 밖의 봇 (github-actions[bot] 포함) 은 리뷰 · 라인 코멘트 · 👍 모두
-# 불인정이다. PR 이 다른 워크플로로 봇 명의 리뷰를 만들어 게이트를 여는 것을 막는다.
+# 불인정이다. PR 이 다른 워크플로로 봇 명의 리뷰를 만들어 success 판정을 얻는 것을 막는다.
 # 워크플로 env REVIEW_BOTS (쉼표 구분) 가 있으면 그것으로 덮어쓴다
 DEFAULT_REVIEW_BOTS = (
     "chatgpt-codex-connector[bot]",
@@ -213,8 +213,8 @@ def combine(verdicts: dict[int, Verdict]) -> Verdict:
     """Merge the verdicts of every open PR whose head is one sha into that sha's verdict.
 
     status 는 sha 단위라, 같은 head 를 공유하는 PR 들의 판정이 한 status 를 덮어쓴다. 그래서 모두
-    인정될 때만 success 이고, 하나라도 아니면 pending 이다 — 한 PR 의 리뷰가 다른 PR 의 게이트를
-    열지 않게. 단일 PR 의 판정은 그대로 돌려준다.
+    인정될 때만 success 이고, 하나라도 아니면 pending 이다 — 한 PR 의 리뷰가 다른 PR 의 판정을
+    success 로 만들지 않게. 단일 PR 의 판정은 그대로 돌려준다.
     """
     if len(verdicts) == 1:
         return next(iter(verdicts.values()))
@@ -276,7 +276,7 @@ def _group_by_sha(
     같은 sha 를 head 로 가진 PR 은 열린 PR 목록의 head.sha 로 찾는다 — `commits/{sha}/pulls` 는
     그 커밋을 *포함* 하는 PR 을 돌려주고 (head 인지 묻지 않는다), 기본 브랜치에 들어간 커밋이면
     병합된 PR 만 돌려준다 (REST "List pull requests associated with a commit").
-    그 sha 에 열린 PR 이 하나라도 있으면 닫힌 PR 은 묶음에서 뺀다 — 게이트는 열린 PR 의 머지를
+    그 sha 에 열린 PR 이 하나라도 있으면 닫힌 PR 은 묶음에서 뺀다 — 이 status 는 열린 PR 의 머지를
     위한 것이라, 리뷰 없이 닫힌 PR 이 리뷰된 열린 PR 을 붙잡지 않게. 열린 PR 이 없을 때만 닫힌
     PR 을 혼자 판정한다.
     """

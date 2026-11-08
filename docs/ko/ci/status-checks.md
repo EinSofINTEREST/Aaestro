@@ -27,11 +27,15 @@
 | `PR Title Lint` | `ci-convention.yml` / `pr-title-lint` | PR 타이틀 `[카테고리#이슈번호] 제목` (또는 `[카테고리#이슈번호]: 제목`) 엄격 강제 (PR only) | Yes |
 | `Linked Issue Check` | `ci-convention.yml` / `linked-issue` | closing reference 최소 1개 검증 (`closingIssuesReferences.totalCount ≥ 1`, PR only; bot allowlist 적용) | Yes |
 | `Docs Sync Check` | `ci-docs.yml` / `docs-sync` | `docs/en` ↔ `docs/ko` 구조 미러 + 언어 선택자 존재 검증 | Yes |
-| `Review Presence` | `ci-review.yml` / `judge` (commit status) | 리뷰로 인정할 것이 최소 1개 — [Review Presence](#review-presence) 참고 | Yes |
+| `Review Presence` | `ci-review.yml` / `judge` (commit status) | 리뷰로 인정할 것이 최소 1개인지 보고 — [Review Presence](#review-presence) 참고. 정보성이며 머지 게이트 아님 (Ruleset 미등록) | No |
 | `Branch Name Lint` | `ci-convention.yml` / `branch-lint` | `{카테고리}/#{이슈번호}/{요약}` 위반 경고 — 정보성 | No |
 | `E2E Test` | `ci-nightly.yml` / `e2e` | Nightly 전체 스택 실행 (fake LLM provider) — 머지 게이트 아님 | No |
 
 ## Review Presence
+
+`Review Presence` 는 **정보성**이다: Ruleset `main-merge-gate` 에 등록돼 있지 않아 머지를
+막지 않는다 (사용자 결정, #537). 아래 절은 이 체크가 무엇을 보고하는지, 그리고 나중에 필수
+체크로 올릴 경우 무엇이 적용되는지를 설명한다.
 
 `Review Presence` 는 job 체크가 아니라 **commit status** 다. `ci-review.yml` (job
 `Review Presence Judge` — 일부러 다른 이름) 이 PR 을 판정해 PR head 커밋에 status 를
@@ -61,7 +65,8 @@
 
   작성자가 아닌 모든 계정을 인정하던 이슈 #514 의 정의보다 좁다.
 - **상태**: 인정할 것이 있으면 `success`, 없으면 `pending` ("waiting for at least one
-  review") — 리뷰는 시간이 지나 도착하므로 실패가 아니고, `pending` 도 머지를 막는다.
+  review") — 리뷰는 시간이 지나 도착하므로 실패가 아니다.
+  `pending` 이 머지를 막는 것은 이 체크가 필수로 등록된 경우뿐이고, 지금은 아니다.
 - **쓰기**: 쓰기 전에 head sha 의 현재 `Review Presence` status 를 읽고, state 나
   description 이 다를 때만 쓴다. GitHub 은 sha · context 당 status 를 1000건으로 제한한다
   ("Attempts to create more than 1000 statuses will result in a validation error") — 실행마다
@@ -91,20 +96,20 @@
   - schedule 과 PR 이벤트는 서로 겹칠 수 있다. schedule 의 판정과 쓰기 사이 수 초 동안 철회가
     들어오면, 오래된 판정이 새 값을 덮어 그 PR 의 다음 판정까지 남을 수 있다.
   - 공개 저장소에서는 저장소 활동이 60일 없으면 schedule 워크플로가 자동으로 꺼진다.
-  - Ruleset 에 등록할 때 기대 출처를 GitHub Actions 앱으로 고정하면 사람 토큰의 직접 위조는
-    막힌다 — GitHub 문서: "If the status is set by any other person or integration, merging
-    won't be allowed". 같은 저장소의 다른 워크플로가 하는 위조는 같은 앱이라 남는다.
+  - 이 체크를 필수로 올릴 경우, Ruleset 에 등록할 때 기대 출처를 GitHub Actions 앱
+    (`integration_id` 고정) 으로 두면 사람 토큰의 직접 위조는 막힌다 — GitHub 문서:
+    "If the status is set by any other person or integration, merging won't be allowed". 같은 저장소의 다른 워크플로가 하는 위조는 같은 앱이라 남는다.
     확인하지 못함: `GITHUB_TOKEN` 으로 쓴 commit status (check run 이 아닌) 가 GitHub Actions
     앱 출처로 매칭되는지.
-  - 그래서 이 체크는 워크플로를 바꾸는 PR 에 대한 **강제가 아니다**. 그런 PR 은 사람이
-    리뷰해야 하고, 강제 장치 (`.github/` 의 CODEOWNERS, Ruleset 규칙) 는 저장소 설정이라 이
+  - 그래서 이 체크는 필수 여부와 무관하게 워크플로를 바꾸는 PR 에 대한 **강제가 아니다**.
+    그런 PR 은 사람이 리뷰해야 하고, 강제 장치 (`.github/` 의 CODEOWNERS, Ruleset 규칙) 는 저장소 설정이라 이
     체크 밖의 사용자 결정 대상이다.
 - **리뷰어가 아무도 응답하지 않을 때**: 지금 신뢰할 수 있는 사람은 PR 작성자 한 명뿐이고
-  작성자는 인정되지 않는다. 리뷰 봇이 모두 응답하지 않으면 (할당량, 장애) 게이트가 열리지
-  않는다. 쓸 수 있는 경로:
+  작성자는 인정되지 않는다. 리뷰 봇이 모두 응답하지 않으면 (할당량, 장애) status 가 `pending` 으로
+  남는다 (필수였다면 게이트가 닫힌 채 유지된다). 쓸 수 있는 경로:
   - 봇 리뷰 재요청 (예: `@codex review` 코멘트)
-  - 이 체크에 대한 Ruleset bypass 또는 두 번째 collaborator — 둘 다 저장소 설정이고 사용자
-    결정 대상이다
+  - 이 체크가 필수인 경우: 이 체크에 대한 Ruleset bypass 또는 두 번째 collaborator — 둘 다
+    저장소 설정이고 사용자 결정 대상이다
 
 ## 진화 내역 (IssueTracker 원형 대비)
 
