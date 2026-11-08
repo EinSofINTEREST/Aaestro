@@ -79,6 +79,7 @@ async def test_start_runs_each_sidecar_hardened_on_its_own_internal_network():
     assert browser["read_only"] is True
     assert browser["cap_drop"] == ["ALL"]
     assert browser["security_opt"] == ["no-new-privileges:true"]
+    assert browser["cgroupns"] == "private"
     assert browser["restart_policy"] == {"Name": "on-failure", "MaximumRetryCount": 5}
     assert browser["nano_cpus"] == 500_000_000
     assert browser["mem_limit"] == 512 * 1024 * 1024

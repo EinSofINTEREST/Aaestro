@@ -370,3 +370,14 @@ def test_to_docker_kwargs_sets_no_new_privileges():
     rendered = build_container_spec(agent_manifest()).to_docker_kwargs()
 
     assert "no-new-privileges:true" in rendered["security_opt"]
+
+
+def test_to_docker_kwargs_sets_a_private_cgroup_namespace():
+    """daemon 기본값은 cgroup v1 호스트에서 `host` 다 (#510 QA).
+
+    명시하지 않으면 그런 호스트의 평범한 컨테이너도 `CgroupnsMode` 경화 대조에 스스로
+    걸려, 재부착과 사이드카 재사용이 매번 실패·재생성으로 빠진다.
+    """
+    rendered = build_container_spec(agent_manifest()).to_docker_kwargs()
+
+    assert rendered["cgroupns"] == "private"
