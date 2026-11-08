@@ -505,6 +505,35 @@ A second request for a deployment that is still being torn down (a retry, a doub
 joins the teardown in progress and gets the same record — the agents are drained and stopped
 once. A caller that gives up (client timeout) does not stop the teardown; it runs to the end.
 
+### Declared volumes
+
+A volume in a manifest's `spec.runtime.volumes` is not mounted under the name it declares. The
+runtime mounts `aaestro-<agent>.<name>`, so two agents that both declare `work` get two volumes
+(`aaestro-a.work`, `aaestro-b.work`). The `.` cannot appear in an agent name, so agent `a`'s
+`b-work` and agent `a-b`'s `work` never collide. Replicas of one agent share its volume. A
+declaration whose combined name exceeds Docker's 255 characters fails validation (`VAL_002`,
+the message names the position, not the name).
+
+- **Fill a pre-populated volume under the mounted name.** Docker creates a missing named volume
+  empty at start, and a `read_only` mount of an empty volume fails quietly inside the agent. For
+  the reference `claude-code` agent's subscription credentials:
+
+  ```bash
+  docker volume create aaestro-claude-code.claude-credentials
+  docker run --rm --user 0 --entrypoint sh \
+    -v aaestro-claude-code.claude-credentials:/dst -v "$HOME/.claude:/src:ro" \
+    aaestro/agent-base:0.1.0 -c 'cp -a /src/. /dst/ && chown -R 1000:1000 /dst'
+  ```
+
+  The `chown` matters: agents run as `1000:1000`.
+- **Upgrading from unprefixed names.** Earlier versions mounted the declared name as is. Existing
+  volumes are not moved or deleted; copy their contents into the new name as above (mount the old
+  volume as `/src`) if you need them. A `ready` deployment of an agent that declares a volume
+  becomes `lost` on the first reattach after the upgrade ("container hardening mismatch" with
+  `Mounts` — its container still mounts the old name), its identities are revoked and its
+  containers are left running. Tear it down with `DELETE /v1/deployments/{id}` and deploy again;
+  the new containers mount the prefixed volume.
+
 ## Runs
 
 A run drives a deployed graph. Because the deployment knows where its agents are, submitting

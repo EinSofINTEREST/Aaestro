@@ -301,7 +301,7 @@ def test_declared_volumes_reach_docker_kwargs():
         agent_manifest(runtime={"volumes": [{"name": "work", "mount_path": "/workspace"}]})
     ).to_docker_kwargs()
 
-    assert kwargs["volumes"] == {"work": {"bind": "/workspace", "mode": "rw"}}
+    assert kwargs["volumes"] == {"aaestro-test-agent.work": {"bind": "/workspace", "mode": "rw"}}
 
 
 def test_read_only_volume_mode_is_carried():
@@ -311,7 +311,38 @@ def test_read_only_volume_mode_is_carried():
         )
     ).to_docker_kwargs()
 
-    assert kwargs["volumes"]["ref"]["mode"] == "ro"
+    assert kwargs["volumes"]["aaestro-test-agent.ref"]["mode"] == "ro"
+
+
+def _volume_sources(agent: str, volume: str, replica: int = 0) -> set[str]:
+    manifest = make_manifest(
+        metadata={"name": agent},
+        spec={"runtime": {"volumes": [{"name": volume, "mount_path": "/data"}]}},
+    )
+    return set(build_container_spec(manifest, replica=replica).to_docker_kwargs()["volumes"])
+
+
+def test_same_volume_name_in_two_agents_is_two_docker_volumes():
+    """두 에이전트가 같은 이름을 선언해도 볼륨을 공유하지 않는다 — 02 Volumes (#513)."""
+    assert _volume_sources("a", "work") == {"aaestro-a.work"}
+    assert _volume_sources("b", "work") == {"aaestro-b.work"}
+
+
+def test_replicas_of_one_agent_share_its_volume():
+    assert _volume_sources("a", "work", replica=0) == _volume_sources("a", "work", replica=3)
+
+
+def test_agent_and_volume_boundary_cannot_collide():
+    """`-` 로 이으면 a + b-work 와 a-b + work 가 겹친다 — 구분자는 에이전트 이름에 없는 `.`."""
+    assert _volume_sources("a", "b-work") != _volume_sources("a-b", "work")
+
+
+def test_reattach_expects_the_same_volume_name_it_creates_with():
+    spec = build_container_spec(
+        agent_manifest(runtime={"volumes": [{"name": "work", "mount_path": "/workspace"}]})
+    )
+
+    assert spec.hardening_kwargs()["volumes"] == spec.to_docker_kwargs()["volumes"]
 
 
 def test_no_volumes_renders_an_empty_mapping():

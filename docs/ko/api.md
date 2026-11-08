@@ -478,6 +478,33 @@ primary 와 같은 fallback 은 거절됩니다.
 받는다 — 에이전트는 한 번만 drain · 정지된다. 부른 쪽이 기다리기를 그만둬도 (클라이언트
 타임아웃) 해체는 멈추지 않고 끝까지 간다.
 
+### 선언한 볼륨
+
+매니페스트 `spec.runtime.volumes` 의 볼륨은 선언한 이름으로 마운트되지 않는다. runtime 은
+`aaestro-<agent>.<name>` 을 마운트하므로 두 에이전트가 모두 `work` 를 선언해도 볼륨은 둘이다
+(`aaestro-a.work`, `aaestro-b.work`). `.` 은 에이전트 이름에 올 수 없어 에이전트 `a` 의 `b-work` 와
+에이전트 `a-b` 의 `work` 가 겹치지 않는다. 한 에이전트의 레플리카는 그 볼륨을 함께 쓴다. 합친 이름이
+Docker 상한 255자를 넘는 선언은 검증에서 거절된다 (`VAL_002` — 메시지는 이름이 아니라 위치를 말한다).
+
+- **미리 채우는 볼륨은 마운트되는 이름으로 채운다.** 없는 이름 있는 볼륨은 Docker 가 기동 때 빈 채로
+  만들고, 빈 볼륨을 `read_only` 로 붙이면 에이전트 안에서 에러 없이 실패한다. 참조 에이전트
+  `claude-code` 의 구독 자격증명은 이렇게 채운다:
+
+  ```bash
+  docker volume create aaestro-claude-code.claude-credentials
+  docker run --rm --user 0 --entrypoint sh \
+    -v aaestro-claude-code.claude-credentials:/dst -v "$HOME/.claude:/src:ro" \
+    aaestro/agent-base:0.1.0 -c 'cp -a /src/. /dst/ && chown -R 1000:1000 /dst'
+  ```
+
+  `chown` 이 필요하다 — 에이전트는 `1000:1000` 으로 돈다.
+- **접두사 없던 이름에서 올라올 때.** 이전 버전은 선언한 이름을 그대로 마운트했다. 기존 볼륨은 옮기지도
+  지우지도 않는다 — 내용이 필요하면 위와 같이 새 이름으로 복사한다 (옛 볼륨을 `/src` 로 마운트).
+  볼륨을 선언한 에이전트의 `ready` 배포는 업그레이드 뒤 첫 재부착에서 `lost` 가 된다 (`Mounts` 가
+  붙은 "container hardening mismatch" — 컨테이너가 아직 옛 이름을 마운트하고 있다). 신원은 회수되고
+  컨테이너는 남는다. `DELETE /v1/deployments/{id}` 로 해체하고 다시 배포하면 새 컨테이너가 접두사
+  붙은 볼륨을 마운트한다.
+
 ## Run
 
 Run 은 배포된 그래프를 구동한다. 배포가 에이전트의 위치를 알고 있으므로, run 제출에는
