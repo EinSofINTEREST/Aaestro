@@ -245,6 +245,61 @@ async def test_a_container_built_from_the_spec_passes_the_engine_check(client, e
         client.remove(container_id)
 
 
+async def test_engine_start_passes_its_own_hardening_check(client, echo_image, tmp_path):  # noqa: F811
+    """기동 직후 대조 (#501) 가 정상 스펙의 실 컨테이너를 거절하지 않는다 — 선언 마운트 포함.
+
+    거절하면 모든 기동이 실패한다. 손으로 쓴 kwargs 가 아니라 실제 스펙으로 `engine.start` 를 돈다.
+    """
+    from aaestro.runtime.docker.engine import DockerEngine
+    from tests.integration.runtime.test_docker_lifecycle import echo_spec
+
+    client.ensure_image(echo_image)
+    declaration = tmp_path / "declaration"
+    declaration.mkdir()
+    spec = echo_spec(
+        image=echo_image,
+        network=NETWORK,
+        mounts=[{"name": str(declaration), "mount_path": "/opt/declared", "read_only": True}],
+    )
+    docker("rm", "-f", "-v", spec.name, check=False)
+    engine = DockerEngine(client=client, network=NETWORK)
+    handle = await engine.start(spec)
+    try:
+        assert client.inspect(handle.container_id)["Running"] is True
+    finally:
+        docker("rm", "-f", "-v", handle.container_id, check=False)
+
+
+async def test_sidecar_start_passes_its_own_hardening_check(client, echo_image):  # noqa: F811
+    """사이드카 기동 직후 대조 (#501) 가 `sidecar_kwargs` 의 실 컨테이너를 거절하지 않는다.
+
+    에이전트 쪽 테스트의 짝이다. 이미지는 그 내용과 무관해 기존 통합 테스트의 echo 이미지를 쓴다 —
+    base 이미지의 `VOLUME` 이 만든 익명 볼륨까지 실제로 거친다.
+    """
+    from aaestro.core.manifest import sidecar_host
+    from aaestro.runtime.sidecars import McpSidecars
+    from tests.fixtures.builders import make_manifest
+
+    agent = f"contract-sidecar-{type(client).__name__.lower()}"
+    manifest = make_manifest(
+        metadata={"name": agent, "version": "0.1.0"},
+        spec={"mcp": {"servers": [{"name": "search", "transport": "streamable-http",
+                                    "sidecar": {"image": echo_image}}]}},
+    )  # fmt: skip
+    client.ensure_image(echo_image)
+    sidecars = McpSidecars(client)
+    name = sidecar_host(agent, "search")
+    docker("rm", "-f", "-v", name, check=False)
+    try:
+        await sidecars.start(manifest, {})
+        container_id = client.find(name)
+        assert container_id is not None
+        assert client.inspect(container_id)["Running"] is True
+    finally:
+        await sidecars.stop(agent)
+        docker("rm", "-f", "-v", name, check=False)
+
+
 async def verdict(client, image, kwargs, expected) -> list[str]:
     """kwargs 로 실제 컨테이너를 만들어 재부착 대조를 돌린다 — 어긋난 필드 이름, 통과면 [].
 
@@ -404,3 +459,51 @@ def test_remove_deletes_anonymous_volumes_and_keeps_named_ones(client, echo_imag
         docker("volume", "rm", "-f", cache, check=False)
         for volume in anonymous:
             docker("volume", "rm", "-f", volume, check=False)
+
+
+async def test_two_agents_declaring_the_same_volume_get_separate_volumes(client, echo_image):  # noqa: F811
+    """두 에이전트가 같은 `work` 를 선언해도 실 daemon 에 서로 다른 볼륨이 마운트된다 (#513)."""
+    import yaml
+
+    from aaestro.core.manifest import AgentManifest
+    from aaestro.runtime.docker.engine import DockerEngine
+    from aaestro.runtime.spec import build_container_spec
+    from tests.integration.runtime.test_docker_lifecycle import ECHO_MANIFEST, TOKEN
+
+    client.ensure_image(echo_image)
+    client.ensure_network(NETWORK)
+    suffix = type(client).__name__.lower()
+    specs = []
+    for agent in (f"contract-a-{suffix}", f"contract-b-{suffix}"):
+        document = yaml.safe_load(ECHO_MANIFEST.read_text(encoding="utf-8"))
+        document["metadata"]["name"] = agent
+        document["spec"]["runtime"]["image"] = echo_image
+        document["spec"]["runtime"]["volumes"] = [{"name": "work", "mount_path": "/data"}]
+        specs.append(
+            build_container_spec(
+                AgentManifest.model_validate(document),
+                env={"AAESTRO_EXECUTOR": "echo", "AAESTRO_AGENT_TOKEN": TOKEN},
+                network=NETWORK,
+            )
+        )
+    volumes = {f"aaestro-{spec.labels['aaestro.agent']}.work" for spec in specs}
+    created: list[str] = []
+    try:
+        mounted = set()
+        for spec in specs:
+            docker("rm", "-f", spec.name, check=False)
+            container_id = client.create(**spec.to_docker_kwargs())
+            created.append(container_id)
+            mounts = client.hardening_of(container_id)["Mounts"]
+            mounted |= {m["Name"] for m in mounts if m.get("Destination") == "/data"}
+            # 새 이름이 재부착 대조의 기대값과도 맞는다 — 정상 컨테이너가 lost 가 되지 않는다
+            await DockerEngine(client=client, network=NETWORK).verify_isolation(
+                spec.labels["aaestro.agent"], echo_image, container_id, spec.hardening_kwargs()
+            )
+        assert mounted == volumes
+        assert len(mounted) == 2
+    finally:
+        for container_id in created:
+            docker("rm", "-f", container_id, check=False)
+        for name in volumes:
+            docker("volume", "rm", "-f", name, check=False)

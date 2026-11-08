@@ -7,10 +7,15 @@
 
 from __future__ import annotations
 
-from tests.fixtures.import_contract import REPO_ROOT, assert_no_forbidden_imports
+from tests.fixtures.import_contract import (
+    REPO_ROOT,
+    assert_dependencies_classified,
+    assert_no_forbidden_imports,
+    modules_of,
+)
 
 # 서버 · control plane 쪽 모듈 — 새 import 가 생기면 이 상수를 고치는 것이 곧 결정이다
-FORBIDDEN = (
+FORBIDDEN_INTERNAL = (
     # aaestro
     "aaestro.orchestrator",
     "aaestro.runtime",
@@ -34,12 +39,38 @@ FORBIDDEN = (
     "aaestro.memory.bootstrap",
     "aaestro.memory.index",
     "aaestro.memory.compaction",
-    # 서드파티
+    # 서드파티는 아래 의존성 이름에서 유도한다
+)
+
+# 서드파티는 pyproject 의존성 이름으로 선언하고 모듈 이름은 유도한다 (#504)
+FORBIDDEN_DEPENDENCIES = (
     "docker",
     "langgraph",
-    "langchain_core",
+    "langgraph-checkpoint-postgres",
+    "langgraph-checkpoint-redis",
+    "langchain-core",
     "psycopg",
 )
+ALLOWED_DEPENDENCIES = {
+    "pydantic": "core 계약",
+    "structlog": "로깅",
+    "prometheus-client": "메트릭",
+    "tenacity": "재시도",
+    "jinja2": "promptset 렌더",
+    "pyyaml": "manifest 로드",
+    "httpx": "Control API · 프록시 호출",
+    "httpx2": "MCP 인증 헤더 클라이언트",
+    "fastapi": "Control API 서버",
+    "uvicorn": "Control API 서버",
+    "a2a-sdk": "A2A 서버",
+    "mcp": "MCP 클라이언트",
+    "anthropic": "모델 어댑터",
+}
+FORBIDDEN = (*FORBIDDEN_INTERNAL, *modules_of(FORBIDDEN_DEPENDENCIES))
+
+
+def test_every_runtime_dependency_is_classified() -> None:
+    assert_dependencies_classified(FORBIDDEN_DEPENDENCIES, ALLOWED_DEPENDENCIES)
 
 
 def _run(body: str) -> None:

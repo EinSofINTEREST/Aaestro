@@ -505,6 +505,35 @@ A second request for a deployment that is still being torn down (a retry, a doub
 joins the teardown in progress and gets the same record — the agents are drained and stopped
 once. A caller that gives up (client timeout) does not stop the teardown; it runs to the end.
 
+### Declared volumes
+
+A volume in a manifest's `spec.runtime.volumes` is not mounted under the name it declares. The
+runtime mounts `aaestro-<agent>.<name>`, so two agents that both declare `work` get two volumes
+(`aaestro-a.work`, `aaestro-b.work`). The `.` cannot appear in an agent name, so agent `a`'s
+`b-work` and agent `a-b`'s `work` never collide. Replicas of one agent share its volume. A
+declaration whose combined name exceeds Docker's 255 characters fails validation (`VAL_002`,
+the message names the position, not the name).
+
+- **Fill a pre-populated volume under the mounted name.** Docker creates a missing named volume
+  empty at start, and a `read_only` mount of an empty volume fails quietly inside the agent. For
+  the reference `claude-code` agent's subscription credentials:
+
+  ```bash
+  docker volume create aaestro-claude-code.claude-credentials
+  docker run --rm --user 0 --entrypoint sh \
+    -v aaestro-claude-code.claude-credentials:/dst -v "$HOME/.claude:/src:ro" \
+    aaestro/agent-base:0.1.0 -c 'cp -a /src/. /dst/ && chown -R 1000:1000 /dst'
+  ```
+
+  The `chown` matters: agents run as `1000:1000`.
+- **Upgrading from unprefixed names.** Earlier versions mounted the declared name as is. Existing
+  volumes are not moved or deleted; copy their contents into the new name as above (mount the old
+  volume as `/src`) if you need them. A `ready` deployment of an agent that declares a volume
+  becomes `lost` on the first reattach after the upgrade ("container hardening mismatch" with
+  `Mounts` — its container still mounts the old name), its identities are revoked and its
+  containers are left running. Tear it down with `DELETE /v1/deployments/{id}` and deploy again;
+  the new containers mount the prefixed volume.
+
 ## Runs
 
 A run drives a deployed graph. Because the deployment knows where its agents are, submitting
@@ -1048,8 +1077,17 @@ outside address fails. The proxy is the only way out.
   the deployment becomes `lost` ("network isolation mismatch", or "container hardening mismatch"
   with the field names), nothing is attached, and its agent
   identities are revoked, so containers with a route out lose their memory, peer and model access.
-  The containers are left running for you to inspect and tear down. On a host that cannot set a PID
-  limit (no pids cgroup), reattaching is refused; a check at start time is a follow-up.
+  The containers are left running for you to inspect and tear down.
+  **Starting runs the same check.** Right after a container (agent or sidecar) is created, and
+  before it is started, the same comparison against the same start arguments runs. A mismatch
+  removes the container and fails the start with `RT_001` (`details.kind` is `hardening`,
+  `details.fields` names the fields, not retryable), so a host that silently drops a setting (no
+  pids cgroup, so no PID limit) fails at deploy time instead of turning every deployment `lost` at
+  the next control plane restart. A container, volume or image inspect that fails here is not a
+  mismatch: the container is removed and the start fails with a retryable `RT_001` whose reason is
+  the error type (reattaching still reads it as a mismatch). A restart that hits it counts as a
+  failed restart. Each start costs one more container inspect, plus one inspect per volume and one
+  for the image.
   A deployment that cannot be rebuilt from its declarations (a manifest is gone, or a node left the
   graph) also becomes `lost` ("cannot rebuild from declarations") and its identities are revoked.
 - **Agents publish no ports.** Ports cannot be published from an internal network, so the control
@@ -1209,8 +1247,9 @@ URL.
   sidecars), so the proxy calls it over `http`, and only at an address that resolves privately.
 - **Restarts.** Docker restarts a sidecar that exits with an error, up to five times. After a control
   plane restart, reattach brings back a sidecar that is gone or stopped, or that no longer matches
-  its start arguments (hardening, networks, mounts), and marks the deployment
-  `lost` if it cannot. agentd waits up to about ten seconds for a sidecar that is still starting; a
+  its start arguments (hardening, networks, mounts), and marks the deployment `lost` if it cannot.
+  A new sidecar is checked against its start arguments before it starts, the same way (`RT_001`,
+  `kind: hardening`). agentd waits up to about ten seconds for a sidecar that is still starting; a
   remote server is not waited for.
 
 ### A2A enforcement
