@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import pathlib
+import posixpath
 from typing import Any
 
 
@@ -29,6 +31,15 @@ def inspect_mounts(kwargs: dict[str, Any]) -> dict[str, Any]:
     return {"Mounts": mounts, "Tmpfs": dict(kwargs.get("tmpfs") or {})}
 
 
+def _norm(path: str) -> str:
+    return posixpath.normpath(path)
+
+
+def anonymous_volume_name(container_id: str, path: str) -> str:
+    """실 daemon 의 익명 볼륨 이름처럼 64자 소문자 hex — 결정적으로 만든다."""
+    return hashlib.sha256(f"{container_id}:{path}".encode()).hexdigest()
+
+
 class FakeDockerClient:
     """스크립트된 Docker 동작을 돌려주는 대역."""
 
@@ -48,6 +59,7 @@ class FakeDockerClient:
         address: str = "172.30.0.7",
         attached: tuple[str, ...] | None = None,
         hardening: dict[str, Any] | None = None,
+        hardening_error: Exception | None = None,
         volumes: dict[str, dict[str, Any] | Exception] | None = None,
         image_volumes: dict[str, set[str] | Exception] | None = None,
     ) -> None:
@@ -65,6 +77,9 @@ class FakeDockerClient:
         self._address = address
         self._attached = attached
         self._hardening = hardening
+        self._hardening_error = hardening_error
+        # 컨테이너 id → 그 컨테이너만의 경화 값 — 기존 것만 약해지고 새로 세운 것은 스펙대로인 경우
+        self.hardening_by_id: dict[str, dict[str, Any]] = {}
         # 볼륨 이름 → `docker volume inspect` 값 (또는 던질 예외). 없는 이름은 일반 local 볼륨이다
         self._volumes = volumes or {}
         # 이미지 id → 이미지 `VOLUME` 경로 (또는 던질 예외). 없는 id 는 VOLUME 없는 이미지다
@@ -78,6 +93,10 @@ class FakeDockerClient:
         self.started: list[str] = []
         self.stopped: list[tuple[str, float]] = []
         self.removed: list[str] = []
+        # 컨테이너 id → 아직 남은 익명 볼륨 경로. remove 가 비운다 (#511)
+        self.anonymous_volumes: dict[str, set[str]] = {}
+        # 만들어진 이름 있는 볼륨 — `remove(v=True)` 는 익명 볼륨만 지운다
+        self.named_volumes: set[str] = set()
         self.built: list[tuple[str, str]] = []
         self.contexts: list[dict[str, str]] = []
         self.connected: list[tuple[str, str, tuple[str, ...]]] = []
@@ -100,6 +119,10 @@ class FakeDockerClient:
 
     def hardening_of(self, container_id: str) -> dict[str, Any]:
         """지정한 값이 있으면 그것, 없으면 만들 때 받은 스펙대로 걸린 것으로 본다."""
+        if self._hardening_error is not None:
+            raise self._hardening_error
+        if container_id in self.hardening_by_id:
+            return dict(self.hardening_by_id[container_id])
         if self._hardening is not None:
             return dict(self._hardening)
         for index, kwargs in enumerate(self.created, start=1):
@@ -112,9 +135,23 @@ class FakeDockerClient:
                     "User": kwargs.get("user"),
                     "NetworkMode": kwargs.get("network_mode"),
                     "Image": kwargs.get("image"),
-                    **inspect_mounts(kwargs),
+                    **self._mounts_with_anonymous(container_id, kwargs),
                 }
         raise LookupError(container_id)
+
+    def _mounts_with_anonymous(self, container_id: str, kwargs: dict[str, Any]) -> dict[str, Any]:
+        found = inspect_mounts(kwargs)
+        found["Mounts"] += [
+            {
+                "Type": "volume",
+                "Name": (name := anonymous_volume_name(container_id, path)),
+                "Source": f"/var/lib/docker/volumes/{name}/_data",
+                "Destination": path,
+                "RW": True,
+            }
+            for path in sorted(self.anonymous_volumes.get(container_id, ()))
+        ]
+        return found
 
     def image_volumes(self, image_id: str) -> set[str]:
         found = self._image_volumes.get(image_id, set())
@@ -136,7 +173,24 @@ class FakeDockerClient:
         if self._create_error is not None:
             raise self._create_error
         self.created.append(kwargs)
-        return f"container-{len(self.created):04d}" + "0" * 20
+        container_id = f"container-{len(self.created):04d}" + "0" * 20
+        # 익명 볼륨: 목록 형태 `-v /path` 와 이미지 VOLUME 경로. Moby 처럼 이미 마운트(이름 있는
+        # 볼륨 · bind · tmpfs)가 덮은 목적지에는 이미지 볼륨을 더하지 않는다
+        volumes = kwargs.get("volumes") or {}
+        anonymous = {_norm(p) for p in volumes} if isinstance(volumes, list) else set()
+        named = volumes.values() if isinstance(volumes, dict) else ()
+        covered = {_norm(t["bind"]) for t in named}
+        covered |= {_norm(p) for p in kwargs.get("tmpfs") or {}}
+        image_paths = {_norm(p) for p in self._image_volumes_of(kwargs.get("image"))}
+        anonymous |= image_paths - covered
+        self.anonymous_volumes[container_id] = anonymous
+        if isinstance(volumes, dict):
+            self.named_volumes |= {name for name in volumes if not name.startswith("/")}
+        return container_id
+
+    def _image_volumes_of(self, image: str | None) -> set[str]:
+        found = self._image_volumes.get(image or "", set())
+        return set() if isinstance(found, Exception) else set(found)
 
     def start(self, container_id: str) -> None:
         if self._start_error is not None:
@@ -161,6 +215,8 @@ class FakeDockerClient:
             self._remove_failures -= 1
             raise RuntimeError("removal of container is already in progress")
         self.removed.append(container_id)
+        # 실 daemon 의 `remove(v=True)` 와 같다 — 컨테이너와 함께 익명 볼륨이 사라진다
+        self.anonymous_volumes[container_id] = set()
 
     def build(self, context: str, tag: str, *, buildargs: dict[str, str] | None = None) -> str:
         """조립된 컨텍스트를 기록만 한다 — 실제 빌드는 통합 테스트 소관."""

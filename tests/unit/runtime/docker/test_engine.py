@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from dataclasses import replace
 
 import pytest
 
@@ -778,6 +779,33 @@ async def test_verify_isolation_refuses_mounts_its_spec_did_not_declare(label, m
     assert "/home" not in str(caught.value) + str(caught.value.details)
 
 
+def volume_spec():
+    """매니페스트가 `work` 볼륨을 선언한 에이전트 `alpha` 의 스펙."""
+    manifest = make_manifest(
+        metadata={"name": "alpha"},
+        spec={"runtime": {"volumes": [{"name": "work", "mount_path": "/data"}]}},
+    )
+    return build_container_spec(manifest)
+
+
+async def test_verify_isolation_accepts_the_agent_namespaced_volume():
+    built = volume_spec()
+    found = {**GOOD_HARDENING, **inspect_mounts(built.to_docker_kwargs())}
+
+    await verify(found, expected=built.hardening_kwargs())
+
+
+async def test_verify_isolation_refuses_a_container_on_the_old_unprefixed_volume():
+    """접두사 없는 옛 이름 (`work`) 으로 마운트된 기존 컨테이너는 재부착 대조에서 걸린다 (#513)."""
+    built = volume_spec()
+    old = {**built.to_docker_kwargs(), "volumes": {"work": {"bind": "/data", "mode": "rw"}}}
+
+    with pytest.raises(AaestroError) as caught:
+        await verify({**GOOD_HARDENING, **inspect_mounts(old)}, expected=built.hardening_kwargs())
+
+    assert caught.value.details["fields"] == ["Mounts"]
+
+
 @pytest.mark.parametrize(
     ("label", "tmpfs", "extra"),
     [
@@ -1030,10 +1058,217 @@ async def test_sidecar_reattach_replaces_a_weakened_sidecar(field, value):
     first = docker.find("aaestro-researcher--mcp-search")
     sound = {**inspect_shape(docker.created[-1]), "NetworkMode": None}
 
-    docker._hardening = sound
+    docker.hardening_by_id[first] = sound
     await sidecars.start(manifest, {}, reuse=True)
     assert docker.find("aaestro-researcher--mcp-search") == first  # 정상이면 그대로 붙는다
 
-    docker._hardening = {**sound, field: value}
+    # 약해진 것은 기존 사이드카뿐이다 — 새로 세운 것은 스펙대로 걸린다 (기동 대조, #501)
+    docker.hardening_by_id[first] = {**sound, field: value}
     await sidecars.start(manifest, {}, reuse=True)
     assert first in docker.removed
+
+
+async def test_stop_removes_the_anonymous_volumes_but_not_a_tmpfs_covered_path():
+    """익명 볼륨이 컨테이너와 함께 지워진다 — tmpfs 가 덮은 경로는 볼륨이 아니다 (#511)."""
+    image = spec().image
+    client = FakeDockerClient(image_volumes={image: {"/data", "/tmp"}})  # noqa: S108
+    docker = engine(client)
+    handle = await docker.start(spec())
+    assert client.anonymous_volumes[handle.container_id] == {"/data"}
+    # 익명 볼륨이 Mounts 에 실제로 보이고, 기동 경화 대조가 `_image_volume` 예외로 통과시킨다
+    mounts = client.hardening_of(handle.container_id)["Mounts"]
+    assert [m["Destination"] for m in mounts] == ["/data"]
+    assert len(mounts[0]["Name"]) == 64
+
+    await docker.stop(handle)
+
+    assert client.anonymous_volumes[handle.container_id] == set()
+
+
+async def test_start_does_not_add_an_anonymous_volume_where_a_named_volume_is_mounted():
+    """이름 있는 볼륨이 덮은 이미지 VOLUME 경로에는 익명 볼륨이 생기지 않는다 (#511)."""
+    base = spec()
+    declared = replace(
+        base,
+        volumes=({"name": "aaestro-alpha.work", "mount_path": "/data", "read_only": False},),
+    )
+    client = FakeDockerClient(image_volumes={base.image: {"/data"}})
+    docker = engine(client)
+    handle = await docker.start(declared)
+
+    assert client.anonymous_volumes[handle.container_id] == set()
+    mounts = client.hardening_of(handle.container_id)["Mounts"]
+    assert [(m["Name"], m["Destination"]) for m in mounts] == [("aaestro-alpha.work", "/data")]
+
+    await docker.stop(handle)
+
+    # 이름 있는 볼륨은 컨테이너와 함께 지워지지 않는다 (실 daemon 확인은 통합 계약 테스트)
+    assert client.removed == [handle.container_id]
+    assert client.named_volumes == {"aaestro-alpha.work"}
+
+
+# --- 기동 직후 경화 대조 (#501) --------------------------------------------------
+
+SOCKET_BIND = bind("/var/run/docker.sock", "/var/run/docker.sock")
+
+
+@pytest.mark.parametrize(
+    ("label", "found", "field"),
+    [
+        ("pid limit dropped by the daemon", {**GOOD_HARDENING, "PidsLimit": None}, "PidsLimit"),
+        ("unexpected security_opt", {**GOOD_HARDENING,
+                                     "SecurityOpt": ["no-new-privileges:true",
+                                                     "seccomp=unconfined"]}, "SecurityOpt"),
+        ("undeclared bind", {**GOOD_HARDENING, "Mounts": [SOCKET_BIND]}, "Mounts"),
+    ],
+)  # fmt: skip
+async def test_start_hardening_mismatch_raises_rt_001_and_leaves_no_container(label, found, field):
+    client = FakeDockerClient(hardening=found)
+
+    with pytest.raises(AaestroError) as caught:
+        await engine(client).start(spec())
+
+    assert caught.value.code == "RT_001", label
+    assert caught.value.retryable is False
+    assert caught.value.details["kind"] == "hardening"
+    assert caught.value.details["fields"] == [field]
+    # 사유에는 필드 이름만 — 값을 싣지 않는다
+    assert "/var/run" not in str(caught.value) + str(caught.value.details)
+    assert "unconfined" not in str(caught.value) + str(caught.value.details)
+    # 어긋난 컨테이너는 띄우지 않고 지운다
+    assert client.started == []
+    assert client.removed == [f"container-{1:04d}" + "0" * 20]
+
+
+async def test_start_hardening_mismatch_is_raised_even_if_the_discard_fails():
+    """정리 실패가 원래 오류를 가리지 않는다 — 제거 실패는 로그로 남는다."""
+    client = FakeDockerClient(
+        hardening={**GOOD_HARDENING, "PidsLimit": None}, remove_error=RuntimeError("busy")
+    )
+
+    with pytest.raises(AaestroError) as caught:
+        await engine(client).start(spec())
+
+    assert caught.value.details["fields"] == ["PidsLimit"]
+
+
+async def test_start_accepts_a_container_hardened_as_specified():
+    client = FakeDockerClient(hardening=GOOD_HARDENING)
+
+    handle = await engine(client).start(spec())
+
+    assert client.started == [handle.container_id]
+    assert client.removed == []
+
+
+PARITY_CASES = [
+    GOOD_HARDENING,
+    {**GOOD_HARDENING, "PidsLimit": None},
+    {**GOOD_HARDENING, "PidsLimit": 0},
+    {**GOOD_HARDENING, "SecurityOpt": None},
+    {**GOOD_HARDENING, "SecurityOpt": ["no-new-privileges:false"]},
+    {**GOOD_HARDENING, "SecurityOpt": ["no-new-privileges=true"]},
+    {**GOOD_HARDENING, "SecurityOpt": ["no-new-privileges:true", "apparmor=unconfined"]},
+    {**GOOD_HARDENING, "CapDrop": None},
+    {**GOOD_HARDENING, "ReadonlyRootfs": False},
+    {**GOOD_HARDENING, "User": "0:0"},
+    {**GOOD_HARDENING, "Privileged": True},
+    {**GOOD_HARDENING, "CapAdd": ["SYS_ADMIN"]},
+    {**GOOD_HARDENING, "PidMode": "host"},
+    {**GOOD_HARDENING, "NetworkMode": "container:abc123"},
+    {**GOOD_HARDENING, "MaskedPaths": []},
+    {**GOOD_HARDENING, "Mounts": [SOCKET_BIND]},
+    {**GOOD_HARDENING, "Mounts": None, "Tmpfs": None},
+    {**GOOD_HARDENING, "Tmpfs": {"/tmp": "mode=1777"}},  # noqa: S108 — 컨테이너 안 경로다
+    {**GOOD_HARDENING, "PidsLimit": None, "Privileged": True, "Mounts": [SOCKET_BIND]},
+]
+
+
+async def _fields(call) -> list[str]:
+    try:
+        await call
+    except AaestroError as err:
+        return list(err.details["fields"])
+    return []
+
+
+@pytest.mark.parametrize("found", PARITY_CASES)
+async def test_start_and_reattach_reach_the_same_verdict(found):
+    """두 시점이 같은 함수 · 같은 기대값으로 판정한다 — 기준이 갈라지면 여기서 드러난다."""
+    reattached = FakeDockerClient(hardening=found)
+    started = FakeDockerClient(hardening=found)
+    built = spec()
+
+    at_reattach = await _fields(
+        engine(reattached).verify_isolation(
+            "test-agent", built.image, "container-0001", built.hardening_kwargs()
+        )
+    )
+    at_start = await _fields(engine(started).start(built))
+
+    assert at_start == at_reattach
+    assert (started.started == []) == bool(at_reattach)
+
+
+def _failing_lookups():
+    """기동 직후 대조의 조회 하나가 일시 실패하는 대역들 — (이름, 클라이언트, 스펙)."""
+    built = mounted_spec()
+    return [
+        ("container inspect", FakeDockerClient(hardening_error=ConnectionError("eof")), built),
+        ("volume inspect",
+         FakeDockerClient(volumes={"alpha-cache": ConnectionError("eof")}), built),
+        ("image inspect",
+         FakeDockerClient(image_volumes={built.image: ConnectionError("eof")}), built),
+    ]  # fmt: skip
+
+
+@pytest.mark.parametrize("case", range(3), ids=["container", "volume", "image"])
+async def test_start_lookup_failure_is_a_retryable_start_failure_not_a_mismatch(case):
+    """조회하지 못한 것은 불일치가 아니다 — 일시 실패를 영구 RT_001 로 오분류하지 않는다."""
+    label, client, built = _failing_lookups()[case]
+
+    with pytest.raises(AaestroError) as caught:
+        await engine(client).start(built)
+
+    assert caught.value.code == "RT_001", label
+    assert caught.value.retryable is True
+    assert caught.value.details.get("kind") is None
+    assert caught.value.details["reason"] == "ConnectionError"
+    assert client.started == []
+    assert client.removed == [f"container-{1:04d}" + "0" * 20]
+
+
+async def test_reattach_still_refuses_a_volume_it_could_not_inspect():
+    """재부착은 확인하지 못한 볼륨을 닫는 쪽으로 읽는다 — 기동 쪽 분류가 이것을 바꾸지 않는다."""
+    with pytest.raises(AaestroError) as caught:
+        await verify(
+            mounted_found(),
+            expected=mounted_spec().hardening_kwargs(),
+            volumes={"alpha-cache": ConnectionError("eof")},
+        )
+
+    assert caught.value.details["fields"] == ["Mounts"]
+    assert caught.value.retryable is False
+
+
+MALFORMED_INSPECT = [
+    {**GOOD_HARDENING, "Mounts": ["/var/run/docker.sock"]},  # 원소가 dict 가 아님 — 조회 단계
+    {**GOOD_HARDENING, "CapDrop": 5},  # 판정 단계 (`hardening_gaps`) 에서 TypeError
+]
+
+
+@pytest.mark.parametrize("found", MALFORMED_INSPECT, ids=["mounts", "capdrop"])
+async def test_start_malformed_inspect_is_a_retryable_failure_and_leaves_no_container(found):
+    """정리는 예외 종류에 의존하지 않는다 — 어떤 대조 예외든 지우고 분류해서 올린다."""
+    client = FakeDockerClient(hardening=found)
+
+    with pytest.raises(AaestroError) as caught:
+        await engine(client).start(spec())
+
+    assert caught.value.code == "RT_001"
+    assert caught.value.retryable is True
+    assert caught.value.details.get("kind") is None
+    assert caught.value.__cause__ is not None
+    assert "/var/run" not in str(caught.value) + str(caught.value.details)
+    assert client.started == []
+    assert client.removed == [f"container-{1:04d}" + "0" * 20]

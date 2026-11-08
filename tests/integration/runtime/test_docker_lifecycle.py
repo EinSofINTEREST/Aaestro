@@ -191,7 +191,7 @@ class CliDockerClient:
         docker("stop", "-t", str(int(timeout_s)), container_id)
 
     def remove(self, container_id: str) -> None:
-        docker("rm", "-f", container_id, check=False)
+        docker("rm", "-f", "-v", container_id, check=False)  # -v: 익명 볼륨도 (#511)
 
     def build(self, context: str, tag: str, *, buildargs: dict[str, str] | None = None) -> str:
         args = ["build", "-t", tag]
@@ -283,7 +283,7 @@ def engine(echo_image: str) -> Iterator[tuple[DockerEngine, CliDockerClient]]:
         yield engine, client
     finally:
         for container_id in client.containers:
-            docker("rm", "-f", container_id, check=False)
+            docker("rm", "-f", "-v", container_id, check=False)
         docker("network", "rm", TEST_NETWORK, check=False)
 
 

@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Final
 
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
-from aaestro.core.manifest import AgentManifest
+from aaestro.core.manifest import AgentManifest, agent_volume_name
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -224,7 +224,7 @@ def build_container_spec(
 
     volumes = tuple(
         {
-            "name": volume.name,
+            "name": agent_volume_name(manifest.name, volume.name),
             "mount_path": volume.mount_path,
             "read_only": volume.read_only,
         }

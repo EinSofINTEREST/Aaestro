@@ -190,7 +190,8 @@ class SdkDockerClient:
 
     def remove(self, container_id: str) -> None:
         try:
-            self._sdk.containers.get(container_id).remove(force=True)
+            # v=True: 이미지 VOLUME 이 만든 익명 볼륨도 함께 지운다 — 이름 있는 볼륨은 남는다 (#511)
+            self._sdk.containers.get(container_id).remove(v=True, force=True)
         except NotFound:
             return  # 이미 없다 — 정리의 목적은 달성됐다
 
