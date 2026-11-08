@@ -23,7 +23,17 @@ REDACTED = "<redacted>"
 # tests/fixtures/declarations.py 의 MARKER · 테스트가 env 로 주는 가짜 에이전트 토큰.
 # 값이 어긋나면 test_subprocesses_helper.py 의 드리프트 검사가 잡는다
 DEFAULT_MASKED = ("sk-SECRET-123-marker", "issued-token")
-_SECRET_ENV_KEY = re.compile(r"(TOKEN|SECRET|PASSWORD|API_KEY|_KEY)$", re.IGNORECASE)
+# `_` 로 나눈 단어 단위로 판정한다 — 부분 문자열이면 KEYBOARD · AUTHOR · MONKEY 까지 잡는다.
+# 이름 끝이 TOKEN · SECRET · PASSWORD · PASSWD 면 단어 경계 없이도 잡는다 (PGPASSWORD ·
+# SYSTEM_ACCESSTOKEN 처럼 붙여 쓴 표준 이름). KEY 는 MONKEY 때문에 끝 일치에 넣지 않는다.
+# DATABASE_URL 은 접속 문자열에 비밀번호가 실리는 관례라 이름 그대로 넣는다.
+# SSH_AUTH_SOCK 처럼 경로를 담는 이름도 가린다 — 진단 정보를 조금 잃더라도 비밀이 새는 쪽보다 낫다
+_SECRET_ENV_KEY = re.compile(
+    r"(?:^|_)(?:TOKEN|SECRET|PASSWORD|PASSWD|KEY|AUTH|CREDENTIALS?|DSN)(?:_|$)"
+    r"|(?:TOKEN|SECRET|PASSWORD|PASSWD)$"
+    r"|^DATABASE_URL$",
+    re.IGNORECASE,
+)
 _MIN_SECRET_LEN = 8
 
 
@@ -57,11 +67,33 @@ class ProcessTimeout(subprocess.TimeoutExpired):
 
 
 def mask(text: str, masked: Sequence[str] = DEFAULT_MASKED) -> str:
-    """``masked`` 의 값을 대체 문자열로 바꾼다."""
+    """``masked`` 의 값이 나온 구간을 합쳐 구간마다 대체 문자열 하나로 바꾼다."""
+    # 값끼리 일부만 겹쳐도 어느 값의 조각이 남지 않도록 겹치는 출현 구간을 먼저 합친다
+    spans: list[tuple[int, int]] = []
     for value in masked:
-        if value:
-            text = text.replace(value, REDACTED)
-    return text
+        if not value:
+            continue
+        start = text.find(value)
+        while start != -1:
+            spans.append((start, start + len(value)))
+            start = text.find(value, start + 1)
+    out: list[str] = []
+    pos = 0
+    for begin, end in _merge_spans(spans):
+        out.extend((text[pos:begin], REDACTED))
+        pos = end
+    out.append(text[pos:])
+    return "".join(out)
+
+
+def _merge_spans(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    merged: list[tuple[int, int]] = []
+    for begin, end in sorted(spans):
+        if merged and begin <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((begin, end))
+    return merged
 
 
 def _tail(text: str) -> str:
