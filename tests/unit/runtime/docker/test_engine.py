@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from dataclasses import replace
 
 import pytest
 
@@ -1065,6 +1066,45 @@ async def test_sidecar_reattach_replaces_a_weakened_sidecar(field, value):
     docker.hardening_by_id[first] = {**sound, field: value}
     await sidecars.start(manifest, {}, reuse=True)
     assert first in docker.removed
+
+
+async def test_stop_removes_the_anonymous_volumes_but_not_a_tmpfs_covered_path():
+    """익명 볼륨이 컨테이너와 함께 지워진다 — tmpfs 가 덮은 경로는 볼륨이 아니다 (#511)."""
+    image = spec().image
+    client = FakeDockerClient(image_volumes={image: {"/data", "/tmp"}})  # noqa: S108
+    docker = engine(client)
+    handle = await docker.start(spec())
+    assert client.anonymous_volumes[handle.container_id] == {"/data"}
+    # 익명 볼륨이 Mounts 에 실제로 보이고, 기동 경화 대조가 `_image_volume` 예외로 통과시킨다
+    mounts = client.hardening_of(handle.container_id)["Mounts"]
+    assert [m["Destination"] for m in mounts] == ["/data"]
+    assert len(mounts[0]["Name"]) == 64
+
+    await docker.stop(handle)
+
+    assert client.anonymous_volumes[handle.container_id] == set()
+
+
+async def test_start_does_not_add_an_anonymous_volume_where_a_named_volume_is_mounted():
+    """이름 있는 볼륨이 덮은 이미지 VOLUME 경로에는 익명 볼륨이 생기지 않는다 (#511)."""
+    base = spec()
+    declared = replace(
+        base,
+        volumes=({"name": "aaestro-alpha.work", "mount_path": "/data", "read_only": False},),
+    )
+    client = FakeDockerClient(image_volumes={base.image: {"/data"}})
+    docker = engine(client)
+    handle = await docker.start(declared)
+
+    assert client.anonymous_volumes[handle.container_id] == set()
+    mounts = client.hardening_of(handle.container_id)["Mounts"]
+    assert [(m["Name"], m["Destination"]) for m in mounts] == [("aaestro-alpha.work", "/data")]
+
+    await docker.stop(handle)
+
+    # 이름 있는 볼륨은 컨테이너와 함께 지워지지 않는다 (실 daemon 확인은 통합 계약 테스트)
+    assert client.removed == [handle.container_id]
+    assert client.named_volumes == {"aaestro-alpha.work"}
 
 
 # --- 기동 직후 경화 대조 (#501) --------------------------------------------------
