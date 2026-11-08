@@ -7,6 +7,7 @@ Manifest 는 에이전트의 유일한 계약 소스이며, 코드에 하드코�
 
 from __future__ import annotations
 
+import posixpath
 import re
 from enum import StrEnum
 from pathlib import PurePosixPath
@@ -699,6 +700,16 @@ _VOLUME_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]+$")
 MAX_VOLUME_NAME_LENGTH = 255
 
 
+def agent_volume_name(agent: str, volume: str) -> str:
+    """Docker volume name for a volume an agent declares.
+
+    매니페스트 볼륨의 실제 Docker 이름 — 에이전트마다 갈라 같은 선언 이름이 볼륨을 공유하지 않게
+    한다 (02 Volumes). 레플리카는 같은 볼륨을 쓴다. 생성 인자와 재부착 대조가 이 함수 하나를 거친다.
+    """
+    # 구분자 `.` 은 에이전트 이름에 올 수 없다 — `-` 로 이으면 a + b-work 와 a-b + work 가 겹친다
+    return f"aaestro-{agent}.{volume}"
+
+
 class VolumeSpec(BaseModel):
     """An explicitly declared volume mount.
 
@@ -722,11 +733,30 @@ class VolumeSpec(BaseModel):
     @field_validator("mount_path")
     @classmethod
     def _reject_sensitive_paths(cls, value: str) -> str:
-        """호스트 민감 경로 마운트 절대 금지."""
+        """호스트 민감 경로 마운트 절대 금지 — 정규화한 경로로 판정한다.
+
+        Docker 가 목적지를 정리(`//etc`, `/a/../etc` → `/etc`)하므로 문자열 비교만으로는 우회된다.
+        정규화한 값을 저장해 런타임 마운트·재부착 대조(양쪽 정규화)와 같은 경로를 보게 한다.
+        """
+        # NUL·개행 같은 제어 문자는 Docker 가 그 앞에서 자르는 등 목적지가 문자열과 달라진다
+        if not value.isprintable():
+            raise ValueError("mount path must contain only printable characters")
+        if not value.startswith("/"):
+            raise ValueError("mount path must be absolute")
+        depth = 0
+        for part in value.split("/"):
+            if part == "..":
+                depth -= 1
+                # 루트 위로 올라가는 경로는 normpath 가 조용히 `/` 로 깎으므로 먼저 거절
+                if depth < 0:
+                    raise ValueError("mount path must not climb above the root")
+            elif part not in ("", "."):
+                depth += 1
+        clean = "/" + posixpath.normpath(value).lstrip("/")
         forbidden = ("/var/run/docker.sock", "/etc", "/root", "/proc", "/sys")
-        if any(value == p or value.startswith(f"{p}/") for p in forbidden):
+        if any(clean == p or clean.startswith(f"{p}/") for p in forbidden):
             raise ValueError("mounting sensitive host path is forbidden")
-        return value
+        return clean
 
 
 class RuntimeSpec(BaseModel):
@@ -864,6 +894,18 @@ class AgentManifest(BaseModel):
             if server.auth is not None and server.auth.token_env not in allowed:
                 raise ValueError(
                     f"spec.mcp.servers[{index}].auth.token_env must be in runtime.env_allowlist"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def _check_volume_names_fit(self) -> AgentManifest:
+        """에이전트 이름을 붙인 볼륨 이름이 Docker 상한 안인지 — 기동 전 배포 검증에서 거절."""
+        for index, volume in enumerate(self.spec.runtime.volumes):
+            if len(agent_volume_name(self.name, volume.name)) > MAX_VOLUME_NAME_LENGTH:
+                # 위치만 싣는다 — 이름 자체는 에러 · 로그로 내보내지 않는다
+                raise ValueError(
+                    f"spec.runtime.volumes[{index}].name exceeds {MAX_VOLUME_NAME_LENGTH} "
+                    "characters once prefixed with the agent name"
                 )
         return self
 
