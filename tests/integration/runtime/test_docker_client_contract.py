@@ -443,9 +443,10 @@ def test_remove_deletes_anonymous_volumes_and_keeps_named_ones(client, echo_imag
         "tmpfs": {},
         "volumes": {cache: {"bind": "/cache", "mode": "rw"}},
     }
-    container_id = client.create(**kwargs)
+    container_id = ""
     anonymous: list[str] = []
     try:
+        container_id = client.create(**kwargs)
         anonymous = volume_names(container_id, named=False)
         assert len(anonymous) == 2  # 비어 있으면 아래 검증이 아무것도 보지 않는다
         assert volume_names(container_id, named=True) == [cache]
@@ -455,7 +456,8 @@ def test_remove_deletes_anonymous_volumes_and_keeps_named_ones(client, echo_imag
         assert not any(volume_exists(v) for v in anonymous)
         assert volume_exists(cache)
     finally:
-        docker("rm", "-f", "-v", container_id, check=False)
+        # create 응답이 실패해도 컨테이너는 생겼을 수 있다 — id 가 없으면 이름으로 지운다
+        docker("rm", "-f", "-v", container_id or name, check=False)
         docker("volume", "rm", "-f", cache, check=False)
         for volume in anonymous:
             docker("volume", "rm", "-f", volume, check=False)
