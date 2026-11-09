@@ -265,6 +265,80 @@ class HangingSleep(Recorder):
         await self._blocked.wait()
 
 
+class RecoveringSleep(Recorder):
+    """backoff 대기 중 감시가 회복을 보고한 것처럼 Unhealthy → Ready 로 되돌린다."""
+
+    def __init__(self, launched_ref: list) -> None:
+        super().__init__()
+        self._launched = launched_ref
+
+    async def __call__(self, delay: float) -> None:
+        self.waits.append(delay)
+        self._launched[0].lifecycle.record_health(healthy=True)
+
+
+async def test_a_replica_that_recovers_during_the_backoff_is_not_replaced():
+    """대기 중 Ready 로 돌아온 레플리카를 교체하면 컨테이너 없는 Ready 가 남는다 (PR #541).
+
+    교체는 컨테이너를 지운 뒤 Ready 에서 STARTING 으로 못 가 `RT_007` 로 넘어지고, 로그 · 메트릭도
+    남지 않는다 — 회복한 레플리카는 컨테이너 · 감시 · Ready 를 그대로 둔다.
+    """
+    metrics = Metrics(registry=CollectorRegistry())
+    client = FakeDockerClient()
+    ref: list = []
+    agents = launcher(client, RecoveringSleep(ref), metrics=metrics)
+    launched, _ = await start_sick(agents)
+    ref.append(launched)
+
+    await restart_now(agents, launched)
+
+    assert launched.lifecycle.state is AgentState.READY
+    assert len(client.created) == 1, "회복한 레플리카를 교체했다"
+    assert not client.stopped and not client.removed, "회복한 컨테이너를 멈췄다"
+    assert agents.launched["echo", 0] is launched
+    monitor = agents._monitors.get(("echo", 0))
+    assert monitor is not None and not monitor.done(), "회복한 레플리카의 감시를 멈췄다"
+    counter = metrics.counter("aaestro_container_restarts_total")
+    for reason in ("unhealthy", "failed", "gave_up", "permanent"):
+        assert counter.labels(agent="echo", reason=reason)._value.get() == 0.0
+    await agents.stop_all()
+
+
+async def test_recoveries_during_the_backoff_do_not_use_up_the_restart_ceiling():
+    """교체 없는 회복이 창을 채우면 재시작 한 번 없이 RT_008 로 Failed 가 된다 (PR #541).
+
+    시계를 고정해 모든 기록이 한 창 안에 있게 한다 — 회복을 상한보다 많이 반복해도 창은 비어
+    있어야 하고, 그 뒤의 진짜 장애에는 상한이 그대로 걸려야 한다.
+    """
+    metrics = Metrics(registry=CollectorRegistry())
+    client = FakeDockerClient()
+    ref: list = []
+    agents = launcher(client, RecoveringSleep(ref), metrics=metrics)
+    launched, _ = await start_sick(agents)
+    ref.append(launched)
+    policy = launched.lifecycle.restart_policy
+    policy.clock = FakeClock()
+
+    for _ in range(policy.max_in_window + 2):
+        await restart_now(agents, launched)
+        assert launched.lifecycle.state is AgentState.READY
+
+    assert policy.restarts_in_window() == 0
+    assert len(client.created) == 1
+    gave_up = metrics.counter("aaestro_container_restarts_total").labels(
+        agent="echo", reason="gave_up"
+    )
+    assert gave_up._value.get() == 0.0
+
+    # 회복은 상한을 지우지 않는다 — 기록이 찬 창에서는 진짜 장애가 여전히 포기된다
+    for _ in range(policy.max_in_window):
+        policy.record_restart()
+    await restart_now(agents, launched)
+    assert launched.lifecycle.state is AgentState.FAILED
+    assert gave_up._value.get() == 1.0
+    await agents.stop_all()
+
+
 async def test_restart_is_not_scheduled_twice():
     """감시 루프는 Unhealthy 를 **매 확인마다** 보고한다 — 겹쳐 걸면 컨테이너가 난립한다.
 

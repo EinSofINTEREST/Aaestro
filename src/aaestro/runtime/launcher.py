@@ -357,6 +357,19 @@ class AgentLauncher:
         attempt = 1
         while True:
             await self._sleep_restart(delay)
+            if launched.lifecycle.state is AgentState.READY:
+                # 대기 중 감시가 Ready 로 되돌렸다 — 회복한 컨테이너를 지우지 않는다 (PR #541).
+                # 이 확인과 `_replace` 의 감시 취소 사이에 await 가 없어야 그 창이 닫힌다.
+                # 교체하지 않았으니 계획에서 센 재시작도 되돌린다 — 깜빡임이 상한을 쓰지 않게
+                launched.lifecycle.restart_policy.withdraw_restart()
+                log.info(
+                    "agent recovered before restart",
+                    agent=agent,
+                    container_id=launched.handle.short_id,
+                    image=launched.handle.image,
+                    attempt=attempt,
+                )
+                return
             try:
                 await self._replace(launched)
             except asyncio.CancelledError:
