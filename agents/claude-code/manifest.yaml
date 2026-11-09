@@ -32,7 +32,14 @@ spec:
     volumes:
       # Claude Code 는 API 키 대신 구독 자격증명으로도 인증한다. 그 경우
       # 이 경로가 필요하다 — **읽기 전용**이며, 02 Volumes 규칙대로 명시
-      # 선언한다. 에이전트 간 공유 금지 대상이다
+      # 선언한다. 에이전트 간 공유 금지 대상이다.
+      # 실제로 마운트되는 볼륨은 `aaestro-claude-code.claude-credentials` 다
+      # (runtime 이 `aaestro-<agent>.<name>` 으로 가른다). 이 이름으로 미리 채운다 —
+      # `claude-credentials` 를 채우면 빈 새 볼륨이 붙어 인증이 에러 없이 실패한다:
+      #   docker volume create aaestro-claude-code.claude-credentials
+      #   docker run --rm --user 0 --entrypoint sh \
+      #     -v aaestro-claude-code.claude-credentials:/dst -v "$HOME/.claude:/src:ro" \
+      #     aaestro/agent-base:0.1.0 -c 'cp -a /src/. /dst/ && chown -R 1000:1000 /dst'
       - name: claude-credentials
         mount_path: /tmp/.claude
         read_only: true

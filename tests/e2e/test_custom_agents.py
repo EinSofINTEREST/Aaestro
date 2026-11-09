@@ -204,6 +204,7 @@ def test_claude_code_bakes_from_its_seed_deploys_and_completes_a_run(plane):
         assert status == 201, deployment
         deployment_id = deployment["deployment_id"]
         assert deployment["status"] == "ready", deployment
+        assert {a["state"] for a in deployment["agents"]} == {"ready"}, deployment
         assert image_of("aaestro-claude-code-0") == "aaestro/agent-claude-code:0.1.0"
         loaded = docker(
             "exec",

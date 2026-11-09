@@ -681,12 +681,14 @@ def _mount_authoring(api: APIRouter, author: Author) -> None:
         return JSONResponse(status_code=status.HTTP_200_OK, content={"retained": retained})
 
 
-def _deployment_view(record: DeploymentRecord) -> dict[str, Any]:
+def _deployment_view(deployments: DeploymentManager, record: DeploymentRecord) -> dict[str, Any]:
+    # status 와 레플리카 state 는 읽은 순간의 계산이다 (#487) — 저장된 기록은 ready 그대로
+    observed = deployments.observe(record)
     return {
         "deployment_id": record.deployment_id,
         "graph": record.graph,
         "version": record.version,
-        "status": record.status,
+        "status": observed.status,
         "error": record.error,
         "updated_at": record.updated_at,
         "model_overrides": record.model_overrides,
@@ -698,8 +700,9 @@ def _deployment_view(record: DeploymentRecord) -> dict[str, Any]:
                 "image": a.image,
                 "control_port": a.control_port,
                 "a2a_port": a.a2a_port,
+                "state": state,
             }
-            for a in record.agents
+            for a, state in zip(record.agents, observed.replicas, strict=True)
         ],
     }
 
@@ -723,20 +726,21 @@ def _mount_deployments(api: APIRouter, deployments: DeploymentManager) -> None:
     async def create_deployment(body: Annotated[Any, Body()]) -> dict[str, Any]:
         request = _parsed(body, DeployRequest)
         return _deployment_view(
-            await deployments.deploy(request.graph, model_overrides=request.model_overrides)
+            deployments,
+            await deployments.deploy(request.graph, model_overrides=request.model_overrides),
         )
 
     @api.get("/v1/deployments")
     async def list_deployments() -> dict[str, Any]:
-        return {"items": [_deployment_view(r) for r in deployments.deployments()]}
+        return {"items": [_deployment_view(deployments, r) for r in deployments.deployments()]}
 
     @api.get("/v1/deployments/{deployment_id}")
     async def get_deployment(deployment_id: str) -> dict[str, Any]:
-        return _deployment_view(deployments.get(deployment_id))
+        return _deployment_view(deployments, deployments.get(deployment_id))
 
     @api.delete("/v1/deployments/{deployment_id}")
     async def delete_deployment(deployment_id: str) -> dict[str, Any]:
-        return _deployment_view(await deployments.teardown(deployment_id))
+        return _deployment_view(deployments, await deployments.teardown(deployment_id))
 
 
 class RunSubmission(BaseModel):

@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import random
 import shutil
-import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +28,7 @@ from aaestro.core.yamlio import (
 from aaestro.modules.registry import ModuleRegistry
 from aaestro.modules.skillset import SkillsetLoader
 from tests.fixtures.declarations import MARKER, REPO_ROOT, _declaration_files
+from tests.fixtures.subprocesses import run_process
 from tests.fixtures.yaml_fuzz import DocumentGenerator, with_duplicate
 
 # --- 중복 키 ---------------------------------------------------------------------------------
@@ -359,11 +359,9 @@ def test_load_yaml_file_reports_runaway_nesting_instead_of_a_traceback(tmp_path:
 
 
 def _tracked_yaml() -> list[Path]:
-    out = subprocess.run(  # noqa: S603
+    out = run_process(
         ["git", "ls-files", "-z", "*.yaml", "*.yml"],  # noqa: S607
         cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
         check=True,
     ).stdout
     return [REPO_ROOT / name for name in out.split("\0") if name]

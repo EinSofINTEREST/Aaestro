@@ -1,4 +1,5 @@
-# 리뷰 존재 게이트 — 리뷰로 인정할 것이 하나 이상인지 판정해 PR head 에 commit status 로 남긴다 (#514).
+# 리뷰 존재 판정 — 리뷰로 인정할 것이 하나 이상인지 판정해 PR head 에 정보성 commit status 로 남긴다 (#514).
+# Ruleset 의 필수 체크가 아니라 머지를 막지 않는다 (#537).
 # 판정 정의 · 상태 이름은 docs/en/ci/status-checks.md 와 일치 필수.
 #
 # 결과를 job 결과가 아니라 commit status 로 남기는 이유: schedule 실행은 PR head 에서 돌지 않아
@@ -62,8 +63,8 @@ jobs:
           REVIEW_BOTS: chatgpt-codex-connector[bot],copilot-pull-request-reviewer[bot],coderabbitai[bot]
         run: |
           script=scripts/ci/review_presence.py
-          # 이 게이트를 도입하는 PR 은 기본 브랜치에 스크립트가 아직 없다 — status 를 쓰지 않으면
-          # 필수 체크가 비어 머지가 막히므로 조용한 통과가 아니다
+          # 이 체크를 도입하는 PR 은 기본 브랜치에 스크립트가 아직 없다 — status 를 쓰지 못해 판정이
+          # 보이지 않는다 (필수 체크로 올리면 status 가 비어 머지가 막히므로 조용한 통과가 아니다)
           if [ ! -f "$script" ]; then
             echo "::warning::$script 가 기본 브랜치에 없습니다 — Review Presence 를 판정하지 않습니다"
             exit 0

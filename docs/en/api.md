@@ -441,7 +441,8 @@ a fallback equal to the primary is refused.
   "model_overrides": {},
   "agents": [
     {"name": "planner", "replica": 0, "container_id": "0f2edbe1aa5a",
-     "image": "aaestro/agent-base:0.1.0", "control_port": 32852, "a2a_port": 9100}
+     "image": "aaestro/agent-base:0.1.0", "control_port": 32852, "a2a_port": 9100,
+     "state": "ready"}
   ]
 }
 ```
@@ -455,9 +456,31 @@ reference graph. Per-agent tokens are never in a response.
 |---|---|
 | `starting` | containers are coming up |
 | `ready` | every agent passed a health check and accepts tasks |
+| `degraded` | the deployment is `ready`, but at least one replica is not right now (see `state` below) |
 | `failed` | a step failed; **everything this deployment started was stopped again** |
 | `stopped` | torn down through `DELETE` |
 | `lost` | after a restart, at least one container was gone |
+
+`degraded` is never stored. It is computed when the deployment is read, from the supervision
+state of its replicas, and turns back into `ready` by itself once they recover. Everything that
+acts on a deployment still sees `ready`: runs are accepted, its agents stay held (`RT_010`), and
+`DELETE` stops its containers. A `lost` deployment stays `lost` — it is not shown as `degraded`.
+
+Each entry in `agents` carries the replica's `state`, read the same way:
+
+| State | Meaning |
+|---|---|
+| `ready` | accepts tasks — it has passed a health check, and fewer than 3 health checks in a row have failed since (a single failed check does not take it out) |
+| `starting` | up but not yet healthy — a replacement container coming up, or a container re-attached after a control plane restart before its first health check |
+| `unhealthy` | failed health checks; supervision is restarting it |
+| `draining` | stopped taking new tasks and is waiting for the ones in flight before it stops |
+| `failed` | the restart limit was hit; supervision gave up. Tear the deployment down and deploy again |
+| `absent` | no replica is held for this slot — its container is being replaced, or it was stopped by a teardown or cleanup that did not finish. Which one is not told apart; if it does not come back, tear the deployment down |
+| `null` | unknown — supervision is off in this assembly, the deployment is not `ready` or `lost`, or the deployment is being torn down. Then every replica is `null` and the status is the stored one |
+
+`null` means "unknown" and nothing else; every other value is a fact about the replica, and any
+value other than `ready` makes a `ready` deployment `degraded`. With supervision off nothing
+updates the replica state, so the deployment shows its stored status rather than guessing.
 
 Failures leave no ghost containers. What you get back tells you which kind it was:
 
@@ -504,6 +527,40 @@ deployment already `stopped` or `failed` is returned unchanged.
 A second request for a deployment that is still being torn down (a retry, a double click)
 joins the teardown in progress and gets the same record — the agents are drained and stopped
 once. A caller that gives up (client timeout) does not stop the teardown; it runs to the end.
+Stopping the control plane also waits for teardowns in progress before it exits — shutdown
+waits, without a limit, for every request still being served, a teardown included. If the
+process is killed before they finish, the deployment is not recorded as `stopped`: after the
+restart it is reattached or shown as `lost`, and tearing it down again removes what is left —
+containers are found by their agent label.
+
+### Declared volumes
+
+A volume in a manifest's `spec.runtime.volumes` is not mounted under the name it declares. The
+runtime mounts `aaestro-<agent>.<name>`, so two agents that both declare `work` get two volumes
+(`aaestro-a.work`, `aaestro-b.work`). The `.` cannot appear in an agent name, so agent `a`'s
+`b-work` and agent `a-b`'s `work` never collide. Replicas of one agent share its volume. A
+declaration whose combined name exceeds Docker's 255 characters fails validation (`VAL_002`,
+the message names the position, not the name).
+
+- **Fill a pre-populated volume under the mounted name.** Docker creates a missing named volume
+  empty at start, and a `read_only` mount of an empty volume fails quietly inside the agent. For
+  the reference `claude-code` agent's subscription credentials:
+
+  ```bash
+  docker volume create aaestro-claude-code.claude-credentials
+  docker run --rm --user 0 --entrypoint sh \
+    -v aaestro-claude-code.claude-credentials:/dst -v "$HOME/.claude:/src:ro" \
+    aaestro/agent-base:0.1.0 -c 'cp -a /src/. /dst/ && chown -R 1000:1000 /dst'
+  ```
+
+  The `chown` matters: agents run as `1000:1000`.
+- **Upgrading from unprefixed names.** Earlier versions mounted the declared name as is. Existing
+  volumes are not moved or deleted; copy their contents into the new name as above (mount the old
+  volume as `/src`) if you need them. A `ready` deployment of an agent that declares a volume
+  becomes `lost` on the first reattach after the upgrade ("container hardening mismatch" with
+  `Mounts` — its container still mounts the old name), its identities are revoked and its
+  containers are left running. Tear it down with `DELETE /v1/deployments/{id}` and deploy again;
+  the new containers mount the prefixed volume.
 
 ## Runs
 
@@ -529,6 +586,9 @@ nobody:
 
 `mode` comes from the graph, not from the caller. Optional fields: `run_id` to choose the id,
 `mode` to assert the graph's mode (a mismatch is `400`).
+
+A `degraded` deployment accepts runs — it is `ready` underneath, and requests are routed to the
+replicas that are ready. A node whose agent has no ready replica fails with `RT_009`.
 
 Refusals: `404` (`NF_001`) when the deployment is unknown or not `ready`; `400` (`VAL_002`)
 when the graph on disk has been edited to a different version than the one deployed —
@@ -1034,12 +1094,13 @@ outside address fails. The proxy is the only way out.
   container still carries the hardening the start spec sets (`CapDrop` has `ALL`, a read-only root
   filesystem, user `1000:1000`, the PID limit (`DEFAULT_PID_LIMIT`, 256), and a `security_opt` whose
   effective value per key equals the spec's — adding an entry or overriding one later is refused)
-  and nothing that voids it (privileged, added capabilities, host PID / IPC / user / network
-  namespaces, an empty `MaskedPaths` or `ReadonlyPaths`). Its mounts must be exactly the ones the
-  start spec sets: the read-only declaration mounts, the declared volumes and the `tmpfs` paths. A
-  bind the spec did not declare (a host path, `/var/run/docker.sock`), a declared mount made
-  writable or pointed elsewhere, and an extra or missing `tmpfs` are refused (`Mounts` / `Tmpfs`;
-  the reason names the field, never the path). Paths are compared normalized (`/cache/` is
+  and nothing that voids it (privileged, added capabilities, host PID / IPC / user / network /
+  UTS / cgroup namespaces, an empty `MaskedPaths` or `ReadonlyPaths`, and `Devices`,
+  `DeviceRequests` or `DeviceCgroupRules` the start spec did not set). Its mounts must be exactly
+  the ones the start spec sets: the read-only declaration mounts, the declared volumes and the
+  `tmpfs` paths. A bind the spec did not declare (a host path, `/var/run/docker.sock`), a declared
+  mount made writable or pointed elsewhere, and an extra or missing `tmpfs` are refused (`Mounts` /
+  `Tmpfs`; the reason names the field, never the path). Paths are compared normalized (`/cache/` is
   `/cache`). The one exception is the anonymous volume Docker creates for a path the image declares
   with `VOLUME` — read from the image itself, not from the container's `Config.Volumes`, which also
   lists volumes added at creation; if the image cannot be inspected there is no exception. Every volume, declared or anonymous, must also be a plain `local` volume: one
@@ -1048,8 +1109,17 @@ outside address fails. The proxy is the only way out.
   the deployment becomes `lost` ("network isolation mismatch", or "container hardening mismatch"
   with the field names), nothing is attached, and its agent
   identities are revoked, so containers with a route out lose their memory, peer and model access.
-  The containers are left running for you to inspect and tear down. On a host that cannot set a PID
-  limit (no pids cgroup), reattaching is refused; a check at start time is a follow-up.
+  The containers are left running for you to inspect and tear down.
+  **Starting runs the same check.** Right after a container (agent or sidecar) is created, and
+  before it is started, the same comparison against the same start arguments runs. A mismatch
+  removes the container and fails the start with `RT_001` (`details.kind` is `hardening`,
+  `details.fields` names the fields, not retryable), so a host that silently drops a setting (no
+  pids cgroup, so no PID limit) fails at deploy time instead of turning every deployment `lost` at
+  the next control plane restart. A container, volume or image inspect that fails here is not a
+  mismatch: the container is removed and the start fails with a retryable `RT_001` whose reason is
+  the error type (reattaching still reads it as a mismatch). A restart that hits it counts as a
+  failed restart. Each start costs one more container inspect, plus one inspect per volume and one
+  for the image.
   A deployment that cannot be rebuilt from its declarations (a manifest is gone, or a node left the
   graph) also becomes `lost` ("cannot rebuild from declarations") and its identities are revoked.
 - **Agents publish no ports.** Ports cannot be published from an internal network, so the control
@@ -1209,8 +1279,9 @@ URL.
   sidecars), so the proxy calls it over `http`, and only at an address that resolves privately.
 - **Restarts.** Docker restarts a sidecar that exits with an error, up to five times. After a control
   plane restart, reattach brings back a sidecar that is gone or stopped, or that no longer matches
-  its start arguments (hardening, networks, mounts), and marks the deployment
-  `lost` if it cannot. agentd waits up to about ten seconds for a sidecar that is still starting; a
+  its start arguments (hardening, networks, mounts), and marks the deployment `lost` if it cannot.
+  A new sidecar is checked against its start arguments before it starts, the same way (`RT_001`,
+  `kind: hardening`). agentd waits up to about ten seconds for a sidecar that is still starting; a
   remote server is not waited for.
 
 ### A2A enforcement

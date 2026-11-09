@@ -23,8 +23,14 @@ from typing import TYPE_CHECKING, Any, Final
 
 import structlog
 
+from aaestro.core.errors import AaestroError
 from aaestro.core.manifest import ResourceSpec, sidecar_host
-from aaestro.runtime.docker.engine import AGENT_LABEL, hardening_gaps, inspect_hardening
+from aaestro.runtime.docker.engine import (
+    AGENT_LABEL,
+    hardening_gaps,
+    inspect_hardening,
+    verify_started_hardening,
+)
 from aaestro.runtime.docker.errors import (
     NetworkIsolationError,
     image_unavailable,
@@ -34,6 +40,7 @@ from aaestro.runtime.docker.errors import (
 from aaestro.runtime.spec import (
     DEFAULT_PID_LIMIT,
     HARDENED_CAP_DROP,
+    HARDENED_CGROUPNS,
     HARDENED_SECURITY_OPT,
     HARDENED_USER,
     TMPFS_OPTIONS,
@@ -111,6 +118,7 @@ def sidecar_kwargs(
         "read_only": True,
         "cap_drop": list(HARDENED_CAP_DROP),
         "security_opt": list(HARDENED_SECURITY_OPT),
+        "cgroupns": HARDENED_CGROUPNS,
         "tmpfs": {SIDECAR_HOME: TMPFS_OPTIONS},
         "volumes": {},
         "labels": {AGENT_LABEL: agent, ROLE_LABEL: SIDECAR_ROLE, SIDECAR_LABEL: server.name},
@@ -247,6 +255,20 @@ class McpSidecars:
             raise start_failed(
                 agent, image, mcp_server=server.name, reason=type(err).__name__
             ) from err
+        try:
+            # 에이전트 기동과 같은 대조 — 재사용(`_sound`)만 보던 경화를 새로 세울 때도 본다 (#501)
+            await asyncio.to_thread(
+                verify_started_hardening,
+                self.client,
+                container_id,
+                kwargs,
+                agent=agent,
+                image=image,
+                mcp_server=server.name,
+            )
+        except AaestroError:
+            await self._discard(agent, container_id)
+            raise
         try:
             await asyncio.to_thread(self.client.start, container_id)
         except Exception as err:

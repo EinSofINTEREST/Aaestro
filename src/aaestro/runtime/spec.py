@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Final
 
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
-from aaestro.core.manifest import AgentManifest
+from aaestro.core.manifest import AgentManifest, agent_volume_name
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -28,6 +28,10 @@ DEFAULT_BASE_IMAGE: Final = "aaestro/agent-base:0.1.0"
 # cap-drop ALL 만으로는 setuid 바이너리 실행으로 얻는 권한을 막지 못한다 (#475)
 HARDENED_CAP_DROP: Final = ("ALL",)
 HARDENED_SECURITY_OPT: Final = ("no-new-privileges:true",)
+HARDENED_CGROUPNS: Final = "private"
+"""daemon 기본값은 cgroup v1 호스트에서 `host` 다 — 거기서는 평범하게 만든 컨테이너도
+`CgroupnsMode` 경화 대조에 스스로 걸린다 (#510 이 그 검사를 추가했다). 명시해 호스트
+cgroup 버전과 무관하게 격리시킨다."""
 
 A2A_PORT_ENV: Final = "AAESTRO_A2A_PORT"
 """할당된 A2A 포트를 컨테이너에 알리는 키 — agentd 가 이것으로 서버를 띄운다."""
@@ -116,6 +120,7 @@ class ContainerSpec:
             "read_only": self.read_only_rootfs,
             "cap_drop": list(self.cap_drop),
             "security_opt": list(self.security_opt),
+            "cgroupns": HARDENED_CGROUPNS,
             # 마운트도 경화다 — 선언에 없는 바인드(호스트 경로, docker.sock)는 격리를 연다 (#488)
             "tmpfs": dict.fromkeys(self.tmpfs, TMPFS_OPTIONS),
             "volumes": {
@@ -224,7 +229,7 @@ def build_container_spec(
 
     volumes = tuple(
         {
-            "name": volume.name,
+            "name": agent_volume_name(manifest.name, volume.name),
             "mount_path": volume.mount_path,
             "read_only": volume.read_only,
         }

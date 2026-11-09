@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import re
-import subprocess
 import sys
 
 import pytest
@@ -28,6 +27,7 @@ from aaestro.modules.boundary import (
     TRUNCATION_NOTICE,
     Boundary,
 )
+from tests.fixtures.subprocesses import assert_returncode, run_process
 
 ID = "0123456789abcdef01234567"
 
@@ -163,7 +163,5 @@ def test_markers_module_does_not_pull_the_template_engine():
     같은 프로세스의 sys.modules 는 다른 테스트가 오염시키므로 격리된 서브프로세스로 본다.
     """
     code = "import sys, aaestro.core.markers; assert 'jinja2' not in sys.modules, 'jinja2'"
-    result = subprocess.run(  # noqa: S603 — 고정 인자, 격리 모드 인터프리터
-        [sys.executable, "-I", "-c", code], capture_output=True, text=True, check=False
-    )
-    assert result.returncode == 0, result.stderr
+    result = run_process([sys.executable, "-I", "-c", code])
+    assert_returncode(result, 0)

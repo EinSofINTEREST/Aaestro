@@ -343,7 +343,11 @@ def test_a_custom_agent_is_built_deployed_and_run_by_clicking(page):
         _deploy_run_and_tear_down_custom(page)
     finally:
         for deployment in api("GET", "/v1/deployments")[1]["items"]:
-            if deployment["graph"] == GRAPH_NAME and deployment["status"] in ("ready", "lost"):
+            if deployment["graph"] == GRAPH_NAME and deployment["status"] in (
+                "ready",
+                "degraded",
+                "lost",
+            ):
                 api("DELETE", f"/v1/deployments/{deployment['deployment_id']}")
         api("DELETE", f"/v1/graphs/{GRAPH_NAME}")
         api("DELETE", f"/v1/agents/{CUSTOM}")
