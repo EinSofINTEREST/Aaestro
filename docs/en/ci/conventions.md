@@ -17,10 +17,10 @@ Related: [Required Status Checks — Single Source](status-checks.md)
 - **Required approving reviews**: the Ruleset requires **0** approvals
   (`required_approving_review_count: 0`). Enable `Require review from Code Owners` once
   CODEOWNERS is registered.
-- **Review presence**: the presence of at least one review — bot reviews included — is
-  guaranteed by the `Review Presence` check instead
-  ([status-checks.md](status-checks.md#review-presence)), once it is registered as a
-  required check in the Ruleset.
+- **Review presence**: whether at least one review — bot reviews included — exists is
+  reported by the informational `Review Presence` status
+  ([status-checks.md](status-checks.md#review-presence)). It is not a required check in
+  the Ruleset and does not block the merge.
 - **Conversation resolution**: all review threads resolved before merge
   (`required_review_thread_resolution: true`).
 - **Merge commits only** (squash/rebase disabled): every per-TODO commit survives on `main`
@@ -86,7 +86,7 @@ Workflows are **split by concern** (readability, clear Actions UI grouping):
 | `ci-quality.yml` | Code quality (PR gate) | `Lint`, `Type Check`, `Test`, `Integration Test` |
 | `ci-convention.yml` | PR/commit metadata format | `Commit Lint`, `PR Title Lint`, `Linked Issue Check`, `Branch Name Lint` |
 | `ci-docs.yml` | Documentation policy | `Docs Sync Check` |
-| `ci-review.yml` | Review presence (PR gate, commit status) | `Review Presence` |
+| `ci-review.yml` | Review presence (informational commit status, not a merge gate) | `Review Presence` |
 | `ci-nightly.yml` | Scheduled full-stack verification | `E2E Test` |
 
 - Jobs run independently in parallel (fast feedback). The only dependency is the

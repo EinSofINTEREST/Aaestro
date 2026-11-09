@@ -28,13 +28,18 @@ as PR merge gates. The GitHub Ruleset and the PR template must match these names
 | `PR Title Lint` | `ci-convention.yml` / `pr-title-lint` | Enforces `[카테고리#이슈번호] 제목` (or `[카테고리#이슈번호]: 제목`) strictly (PR only) | Yes |
 | `Linked Issue Check` | `ci-convention.yml` / `linked-issue` | Requires ≥ 1 closing reference (`closingIssuesReferences.totalCount ≥ 1`, PR only; bot allowlist applies) | Yes |
 | `Docs Sync Check` | `ci-docs.yml` / `docs-sync` | `docs/en` ↔ `docs/ko` structure mirror + language selector presence | Yes |
-| `Review Presence` | `ci-review.yml` / `judge` (commit status) | Requires ≥ 1 review that counts — see [Review Presence](#review-presence) | Yes |
+| `Review Presence` | `ci-review.yml` / `judge` (commit status) | Reports whether ≥ 1 review counts — see [Review Presence](#review-presence). Informational, not a merge gate (not in the Ruleset) | No |
 | `Branch Name Lint` | `ci-convention.yml` / `branch-lint` | Warns on `{category}/#{issue}/{summary}` violations — informational | No |
 | `E2E Test` | `ci-nightly.yml` / `e2e` | Nightly full-stack run with fake LLM provider — not a merge gate | No |
 
 ## Review Presence
 
-`Review Presence` is a **commit status**, not a job check. `ci-review.yml` (job
+`Review Presence` is **informational**: it is not registered in the Ruleset
+`main-merge-gate`, so it does not block the merge (a user decision, #537). The sections
+below describe what the check reports and what would apply if it were promoted to a
+required check later.
+
+It is a **commit status**, not a job check. `ci-review.yml` (job
 `Review Presence Judge`, deliberately a different name) judges the PR and writes the
 status on the PR head commit. Scheduled runs do not execute on the PR head, so a job
 result could never become that PR's check — every trigger therefore writes the same
@@ -64,8 +69,9 @@ status context.
 
   This is narrower than the definition in issue #514, which counted any non-author account.
 - **States**: `success` when something counts, otherwise `pending` ("waiting for at
-  least one review") — a review arrives over time, so missing one is not a failure,
-  and `pending` still blocks the merge.
+  least one review") — a review arrives over time, so missing one is not a failure.
+  `pending` blocks the merge only if the check is registered as required; today it does
+  not.
 - **Writes**: before writing, the judge reads the current `Review Presence` status on the
   head sha and writes only when state or description differs. GitHub caps statuses at
   1000 per sha and context ("Attempts to create more than 1000 statuses will result in a
@@ -100,21 +106,22 @@ status context.
     the next judgment of that PR.
   - In a public repository, scheduled workflows are disabled automatically after 60 days
     without repository activity.
-  - Registering the check in the Ruleset with the GitHub Actions app as the expected
-    source blocks direct forgery with a person's token: GitHub documents that "if the
-    status is set by any other person or integration, merging won't be allowed".
+  - If the check is promoted to required, registering it in the Ruleset with the GitHub
+    Actions app as the expected (pinned `integration_id`) source blocks direct forgery
+    with a person's token: GitHub documents that "if the status is set by any other
+    person or integration, merging won't be allowed".
     Forgery from another workflow in the same repository remains, since it runs as the
     same app. Not verified: that a commit status written with `GITHUB_TOKEN` (rather than
     a check run) matches the GitHub Actions app as the source.
-  - Therefore this check is **not enforcement** for PRs that change workflows. Those PRs
-    must be reviewed by a human; an enforcing mechanism (CODEOWNERS on `.github/`, Ruleset
+  - Therefore this check is **not enforcement** for PRs that change workflows, required
+    or not. Those PRs must be reviewed by a human; an enforcing mechanism (CODEOWNERS on `.github/`, Ruleset
     rules) is a repository setting and a user decision, outside this check.
 - **When no reviewer answers**: today the only trusted human is the PR author, who cannot
-  count. If every review bot stays silent (quota, outage), the gate does not open. Paths
-  out:
+  count. If every review bot stays silent (quota, outage), the status stays `pending`
+  (and would hold the gate shut if it were required). Paths out:
   - re-request a bot review (for example comment `@codex review`)
-  - a Ruleset bypass for this check, or a second collaborator — both are repository
-    settings and a user decision
+  - if the check is required: a Ruleset bypass for it, or a second collaborator — both are
+    repository settings and a user decision
 
 ## Evolution Notes (from the IssueTracker origin)
 
