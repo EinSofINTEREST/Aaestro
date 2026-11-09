@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from aaestro.core.errors import AaestroError, ErrorCode
-from aaestro.runtime.docker.errors import NetworkIsolationError
+from aaestro.runtime.docker.errors import ImageMissingError, NetworkIsolationError
 from aaestro.runtime.sidecars import (
     McpSidecars,
     ProxyAttachment,
@@ -317,13 +317,23 @@ async def test_a_fresh_sidecar_with_malformed_inspect_is_removed_and_retryable(m
     assert docker.removed == ["container-0001" + "0" * 20]
 
 
-async def test_a_missing_sidecar_image_is_rt_004():
-    docker = FakeDockerClient(image_error=RuntimeError("pull denied"))
+@pytest.mark.parametrize(
+    ("error", "retryable"),
+    [
+        (ImageMissingError("mcp/search:0.3.0"), False),
+        # daemon · 레지스트리 장애는 다시 세우면 설 수 있다 — 엔진과 같은 규칙 (#520)
+        (RuntimeError("registry unreachable"), True),
+    ],
+    ids=["missing", "transient"],
+)
+async def test_a_sidecar_image_failure_is_rt_004_retryable_unless_missing(error, retryable):
+    docker = FakeDockerClient(image_error=error)
 
     with pytest.raises(AaestroError) as caught:
         await McpSidecars(docker).start(with_servers(SEARCH), {})
 
     assert caught.value.code == ErrorCode.RT_004
+    assert caught.value.retryable is retryable
     assert docker.created == []
 
 

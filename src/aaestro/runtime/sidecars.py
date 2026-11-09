@@ -32,6 +32,7 @@ from aaestro.runtime.docker.engine import (
     verify_started_hardening,
 )
 from aaestro.runtime.docker.errors import (
+    ImageMissingError,
     NetworkIsolationError,
     image_unavailable,
     network_mismatch,
@@ -245,9 +246,14 @@ class McpSidecars:
             await self._discard(agent, existing)
         try:
             await asyncio.to_thread(self.client.ensure_image, image)
-        except Exception as err:
+        except ImageMissingError as err:
             raise image_unavailable(
                 agent, image, mcp_server=server.name, reason=type(err).__name__
+            ) from err
+        except Exception as err:
+            # 엔진과 같은 규칙 — 없는 이미지만 재시도 불가, 그 밖은 일시 장애일 수 있다 (#520)
+            raise image_unavailable(
+                agent, image, retryable=True, mcp_server=server.name, reason=type(err).__name__
             ) from err
         try:
             container_id = await asyncio.to_thread(self.client.create, **kwargs)
