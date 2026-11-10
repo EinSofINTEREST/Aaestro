@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from aaestro.runtime.docker.client import SdkDockerClient, image_reference
-from aaestro.runtime.docker.errors import NetworkIsolationError
+from aaestro.runtime.docker.errors import ImageMissingError, NetworkIsolationError
 
 
 @pytest.mark.parametrize(
@@ -122,3 +122,63 @@ def test_remove_deletes_anonymous_volumes_with_the_container():
     SdkDockerClient(handle=_Handle()).remove("c")
 
     assert calls == [{"v": True, "force": True}]
+
+
+class _Images:
+    """로컬에 없고, pull 이 주어진 예외로 실패하는 이미지 저장소."""
+
+    def __init__(self, pull_error: Exception) -> None:
+        self.pull_error = pull_error
+        self.pulled: list[tuple[str, str]] = []
+
+    def get(self, name):
+        from docker.errors import ImageNotFound
+
+        raise ImageNotFound(name)
+
+    def pull(self, repository, *, tag):
+        self.pulled.append((repository, tag))
+        raise self.pull_error
+
+
+def _pull_failing_with(error: Exception) -> SdkDockerClient:
+    class _Handle:
+        images = _Images(error)
+
+    return SdkDockerClient(handle=_Handle())
+
+
+def test_an_image_the_registry_does_not_have_is_missing():
+    """레지스트리의 404 만 "없다" 다 — 재시작 경로가 이것을 재시도 불가로 본다 (#520)."""
+    from docker.errors import NotFound
+
+    with pytest.raises(ImageMissingError):
+        _pull_failing_with(NotFound("manifest unknown")).ensure_image("agent:1.0.0")
+
+
+def _server_error() -> Exception:
+    from docker.errors import APIError
+    from requests import Response
+
+    response = Response()
+    response.status_code = 500
+    return APIError("registry exploded", response=response)
+
+
+def _unreachable() -> Exception:
+    # docker-py 는 데몬 · 레지스트리 단절을 requests 의 ConnectionError 로 그대로 올린다
+    from requests.exceptions import ConnectionError as RequestsConnectionError
+
+    return RequestsConnectionError("connection refused")
+
+
+@pytest.mark.parametrize("make_error", [_unreachable, _server_error], ids=["unreachable", "500"])
+def test_a_transient_pull_failure_is_not_reported_as_missing(make_error):
+    """도달 불가 · 서버 오류를 "없다" 로 바꾸면 일시 장애가 바로 Failed 로 간다 (#520)."""
+    error = make_error()
+
+    with pytest.raises(type(error)) as exc_info:
+        _pull_failing_with(error).ensure_image("agent:1.0.0")
+
+    assert exc_info.value is error
+    assert not isinstance(exc_info.value, ImageMissingError)

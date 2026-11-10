@@ -7,6 +7,7 @@
 
 예외는 SDK 것을 그대로 올린다. `DockerEngine` 이 단계별로 `except Exception` 으로 받아
 RT_004(이미지) / RT_001(기동) 로 옮기므로, 여기서 또 감싸면 이중이다 (05 Layer Rules).
+결정적 실패 (격리 불일치, 이미지 없음) 만 도메인 예외로 바꾼다 — 엔진이 그것만 재시도 불가로 올린다.
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ import docker
 from docker.errors import BuildError, ImageNotFound, NotFound
 from docker.utils import parse_repository_tag
 
-from aaestro.runtime.docker.errors import NetworkIsolationError
+from aaestro.runtime.docker.errors import ImageMissingError, NetworkIsolationError
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -110,7 +111,12 @@ class SdkDockerClient:
             self._sdk.images.get(image)
         except ImageNotFound:
             repository, tag = image_reference(image)
-            self._sdk.images.pull(repository, tag=tag)
+            try:
+                self._sdk.images.pull(repository, tag=tag)
+            except NotFound as err:
+                # 레지스트리의 404 (없음 · 로그인 필요) 만 "없다" 다 — 도달 불가 · 서버 오류는
+                # 일시 장애일 수 있어 그대로 올린다 (엔진이 retryable 로 옮긴다)
+                raise ImageMissingError(image) from err
 
     def ensure_network(self, name: str, *, internal: bool = False) -> None:
         """네트워크를 확보한다 — 없으면 bridge 로 생성 (02 Network).

@@ -185,6 +185,19 @@ def test_restarts_outside_the_window_are_forgotten():
     assert policy.restarts_in_window() == 0
 
 
+def test_a_withdrawn_restart_is_not_counted():
+    """계획만 하고 교체하지 않은 재시작이 상한을 쓰면 깜빡이는 레플리카가 Failed 로 간다."""
+    policy = RestartPolicy(clock=FakeClock())
+    policy.record_restart()
+    policy.record_restart()
+
+    policy.withdraw_restart()
+    assert policy.restarts_in_window() == 1
+    policy.withdraw_restart()
+    policy.withdraw_restart()  # 지울 기록이 없어도 넘어지지 않는다
+    assert policy.restarts_in_window() == 0
+
+
 def test_plan_restart_returns_growing_delays():
     agent = ready_agent(clock=FakeClock())
 

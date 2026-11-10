@@ -34,8 +34,9 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
-RESTART_REASONS = ("unhealthy", "failed", "gave_up")
-"""`aaestro_container_restarts_total{reason}` 의 값 — 교체됨 · 교체 기동 실패 · 상한 도달."""
+RESTART_REASONS = ("unhealthy", "failed", "gave_up", "permanent")
+"""`aaestro_container_restarts_total{reason}` 의 값 — 교체됨 · 교체 기동 실패 · 상한 도달 ·
+재시도 불가 기동 실패."""
 
 
 @dataclass
@@ -337,7 +338,8 @@ class AgentLauncher:
         먼저 멈추므로, 실패한 뒤 "다음 health 확인" 은 오지 않는다. 재시도마다 같은
         lifecycle 의 `plan_restart` 를 거치므로 실패한 재기동도 창 안의 재시작으로 세어
         crash-loop 상한이 걸린다. 루프는 `_restarts` 가 쥔 이 태스크 하나라 정지가
-        끊을 수 있다 (07 Async 5).
+        끊을 수 있다 (07 Async 5). 다시 시도하는 것은 일시 장애 (`retryable`) 뿐이다 —
+        재시도 불가 실패는 바로 Failed 로 간다 (#520).
 
         `tenacity` 를 쓰지 않는다: 대기와 포기의 판단 주체는 lifecycle 의 `RestartPolicy` 다
         (창 안의 횟수 — 이 연쇄 밖의 재시작도 센다). 재시도기를 하나 더 두면 상한이 두 곳에서
@@ -355,11 +357,28 @@ class AgentLauncher:
         attempt = 1
         while True:
             await self._sleep_restart(delay)
+            if launched.lifecycle.state is AgentState.READY:
+                # 대기 중 감시가 Ready 로 되돌렸다 — 회복한 컨테이너를 지우지 않는다 (PR #541).
+                # 이 확인과 `_replace` 의 감시 취소 사이에 await 가 없어야 그 창이 닫힌다.
+                # 교체하지 않았으니 계획에서 센 재시작도 되돌린다 — 깜빡임이 상한을 쓰지 않게
+                launched.lifecycle.restart_policy.withdraw_restart()
+                log.info(
+                    "agent recovered before restart",
+                    agent=agent,
+                    container_id=launched.handle.short_id,
+                    image=launched.handle.image,
+                    attempt=attempt,
+                )
+                return
             try:
                 await self._replace(launched)
             except asyncio.CancelledError:
                 raise
             except Exception as err:
+                if isinstance(err, AaestroError) and not err.retryable:
+                    # 05 Retry Rule 2 — 같은 선언으로 다시 세워도 같은 실패다 (#520)
+                    self._fail_permanently(launched, err)
+                    return
                 # runtime 은 살아 있어야 한다 — 실패를 세고 다음 backoff 로 넘어간다
                 self._record_restart(agent, reason="failed")
                 delay = self._plan_restart(launched, last_error=err)
@@ -415,6 +434,24 @@ class AgentLauncher:
             )
             self._record_restart(launched.agent, reason="gave_up")
             return None
+
+    def _fail_permanently(self, launched: LaunchedAgent, err: AaestroError) -> None:
+        """재시도 불가 기동 실패 — 상한까지 반복하지 않고 바로 Failed 로 보낸다.
+
+        상한 초과 (`gave_up`) 와 같이 사유를 따로 센다: 원인이 crash-loop 가 아니라 선언 · 이미지
+        같은 설정 문제라 대응이 다르다. 감시는 `_replace` 가 이미 멈췄다.
+        """
+        # `_replace` 가 실패한 레플리카를 Unhealthy 로 되돌려 두었다 — 거기서 Failed 는 합법 전이다
+        launched.lifecycle.transition(AgentState.FAILED)
+        log.error(
+            "agent restart failed permanently",
+            agent=launched.agent,
+            container_id=launched.handle.short_id,
+            image=launched.handle.image,
+            error_code=err.code,
+            exc_info=err,
+        )
+        self._record_restart(launched.agent, reason="permanent")
 
     async def _sleep_restart(self, delay: float) -> None:
         """backoff 대기 — 06 은 테스트가 실제로 자는 것을 금지하므로 주입을 받는다."""

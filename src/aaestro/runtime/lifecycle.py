@@ -102,6 +102,11 @@ class RestartPolicy:
         self._restarts = [t for t in self._restarts if now - t < self.window_s]
         self._restarts.append(now)
 
+    def withdraw_restart(self) -> None:
+        """마지막 기록을 지운다 — 계획만 하고 교체하지 않은 재시작이 상한을 쓰지 않게."""
+        if self._restarts:
+            self._restarts.pop()
+
     def restarts_in_window(self) -> int:
         """현재 창 안의 재시작 횟수."""
         now = self.clock()

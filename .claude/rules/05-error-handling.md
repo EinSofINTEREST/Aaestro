@@ -503,7 +503,7 @@ aaestro_a2a_calls_total{caller, callee, status}
 
 # Runtime metrics
 aaestro_containers_running{agent}                        # Gauge
-aaestro_container_restarts_total{agent, reason}
+aaestro_container_restarts_total{agent, reason}         # reason: unhealthy|failed|gave_up|permanent — permanent 는 재시도 불가 기동 실패 (바로 Failed)
 aaestro_agent_health{agent}                              # Gauge: 1 healthy / 0 unhealthy
 
 # Orchestrator metrics
@@ -583,6 +583,15 @@ groups:
         labels: {severity: critical}
         annotations:
           summary: "Agent {{ $labels.agent }} restart loop"
+
+      - alert: AgentFailed
+        expr: |
+          sum without (reason) (
+            increase(aaestro_container_restarts_total{reason=~"permanent|gave_up"}[10m])
+          ) > 0
+        labels: {severity: critical}
+        annotations:
+          summary: "Agent {{ $labels.agent }} restarts ended in Failed — the runtime stopped restarting it"
 
       - alert: ModelRateLimited
         expr: |

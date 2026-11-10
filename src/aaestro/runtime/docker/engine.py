@@ -19,6 +19,7 @@ import structlog
 from aaestro.core.errors import AaestroError
 from aaestro.runtime.docker.errors import (
     OOM_EXIT_CODE,
+    ImageMissingError,
     NetworkIsolationError,
     drain_timeout,
     hardening_mismatch,
@@ -516,8 +517,13 @@ class DockerEngine:
 
         try:
             await asyncio.to_thread(self.client.ensure_image, spec.image)
-        except Exception as err:
+        except ImageMissingError as err:
             raise image_unavailable(agent, spec.image, reason=type(err).__name__) from err
+        except Exception as err:
+            # daemon 단절 · 레지스트리 흔들림 — 같은 선언으로 다시 세우면 설 수 있다 (#520)
+            raise image_unavailable(
+                agent, spec.image, retryable=True, reason=type(err).__name__
+            ) from err
 
         try:
             await asyncio.to_thread(

@@ -22,6 +22,7 @@ from aaestro.core.errors import AaestroError
 from aaestro.core.manifest import AgentManifest
 from aaestro.observability.metrics import Metrics
 from aaestro.runtime.docker.engine import DockerEngine
+from aaestro.runtime.docker.errors import ImageMissingError
 from aaestro.runtime.launcher import AgentLauncher
 from aaestro.runtime.lifecycle import AgentState, RestartPolicy
 from tests.fixtures.fake_docker import FakeDockerClient
@@ -264,6 +265,80 @@ class HangingSleep(Recorder):
         await self._blocked.wait()
 
 
+class RecoveringSleep(Recorder):
+    """backoff 대기 중 감시가 회복을 보고한 것처럼 Unhealthy → Ready 로 되돌린다."""
+
+    def __init__(self, launched_ref: list) -> None:
+        super().__init__()
+        self._launched = launched_ref
+
+    async def __call__(self, delay: float) -> None:
+        self.waits.append(delay)
+        self._launched[0].lifecycle.record_health(healthy=True)
+
+
+async def test_a_replica_that_recovers_during_the_backoff_is_not_replaced():
+    """대기 중 Ready 로 돌아온 레플리카를 교체하면 컨테이너 없는 Ready 가 남는다 (PR #541).
+
+    교체는 컨테이너를 지운 뒤 Ready 에서 STARTING 으로 못 가 `RT_007` 로 넘어지고, 로그 · 메트릭도
+    남지 않는다 — 회복한 레플리카는 컨테이너 · 감시 · Ready 를 그대로 둔다.
+    """
+    metrics = Metrics(registry=CollectorRegistry())
+    client = FakeDockerClient()
+    ref: list = []
+    agents = launcher(client, RecoveringSleep(ref), metrics=metrics)
+    launched, _ = await start_sick(agents)
+    ref.append(launched)
+
+    await restart_now(agents, launched)
+
+    assert launched.lifecycle.state is AgentState.READY
+    assert len(client.created) == 1, "회복한 레플리카를 교체했다"
+    assert not client.stopped and not client.removed, "회복한 컨테이너를 멈췄다"
+    assert agents.launched["echo", 0] is launched
+    monitor = agents._monitors.get(("echo", 0))
+    assert monitor is not None and not monitor.done(), "회복한 레플리카의 감시를 멈췄다"
+    counter = metrics.counter("aaestro_container_restarts_total")
+    for reason in ("unhealthy", "failed", "gave_up", "permanent"):
+        assert counter.labels(agent="echo", reason=reason)._value.get() == 0.0
+    await agents.stop_all()
+
+
+async def test_recoveries_during_the_backoff_do_not_use_up_the_restart_ceiling():
+    """교체 없는 회복이 창을 채우면 재시작 한 번 없이 RT_008 로 Failed 가 된다 (PR #541).
+
+    시계를 고정해 모든 기록이 한 창 안에 있게 한다 — 회복을 상한보다 많이 반복해도 창은 비어
+    있어야 하고, 그 뒤의 진짜 장애에는 상한이 그대로 걸려야 한다.
+    """
+    metrics = Metrics(registry=CollectorRegistry())
+    client = FakeDockerClient()
+    ref: list = []
+    agents = launcher(client, RecoveringSleep(ref), metrics=metrics)
+    launched, _ = await start_sick(agents)
+    ref.append(launched)
+    policy = launched.lifecycle.restart_policy
+    policy.clock = FakeClock()
+
+    for _ in range(policy.max_in_window + 2):
+        await restart_now(agents, launched)
+        assert launched.lifecycle.state is AgentState.READY
+
+    assert policy.restarts_in_window() == 0
+    assert len(client.created) == 1
+    gave_up = metrics.counter("aaestro_container_restarts_total").labels(
+        agent="echo", reason="gave_up"
+    )
+    assert gave_up._value.get() == 0.0
+
+    # 회복은 상한을 지우지 않는다 — 기록이 찬 창에서는 진짜 장애가 여전히 포기된다
+    for _ in range(policy.max_in_window):
+        policy.record_restart()
+    await restart_now(agents, launched)
+    assert launched.lifecycle.state is AgentState.FAILED
+    assert gave_up._value.get() == 1.0
+    await agents.stop_all()
+
+
 async def test_restart_is_not_scheduled_twice():
     """감시 루프는 Unhealthy 를 **매 확인마다** 보고한다 — 겹쳐 걸면 컨테이너가 난립한다.
 
@@ -482,6 +557,55 @@ async def test_restarts_that_keep_failing_end_in_failed():
     await agents.stop_all()
 
 
+async def test_a_restart_that_cannot_succeed_is_not_retried():
+    """#520 — 재시도 불가 기동 실패 (이미지 없음, `RT_004`) 를 상한까지 반복하지 않는다."""
+    client = FakeDockerClient()
+    clock = FakeClock()
+    metrics = Metrics(registry=CollectorRegistry())
+    waits = ClockedSleep(clock, client)
+    agents = launcher(client, waits, metrics=metrics, health_interval_s=None)
+    launched, _ = await start_sick(agents)
+    launched.lifecycle.restart_policy = RestartPolicy(clock=clock)
+    client._image_error = ImageMissingError("aaestro/agent-echo:0.1.0")
+
+    await restart_now(agents, launched)
+
+    assert waits.waits == [1.0], "재시도 불가 실패 뒤에 다시 기동을 시도했다"
+    assert launched.lifecycle.state is AgentState.FAILED
+    assert restart_count(metrics, "permanent") == 1.0
+    assert restart_count(metrics, "failed") == 0.0
+    assert restart_count(metrics, "gave_up") == 0.0
+    assert agents.replicas_of("echo") == [launched], "포기한 레플리카가 목록에서 사라졌다"
+    await agents.stop_all()
+
+
+async def test_a_permanent_restart_failure_logs_its_cause(monkeypatch: pytest.MonkeyPatch):
+    """원인 코드가 로그에 있어야 운영자가 crash-loop 와 설정 문제를 구분한다."""
+    import aaestro.runtime.launcher as launcher_module
+
+    logged: list[tuple[str, str, dict]] = []
+
+    class Capture:
+        def __getattr__(self, level: str):
+            return lambda event, **fields: logged.append((level, event, fields))
+
+    monkeypatch.setattr(launcher_module, "log", Capture())
+    client = FakeDockerClient()
+    agents = launcher(client, Recorder(), health_interval_s=None)
+    launched, _ = await start_sick(agents)
+    client._image_error = ImageMissingError("aaestro/agent-echo:0.1.0")
+
+    await restart_now(agents, launched)
+
+    failed = [(lvl, f) for lvl, event, f in logged if event == "agent restart failed permanently"]
+    assert len(failed) == 1
+    level, fields = failed[0]
+    assert level == "error"
+    assert fields["error_code"] == "RT_004"
+    assert fields["agent"] == "echo"
+    await agents.stop_all()
+
+
 async def test_a_replica_whose_restart_failed_stays_visible():
     """재기동 실패 뒤 레플리카가 목록에서 빠지면 배포는 READY 로만 보이고 정지도 못 한다."""
     client = FakeDockerClient()
@@ -579,7 +703,7 @@ async def test_restart_reasons_exist_before_the_first_restart():
 
     await agents.start(manifest())
 
-    for reason in ("unhealthy", "failed", "gave_up"):
+    for reason in ("unhealthy", "failed", "gave_up", "permanent"):
         sample = registry.get_sample_value(
             "aaestro_container_restarts_total", {"agent": "echo", "reason": reason}
         )

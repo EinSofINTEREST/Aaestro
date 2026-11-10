@@ -51,19 +51,36 @@ More than five restarts in ten minutes.
 
 1. Check `reason` on `aaestro_container_restarts_total`: `unhealthy` (replaced after failing
    health checks), `failed` (the replacement container did not start — retried after the next
-   backoff), `gave_up` (the ceiling was hit). OOM kills are not classified yet — the runtime does not
-   log `RT_003` on a restart, and the replaced container is removed — so memory pressure shows up as
-   `unhealthy`. Look for `oom` in `docker events --filter event=oom`; if it is there, raise
-   `runtime.resources.memory` or lower concurrency.
-2. Repeated `failed` with `RT_001` usually means the image or entrypoint is wrong; the container
-   never gets far enough to report health. While it retries, the replica stays listed as
-   **Unhealthy** and receives no tasks.
-3. A restart whose container fails to start still counts. After five restarts in ten minutes
-   the runtime marks the agent **Failed** and stops retrying. Fix the cause, then redeploy.
+   backoff), `gave_up` (the ceiling was hit — see [AgentFailed](#agentfailed)). OOM kills are not
+   classified yet — the runtime does not log `RT_003` on a restart, and the replaced container is
+   removed — so memory pressure shows up as `unhealthy`. Look for `oom` in
+   `docker events --filter event=oom`; if it is there, raise `runtime.resources.memory` or lower
+   concurrency.
+2. Repeated `failed` means the replacement keeps failing with an error that a retry could clear —
+   a retryable `RT_001` (the container did not start) or `RT_004` (the image could not be fetched
+   because the daemon or the registry did not answer). While it retries, the replica stays listed
+   as **Unhealthy** and receives no tasks. A missing image or a spec the runtime refuses is not
+   retried at all — it ends in [AgentFailed](#agentfailed) with `reason="permanent"`.
+3. A restart whose container fails to start with a retryable error still counts. After five
+   restarts in ten minutes the runtime marks the agent **Failed** and stops retrying. Fix the
+   cause, then redeploy.
 4. An agent that is restarted **while it is still starting** — never healthy, restarted at
    `interval_s × unhealthy_threshold` — needs a longer startup grace, not a fix to the agent. Raise
    `runtime.health_check.startup_grace_s` and `orchestrator.deployment_ready_timeout_s` together;
    raising only the grace lets the deployment give up first (`RT_002`).
+
+### AgentFailed
+
+A replica's restarts ended in **Failed** — the runtime will not restart it again.
+
+1. Check `reason` on `aaestro_container_restarts_total`: `gave_up` (five restarts in ten minutes
+   — the cause is in [ContainerRestartLoop](#containerrestartloop)) or `permanent` (the
+   replacement failed with a non-retryable error, so it was not retried).
+2. For `permanent`, the `agent restart failed permanently` log carries the `error_code`. `RT_004`
+   means the image exists neither locally nor in its registry — build or push it. `RT_001` means
+   the container spec or the agent network does not match the runtime. Retrying would fail the
+   same way.
+3. Fix the cause, then redeploy. A Failed replica receives no tasks and is no longer health-checked.
 
 ### ModelRateLimited
 

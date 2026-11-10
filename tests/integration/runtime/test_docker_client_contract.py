@@ -13,6 +13,7 @@ import pytest
 
 from aaestro.runtime.docker.client import SdkDockerClient
 from aaestro.runtime.docker.engine import DockerClient
+from aaestro.runtime.docker.errors import ImageMissingError
 from tests.integration.runtime.test_docker_lifecycle import (
     CliDockerClient,
     docker,
@@ -70,7 +71,8 @@ def test_the_protocol_is_satisfied(client):
 
 
 def test_a_missing_image_is_an_error_not_a_silent_pass(client):
-    with pytest.raises(Exception):  # noqa: B017 — 종류는 엔진이 RT_004 로 옮긴다
+    # 레지스트리의 404 만 "없다" 다 — 엔진이 이것만 재시도 불가 RT_004 로 옮긴다 (#520)
+    with pytest.raises(ImageMissingError):
         client.ensure_image("aaestro/does-not-exist:0.0.0")
 
 
