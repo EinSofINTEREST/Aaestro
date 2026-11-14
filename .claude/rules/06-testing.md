@@ -7,6 +7,8 @@
 1. **Test Coverage**
    - **강제 게이트는 하나**: `src/aaestro` 전체 기준 70% — `make test` 의
      pytest-cov `--cov-fail-under=70` 가 유일한 CI 강제 수단
+     (옵션은 `make test` 명령줄에만 있다 — 그 밖의 pytest 실행은 계측하지 않는다.
+     `make test` 는 `-n auto` (pytest-xdist) 로 병렬이고 부분 실행은 직렬이 기본이다 — addopts 에 `-n` 을 넣지 않는다)
    - 90%+ coverage for critical paths (`core/`, `orchestrator/`, protocol boundaries)
      — 목표치 (리뷰에서 확인, CI 강제 아님)
    - 100% coverage for error handling paths (boundary 변환 로직) — 목표치, 신규
@@ -373,7 +375,8 @@ async def test_cancel_inflight_task_cleans_up_tools():
 ## Benchmarking
 
 - 프레임워크 오버헤드 벤치마크: Control API 왕복, state 병합, 템플릿 렌더
-- `pytest-benchmark` 사용, 회귀 임계 초과 시 CI 경고
+- `pytest-benchmark` 사용. 측정은 `make bench` (직렬) — `make test` 는 `-n auto` 라 xdist 아래에서
+  벤치마크 측정이 꺼진다 (테스트는 한 번 실행). 회귀 비교 · CI 경고는 아직 없다 (#565)
 
 ```python
 def test_bench_topology_validation(benchmark):

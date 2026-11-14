@@ -1,4 +1,4 @@
-.PHONY: help install lint fmt typecheck test test-integration test-e2e check build build-base up down \
+.PHONY: help install lint fmt typecheck test bench test-integration test-e2e check build build-base up down \
 	e2e-up e2e-down clean
 
 UV ?= uv
@@ -25,7 +25,11 @@ typecheck: ## mypy (aaestro.core 는 strict) + CI 스크립트 (strict)
 	$(RUN) mypy --strict --explicit-package-bases scripts/ci
 
 test: ## unit 테스트 + 커버리지 게이트 (>= 70%)
-	$(RUN) pytest tests/unit
+	$(RUN) pytest tests/unit -n auto --cov=aaestro --cov-report=term-missing --cov-fail-under=70
+
+# 벤치마크는 xdist 아래에서 측정이 꺼지므로 직렬로 따로 돈다
+bench: ## 벤치마크 측정 (직렬, 커버리지 없음)
+	$(RUN) pytest tests/unit --benchmark-only
 
 # 레이어 구현 전에는 수집 대상이 없다 — pytest 의 "no tests collected"(5) 만 통과시키고
 # 실제 실패(1)는 그대로 게이트를 막는다

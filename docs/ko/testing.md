@@ -70,7 +70,12 @@ make test-integration
 ```
 
 커버리지: **강제 게이트는 하나** — `src/aaestro` 전체 기준 70% 이상, `make test` 의
-pytest-cov `--cov-fail-under=70` 로 강제. 핵심 경로 90%+ 와 에러 변환 경로 100% 는
+pytest-cov `--cov-fail-under=70` 로 강제. 커버리지 옵션은 `make test` 명령줄에만 있어
+그 밖의 pytest 실행은 계측 비용을 지지 않습니다. `make test` 는 병렬로도 돕니다
+(`-n auto`, pytest-xdist — 커버리지는 워커 간 합산). `uv run pytest tests/unit/core` 같은
+부분 실행은 워커 기동 비용이 더 커서 기본이 직렬입니다. 벤치마크 측정은 `make bench` (직렬) 로
+합니다. xdist 아래에서는 pytest-benchmark 가 측정을 꺼서 `make test` 는 한 번 실행만 합니다.
+회귀 비교와 CI 경고는 아직 없습니다 (#565). 핵심 경로 90%+ 와 에러 변환 경로 100% 는
 리뷰 목표치이며 별도 CI 게이트가 아닙니다.
 체크 이름과 머지 게이트 연결: [ci/status-checks.md](ci/status-checks.md).
 

@@ -24,7 +24,7 @@ from tests.fixtures.subprocesses import (
 )
 
 FAKE_TOKEN = "issued-token"
-TIMEOUT_S = 5
+TIMEOUT_S = 0.5
 SECRET_VALUE = "value-0123456789"
 
 

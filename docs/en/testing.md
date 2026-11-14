@@ -70,7 +70,13 @@ make test-integration
 ```
 
 Coverage: a **single enforced gate** — ≥ 70% across `src/aaestro`, enforced by
-`make test` via pytest-cov `--cov-fail-under=70`. The 90%+ (critical paths) and 100%
+`make test` via pytest-cov `--cov-fail-under=70`. The coverage options live on the `make test`
+command line only, so plain `pytest` runs do not pay for instrumentation. `make test` also runs in parallel
+(`-n auto`, pytest-xdist; coverage is merged across workers). Partial runs such as
+`uv run pytest tests/unit/core` stay serial by default because worker start-up costs more than
+a few tests. Benchmarks are measured by `make bench` (serial); under xdist pytest-benchmark disables
+measurement, so `make test` only runs them once. Regression comparison and a CI warning do not
+exist yet (#565). The 90%+ (critical paths) and 100%
 (error-conversion paths) figures are review targets, not separate CI gates.
 Check names and merge-gate wiring: [ci/status-checks.md](ci/status-checks.md).
 
