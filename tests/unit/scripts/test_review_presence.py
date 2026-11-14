@@ -491,31 +491,21 @@ def test_workflow_review_bots_match_the_script_default() -> None:
     assert line.split(":", 1)[1].strip().split(",") == list(review_presence.DEFAULT_REVIEW_BOTS)
 
 
-def test_workflow_run_listens_to_the_signal_workflow_by_name() -> None:
-    # workflow_run 은 이름으로 짝을 찾는다 — 한쪽만 바뀌면 오류 없이 리뷰 판정이 멈춘다 (#578)
+def test_judge_workflow_has_no_review_event_trigger() -> None:
+    # 리뷰 이벤트 트리거는 bot 리뷰에서 승인 대기에 걸린다 (#574 · #578 · #584) — 집합을 정확히 본다
     workflows = Path(__file__).resolve().parents[3] / ".github/workflows"
     judge_wf = yaml.safe_load((workflows / "ci-review.yml").read_text("utf-8"))
-    signal_wf = yaml.safe_load((workflows / "ci-review-signal.yml").read_text("utf-8"))
 
+    assert not (workflows / "ci-review-signal.yml").exists()
     # PyYAML 은 키 `on` 을 불리언 True 로 읽는다
-    assert judge_wf[True]["workflow_run"]["workflows"] == [signal_wf["name"]]
-    # 신호는 아무 권한 없이 돈다 — PR 쪽 파일로 도는 실행이 토큰을 갖지 않게
-    assert signal_wf["permissions"] == {}
-    # PR 이벤트는 ci-review 가 직접 받는다 — 신호에도 두면 판정이 두 번 돈다.
-    # 타입 하나가 빠져도 (철회 · 삭제) 오류 없이 그 판정만 멈추므로 집합을 정확히 본다
-    assert {event: set(spec["types"]) for event, spec in signal_wf[True].items()} == {
-        "pull_request_review": {"submitted", "edited", "dismissed"},
-        "pull_request_review_comment": {"created", "edited", "deleted"},
-    }
     judge_on = judge_wf[True]
-    assert set(judge_on) == {"pull_request_target", "workflow_run", "schedule", "workflow_dispatch"}
+    assert set(judge_on) == {"pull_request_target", "schedule", "workflow_dispatch"}
     assert set(judge_on["pull_request_target"]["types"]) == {
         "opened",
         "synchronize",
         "reopened",
         "ready_for_review",
     }
-    assert set(judge_on["workflow_run"]["types"]) == {"requested", "completed"}
     # 그룹 이름은 대소문자를 구분하지 않아 브랜치명 키는 다른 PR 끼리 대기 실행을 교체한다
     group = judge_wf["concurrency"]["group"]
     assert "head_branch" not in group

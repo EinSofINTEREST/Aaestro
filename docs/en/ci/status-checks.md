@@ -29,7 +29,6 @@ as PR merge gates. The GitHub Ruleset and the PR template must match these names
 | `Linked Issue Check` | `ci-convention.yml` / `linked-issue` | Requires ≥ 1 closing reference (`closingIssuesReferences.totalCount ≥ 1`, PR only; bot allowlist applies) | Yes |
 | `Docs Sync Check` | `ci-docs.yml` / `docs-sync` | `docs/en` ↔ `docs/ko` structure mirror + language selector presence | Yes |
 | `Review Presence` | `ci-review.yml` / `judge` (commit status) | Reports whether ≥ 1 review counts — see [Review Presence](#review-presence). Informational, not a merge gate (not in the Ruleset) | No |
-| `Review Presence Signal` | `ci-review-signal.yml` / `signal` | Permissionless relay of review events that wakes `ci-review.yml` through `workflow_run` — see [Review Presence](#review-presence). Its own result means nothing; a bot's review leaves it `action_required` | No |
 | `Benchmark Regression` | `ci-bench.yml` / `bench` | Saves `make bench` JSON as the `bench-baseline` artifact on main pushes; on PRs compares against it and warns (annotation + summary) at ≥ 25% slower mean. Unreadable input or a missing baseline skips the comparison. Never fails — informational, not a merge gate | No |
 | `Branch Name Lint` | `ci-convention.yml` / `branch-lint` | Warns on `{category}/#{issue}/{summary}` violations — informational | No |
 | `E2E Test` | `ci-nightly.yml` / `e2e` | Nightly full-stack run with fake LLM provider — not a merge gate | No |
@@ -48,20 +47,16 @@ result could never become that PR's check — every trigger therefore writes the
 status context.
 
 - **Triggers**: PR opened / synchronize / reopened / ready_for_review
-  (`pull_request_target`, judged directly). Review submitted / edited / dismissed and
-  review comment created / edited / deleted reach `ci-review-signal.yml`, a workflow with
-  no permissions and one `echo` step; its run fires `workflow_run` (`requested` and
-  `completed`), and that runs `ci-review.yml` from the default branch, which judges the
-  PRs GitHub lists for the run (all open PRs when the list is empty, as it is for a fork).
-  The relay exists because a `pull_request_review` run waits for approval when the account
-  behind the event needs it — every Copilot review ended `action_required` with no job
-  (#574) — while `workflow_run` still fires for a run that waits for approval and its own
-  run needs none. Also: a schedule at minutes 7, 22, 37 and 52 of every hour for all open
-  PRs (reactions do not fire workflows, so a review bot's 👍 lands only through this
-  path), and manual `workflow_dispatch`. PR and signal events use one concurrency group
-  per PR number (a group name is case-insensitive, so branch names are not used); full
-  judgments — the schedule, manual runs and a fork's signal that names no PR — share
-  another.
+  (`pull_request_target`, judged directly). Review events (a review submitted / edited /
+  dismissed, a review comment created / edited / deleted) have **no trigger**: they are
+  reflected only by a schedule at minutes 7, 22, 37 and 52 of every hour for all open PRs, or
+  by a manual `workflow_dispatch`. A review-event trigger waits for approval whenever the
+  account behind the event needs it — every Copilot review ended `action_required` with no
+  job (#574) — and so did a relay through a signal workflow and `workflow_run` (#578; the
+  judging run inherited the waiting state, #584). Reactions do not fire workflows either, so a
+  review bot's 👍 lands through the same path. PR events use one concurrency group per PR
+  number (a group name is case-insensitive, so branch names are not used); full judgments —
+  the schedule and manual runs — share another.
 - **Trusted accounts** — only these can count, and never the PR author:
   - a human whose `author_association` is `OWNER`, `MEMBER` or `COLLABORATOR`
     (the repository is public — an outsider's review does not open the gate)
@@ -97,15 +92,12 @@ status context.
   PRs, so a closed PR never holds an open one back. `--all-open` groups by sha and writes each sha once, reading and writing right
   after judging that sha before moving to the next. A failure on one PR (API error, malformed response)
   is logged and skipped; the run still exits 1.
-- **Gate integrity**: the automatic paths — `pull_request_target`, `workflow_run` and
-  `schedule` — run the default branch's workflow file, which checks the judging script
-  out from the default branch, so a PR that edits `ci-review.yml` or
-  `ci-review-signal.yml` cannot change how its own head is judged. A manual
-  `workflow_dispatch` runs the workflow file of the ref its runner picks; only
+- **Gate integrity**: the automatic paths — `pull_request_target` and `schedule` — run the
+  default branch's workflow file, which checks the judging script out from the default
+  branch, so a PR that edits `ci-review.yml` cannot change how its own head is judged. A
+  manual `workflow_dispatch` runs the workflow file of the ref its runner picks; only
   write-access accounts can start it, the same trust level that can already write a
-  status directly (Known limits). The signal runs from the PR side, but it holds no token and passes nothing on: the judge
-  reads the PR numbers GitHub put in the event payload and re-reads every review through
-  the API. The workflow never checks out PR code.
+  status directly (Known limits). The workflow never checks out PR code.
 - **Known limits**:
   - Any token with write access (a person, or any workflow in this repository) can write
     a commit status directly. A forgery written **once** differs from the judgment, so the
@@ -114,26 +106,20 @@ status context.
     (6.5 on average), so a status fixed only by the schedule can stay wrong for hours.
   - A 👍 from a review bot with no review event lands only with the next judgment of any
     kind — usually the schedule, so hours later.
-  - The signal runs from the PR's copy of `ci-review-signal.yml`. A PR that deletes it, or
-    a branch made before the file existed, sends no signal for reviews; its reviews are
-    judged at the next push (`pull_request_target`) or by the schedule.
+  - Review events are judged only by the schedule or a manual run, so a review bot's review
+    or 👍 can take hours to show (best-effort — 3.4 to 8.7 hours between runs measured on
+    #574), and a new push (`pull_request_target`) judges it sooner. There is no
+    event-driven path for reviews: both a direct `pull_request_review` trigger (#574) and a
+    `workflow_run` relay (#578) waited for approval on bot reviews (#584).
   - GitHub blocks `pull_request_target` by default in public repositories from
     2026-12-02 ("Securely using pull_request_target"). Unless the repository allows it,
     PR events stop being judged then; that is tracked separately from this check.
-  - That `workflow_run` fires for a signal run waiting for approval is not stated by the
-    GitHub docs. They say `completed` "occurs when a workflow run is completed, regardless
-    of whether the workflow was successful", and a run waiting for approval is created
-    already `completed` with conclusion `action_required` (run 43603239882, attempt 1);
-    other public repositories report both `requested` and `completed` firing for such runs.
-    Confirmed here only after the change reaches the default branch, because GitHub runs
-    `workflow_run` workflows from there. If it does not fire, reviews are judged only at the
-    next push or by the schedule; PR events are judged as before.
   - A forgery written **repeatedly** by a write-access token cannot be beaten by the
     judgment. If that loop spends the 1000 statuses of the sha, the judge's writes fail
     and the forgery stays.
   - The judge decides whether to write by (state, description) only; it does not look at
     who wrote the current status (its source).
-  - Full judgments (the schedule, manual runs, a fork's review signal) and per-PR judgments
+  - Full judgments (the schedule, manual runs) and per-PR judgments
     can overlap: reading and writing are not atomic and the write does not check freshness.
     If a review or dismissal lands in the seconds between a full judgment's read and its
     write, the older verdict can overwrite the newer one; the next judgment of that PR
