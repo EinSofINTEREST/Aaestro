@@ -149,6 +149,31 @@ def test_registry_merges_skillset_and_mcp_tools():
     assert set(registry) == {"search", "mcp__fs__read_file"}
 
 
+def test_registry_skips_oversized_mcp_schema_and_warns():
+    from structlog.testing import capture_logs
+
+    from aaestro.agentd.bootstrap import MCP_SCHEMA_MAX_BYTES
+
+    big = {
+        "type": "object",
+        "properties": {"x": {"type": "string", "enum": ["a" * MCP_SCHEMA_MAX_BYTES]}},
+    }
+    small = {"type": "object", "properties": {"y": {"type": "string"}}}
+
+    with capture_logs() as logs:
+        registry = build_tool_registry(
+            [],
+            {"fs": ("big", "small")},
+            agent="a",
+            mcp_schemas={"mcp__fs__big": big, "mcp__fs__small": small},
+        )
+
+    assert set(registry) == {"mcp__fs__small"}
+    (entry,) = [e for e in logs if e["log_level"] == "warning"]
+    assert (entry["agent"], entry["mcp_server"], entry["tool"]) == ("a", "fs", "mcp__fs__big")
+    assert entry["schema_bytes"] > entry["max_bytes"] == MCP_SCHEMA_MAX_BYTES
+
+
 def test_duplicate_skillset_tool_names_are_rejected():
     """두 스킬셋이 같은 tool 이름을 주장하면 모델이 어느 쪽을 부를지 모호해진다."""
     with pytest.raises(AaestroError) as exc_info:

@@ -187,6 +187,9 @@ spec:
      `examples` · `$comment` · `x-*` · 모르는 키) 는 데이터 위치라 안의 문자열을 키 이름과
      무관하게 정리한다 (스키마로 해석하지 않으므로 `examples` 안의 `enum` 도 정리). 딕셔너리 키
      이름 (속성 이름) 은 계약이라 그대로다.
+     정리한 inputSchema 의 JSON 직렬화가 32 KiB (`MCP_SCHEMA_MAX_BYTES`) 를 넘는 tool 은 모델에
+     광고하지 않고 WARN (`agent` · `mcp_server` · `tool` · `schema_bytes` · `max_bytes`) 을 남긴다 —
+     기동은 막지 않는다.
      `ask_peer` 는 부를 수 있는 peer (연결이 선언되고 주소가 주입된 것) 이름을 설명에 싣는다 (`peer_spec`)
 
 4. **Tool Filtering**

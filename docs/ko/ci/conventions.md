@@ -82,7 +82,7 @@ timeline 이벤트의 actor 를 메인테이너 allowlist (현재 `juhy0987`) �
 | `ci-convention.yml` | PR/커밋 메타데이터 형식 | `Commit Lint`, `PR Title Lint`, `Linked Issue Check`, `Branch Name Lint` |
 | `ci-docs.yml` | 문서 정책 | `Docs Sync Check` |
 | `ci-review.yml` | 리뷰 존재 (정보성 commit status, 머지 게이트 아님) | `Review Presence` |
-| `ci-review-signal.yml` | 리뷰 이벤트를 `ci-review.yml` 로 넘기는 권한 없는 중계 (`workflow_run`) | `Review Presence Signal` |
+| `ci-bench.yml` | 벤치마크 회귀 경고 (정보성, 머지 게이트 아님) | `Benchmark Regression` |
 | `ci-nightly.yml` | 스케줄 전체 스택 검증 | `E2E Test` |
 
 - 각 job 은 독립 병렬 실행 (빠른 피드백). 유일한 의존은 `ci-quality.yml` 의 경량
