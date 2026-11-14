@@ -473,8 +473,7 @@ async def test_the_framework_instructions_are_the_same_for_every_agent_and_task(
 
     systems = sent_systems(fake_models)
     assert len(systems) == 3
-    leads = {system.split("\n\n", 1)[0] for system in systems}
-    assert leads == {FRAMEWORK_INSTRUCTIONS}
+    assert all(system.startswith(f"{FRAMEWORK_INSTRUCTIONS}\n\n") for system in systems)
     assert systems[0] == systems[1]
     assert systems[0] != systems[2]  # 뒤의 promptset 지시는 에이전트마다 다르다
     assert "{" not in FRAMEWORK_INSTRUCTIONS
