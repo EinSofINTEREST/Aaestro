@@ -679,6 +679,10 @@ delegated to a peer over A2A is not addressable from here — steer the node tha
 Refused instructions are logged by the control plane too (`run steer refused`), with who tried. The instruction text is not written to logs (only its length); the `steer` event
 on the task stream carries it.
 
+### Tool results on the task stream
+
+A `tool_result` event carries the tool's result converted to JSON the same way the model reads it (a string stays a string; other values go through one JSON serialization, with anything that is not a JSON type written as its `str()`). An MCP result keeps its `{"content", "is_error"}` shape so a consumer can see a tool-reported error. Numbers JSON cannot carry (`NaN`, `±inf`) are `null` in the event while the model's text keeps them. If an event still cannot be serialized, the stream does not break: the event is replaced by kind: a `tool_result` is sent with no `result` and an `error` (`MCP_003` for an MCP tool, otherwise `SKILL_001`; `tool result not serializable: <tool>`); a `tool_call` is sent with empty `arguments`; a `done` or `error` is replaced by one `error` event (`INTERNAL_001`) that ends the stream; any other event (such as `token` or `steer`) is skipped with a `WARN`. Only the terminal replacement reports a failure, so a stream never says the task failed and then keeps going.
+
 ## Access registry
 
 Permissions that change while agents run are decided **outside the agent's container, per

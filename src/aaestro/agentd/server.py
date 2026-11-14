@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, Any
 
+import structlog
 from a2a.utils.constants import AGENT_CARD_WELL_KNOWN_PATH
 from fastapi import APIRouter, FastAPI, Request, Response, status
 from fastapi.exception_handlers import http_exception_handler
@@ -22,6 +23,8 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from aaestro.core.agent import HealthState, HealthStatus, TaskKey, TaskRequest, TaskResult
 from aaestro.core.errors import AaestroError, AaestroErrorPayload, ErrorCategory, ErrorCode
+from aaestro.core.events import DoneEvent, ErrorEvent, TaskEvent, ToolCallEvent, ToolResultEvent
+from aaestro.core.tools import is_mcp_tool
 from aaestro.http_auth import AdmitBeforeRouting, admit_first, require_token
 from aaestro.http_errors import request_validation_error, status_for, unroutable_problem
 
@@ -159,6 +162,97 @@ def _error_response(err: AaestroError, http_status: int) -> JSONResponse:
     return JSONResponse(status_code=http_status, content=err.payload().model_dump(mode="json"))
 
 
+log = structlog.get_logger(__name__)
+
+
+_FALLBACK_ERROR_FRAME = (
+    b'data: {"type":"error","task_id":"","error":{"category":"internal","code":"INTERNAL_001",'
+    b'"message":"event not serializable","retryable":false,"details":{}}}\n\n'
+)
+"""대체 이벤트마저 직렬화에 실패할 때 — 사용자 문자열이 하나도 없는 고정 프레임."""
+
+
+def _printable(text: str) -> str:
+    """고립 surrogate 처럼 UTF-8 로 쓸 수 없는 글자를 치환한다 — 대체 이벤트가 다시 터지지 않게."""
+    return text.encode("utf-8", "replace").decode()
+
+
+def _frame(event: TaskEvent) -> bytes:
+    return f"data: {event.model_dump_json()}\n\n".encode()
+
+
+def _replacement(event: TaskEvent, agent: str) -> TaskEvent | None:
+    """직렬화에 실패한 이벤트의 대체 — 종류별로 스트림의 뜻을 바꾸지 않는 모양을 고른다.
+
+    ``None`` 은 건너뛴다는 뜻이다. ``ErrorEvent`` 는 종료 이벤트이므로
+    종료 이벤트가 깨졌을 때만 쓴다.
+    """
+    task_id = _printable(event.task_id)
+    update: dict[str, Any]
+    if isinstance(event, ToolResultEvent):
+        tool = _printable(event.tool)
+        is_mcp = is_mcp_tool(tool)
+        failure = AaestroError(
+            category=ErrorCategory.MCP if is_mcp else ErrorCategory.MODULE,
+            code=ErrorCode.MCP_003 if is_mcp else ErrorCode.SKILL_001,
+            message=f"tool result not serializable: {tool}",
+            agent=agent,
+            task_id=task_id,
+            details={"tool": tool},
+        ).payload()
+        update = {
+            "task_id": task_id,
+            "tool": tool,
+            "result": None,
+            "error": failure,
+        }
+        return event.model_copy(update=update)
+    if isinstance(event, ToolCallEvent):
+        update = {
+            "task_id": task_id,
+            "tool": _printable(event.tool),
+            "arguments": {},
+        }
+        return event.model_copy(update=update)
+    if isinstance(event, DoneEvent | ErrorEvent):
+        failure = AaestroError(
+            category=ErrorCategory.INTERNAL,
+            code=ErrorCode.INTERNAL_001,
+            message="event not serializable",
+            agent=agent,
+            task_id=task_id,
+        ).payload()
+        return ErrorEvent(task_id=task_id, error=failure)
+    return None
+
+
+def _sse_frame(event: TaskEvent, agent: str) -> bytes:
+    """이벤트 하나를 SSE 프레임으로 — 직렬화 실패가 스트림을 끊지 않게 한다.
+
+    JSON 왕복을 통과한 값도 깊은 중첩 · 고립 surrogate 처럼 pydantic 직렬화에서 터질 수 있다.
+    값마다 막지 않고 부류를 막는다: 실패한 이벤트는 종류별 대체 (`_replacement`) 로 보낸다.
+    건너뛴 이벤트는 빈 바이트다.
+    """
+    try:
+        return _frame(event)
+    except Exception as err:
+        # 값은 로그에 싣지 않는다 — 도구 결과는 신뢰하지 않는 데이터다
+        log.warning(
+            "event not serializable",
+            agent=agent,
+            task_id=_printable(event.task_id),
+            tool=_printable(getattr(event, "tool", "")),
+            error_type=type(err).__name__,
+        )
+    try:
+        replaced = _replacement(event, agent)
+        return _frame(replaced) if replaced is not None else b""
+    except Exception:
+        log.warning("replacement event not serializable", agent=agent)
+        # 비종료 이벤트 뒤에 error 를 보내면 실패를 알린 뒤에도 스트림이 이어진다
+        return _FALLBACK_ERROR_FRAME if isinstance(event, DoneEvent | ErrorEvent) else b""
+
+
 def create_app(runtime: AgentRuntime, *, token: str | None = None) -> FastAPI:
     """Build the Control API application.
 
@@ -264,7 +358,8 @@ def create_app(runtime: AgentRuntime, *, token: str | None = None) -> FastAPI:
         async def events() -> AsyncIterator[bytes]:
             async with runtime.semaphore:
                 async for event in runtime.executor.stream(task):
-                    yield f"data: {event.model_dump_json()}\n\n".encode()
+                    if frame := _sse_frame(event, runtime.agent):
+                        yield frame
 
         return StreamingResponse(events(), media_type=SSE_MEDIA_TYPE)
 
