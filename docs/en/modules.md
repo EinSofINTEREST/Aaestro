@@ -193,6 +193,23 @@ Answer it.
   look-alike angle brackets. A recalled memory's second and later lines are indented under its
   `[memory:…]` line, so a memory cannot start a line that looks like another memory. Only the
   real notation has the real shape. Promptset values keep the id rule above.
+- **A failed tool call goes back to the model, not to the task.** A skill exception
+  (`SKILL_001`), an MCP failure, a tool timeout (`TO_002`), an unknown tool, an error the tool
+  raised itself, or a result that cannot be serialized for the model is returned as that call's
+  result, marked as an error (`is_error`; the OpenAI-compatible adapter adds the `[tool error]`
+  line), so the model can fix the arguments or take another path. A result that cannot be
+  serialized keeps the source's code (`SKILL_001` / `MCP_003`) but says
+  `tool result not serializable: <name>`: the tool already ran, and reading it as a failed call
+  would invite the model to run a side-effecting tool again with the same arguments. The body
+  is JSON: `{"error": {"code", "category", "retryable", "message", "cause": {"type", "message"}}}`
+  — `cause` only when the error carries a non-empty underlying exception (an MCP server's own
+  reason travels here); `details` is never included. Text written by the tool side (`message`,
+  `cause.message`) is untrusted: secrets are masked with the same rules as the logs, it is cut
+  at 1000 characters, and the whole body has its notation neutralized like any other tool
+  result. The stream's `tool_result` event still carries the error, the tool metric still counts
+  `failed`, and the agent logs a WARN (`tool call failed, returned to model`). Cancellation, the
+  task timeout (`TO_001`) and failures outside the tool still end the task; the turn limit
+  (`LLM_005`) bounds a model that keeps failing.
 - **Syntax that bypasses the fence is refused**, when the promptset is loaded (`MOD_003` — the
   module was published broken, like a missing template file) and again on every render
   (`MOD_004`). The load-time check goes as far as parsing (syntax and refused statements); what

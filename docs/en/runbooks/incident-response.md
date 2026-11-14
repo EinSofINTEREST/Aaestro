@@ -31,9 +31,27 @@ Task failures exceed 10% for one agent.
 1. `aaestro agent logs <agent>` — read the dominant `error_code`.
 2. `LLM_001` (rate limit) → see [ModelRateLimited](#modelratelimited).
    `LLM_005` (max turns) → the prompt is likely looping; check the promptset version.
-   `MCP_003` → a tool is failing; see the Protocol dashboard.
+   A failing tool does not show up here: its failure goes back to the model as an error
+   result, and the task fails only if the model then gives up (often `LLM_005`). See
+   [ToolHighFailureRate](#toolhighfailurerate).
 3. If a recent deploy correlates, roll back the module version — module versioning
    makes this immediate.
+
+### ToolHighFailureRate
+
+More than 20% of one tool's calls on one agent failed for 10 minutes. Tool failures do not
+fail the task — each one goes back to the model as an error result — so this alert, not
+[AgentHighFailureRate](#agenthighfailurerate), is where a broken tool shows up.
+
+1. `aaestro agent logs <agent>` — filter `tool call failed, returned to model` and read
+   `error_code` for the `tool` in the alert.
+2. `SKILL_001` → the skill raises; check the skillset version and its inputs.
+   `TO_002` → the tool is slow or hanging; check its timeout and the service behind it.
+   `MCP_002` / `MOD_001` → the model calls a tool the agent does not have; check the
+   promptset against the declared skillsets and MCP servers.
+   `MCP_003` / `MCP_004` → the MCP server fails or the transport drops; see the Protocol
+   dashboard.
+3. If a recent deploy correlates, roll back the skillset or the MCP sidecar image version.
 
 ### AgentDown
 

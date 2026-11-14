@@ -432,6 +432,24 @@ async def execute(self, task: TaskRequest) -> TaskResult:
    circuit open 인 모델은 건너뛴다
 7. **System Prefix**: 모델 호출의 시스템 자리는 프레임워크의 고정 경계 지시가 promptset `system`
    렌더보다 먼저 온다 ([04](04-module-system.md) Promptset Rules 6) — 매 턴 같은 문자열이다
+8. **Tool Failure Is a Result**: tool 호출의 실패 (skill 예외 `SKILL_001`, MCP `MCP_00x`, tool
+   timeout `TO_002`, 미등록 tool, tool 이 던진 `AaestroError`, 결과를 모델에 실을 수 없음) 는
+   태스크를 끝내지 않는다 — 같은 턴의 tool 결과에 `is_error` 로 실려 모델에 돌아가고, 모델이
+   인자를 고치거나 다른 길을 택한다. 결과를 실을 수 없는 경우 (직렬화 실패) 는 출처의 코드
+   (`SKILL_001` / `MCP_003`) 를 쓰되 message 가 `tool result not serializable: <name>` 이다 —
+   도구는 이미 실행됐으므로, 호출 실패로 읽혀 부수효과 도구가 같은 인자로 다시 불리지 않게
+   (05 Retry Rules 5 와 같은 결). 본문은 JSON `{"error": {code, category, retryable, message,
+   cause?}}` 이다. `cause` 는 원인 예외의 `type` 이름과 문자열이다 (`AaestroError` 원인과
+   문자열이 빈 원인은 싣지 않는다). tool 이 던진 구조화 에러는 원인 체인을 보존한 채 넘어온다 —
+   MCP 서버 · 프록시의 사유가 원인에 있다. `details` 는 싣지 않는다 — 값이 섞인다. tool 쪽이 쓴
+   글 (`message` · `cause.message`) 은 신뢰하지 않는 데이터라 로그와 같은 비밀값 마스킹을 지나고
+   `MAX_TOOL_FAILURE_TEXT_CHARS` (1000자) 로 잘리며, 본문 전체가 `defang` 을 지난다. 실패 표시는
+   `is_error` 로만 한다 — 본문에 머리말을 붙이지 않고 표현은 provider 어댑터가 정한다
+   (openai-compat 은 `[tool error]` 앞줄). 스트림의 `ToolResultEvent.error`, tool 메트릭
+   `status="failed"` (알림 `ToolHighFailureRate`) 는 그대로 남고, 실패마다 WARN
+   (`tool call failed, returned to model` — `tool`, `turn`, `error_code`) 을 남긴다.
+   태스크를 끝내는 것은 그대로다: 취소, 태스크 timeout (`TO_001`), tool 바깥의 실패 (모델 호출 ·
+   출력 형식). 실패 반복의 상한은 turn 상한 (`LLM_005`) 이다
 
 ### Steering — 턴 경계의 운영자 지시
 
@@ -456,8 +474,9 @@ if pending_steers:                                   # 턴 경계 — tool 결�
    되므로 어댑터가 한 메시지로 합친다 (`tool_result` 블록 먼저, steer 의 text 가 그 뒤). 연속된
    같은 역할을 받아 주는 것에 기대지 않는다
 4. **steer 가 없으면 아무것도 바뀌지 않는다**: 모델에 가는 `messages` 가 바이트 단위로 같다
-5. **접수는 반영 보장이 아니다**: 마지막 모델 호출(tool 호출 없음) 도중에 온 지시, tool 실패·
-   turn 상한·취소·timeout 으로 끝난 태스크의 지시는 반영되지 않는다. 그때는 `agent`, `task_id`
+5. **접수는 반영 보장이 아니다**: 마지막 모델 호출(tool 호출 없음) 도중에 온 지시, 모델 호출
+   실패·turn 상한·취소·timeout 으로 끝난 태스크의 지시는 반영되지 않는다 (tool 실패는 태스크를
+   끝내지 않는다 — Loop Rules 8). 그때는 `agent`, `task_id`
    를 실은 WARN 을 남긴다 — 접수해 놓고 조용히 버리지 않는다. 종료 이벤트는 대기열을 닫은
    **뒤에** 낸다: `done` 을 본 뒤의 steer 는 404 다
 6. **대기열은 태스크 수명**: 루프 진입 때 생기고 종료(완료·실패·취소·timeout) 때 지워진다 —

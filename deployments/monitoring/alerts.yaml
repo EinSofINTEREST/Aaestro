@@ -20,6 +20,19 @@ groups:
           summary: "Agent {{ $labels.agent }} failure rate > 10%"
           runbook: "docs/en/runbooks/incident-response.md#agenthighfailurerate"
 
+      - alert: ToolHighFailureRate
+        # 도구 실패는 모델에 돌아가 태스크 실패가 되지 않는다 (#546) — 태스크 실패율이 잡지 못한다
+        expr: |
+          sum without (status) (rate(aaestro_tool_calls_total{status="failed"}[5m]))
+          /
+          sum without (status) (rate(aaestro_tool_calls_total[5m]))
+          > 0.2
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "Tool {{ $labels.tool }} on {{ $labels.agent }} fails more than 20% of calls"
+          runbook: "docs/en/runbooks/incident-response.md#toolhighfailurerate"
+
       - alert: AgentDown
         expr: aaestro_agent_health == 0
         for: 3m

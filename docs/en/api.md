@@ -657,8 +657,9 @@ from the task input. On providers where tool results already travel in the `user
 instruction is appended to that same message rather than sent as a second `user` message.
 
 **It may not take effect at all.** If the task ends before another turn boundary — the model
-was already writing its final answer, the tool failed, the turn limit was reached, the task
-was cancelled — the instruction is dropped. `queued` is not a promise. The agent logs a
+was already writing its final answer, a model call failed, the turn limit was reached, the task
+was cancelled (a failed tool call does not end the task — it goes back to the model as an error
+result) — the instruction is dropped. `queued` is not a promise. The agent logs a
 `WARN` (`steer dropped, task ended before the next turn boundary`, with `agent`, `task_id`,
 `run_id`, and who issued it) and nothing else happens; check the run's output, and resubmit
 if the direction mattered. A stream consumer sees a `steer` event at the moment an

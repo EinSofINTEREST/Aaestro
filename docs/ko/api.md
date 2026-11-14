@@ -622,7 +622,8 @@ curl -X POST -H "Authorization: Bearer $TOKEN" -H 'content-type: application/jso
 `user` 역할로 가는 provider 에서는 지시를 두 번째 `user` 메시지로 보내지 않고 그 메시지 뒤에 붙인다.
 
 **반영되지 않을 수도 있다.** 다음 턴 경계가 오기 전에 태스크가 끝나면 — 모델이 이미 최종 답을
-쓰고 있었거나, tool 이 실패했거나, turn 상한에 닿았거나, 태스크가 취소됐으면 — 지시는 버려진다.
+쓰고 있었거나, 모델 호출이 실패했거나, turn 상한에 닿았거나, 태스크가 취소됐으면 — 지시는 버려진다
+(tool 호출의 실패는 태스크를 끝내지 않는다 — 오류 결과로 모델에 돌아간다).
 `queued` 는 약속이 아니다. 에이전트는 `WARN` 을 남기고 (`steer dropped, task ended before the
 next turn boundary` — `agent`, `task_id`, `run_id`, 누가 냈는지) 그 밖의 일은 일어나지 않는다.
 run 의 결과를 확인하고, 방향이 중요했다면 다시 제출한다. 스트림 소비자는 지시가 대화에 들어간
