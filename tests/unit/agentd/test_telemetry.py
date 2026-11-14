@@ -362,6 +362,23 @@ async def test_unserializable_result_is_counted_as_failed():
     assert value(metrics, "aaestro_tool_calls_total", status="completed", **labels) == 0.0
 
 
+async def test_result_whose_str_raises_is_counted_as_failed():
+    class Unprintable:
+        def __str__(self) -> str:
+            raise RuntimeError("cannot print")
+
+    metrics = make_metrics()
+    tools = FakeTools()
+    tools.script(SKILL_TOOL, result={"value": Unprintable()})
+    executor, _ = make_executor([calls(SKILL_TOOL), text("done")], metrics=metrics, tools=tools)
+
+    await executor.execute(make_task(trace=GRAPH_TRACE))
+
+    labels = {"agent": "researcher", "source": "skillset", "tool": SKILL_TOOL}
+    assert value(metrics, "aaestro_tool_calls_total", status="failed", **labels) == 1.0
+    assert value(metrics, "aaestro_tool_calls_total", status="completed", **labels) == 0.0
+
+
 # --- 계측은 선택적이다 ------------------------------------------------------
 
 

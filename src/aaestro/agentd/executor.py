@@ -766,7 +766,8 @@ class Executor:
 
         try:
             outcome = tool_outcome(call, result)
-        except (TypeError, ValueError) as err:
+        except Exception as err:
+            # default=str 이 부르는 __str__ 은 무엇이든 던질 수 있다 (CancelledError 는 안 잡힌다).
             # 도구는 이미 실행됐다 — "호출 실패" 로 읽히면 모델이 부수효과 도구를 다시 부른다
             self._record_tool(call.name, status=STATUS_FAILED)
             raise _tool_error(
@@ -1234,6 +1235,21 @@ def _untrusted_text(text: str) -> str:
     return f"{masked[:MAX_TOOL_FAILURE_TEXT_CHARS]}…[truncated]"
 
 
+def _cause_text(cause: BaseException | None) -> str:
+    """원인 예외의 문자열 — 싣지 않을 원인이거나 문자열화가 실패하면 빈 문자열.
+
+    원인은 도구 쪽 객체라 ``__str__`` 이 무엇이든 던질 수 있다 — 그것이 회복 경계 밖으로 새면
+    도구 실패가 태스크 실패 (``INTERNAL_001``) 가 된다. 실패하면 원인이 없는 모양으로 낸다.
+    """
+    if cause is None or isinstance(cause, AaestroError):
+        return ""
+    try:
+        return str(cause)
+    except Exception:
+        log.debug("tool failure cause not printable", cause_type=type(cause).__name__)
+        return ""
+
+
 def tool_failure(call: ToolCall, error: AaestroError) -> ToolOutcome:
     """Turn a failed tool call into an ``is_error`` result the model reads back.
 
@@ -1251,10 +1267,10 @@ def tool_failure(call: ToolCall, error: AaestroError) -> ToolOutcome:
         "retryable": error.retryable,
         "message": _untrusted_text(error.message),
     }
-    cause = error.__cause__
+    reason = _cause_text(error.__cause__)
     # 문자열이 빈 원인 (tool timeout 의 TimeoutError) 은 사유를 더하지 않는다
-    if cause is not None and not isinstance(cause, AaestroError) and str(cause):
-        body["cause"] = {"type": type(cause).__name__, "message": _untrusted_text(str(cause))}
+    if reason:
+        body["cause"] = {"type": type(error.__cause__).__name__, "message": _untrusted_text(reason)}
     content = json.dumps({"error": body}, ensure_ascii=False)
     return ToolOutcome(call_id=call.id, content=defang(content), is_error=True)
 

@@ -573,8 +573,8 @@ groups:
 
       - alert: ToolHighFailureRate
         expr: |
-          sum without (status) (rate(aaestro_tool_calls_total{status="failed"}[5m])) /
-          sum without (status) (rate(aaestro_tool_calls_total[5m])) > 0.2
+          sum by (agent, source, tool) (rate(aaestro_tool_calls_total{status="failed"}[5m])) /
+          sum by (agent, source, tool) (rate(aaestro_tool_calls_total[5m])) > 0.2
         for: 10m
         labels: {severity: warning}
         annotations:

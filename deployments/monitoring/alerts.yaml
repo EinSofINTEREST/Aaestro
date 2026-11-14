@@ -23,9 +23,9 @@ groups:
       - alert: ToolHighFailureRate
         # 도구 실패는 모델에 돌아가 태스크 실패가 되지 않는다 (#546) — 태스크 실패율이 잡지 못한다
         expr: |
-          sum without (status) (rate(aaestro_tool_calls_total{status="failed"}[5m]))
+          sum by (agent, source, tool) (rate(aaestro_tool_calls_total{status="failed"}[5m]))
           /
-          sum without (status) (rate(aaestro_tool_calls_total[5m]))
+          sum by (agent, source, tool) (rate(aaestro_tool_calls_total[5m]))
           > 0.2
         for: 10m
         labels: {severity: warning}

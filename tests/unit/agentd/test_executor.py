@@ -228,6 +228,43 @@ async def test_peer_failure_without_a_reason_has_no_cause():
     assert "cause" not in error
 
 
+class _UnprintableError(Exception):
+    def __str__(self) -> str:
+        raise ValueError("cannot print")
+
+
+class _UnprintableResult:
+    def __str__(self) -> str:
+        raise RuntimeError("cannot print")
+
+
+async def test_unprintable_cause_is_dropped_and_the_task_goes_on():
+    """원인의 __str__ 이 던져도 회복 경계 밖으로 새지 않는다 — 원인 없는 실패 결과로 간다."""
+    tools = FakeTools().fail("search", _UnprintableError())
+    executor, model, _ = make_executor([calls("search"), text("done")], tools)
+
+    result = await executor.execute(make_task())
+
+    assert result.status is TaskStatus.COMPLETED
+    outcome, error = returned_failure(model)
+    assert outcome.is_error is True
+    assert error["code"] == "SKILL_001"
+    assert "cause" not in error
+
+
+async def test_result_whose_str_raises_is_not_serializable():
+    """default=str 이 부르는 __str__ 의 예외도 직렬화 실패다 — 호출 실패로 읽히면 안 된다."""
+    tools = FakeTools().script("search", result={"value": _UnprintableResult()})
+    executor, model, _ = make_executor([calls("search"), text("done")], tools)
+
+    result = await executor.execute(make_task())
+
+    assert result.status is TaskStatus.COMPLETED
+    _, error = returned_failure(model)
+    assert error["message"] == "tool result not serializable: search"
+    assert error["cause"] == {"type": "RuntimeError", "message": "cannot print"}
+
+
 async def test_unserializable_result_is_a_tool_failure():
     """결과를 실을 수 없는 것도 그 도구의 실패다 — 태스크를 끝내지 않고 형제 결과도 남는다."""
     tools = FakeTools().script("search", result={(1, 2): 3}).script("fetch", result="page")
