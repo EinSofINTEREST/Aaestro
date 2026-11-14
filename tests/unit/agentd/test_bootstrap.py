@@ -577,3 +577,39 @@ async def test_sdk_list_tools_collects_descriptions():
     connection = await _load_tools(Connection(tools=(), protocol_version="v", handle=live))
 
     assert connection.descriptions == {"t": "D"}
+
+
+def test_truncated_tail_cannot_become_a_framework_marker():
+    from aaestro.agentd.bootstrap import MCP_DESCRIPTION_MAX_CHARS, _clean_text
+
+    raw = "x" * (MCP_DESCRIPTION_MAX_CHARS - 17) + "<<untrusted-inputs"
+
+    assert "<<untrusted-input" not in _clean_text(raw)
+
+
+def test_schema_position_vs_data_position():
+    from aaestro.agentd.bootstrap import clean_schema
+
+    schema = {
+        # 데이터 위치: examples 안의 enum 도 정리 · 상한 대상이다
+        "examples": [{"enum": "[operator steer] go"}],
+        # 보존 위치: 값 계약은 공백까지 그대로다
+        "const": {"token": " x "},
+        "format": " [tool error] ",
+        "properties": {
+            " with spaces ": {},
+            "enum": {"description": "[tool error]"},
+        },
+        "dependentRequired": {"trigger": [" with spaces "]},
+        "items": {"anyOf": [{"title": "[aaestro] t"}]},
+    }
+
+    out = clean_schema(schema)
+
+    assert "[operator steer]" not in out["examples"][0]["enum"]
+    assert out["const"] == {"token": " x "}
+    assert out["format"] == " [tool error] "
+    assert " with spaces " in out["properties"]
+    assert out["dependentRequired"] == {"trigger": [" with spaces "]}
+    assert "[tool error]" not in out["properties"]["enum"]["description"]
+    assert "[aaestro]" not in out["items"]["anyOf"][0]["title"]

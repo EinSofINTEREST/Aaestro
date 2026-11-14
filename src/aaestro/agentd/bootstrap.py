@@ -101,13 +101,14 @@ def _module_error(code: ErrorCode, message: str, agent: str, **details: Any) -> 
 MCP_DESCRIPTION_MAX_CHARS: Final = 1024
 """서버 설명의 상한 — 서버가 프롬프트를 마음대로 부풀리지 못하게 한다."""
 
-_EXACT_KEYS: Final = frozenset(
+_KEEP_KEYS: Final = frozenset(
     {
         # 인자 값 계약
         "enum",
         "const",
         "default",
         "pattern",
+        "format",
         # 이름 · 참조
         "required",
         "dependentRequired",
@@ -119,14 +120,38 @@ _EXACT_KEYS: Final = frozenset(
         "$dynamicAnchor",
     }
 )
-"""정확히 일치해야 하는 스키마 키 — 값을 정리하지 않는다 (거부 목록: 그 밖의 문자열은 전부 정리)."""
+"""스키마 위치에서 값을 통째로 보존하는 키 — 정리도 재귀도 하지 않는다."""
+_SCHEMA_MAP_KEYS: Final = frozenset(
+    {"properties", "patternProperties", "$defs", "definitions", "dependentSchemas"}
+)
+"""이름 → 하위 스키마 맵 — 키 이름은 그대로, 값은 스키마로 재귀한다."""
+_SUBSCHEMA_KEYS: Final = frozenset(
+    {
+        "items",
+        "prefixItems",
+        "additionalProperties",
+        "unevaluatedProperties",
+        "unevaluatedItems",
+        "propertyNames",
+        "contains",
+        "not",
+        "if",
+        "then",
+        "else",
+        "allOf",
+        "anyOf",
+        "oneOf",
+    }
+)
+"""하위 스키마 또는 그 목록 — 스키마로 재귀한다. 그 밖의 키는 데이터 위치다."""
 
 
 def _clean_text(raw: str) -> str:
     """서버 문구를 모델에 싣기 전 정리한다 — 서버 문구는 신뢰하지 않는 입력이다.
 
-    유니코드 범주 C* (폭 없는 문자 · bidi 제어 포함) 와 줄 · 문단 구분자는 공백으로 바꾼 뒤
-    표기를 무력화한다 — 폭 없는 문자를 끼워 defang 을 피하는 길을 막는다. 탭 · 개행은 둔다.
+    순서: 유니코드 범주 C* (폭 없는 문자 · bidi 제어 포함) 와 줄 · 문단 구분자를 공백으로
+    (탭 · 개행은 둔다) → strip → 상한에서 자르기 → 표기 무력화. 무력화가 마지막이라 잘린 꼬리가
+    표기가 되지 못한다. 상한은 무력화 전 길이 기준이라 결과는 무력화 접미사만큼 길 수 있다.
     """
     spaced = "".join(
         " "
@@ -135,30 +160,45 @@ def _clean_text(raw: str) -> str:
         else c
         for c in raw
     )
-    return defang(spaced).strip()[:MCP_DESCRIPTION_MAX_CHARS].strip()
+    return defang(spaced.strip()[:MCP_DESCRIPTION_MAX_CHARS].strip())
+
+
+def _clean_data(node: Any) -> Any:
+    """데이터 위치 — 스키마로 해석하지 않고 안의 모든 문자열을 정리한다 (키 이름은 그대로)."""
+    if isinstance(node, str):
+        return _clean_text(node)
+    if isinstance(node, dict):
+        return {key: _clean_data(value) for key, value in node.items()}
+    if isinstance(node, list):
+        return [_clean_data(item) for item in node]
+    return node
 
 
 def clean_schema(node: Any) -> Any:
     """Copy a server input schema with every server-written string cleaned.
 
-    서버 스키마 안의 문자열을 (``description`` · ``title`` · ``examples`` · ``$comment`` ·
-    ``x-*`` 확장 등 이름과 상관없이) 전부 정리한 사본을 돌려줍니다 — 새 키가 생겨도 기본값이
-    "정리" 입니다. ``_EXACT_KEYS`` 의 값만 그대로 둡니다. 딕셔너리 키 이름 (속성 이름) 은
-    인자 계약이라 그대로입니다. 거부 목록 이름의 속성 (``properties: {enum: {...}}``) 이 하위
-    스키마를 숨기지 못하도록, 값이 딕셔너리면 그 키라도 재귀합니다.
+    스키마 위치와 데이터 위치를 구분해 정리한 사본을 돌려줍니다. 스키마 위치에서는 인자
+    계약 · 이름 · 참조 키 (``_KEEP_KEYS``) 의 값을 통째로 보존하고, 하위 스키마를 담는 키
+    (``properties`` 의 값들, ``items``, ``allOf`` …) 는 스키마로 재귀합니다. 그 밖의 모든 키
+    (``description`` · ``title`` · ``examples`` · ``$comment`` · ``x-*`` · 모르는 키) 는 데이터
+    위치라 안의 문자열을 키 이름과 무관하게 정리합니다 — 새 키의 기본값은 "정리" 입니다.
+    딕셔너리 키 이름 (속성 이름) 은 인자 계약이라 그대로입니다.
     """
-    if isinstance(node, str):
-        return _clean_text(node)
-    if isinstance(node, dict):
-        return {
-            key: value
-            if key in _EXACT_KEYS and not isinstance(value, dict)
-            else clean_schema(value)
-            for key, value in node.items()
-        }
     if isinstance(node, list):
         return [clean_schema(item) for item in node]
-    return node
+    if not isinstance(node, dict):
+        return node
+    out: dict[str, Any] = {}
+    for key, value in node.items():
+        if key in _KEEP_KEYS:
+            out[key] = value
+        elif key in _SCHEMA_MAP_KEYS and isinstance(value, dict):
+            out[key] = {name: clean_schema(sub) for name, sub in value.items()}
+        elif key in _SUBSCHEMA_KEYS:
+            out[key] = clean_schema(value)
+        else:
+            out[key] = _clean_data(value)
+    return out
 
 
 def mcp_tool_description(server: str, raw: str) -> str:

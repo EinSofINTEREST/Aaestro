@@ -177,15 +177,17 @@ Answer it.
   줄 아래로 들여 써서, 기억이 다른 기억처럼 보이는 줄을 시작하지 못합니다. 진짜 표기만 진짜 모양을
   갖습니다. promptset 값은 위의 id 규칙을 그대로 따릅니다.
 - **MCP 서버가 도구에 붙인 설명도 신뢰하지 않는 입력입니다.** 유니코드 범주 `C*` 문자 (폭 없는 문자 ·
-  bidi 제어 포함, 탭 · 개행 제외) 와 줄 · 문단 구분자를 공백으로 바꾸고, 위 표기를 무력화하고,
-  1024자에서 자른 뒤 `(from MCP server {server})` 를 붙여 모델에 도구 설명으로 전달합니다.
-  도구 입력 스키마 안의 문자열은 키 이름과 상관없이 (`description` · `title` · `examples` ·
-  `$comment` · `x-*` …) 전부 같은 정리를 거칩니다 (출처 꼬리 없음). 정확히 일치하는 키의 값만
-  그대로 둡니다: `enum` · `const` · `default` · `pattern` (인자 값 계약), `required` ·
-  `dependentRequired` · `$ref` · `$id` · `$schema` · `$anchor` · `$dynamicRef` ·
-  `$dynamicAnchor` (이름 · 참조). 딕셔너리 키 이름 (속성 이름) 도 계약이라 그대로입니다. 이런
-  키 아래의 값이 딕셔너리면 계속 들어가 살피므로, `enum` 이라는 이름의 속성이 하위 스키마를
-  숨기지 못합니다. 서버가 설명을 주지 않았거나 공백뿐이면 `MCP tool from {server}` 를 그대로 씁니다.
+  bidi 제어 포함, 탭 · 개행 제외) 와 줄 · 문단 구분자를 공백으로 바꾸고,
+  앞뒤를 다듬어 1024자에서 자른 **뒤에** 위 표기를 무력화합니다 (자른 꼬리가 표기가 되지 못하게.
+  상한은 무력화 전 길이 기준이라 결과는 무력화 접미사만큼 길 수 있습니다). 그 뒤
+  `(from MCP server {server})` 를 붙여 모델에 도구 설명으로 전달합니다. 도구 입력 스키마는
+  위치별로 정리합니다 (출처 꼬리 없음). `enum` · `const` · `default` · `pattern` · `format` ·
+  `required` · `dependentRequired` · `$ref` · `$id` · `$schema` · `$anchor` · `$dynamicRef` ·
+  `$dynamicAnchor` 의 값은 통째로 보존합니다. 하위 스키마 키 (`properties` 등 이름 맵 — 키 이름은
+  그대로 — 과 `items` · `allOf` · `anyOf` · `not` · `if` 등) 는 스키마로 재귀합니다. 그 밖의 모든
+  키 (`description` · `title` · `examples` · `$comment` · `x-*` · 모르는 키) 는 데이터 위치라
+  안의 문자열을 키 이름과 무관하게 정리합니다 (`examples` 안의 `enum` 도 정리). 속성 이름은 계약이라
+  그대로입니다. 서버가 설명을 주지 않았거나 공백뿐이면 `MCP tool from {server}` 를 그대로 씁니다.
   `ask_peer` 는 설명에 이 에이전트가 실제로 부를 수 있는 (연결이 선언되고 주소가 주입된) peer 이름을 싣습니다.
 - **경계를 우회하는 구문은 거절합니다.** promptset 을 로드할 때 (`MOD_003` — 템플릿 파일이 없는
   것과 같이 모듈이 잘못 게시된 것), 그리고 렌더할 때마다 다시 (`MOD_004`) 검사합니다. 로드 시점
