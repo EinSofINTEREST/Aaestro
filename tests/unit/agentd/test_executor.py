@@ -857,7 +857,8 @@ async def test_the_system_instruction_is_sent_apart_from_the_task():
 
     system, conversation, _ = model.requests[0]
     assert system == "rules"
-    assert conversation == (UserTurn(parts=("task",)),)
+    [opening] = conversation
+    assert opening.parts[1:] == ("task",)  # 맨 앞은 실행 맥락 블록
 
 
 @pytest.mark.parametrize(

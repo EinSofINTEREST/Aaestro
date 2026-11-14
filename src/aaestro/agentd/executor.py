@@ -15,6 +15,7 @@ from collections import OrderedDict
 from contextlib import aclosing
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final, Protocol, TypedDict
 
 import structlog
@@ -55,6 +56,7 @@ from aaestro.core.identifiers import IdentifierProblem, identifier_problem
 from aaestro.core.markers import STEER_HEADER, defang
 from aaestro.core.skill import SkillContext
 from aaestro.core.tools import is_mcp_tool
+from aaestro.modules.boundary import TASK_CONTEXT
 from aaestro.observability.logging import mask_secrets
 
 if TYPE_CHECKING:
@@ -276,6 +278,8 @@ class ExecutorServices:
     """태스크마다 다르다 — 같은 에이전트가 노드마다 다른 템플릿을 쓰고,
     계약은 그 템플릿에 붙어 있다 (#150)."""
     on_cleanup: Callable[[], None] | None = None
+    clock: Callable[[], datetime] = lambda: datetime.now(UTC)
+    """실행 맥락 블록의 날짜 출처 — 테스트가 고정 시각을 주입한다 (06 Async 2)."""
     chains: Callable[[ModelConfig], ModelChain] | None = None
     """태스크가 실어 온 모델 선언(``TaskConfig.model``)으로 체인을 만든다.
 
@@ -632,16 +636,19 @@ class Executor:
         회상은 **태스크당 1회**입니다 — tool loop 가 N 턴 돌아도 다시 검색하지 않습니다 (09 Rule 7).
         추가 탐색은 모델이 ``memory_search`` 를 명시 호출합니다.
         """
+        today = self._services.clock().astimezone(UTC).date().isoformat()
+        head = TASK_CONTEXT.format(agent=self._agent, date=today, turns=self._max_turns(task))
         prompt = binding.render(task)
         if self._services.recall is None:
-            return UserTurn(parts=(prompt,))
+            return UserTurn(parts=(head, prompt))
 
         context = await self._services.recall(task)
         if not context:
-            return UserTurn(parts=(prompt,))
-        # 렌더된 프롬프트가 먼저다 — 그 맨 앞의 경계 안내가 user 턴 맨 앞에 와야 시스템 지시가
-        # 가리키는 자리에 진짜 안내가 놓인다. 기억이 앞이면 기억 속 위조 안내가 그 자리를 차지한다
-        return UserTurn(parts=(prompt, context))
+            return UserTurn(parts=(head, prompt))
+        # 순서는 맥락 블록 → 렌더 → 회상이다: 프레임워크가 쓴 글이 데이터보다 앞서고, 렌더 맨 앞의
+        # 진짜 경계 안내보다 회상 기억이 앞서지 않는다 — 기억이 앞이면 기억 속 위조 안내가
+        # 시스템 지시가 가리키는 경계 안내 자리를 차지한다
+        return UserTurn(parts=(head, prompt, context))
 
     async def _run(self, task: TaskRequest) -> TaskResult:
         """공용 루프를 끝까지 돌려 결과만 취한다.

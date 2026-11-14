@@ -450,6 +450,16 @@ async def execute(self, task: TaskRequest) -> TaskResult:
    (`tool call failed, returned to model` — `tool`, `turn`, `error_code`) 을 남긴다.
    태스크를 끝내는 것은 그대로다: 취소, 태스크 timeout (`TO_001`), tool 바깥의 실패 (모델 호출 ·
    출력 형식). 실패 반복의 상한은 turn 상한 (`LLM_005`) 이다
+9. **Task Context Block**: 첫 user 턴의 **첫 part** 는 한 줄 실행 맥락 블록이다 —
+   `[aaestro] Task context: agent {name}; date {YYYY-MM-DD} (UTC); turn limit {N}.`
+   (`modules/boundary.py` `TASK_CONTEXT`, #550). 태스크마다 바뀌는 값이라 바이트 고정이어야 하는
+   시스템 자리가 아니라 여기 둔다 (프롬프트 캐시 prefix). `date` 는 태스크 진입 때 주입된 시계
+   (`ExecutorServices.clock`) 의 UTC 날짜, `N` 은 그 태스크에 실제 적용되는 turn 상한이다.
+   그래프 이름 · `node_id` · run 모드 · `run_id` 는 싣지 않는다 (Rule 6). 운영자 · 프레임워크 글이라
+   경계 표시를 치지 않는다. 데이터 안의 같은 모양은 경로별로 다르다: 도구 결과 · A2A 응답 · 회상
+   기억은 `defang` 이 무력화하고, 태스크 입력 (promptset 값) 은 경계 표시 안에 그대로 놓인다 —
+   진짜 블록은 첫 user 턴의 첫 part 하나뿐이라고 프레임워크 지시가 말한다. 그 뒤에 렌더된
+   템플릿, 회상 블록이 온다. 기본 루프만 대상이다 (커스텀 entrypoint · echo 제외)
 
 ### Steering — 턴 경계의 운영자 지시
 

@@ -12,6 +12,10 @@ from typing import Any
 from aaestro.agentd.executor import Message, ModelResponse, ToolCall, UserTurn
 from aaestro.core.agent import ModelUsage
 from aaestro.core.skill import SkillContext
+from aaestro.modules.boundary import TASK_CONTEXT
+
+# 상수 형식에서 유도한다 — 첫 자리표시자 앞까지가 고정 머리말이다
+TASK_CONTEXT_HEAD = TASK_CONTEXT.split("{", 1)[0]
 
 
 class FakeModel:
@@ -28,7 +32,13 @@ class FakeModel:
         messages = tuple(messages)
         self.requests.append((system, messages, tuple(tools)))
         opening = messages[0]
-        self.calls.append((opening.parts[0] if isinstance(opening, UserTurn) else "", tuple(tools)))
+        # 실행 맥락 블록은 태스크 텍스트가 아니다 — 기록하는 것은 렌더된 프롬프트다
+        task_text = (
+            next((p for p in opening.parts if not p.startswith(TASK_CONTEXT_HEAD)), "")
+            if isinstance(opening, UserTurn)
+            else ""
+        )
+        self.calls.append((task_text, tuple(tools)))
         index = min(len(self.calls) - 1, len(self._responses) - 1)
         item = self._responses[index]
         if isinstance(item, Exception):
