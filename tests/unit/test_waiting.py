@@ -10,7 +10,7 @@ import asyncio
 
 import pytest
 
-from tests.fixtures.waiting import spin, until
+from tests.fixtures.waiting import reached, spin, until
 
 
 async def test_until_returns_once_the_condition_holds():
@@ -51,3 +51,40 @@ async def test_spin_yields_and_returns():
     await task
 
     assert ticks == 10
+
+
+async def test_reached_returns_when_the_task_sets_the_event():
+    event = asyncio.Event()
+
+    async def work() -> None:
+        event.set()
+        await asyncio.sleep(3600)
+
+    task = asyncio.create_task(work())
+    await reached(event, task)
+    task.cancel()
+
+
+async def test_reached_raises_the_tasks_own_failure_instead_of_hanging():
+    """#568 — 이벤트를 세우기 전에 죽은 태스크의 예외가 그대로 보여야 한다."""
+
+    async def dies() -> None:
+        raise KeyError("lookup")
+
+    with pytest.raises(KeyError):
+        await reached(asyncio.Event(), asyncio.create_task(dies()))
+
+
+async def test_reached_fails_loudly_at_the_deadline():
+    task = asyncio.create_task(asyncio.sleep(3600))
+    with pytest.raises(AssertionError, match="not set within"):
+        await reached(asyncio.Event(), task, timeout_s=0.01)
+    task.cancel()
+
+
+async def test_reached_fails_when_the_task_ends_quietly_without_the_event():
+    async def quiet() -> None:
+        return None
+
+    with pytest.raises(AssertionError, match="not set within"):
+        await reached(asyncio.Event(), asyncio.create_task(quiet()))

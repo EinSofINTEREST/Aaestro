@@ -29,6 +29,7 @@ from aaestro.runtime.control import ControlClient
 from aaestro.runtime.nodes import ControlNodeRuntime, InflightTask, SteerReceipt
 from tests.fixtures.builders import make_task
 from tests.fixtures.fake_model import FakeModel, FakeTools, calls, text
+from tests.fixtures.waiting import reached
 
 AGENT_TOKEN = "agent-token"  # noqa: S105 — 테스트 값
 
@@ -406,7 +407,7 @@ async def test_a_custom_executor_without_steer_is_501_end_to_end(store):
     stack = Stack(store, executor=CustomExecutor())
     call = asyncio.create_task(stack.runtime.invoke(NODE, make_task(task_id="t-1", run_id="run-1")))
     try:
-        await started.wait()
+        await reached(started, call)
         response = await stack.api.post("/v1/runs/run-1/steer", json={"text": "go"})
         release.set()
         await call

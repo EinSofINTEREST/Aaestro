@@ -19,6 +19,7 @@ from aaestro.core.errors import AaestroError, ErrorCategory
 from aaestro.core.events import DoneEvent, TokenEvent, ToolCallEvent
 from aaestro.runtime.control import ControlClient, control_url
 from tests.fixtures.builders import make_task
+from tests.fixtures.waiting import reached
 
 BASE_URL = "http://agent-researcher:8080"
 
@@ -379,7 +380,7 @@ async def test_invoke_cancellation_propagates_and_releases_the_request():
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as transport:
         client = ControlClient(BASE_URL, agent="researcher", client=transport)
         task = asyncio.create_task(client.invoke(make_task()))
-        await started.wait()
+        await reached(started, task)
         task.cancel()
 
         with pytest.raises(asyncio.CancelledError):
@@ -405,7 +406,7 @@ async def test_stream_cancellation_closes_the_response():
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as transport:
         client = ControlClient(BASE_URL, agent="researcher", client=transport)
         task = asyncio.create_task(consume(client))
-        await entered.wait()
+        await reached(entered, task)
         task.cancel()
 
         with pytest.raises(asyncio.CancelledError):
@@ -424,7 +425,7 @@ async def test_cancellation_is_not_converted_to_a_aaestro_error():
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as transport:
         client = ControlClient(BASE_URL, agent="researcher", client=transport)
         task = asyncio.create_task(client.invoke(make_task()))
-        await started.wait()
+        await reached(started, task)
         task.cancel()
 
         with pytest.raises(asyncio.CancelledError):
