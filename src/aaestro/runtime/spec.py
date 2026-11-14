@@ -32,6 +32,9 @@ HARDENED_CGROUPNS: Final = "private"
 """daemon 기본값은 cgroup v1 호스트에서 `host` 다 — 거기서는 평범하게 만든 컨테이너도
 `CgroupnsMode` 경화 대조에 스스로 걸린다 (#510 이 그 검사를 추가했다). 명시해 호스트
 cgroup 버전과 무관하게 격리시킨다."""
+HARDENED_INIT: Final = True
+"""`--init` (daemon 의 tini) 을 PID 1 로 — PID 1 은 핸들러 없는 SIGTERM 을 무시해 기동 중
+정지가 유예를 다 쓰고 (#567: 1초 뒤 정지 31초), 자식 (stdio MCP 서버) 의 좀비도 거두지 않는다."""
 
 A2A_PORT_ENV: Final = "AAESTRO_A2A_PORT"
 """할당된 A2A 포트를 컨테이너에 알리는 키 — agentd 가 이것으로 서버를 띄운다."""
@@ -121,6 +124,7 @@ class ContainerSpec:
             "cap_drop": list(self.cap_drop),
             "security_opt": list(self.security_opt),
             "cgroupns": HARDENED_CGROUPNS,
+            "init": HARDENED_INIT,
             # 마운트도 경화다 — 선언에 없는 바인드(호스트 경로, docker.sock)는 격리를 연다 (#488)
             "tmpfs": dict.fromkeys(self.tmpfs, TMPFS_OPTIONS),
             "volumes": {

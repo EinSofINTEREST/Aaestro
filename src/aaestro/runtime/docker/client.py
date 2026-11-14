@@ -30,6 +30,7 @@ BRIDGE = "bridge"
 HARDENING_FIELDS = (
     "CapDrop",
     "CapAdd",
+    "Init",
     "ReadonlyRootfs",
     "SecurityOpt",
     "PidsLimit",

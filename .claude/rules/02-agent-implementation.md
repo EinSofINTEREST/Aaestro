@@ -254,6 +254,9 @@ spec:
    - SHOULD use read-only root filesystem + 명시적 writable volume (`/workspace`, `/tmp`)
    - Capability drop: `--cap-drop=ALL` 기본, 필요 capability 만 manifest 로 선언
    - `--security-opt=no-new-privileges:true` 기본 — setuid 바이너리로 권한을 되찾는 길을 막는다 (사이드카와 같은 경화 집합)
+   - `--init` 기본 — daemon 의 init (tini) 이 PID 1 이 되어 `SIGTERM` 을 전달하고 좀비 (stdio MCP 서버 등 자식) 를
+     거둔다. 핸들러를 걸기 전의 PID 1 은 `SIGTERM` 을 무시해 기동 직후 정지가 유예를 다 쓴다 (#570). 사이드카와
+     같은 경화 집합이고, 재부착 대조 (`Init`) 에 든다. 이미지에 init 을 설치하지 않는다
 
 4. **Resources**
    - CPU/Memory limit 필수 (manifest `runtime.resources`)
