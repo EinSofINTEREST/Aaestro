@@ -21,6 +21,7 @@ from aaestro.core.events import DoneEvent, TokenEvent
 from aaestro.core.markers import STEER_HEADER
 from tests.fixtures.builders import make_task
 from tests.fixtures.fake_model import FakeModel, FakeTools, calls, text
+from tests.fixtures.waiting import reached
 
 TOKEN = "agent-token"
 AUTH = {"authorization": f"Bearer {TOKEN}"}
@@ -541,7 +542,7 @@ async def test_drain_waits_for_inflight_tasks():
     task = make_task(task_id="t-drain")
     running = asyncio.create_task(runtime.executor.execute(task))
     runtime.track(task.key, running)
-    await executor.running.wait()
+    await reached(executor.running, running)
 
     await runtime.drain()
 
@@ -635,7 +636,7 @@ async def test_the_cancel_endpoint_stops_the_task_the_invoke_endpoint_is_running
         # 본문의 호출자 주장은 버려진다 — 취소가 찾는 것은 Control API 의 태스크다
         body = {**task_payload(task_id="t-http"), "caller": "writer"}
         invoking = asyncio.create_task(client.post("/v1/invoke", json=body, headers=AUTH))
-        await executor.running.wait()
+        await reached(executor.running, invoking)
 
         canceled = await client.post("/v1/cancel/t-http", headers=AUTH)
         response = await invoking

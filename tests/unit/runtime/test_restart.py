@@ -26,7 +26,7 @@ from aaestro.runtime.docker.errors import ImageMissingError
 from aaestro.runtime.launcher import AgentLauncher
 from aaestro.runtime.lifecycle import AgentState, RestartPolicy
 from tests.fixtures.fake_docker import FakeDockerClient
-from tests.fixtures.waiting import spin, until
+from tests.fixtures.waiting import reached, spin, until
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -807,7 +807,7 @@ async def test_stop_restart_scheduled_while_stopping_another_replica_leaves_no_o
 
     monkeypatch.setattr(agents.engine, "stop", held_stop)
     stopping = asyncio.create_task(agents.stop("echo"))
-    await stop_entered.wait()
+    await reached(stop_entered, stopping)
 
     # 둘째 레플리카의 감시 루프가 Unhealthy 를 보고한 것과 같은 콜백
     second.lifecycle.record_health(healthy=False, threshold=1)
