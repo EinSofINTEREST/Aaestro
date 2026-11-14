@@ -32,7 +32,6 @@ from aaestro.runtime.spec import build_container_spec
 pytestmark = pytest.mark.integration
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-DOCKER_DIR = REPO_ROOT / "deployments" / "docker"
 ECHO_MANIFEST = REPO_ROOT / "agents" / "echo" / "manifest.yaml"
 TEST_NETWORK = "aaestro-net-lifecycle"
 TOKEN = "integration-token"  # noqa: S105
@@ -264,30 +263,6 @@ class HttpProbe:
             fetch, f"http://127.0.0.1:{self._port}/v1/health", timeout=5.0
         )
         return HealthStatus.model_validate(payload)
-
-
-@pytest.fixture(scope="module")
-def echo_image() -> str:
-    """echo 이미지 — base 와 함께 빌드한다."""
-    docker(
-        "build",
-        "-t",
-        "aaestro/agent-base:0.1.0",
-        "-f",
-        str(DOCKER_DIR / "agent-base.Dockerfile"),
-        str(REPO_ROOT),
-    )
-    docker(
-        "build",
-        "-t",
-        "aaestro/agent-echo:0.1.0",
-        "--build-arg",
-        "BASE_TAG=0.1.0",
-        "-f",
-        str(DOCKER_DIR / "agent-echo.Dockerfile"),
-        str(REPO_ROOT),
-    )
-    return "aaestro/agent-echo:0.1.0"
 
 
 @pytest.fixture

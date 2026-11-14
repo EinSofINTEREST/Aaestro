@@ -21,8 +21,6 @@ import pytest
 pytestmark = pytest.mark.integration
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-DOCKER_DIR = REPO_ROOT / "deployments" / "docker"
-ECHO_IMAGE = "aaestro/agent-echo:0.1.0"
 NETWORK = "aaestro-net-test"
 READY_TIMEOUT_S = 90.0
 TOKEN = "integration-token"  # noqa: S105
@@ -56,28 +54,6 @@ def docker_available() -> bool:
 
 
 requires_docker = pytest.mark.skipif(not docker_available(), reason="docker daemon unavailable")
-
-
-@pytest.fixture(scope="module")
-def echo_image() -> str:
-    """echo 이미지를 빌드한다 — base 이미지도 함께 만들어진다."""
-    docker(
-        "build",
-        "-t",
-        "aaestro/agent-base:0.1.0",
-        "-f",
-        str(DOCKER_DIR / "agent-base.Dockerfile"),
-        str(REPO_ROOT),
-    )
-    docker(
-        "build",
-        "-t",
-        ECHO_IMAGE,
-        "-f",
-        str(DOCKER_DIR / "agent-echo.Dockerfile"),
-        str(REPO_ROOT),
-    )
-    return ECHO_IMAGE
 
 
 @pytest.fixture(scope="module")

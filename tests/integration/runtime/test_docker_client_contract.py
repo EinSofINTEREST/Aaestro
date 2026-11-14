@@ -17,7 +17,6 @@ from aaestro.runtime.docker.errors import ImageMissingError
 from tests.integration.runtime.test_docker_lifecycle import (
     CliDockerClient,
     docker,
-    echo_image,  # noqa: F401 — fixture
     requires_docker,
 )
 
@@ -54,7 +53,7 @@ def client(request) -> DockerClient:
 
 
 @pytest.fixture
-def container(client: DockerClient, echo_image: str):  # noqa: F811
+def container(client: DockerClient, echo_image: str):
     """만들고 반드시 지운다 — 유령 컨테이너는 05 Consistency 3 위반이다."""
     client.ensure_image(echo_image)
     client.ensure_network(NETWORK)
@@ -184,7 +183,7 @@ def test_labeled_finds_stopped_containers_and_nothing_else(client, container):
     assert container not in client.labeled({"aaestro.contract": "1"})
 
 
-def test_sidecar_hardening_reaches_the_container(client, echo_image):  # noqa: F811
+def test_sidecar_hardening_reaches_the_container(client, echo_image):
     name = f"contract-hardened-{type(client).__name__.lower()}"
     docker("rm", "-f", name, check=False)
     kwargs = {
@@ -230,7 +229,7 @@ def test_hardening_is_read_under_the_inspect_field_names(client, container):
     assert client.image_volumes(found["Image"]) == {"/tmp", "/workspace"}  # noqa: S108
 
 
-async def test_a_container_built_from_the_spec_passes_the_engine_check(client, echo_image):  # noqa: F811
+async def test_a_container_built_from_the_spec_passes_the_engine_check(client, echo_image):
     """기동 스펙(`build_container_spec`)이 만든 컨테이너를 대조가 거절하지 않는다 (#483).
 
     손으로 쓴 kwargs 가 아니라 실제 스펙이어야 스펙과 대조의 어긋남(표기 · 빈 값)이 드러난다.
@@ -251,7 +250,7 @@ async def test_a_container_built_from_the_spec_passes_the_engine_check(client, e
         client.remove(container_id)
 
 
-async def test_engine_start_passes_its_own_hardening_check(client, echo_image, tmp_path):  # noqa: F811
+async def test_engine_start_passes_its_own_hardening_check(client, echo_image, tmp_path):
     """기동 직후 대조 (#501) 가 정상 스펙의 실 컨테이너를 거절하지 않는다 — 선언 마운트 포함.
 
     거절하면 모든 기동이 실패한다. 손으로 쓴 kwargs 가 아니라 실제 스펙으로 `engine.start` 를 돈다.
@@ -276,7 +275,7 @@ async def test_engine_start_passes_its_own_hardening_check(client, echo_image, t
         docker("rm", "-f", "-v", handle.container_id, check=False)
 
 
-async def test_sidecar_start_passes_its_own_hardening_check(client, echo_image):  # noqa: F811
+async def test_sidecar_start_passes_its_own_hardening_check(client, echo_image):
     """사이드카 기동 직후 대조 (#501) 가 `sidecar_kwargs` 의 실 컨테이너를 거절하지 않는다.
 
     에이전트 쪽 테스트의 짝이다. 이미지는 그 내용과 무관해 기존 통합 테스트의 echo 이미지를 쓴다 —
@@ -333,7 +332,7 @@ def mounted_echo_spec(image: str, mounts):
     return echo_spec(image=image, network=NETWORK, mounts=mounts)
 
 
-async def test_reattach_refuses_a_bind_the_spec_did_not_declare(client, echo_image, tmp_path):  # noqa: F811
+async def test_reattach_refuses_a_bind_the_spec_did_not_declare(client, echo_image, tmp_path):
     """선언 마운트를 가진 실제 컨테이너는 붙고, docker.sock 을 더 건 컨테이너는 거절된다 (#488).
 
     선언은 끝 `/` · `//` 를 섞어 쓴다 — daemon 이 정규화해 보고하는 값과 같게 읽는지도 본다.
@@ -354,7 +353,7 @@ async def test_reattach_refuses_a_bind_the_spec_did_not_declare(client, echo_ima
     assert await verdict(client, echo_image, socked, spec.hardening_kwargs()) == ["Mounts"]
 
 
-async def test_reattach_refuses_tmpfs_the_spec_did_not_declare(client, echo_image):  # noqa: F811
+async def test_reattach_refuses_tmpfs_the_spec_did_not_declare(client, echo_image):
     """실 daemon 의 `HostConfig.Tmpfs` 를 읽는다 — tmpfs 를 빼거나 더한 컨테이너는 거절된다."""
     client.ensure_image(echo_image)
     client.ensure_network(NETWORK)
@@ -368,7 +367,7 @@ async def test_reattach_refuses_tmpfs_the_spec_did_not_declare(client, echo_imag
     assert await verdict(client, echo_image, dropped, spec.hardening_kwargs()) == ["Tmpfs"]
 
 
-async def test_reattach_refuses_a_device_the_spec_did_not_set(client, echo_image):  # noqa: F811
+async def test_reattach_refuses_a_device_the_spec_did_not_set(client, echo_image):
     """`--device /dev/null:/dev/qa` 를 더한 실제 컨테이너가 재부착을 통과했다 (#510 — #488 QA).
 
     디바이스 없는 정상 컨테이너는 daemon 이 `null` (SDK) · `[]` (CLI) 로 보고한다 — 둘 다 통과한다.
@@ -386,7 +385,7 @@ async def test_reattach_refuses_a_device_the_spec_did_not_set(client, echo_image
     assert await verdict(client, echo_image, ruled, expected) == ["DeviceCgroupRules"]
 
 
-async def test_reattach_accepts_an_image_volume(client, echo_image, tmp_path):  # noqa: F811
+async def test_reattach_accepts_an_image_volume(client, echo_image, tmp_path):
     """이미지의 `VOLUME ["/data"]` 가 만든 익명 볼륨 때문에 정상 컨테이너가 lost 가 되지 않는다."""
     tag = "aaestro/contract-image-volume:0.0.1"
     context = tmp_path / "context"
@@ -409,7 +408,7 @@ async def test_reattach_accepts_an_image_volume(client, echo_image, tmp_path):  
         docker("rmi", "-f", tag, check=False)
 
 
-async def test_reattach_refuses_a_volume_recreated_onto_a_host_path(client, echo_image, tmp_path):  # noqa: F811
+async def test_reattach_refuses_a_volume_recreated_onto_a_host_path(client, echo_image, tmp_path):
     """같은 이름이어도 `--opt o=bind` 로 다시 만든 볼륨은 호스트 경로를 연다 — 거절 (#488 QA)."""
     client.ensure_image(echo_image)
     client.ensure_network(NETWORK)
@@ -431,7 +430,7 @@ async def test_reattach_refuses_a_volume_recreated_onto_a_host_path(client, echo
         docker("volume", "rm", "-f", name, check=False)
 
 
-async def test_reattach_refuses_an_anonymous_volume_the_caller_added(client, echo_image):  # noqa: F811
+async def test_reattach_refuses_an_anonymous_volume_the_caller_added(client, echo_image):
     """`-v /extra` 로 익명 볼륨을 더한 컨테이너는 거절된다 — 컨테이너 `Config.Volumes` 에 그 경로가
     복사되어도 이미지가 선언하지 않았다 (#488 리뷰).
     """
@@ -454,7 +453,7 @@ def volume_exists(name: str) -> bool:
     return bool(docker("volume", "inspect", "-f", "{{.Name}}", name, check=False))
 
 
-def test_remove_deletes_anonymous_volumes_and_keeps_named_ones(client, echo_image):  # noqa: F811
+def test_remove_deletes_anonymous_volumes_and_keeps_named_ones(client, echo_image):
     """이미지 VOLUME 의 익명 볼륨은 컨테이너와 함께 지우고, 이름 있는 볼륨은 남긴다 (#511)."""
     client.ensure_image(echo_image)
     client.ensure_network(NETWORK)
@@ -487,7 +486,7 @@ def test_remove_deletes_anonymous_volumes_and_keeps_named_ones(client, echo_imag
             docker("volume", "rm", "-f", volume, check=False)
 
 
-async def test_two_agents_declaring_the_same_volume_get_separate_volumes(client, echo_image):  # noqa: F811
+async def test_two_agents_declaring_the_same_volume_get_separate_volumes(client, echo_image):
     """두 에이전트가 같은 `work` 를 선언해도 실 daemon 에 서로 다른 볼륨이 마운트된다 (#513)."""
     import yaml
 
