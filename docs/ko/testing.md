@@ -75,7 +75,9 @@ pytest-cov `--cov-fail-under=70` 로 강제. 커버리지 옵션은 `make test` 
 (`-n auto`, pytest-xdist — 커버리지는 워커 간 합산). `uv run pytest tests/unit/core` 같은
 부분 실행은 워커 기동 비용이 더 커서 기본이 직렬입니다. 벤치마크 측정은 `make bench` (직렬) 로
 합니다. xdist 아래에서는 pytest-benchmark 가 측정을 꺼서 `make test` 는 한 번 실행만 합니다.
-회귀 비교와 CI 경고는 아직 없습니다 (#565). 핵심 경로 90%+ 와 에러 변환 경로 100% 는
+CI job (`Benchmark Regression`, `ci-bench.yml`) 이 main push 마다
+`make bench` 결과를 `bench-baseline` 아티팩트로 저장하고, PR 에서 그것과 비교해 평균이 25% 이상 느려지면
+경고 (annotation + job summary) 합니다. 머지 게이트가 아닙니다. 느려짐 · 기준선 없음 · 읽을 수 없는 입력으로는 실패하지 않고, 벤치마크 테스트가 실패하면 job 이 실패합니다 (정보성 체크 — 머지를 막지 않음) (#565). 핵심 경로 90%+ 와 에러 변환 경로 100% 는
 리뷰 목표치이며 별도 CI 게이트가 아닙니다.
 체크 이름과 머지 게이트 연결: [ci/status-checks.md](ci/status-checks.md).
 

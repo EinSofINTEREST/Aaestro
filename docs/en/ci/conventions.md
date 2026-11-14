@@ -87,6 +87,7 @@ Workflows are **split by concern** (readability, clear Actions UI grouping):
 | `ci-convention.yml` | PR/commit metadata format | `Commit Lint`, `PR Title Lint`, `Linked Issue Check`, `Branch Name Lint` |
 | `ci-docs.yml` | Documentation policy | `Docs Sync Check` |
 | `ci-review.yml` | Review presence (informational commit status, not a merge gate) | `Review Presence` |
+| `ci-bench.yml` | Benchmark regression warning (informational, not a merge gate) | `Benchmark Regression` |
 | `ci-nightly.yml` | Scheduled full-stack verification | `E2E Test` |
 
 - Jobs run independently in parallel (fast feedback). The only dependency is the
