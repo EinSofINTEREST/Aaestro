@@ -72,15 +72,40 @@ def unreachable(caller: str, callee: str, **details: Any) -> AaestroError:
     )
 
 
+class PeerTaskError(Exception):
+    """피호출자가 보고한 실패 사유 — `task_rejected` 의 원인으로만 쓴다."""
+
+
 def task_rejected(caller: str, callee: str, **details: Any) -> AaestroError:
-    """Callee 가 태스크를 거부/실패 — 재시도해도 같은 결과."""
-    return a2a_error(
+    """Callee 가 태스크를 거부/실패 — 재시도해도 같은 결과.
+
+    peer 가 준 사유 — ``peer_error`` 의 코드 · 메시지, 없으면 ``reason`` (SDK 가 문자열로만 실어 온
+    거부) — 를 원인 예외로 붙인다. details 는 모델에 실리지 않으므로, 원인이 없으면 호출자
+    (ask_peer 를 부른 모델) 가 peer 의 실패 사유를 받지 못한다.
+    """
+    error = a2a_error(
         ErrorCode.A2A_003,
         f"a2a task failed on peer: {callee}",
         caller=caller,
         callee=callee,
         **details,
     )
+    reason = _peer_reason(details.get("peer_error"))
+    if not reason and isinstance(details.get("reason"), str):
+        reason = details["reason"]
+    if reason:
+        error.__cause__ = PeerTaskError(reason)
+    return error
+
+
+def _peer_reason(peer_error: Any) -> str:
+    """``code: message`` — ``AaestroErrorPayload`` (Control 경로) 또는 dict (SDK 경로) 에서."""
+    if isinstance(peer_error, dict):
+        code, message = peer_error.get("code"), peer_error.get("message")
+    else:
+        code, message = getattr(peer_error, "code", None), getattr(peer_error, "message", None)
+    parts = [part for part in (code, message) if isinstance(part, str) and part]
+    return ": ".join(parts)
 
 
 def not_allowed(
@@ -127,6 +152,7 @@ def depth_exceeded(caller: str, callee: str, *, depth: int, limit: int) -> Aaest
 
 
 __all__ = [
+    "PeerTaskError",
     "a2a_error",
     "depth_exceeded",
     "not_allowed",

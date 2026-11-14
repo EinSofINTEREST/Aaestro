@@ -26,8 +26,9 @@ from aaestro.agentd.executor import (
 from aaestro.agentd.models import ModelChain, ModelLink
 from aaestro.agentd.tools import AgentToolRegistry
 from aaestro.core.agent import TaskConfig, TaskStatus
-from aaestro.core.errors import AaestroError, ErrorCategory
+from aaestro.core.errors import AaestroError, AaestroErrorPayload, ErrorCategory
 from aaestro.core.events import DoneEvent, ErrorEvent, ToolCallEvent, ToolResultEvent
+from aaestro.protocols.a2a.errors import task_rejected
 from aaestro.protocols.mcp.errors import tool_failed
 from aaestro.protocols.mcp.session import ToolResult as McpToolResult
 from tests.fixtures.builders import make_task
@@ -197,6 +198,34 @@ async def test_mcp_failure_reason_from_the_cause_chain_reaches_the_model():
         "type": "RuntimeError",
         "message": "Invalid path: /etc/shadow not allowed",
     }
+
+
+async def test_peer_failure_reason_reaches_the_model():
+    """ask_peer 실패 — peer 가 왜 실패했는지 모르면 모델이 요청을 고칠 수 없다."""
+    peer_error = AaestroErrorPayload(
+        category=ErrorCategory.VALIDATION, code="VAL_002", message="request must name a goal"
+    )
+    tools = FakeTools().fail(
+        "ask_peer", task_rejected("researcher", "planner", peer_error=peer_error)
+    )
+    executor, model, _ = make_executor([calls("ask_peer"), text("done")], tools)
+
+    await executor.execute(make_task())
+
+    _, error = returned_failure(model)
+    assert error["code"] == "A2A_003"
+    assert error["cause"]["message"] == "VAL_002: request must name a goal"
+
+
+async def test_peer_failure_without_a_reason_has_no_cause():
+    tools = FakeTools().fail("ask_peer", task_rejected("researcher", "planner", state="failed"))
+    executor, model, _ = make_executor([calls("ask_peer"), text("done")], tools)
+
+    await executor.execute(make_task())
+
+    _, error = returned_failure(model)
+    assert error["code"] == "A2A_003"
+    assert "cause" not in error
 
 
 async def test_unserializable_result_is_a_tool_failure():
