@@ -306,7 +306,7 @@ async def test_failed_tool_is_counted_as_failed():
     metrics = make_metrics()
     tools = FakeTools()
     tools.fail(MCP_TOOL, RuntimeError("transport lost"))
-    executor, _ = make_executor([calls(MCP_TOOL)], metrics=metrics, tools=tools)
+    executor, _ = make_executor([calls(MCP_TOOL), text("done")], metrics=metrics, tools=tools)
 
     await executor.execute(make_task(trace=GRAPH_TRACE))
 
@@ -329,7 +329,7 @@ async def test_timed_out_tool_is_counted_as_failed():
     tools = FakeTools()
     tools.script(SKILL_TOOL, delay=10.0)
     executor, _ = make_executor(
-        [calls(SKILL_TOOL)], metrics=metrics, tools=tools, tool_timeout_s=0.01
+        [calls(SKILL_TOOL), text("done")], metrics=metrics, tools=tools, tool_timeout_s=0.01
     )
 
     await executor.execute(make_task(trace=GRAPH_TRACE))
@@ -347,6 +347,38 @@ async def test_timed_out_tool_is_counted_as_failed():
     )
 
 
+async def test_unserializable_result_is_counted_as_failed():
+    """결과를 실을 수 없으면 도구 실패다 — completed 로 세면 실패가 메트릭에서 사라진다."""
+    metrics = make_metrics()
+    tools = FakeTools()
+    tools.script(SKILL_TOOL, result={(1, 2): 3})
+    executor, _ = make_executor([calls(SKILL_TOOL), text("done")], metrics=metrics, tools=tools)
+
+    result = await executor.execute(make_task(trace=GRAPH_TRACE))
+
+    assert result.status is TaskStatus.COMPLETED
+    labels = {"agent": "researcher", "source": "skillset", "tool": SKILL_TOOL}
+    assert value(metrics, "aaestro_tool_calls_total", status="failed", **labels) == 1.0
+    assert value(metrics, "aaestro_tool_calls_total", status="completed", **labels) == 0.0
+
+
+async def test_result_whose_str_raises_is_counted_as_failed():
+    class Unprintable:
+        def __str__(self) -> str:
+            raise RuntimeError("cannot print")
+
+    metrics = make_metrics()
+    tools = FakeTools()
+    tools.script(SKILL_TOOL, result={"value": Unprintable()})
+    executor, _ = make_executor([calls(SKILL_TOOL), text("done")], metrics=metrics, tools=tools)
+
+    await executor.execute(make_task(trace=GRAPH_TRACE))
+
+    labels = {"agent": "researcher", "source": "skillset", "tool": SKILL_TOOL}
+    assert value(metrics, "aaestro_tool_calls_total", status="failed", **labels) == 1.0
+    assert value(metrics, "aaestro_tool_calls_total", status="completed", **labels) == 0.0
+
+
 # --- 계측은 선택적이다 ------------------------------------------------------
 
 
@@ -358,7 +390,8 @@ async def test_execution_works_without_any_metrics():
 
     result = await executor.execute(make_task(trace=GRAPH_TRACE))
 
-    assert result.status is TaskStatus.FAILED
+    # 도구 실패는 모델에 돌아가고 태스크는 모델의 답으로 끝난다 (#546)
+    assert result.status is TaskStatus.COMPLETED
 
 
 async def test_streaming_without_metrics_still_streams():
@@ -375,7 +408,9 @@ async def test_sibling_tools_are_counted_when_one_fails():
     tools = FakeTools()
     tools.fail(SKILL_TOOL, RuntimeError("boom"))
     tools.script(MCP_TOOL, delay=0.05)
-    executor, _ = make_executor([calls(SKILL_TOOL, MCP_TOOL)], metrics=metrics, tools=tools)
+    executor, _ = make_executor(
+        [calls(SKILL_TOOL, MCP_TOOL), text("done")], metrics=metrics, tools=tools
+    )
 
     await executor.execute(make_task(trace=GRAPH_TRACE))
 

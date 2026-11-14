@@ -356,8 +356,8 @@ log.info(f"task {task_id} done in {elapsed}ms")
 |-------|-----------|--------------|
 | **DEBUG** | 개발/트러블슈팅용 내부 상세 | tool 호출 인자, 템플릿 렌더 결과 크기, edge 조건 평가값 |
 | **INFO**  | 운영자가 확인하고 싶은 정상 마일스톤 | run 시작/완료, 에이전트 Ready, 그래프 배포 완료, checkpoint 저장 |
-| **WARN**  | 예상 외지만 gracefully 처리됨 | 재시도, MCP 재연결, optional 서버 기동 실패, drain timeout 임박 |
-| **ERROR** | 작업 실패 — 다른 run 은 계속 가능 | 태스크 실패, node 실패, tool 실패, checkpoint 저장 실패 |
+| **WARN**  | 예상 외지만 gracefully 처리됨 | 재시도, MCP 재연결, optional 서버 기동 실패, drain timeout 임박, tool 실패 (모델에 돌아감 — 02 Loop Rules 8) |
+| **ERROR** | 작업 실패 — 다른 run 은 계속 가능 | 태스크 실패, node 실패, checkpoint 저장 실패 |
 | **FATAL** | 복구 불가 — 프로세스 종료 | 설정 파싱 실패, Docker daemon 접속 불가 (기동 시) |
 
 **빠른 판단 기준:**
@@ -570,6 +570,15 @@ groups:
         labels: {severity: warning}
         annotations:
           summary: "Agent {{ $labels.agent }} failure rate > 10%"
+
+      - alert: ToolHighFailureRate
+        expr: |
+          sum by (agent, source, tool) (rate(aaestro_tool_calls_total{status="failed"}[5m])) /
+          sum by (agent, source, tool) (rate(aaestro_tool_calls_total[5m])) > 0.2
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "Tool {{ $labels.tool }} on {{ $labels.agent }} fails more than 20% of calls"
 
       - alert: AgentDown
         expr: aaestro_agent_health == 0

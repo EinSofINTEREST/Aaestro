@@ -172,6 +172,23 @@ async def test_peer_failure_is_a2a_003():
     assert exc_info.value.retryable is False
 
 
+async def test_peer_failure_carries_the_peer_reason_as_its_cause():
+    """details 는 모델에 실리지 않는다 — peer 의 사유는 원인으로 가야 ask_peer 를 고칠 수 있다."""
+    task = make_task()
+    failed = TaskResult.failed(
+        task,
+        AaestroErrorPayload(
+            category="validation", code="VAL_002", message="request must name a goal"
+        ),
+    )
+    client = make_client(FakePeer(result=failed))
+
+    with pytest.raises(AaestroError) as exc_info:
+        await client.call("planner", task)
+
+    assert str(exc_info.value.__cause__) == "VAL_002: request must name a goal"
+
+
 async def test_call_timeout_reports_unreachable():
     import asyncio
 

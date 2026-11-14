@@ -174,7 +174,9 @@ def test_binary_operations_align_label_sets(alert_rules):
                 f"{rule['alert']}: `and` needs an explicit on(...) matcher"
             )
         if "/" in expr:
-            assert expr.count("sum without") >= 2, (
+            # `sum by` 도 받는다 — instance · job 까지 접어야 레플리카를 합친 비율이다
+            clauses = re.findall(r"sum\s+(without|by)\s*\(([^)]*)\)", expr)
+            assert len(clauses) >= 2 and len(set(clauses)) == 1, (
                 f"{rule['alert']}: ratio needs both sides aggregated to the same label set"
             )
 

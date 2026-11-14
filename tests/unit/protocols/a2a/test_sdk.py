@@ -342,3 +342,15 @@ async def test_a_peer_failure_carries_its_structured_reason_to_the_caller():
     assert exc_info.value.code == ErrorCode.A2A_003
     assert exc_info.value.details["peer_error"]["code"] == "ACC_003"
     assert exc_info.value.details["peer_error"]["message"] == "beyond the ceiling"
+
+
+def test_a_peer_refusal_text_becomes_the_cause():
+    """SDK 는 원격 거부를 문자열로만 실어 온다 — details 에만 두면 모델이 사유를 받지 못한다."""
+    from a2a.utils.errors import A2AError
+
+    transport = SdkPeerTransport(agent=CALLER, addresses={CALLEE: BASE_URL})
+
+    error = transport._refusal(CALLEE, A2AError("request must name a goal"))
+
+    assert error.code == ErrorCode.A2A_003
+    assert str(error.__cause__) == "request must name a goal"

@@ -55,6 +55,7 @@ from aaestro.core.identifiers import IdentifierProblem, identifier_problem
 from aaestro.core.markers import STEER_HEADER, defang
 from aaestro.core.skill import SkillContext
 from aaestro.core.tools import is_mcp_tool
+from aaestro.observability.logging import mask_secrets
 
 if TYPE_CHECKING:
     from collections.abc import (
@@ -281,7 +282,9 @@ class ExecutorServices:
     없으면 그 선언을 쓸 수 없다 — 기본 체인으로 돌고 WARN 을 남긴다."""
 
 
-def _tool_error(name: str, task: TaskRequest, agent: str, err: BaseException) -> AaestroError:
+def _tool_error(
+    name: str, task: TaskRequest, agent: str, err: BaseException, *, message: str | None = None
+) -> AaestroError:
     """tool 실패를 출처에 맞는 코드로 변환한다.
 
     skillset tool 은 ``SKILL_001``, MCP tool 은 ``MCP_003`` — 출처가 다르면
@@ -294,7 +297,7 @@ def _tool_error(name: str, task: TaskRequest, agent: str, err: BaseException) ->
     return AaestroError(
         category=ErrorCategory.MCP if is_mcp else ErrorCategory.MODULE,
         code=ErrorCode.MCP_003 if is_mcp else ErrorCode.SKILL_001,
-        message=f"tool call failed: {name}",
+        message=message or f"tool call failed: {name}",
         agent=agent,
         task_id=task.task_id,
         details={"tool": name},
@@ -728,8 +731,12 @@ class Executor:
 
     async def _run_tool(
         self, call: ToolCall, task: TaskRequest, ctx: SkillContext, binding: ModuleBinding
-    ) -> Any:
-        """단일 tool 을 상한 안에서 실행하고 실패를 변환한다."""
+    ) -> tuple[Any, ToolOutcome]:
+        """단일 tool 을 상한 안에서 실행하고, 결과를 모델이 읽을 모양으로 바꾸고, 실패를 변환한다.
+
+        결과를 실을 수 없는 것(직렬화 실패)도 그 도구의 실패다 — 태스크 실패가 아니다. 다만 도구는
+        이미 실행됐으므로 호출 실패와 다른 메시지로 알린다.
+        """
         timeout = self._tool_timeout(call.name, task, binding)
         try:
             result = await asyncio.wait_for(
@@ -748,12 +755,31 @@ class Executor:
             ) from err
         except asyncio.CancelledError:
             raise
+        except AaestroError:
+            # 구조화 에러는 그대로 — `from err` 를 붙이면 자기 자신이 원인이 되어 원인 체인
+            # (MCP 서버 · 프록시의 사유) 이 지워지고 모델이 사유를 받지 못한다
+            self._record_tool(call.name, status=STATUS_FAILED)
+            raise
         except Exception as err:
             self._record_tool(call.name, status=STATUS_FAILED)
             raise _tool_error(call.name, task, self._agent, err) from err
 
+        try:
+            outcome = tool_outcome(call, result)
+        except Exception as err:
+            # default=str 이 부르는 __str__ 은 무엇이든 던질 수 있다 (CancelledError 는 안 잡힌다).
+            # 도구는 이미 실행됐다 — "호출 실패" 로 읽히면 모델이 부수효과 도구를 다시 부른다
+            self._record_tool(call.name, status=STATUS_FAILED)
+            raise _tool_error(
+                call.name,
+                task,
+                self._agent,
+                err,
+                message=f"tool result not serializable: {call.name}",
+            ) from err
+
         self._record_tool(call.name, status=STATUS_COMPLETED)
-        return result
+        return result, outcome
 
     def _record_tool(self, tool: str, *, status: str) -> None:
         """tool 호출을 메트릭에 남긴다 — telemetry 미주입 시 무동작."""
@@ -961,19 +987,14 @@ class Executor:
                         turn=turn,
                     )
 
+                # 도구 실패도 결과다 — 모델이 사유를 읽고 인자를 고치거나 다른 길을 택한다.
+                # 실패 반복의 상한은 turn 상한(LLM_005)이다
                 outcomes = []
-                failure: AaestroError | None = None
                 for event, outcome in await self._invoke_tools(
                     response.tool_calls, task, ctx, turn, binding
                 ):
                     yield event
-                    if isinstance(outcome, AaestroError):
-                        failure = failure or outcome
-                    else:
-                        outcomes.append(outcome)
-
-                if failure is not None:
-                    raise failure
+                    outcomes.append(outcome)
 
                 # 모델이 보낸 그대로(raw) 되돌리고, 모든 결과를 **한** 메시지에 모은다 —
                 # 나눠 보내면 모델이 병렬 호출을 멈추도록 학습된다
@@ -1047,14 +1068,15 @@ class Executor:
         ctx: SkillContext,
         turn: int,
         binding: ModuleBinding,
-    ) -> list[tuple[ToolResultEvent, Any]]:
+    ) -> list[tuple[ToolResultEvent, ToolOutcome]]:
         """독립 tool 호출을 병렬 실행하고, 각 결과를 이벤트와 짝지어 돌려준다.
 
         하나가 실패해도 형제 호출을 중도 취소하지 않는다 — 취소된 호출은 결과도
         메트릭도 남기지 못해, 다중 tool 턴의 집계가 조용히 비게 된다.
 
         Returns:
-            ``(이벤트, 결과)`` 쌍. 실패한 호출의 결과 자리에는 `AaestroError` 가 온다.
+            ``(이벤트, 모델이 읽을 결과)`` 쌍. 실패한 호출은 이벤트에 ``error`` 를 싣고,
+            결과는 사유를 담은 ``is_error`` 결과다 (`tool_failure`).
         """
         started = time.monotonic()
         outcomes = await asyncio.gather(
@@ -1063,7 +1085,7 @@ class Executor:
         )
         elapsed_ms = int((time.monotonic() - started) * 1000)
 
-        paired: list[tuple[ToolResultEvent, Any]] = []
+        paired: list[tuple[ToolResultEvent, ToolOutcome]] = []
         for call, outcome in zip(calls, outcomes, strict=True):
             if isinstance(outcome, asyncio.CancelledError):
                 self._cleanup()
@@ -1074,6 +1096,17 @@ class Executor:
                     if isinstance(outcome, AaestroError)
                     else _tool_error(call.name, task, self._agent, outcome)
                 )
+                # 태스크 실패 ERROR 가 더는 나지 않는다 — 처리됐지만 운영자가 알아야 하므로 WARN
+                log.warning(
+                    "tool call failed, returned to model",
+                    agent=self._agent,
+                    task_id=task.task_id,
+                    run_id=task.run_id,
+                    tool=call.name,
+                    turn=turn,
+                    error_code=error.code,
+                    retryable=error.retryable,
+                )
                 paired.append(
                     (
                         ToolResultEvent(
@@ -1083,20 +1116,21 @@ class Executor:
                             duration_ms=elapsed_ms,
                             error=error.payload(),
                         ),
-                        error,
+                        tool_failure(call, error),
                     )
                 )
                 continue
+            result, read_back = outcome
             paired.append(
                 (
                     ToolResultEvent(
                         task_id=task.task_id,
                         tool=call.name,
-                        result=outcome,
+                        result=result,
                         turn=turn,
                         duration_ms=elapsed_ms,
                     ),
-                    tool_outcome(call, outcome),
+                    read_back,
                 )
             )
         return paired
@@ -1186,10 +1220,66 @@ def tool_outcome(call: ToolCall, result: Any) -> ToolOutcome:
     return ToolOutcome(call_id=call.id, content=defang(content), is_error=is_error)
 
 
+MAX_TOOL_FAILURE_TEXT_CHARS: Final = 1000
+"""도구 실패 사유에서 도구 쪽이 쓴 글(예외 문자열 · 도구가 던진 에러의 메시지)의 상한."""
+
+
+def _untrusted_text(text: str) -> str:
+    """도구 쪽이 쓴 글을 모델에 실을 모양으로 — 비밀값을 로그와 같은 규칙으로 가리고 자른다.
+
+    가린 뒤에 자른다 — 자르다 ``token=`` 머리만 남기면 값 패턴이 잡지 못한다.
+    """
+    masked = str(mask_secrets(None, "", {"text": text})["text"])
+    if len(masked) <= MAX_TOOL_FAILURE_TEXT_CHARS:
+        return masked
+    return f"{masked[:MAX_TOOL_FAILURE_TEXT_CHARS]}…[truncated]"
+
+
+def _cause_text(cause: BaseException | None) -> str:
+    """원인 예외의 문자열 — 싣지 않을 원인이거나 문자열화가 실패하면 빈 문자열.
+
+    원인은 도구 쪽 객체라 ``__str__`` 이 무엇이든 던질 수 있다 — 그것이 회복 경계 밖으로 새면
+    도구 실패가 태스크 실패 (``INTERNAL_001``) 가 된다. 실패하면 원인이 없는 모양으로 낸다.
+    """
+    if cause is None or isinstance(cause, AaestroError):
+        return ""
+    try:
+        return str(cause)
+    except Exception:
+        log.debug("tool failure cause not printable", cause_type=type(cause).__name__)
+        return ""
+
+
+def tool_failure(call: ToolCall, error: AaestroError) -> ToolOutcome:
+    """Turn a failed tool call into an ``is_error`` result the model reads back.
+
+    실패를 태스크 실패로 올리지 않고 사유와 함께 돌려준다 — 모델이 인자를 고치거나 다른 길을
+    택할 수 있게 (#546). 본문은 코드 · 카테고리 · retryable · 사유이고, 도구 예외를 감싼 경우
+    원인의 타입 이름과 문자열을 더한다. ``details`` 는 싣지 않는다 — 값이 섞인다.
+
+    사유 원문은 신뢰하지 않는 데이터다: 비밀값을 가리고 길이를 자른 뒤, 직렬화한 본문 전체가
+    ``defang`` 을 지난다 (`tool_outcome` 과 같은 경계). 실패 표시는 ``is_error`` 로만 하고 본문에
+    머리말을 붙이지 않는다 — 표현은 provider 어댑터가 정한다.
+    """
+    body: dict[str, Any] = {
+        "code": error.code,
+        "category": str(error.category),
+        "retryable": error.retryable,
+        "message": _untrusted_text(error.message),
+    }
+    reason = _cause_text(error.__cause__)
+    # 문자열이 빈 원인 (tool timeout 의 TimeoutError) 은 사유를 더하지 않는다
+    if reason:
+        body["cause"] = {"type": type(error.__cause__).__name__, "message": _untrusted_text(reason)}
+    content = json.dumps({"error": body}, ensure_ascii=False)
+    return ToolOutcome(call_id=call.id, content=defang(content), is_error=True)
+
+
 __all__ = [
     "MAX_PENDING_STEERS",
     "MAX_STEER_BY_CHARS",
     "MAX_STEER_CHARS",
+    "MAX_TOOL_FAILURE_TEXT_CHARS",
     "MODEL_RETRY_POLICIES",
     "AssistantTurn",
     "Executor",
@@ -1205,5 +1295,6 @@ __all__ = [
     "ToolRegistry",
     "ToolTurn",
     "UserTurn",
+    "tool_failure",
     "tool_outcome",
 ]

@@ -32,8 +32,24 @@ Aaestro 알림이 울렸을 때의 대응 절차. 규범 규칙:
 1. `aaestro agent logs <agent>` — 지배적인 `error_code` 를 읽는다.
 2. `LLM_001` (rate limit) → [ModelRateLimited](#modelratelimited) 참조.
    `LLM_005` (max turns) → 프롬프트가 루프에 빠졌을 가능성이 높다, promptset 버전 확인.
-   `MCP_003` → tool 이 실패 중이다, Protocol 대시보드 확인.
+   tool 실패는 여기에 잡히지 않는다: 실패는 오류 결과로 모델에 돌아가고, 모델이 포기했을 때만
+   (흔히 `LLM_005`) 태스크가 실패한다. [ToolHighFailureRate](#toolhighfailurerate) 참조.
 3. 최근 배포와 상관관계가 있으면 모듈 버전을 롤백한다 — 모듈 버저닝 덕에 즉시 가능하다.
+
+### ToolHighFailureRate
+
+한 에이전트에서 한 tool 의 호출 중 20% 넘게가 10분간 실패했다. tool 실패는 태스크를 실패시키지
+않고 오류 결과로 모델에 돌아가므로, 고장 난 tool 은 [AgentHighFailureRate](#agenthighfailurerate)
+가 아니라 이 알림으로 드러난다.
+
+1. `aaestro agent logs <agent>` — `tool call failed, returned to model` 을 걸러 알림의 `tool` 의
+   `error_code` 를 읽는다.
+2. `SKILL_001` → skill 이 예외를 던진다, skillset 버전과 입력 확인.
+   `TO_002` → tool 이 느리거나 멈췄다, timeout 과 뒤의 서비스 확인.
+   `MCP_002` / `MOD_001` → 에이전트에 없는 tool 을 모델이 부른다, promptset 과 선언된 skillset ·
+   MCP 서버 대조.
+   `MCP_003` / `MCP_004` → MCP 서버가 실패하거나 전송이 끊긴다, Protocol 대시보드 확인.
+3. 최근 배포와 상관관계가 있으면 skillset 또는 MCP 사이드카 이미지 버전을 롤백한다.
 
 ### AgentDown
 

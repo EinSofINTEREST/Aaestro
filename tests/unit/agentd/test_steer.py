@@ -390,8 +390,8 @@ async def test_the_queue_is_gone_once_the_task_completes():
 
 
 async def test_the_queue_is_gone_once_the_task_fails():
-    executor, _model, tools = make_executor([calls("search"), text("done")])
-    tools.fail("search", RuntimeError("boom"))
+    # 도구 실패는 태스크를 끝내지 않는다 (#546) — 다음 모델 호출이 실패해 끝난다
+    executor, _model, tools = make_executor([calls("search"), RuntimeError("provider exploded")])
     tools.during["search"] = steering(executor, "note")
 
     result = await executor.execute(make_task())
