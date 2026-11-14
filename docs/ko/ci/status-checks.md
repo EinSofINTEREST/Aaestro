@@ -28,7 +28,6 @@
 | `Linked Issue Check` | `ci-convention.yml` / `linked-issue` | closing reference 최소 1개 검증 (`closingIssuesReferences.totalCount ≥ 1`, PR only; bot allowlist 적용) | Yes |
 | `Docs Sync Check` | `ci-docs.yml` / `docs-sync` | `docs/en` ↔ `docs/ko` 구조 미러 + 언어 선택자 존재 검증 | Yes |
 | `Review Presence` | `ci-review.yml` / `judge` (commit status) | 리뷰로 인정할 것이 최소 1개인지 보고 — [Review Presence](#review-presence) 참고. 정보성이며 머지 게이트 아님 (Ruleset 미등록) | No |
-| `Review Presence Signal` | `ci-review-signal.yml` / `signal` | 리뷰 이벤트를 받아 `ci-review.yml` 을 `workflow_run` 으로 깨우는 권한 없는 중계 — [Review Presence](#review-presence) 참고. 자기 결과는 의미가 없고, 봇 리뷰에서는 `action_required` 로 남는다 | No |
 | `Benchmark Regression` | `ci-bench.yml` / `bench` | main push 에서 `make bench` JSON 을 `bench-baseline` artifact 로 저장, PR 에서는 그것과 비교해 평균이 25% 이상 느려지면 경고 (annotation + summary). 입력을 읽을 수 없거나 기준선이 없으면 비교를 생략. 실패하지 않는다 — 정보성, 머지 게이트 아님 | No |
 | `Branch Name Lint` | `ci-convention.yml` / `branch-lint` | `{카테고리}/#{이슈번호}/{요약}` 위반 경고 — 정보성 | No |
 | `E2E Test` | `ci-nightly.yml` / `e2e` | Nightly 전체 스택 실행 (fake LLM provider) — 머지 게이트 아님 | No |
@@ -45,17 +44,14 @@
 모든 발화 경로가 같은 status context 를 쓴다.
 
 - **발화**: PR opened / synchronize / reopened / ready_for_review 는 `pull_request_target`
-  으로 직접 판정한다. 리뷰 submitted / edited / dismissed, 리뷰 코멘트 created / edited /
-  deleted 는 권한 없이 `echo` 한 단계만 도는 `ci-review-signal.yml` 이 받는다. 그 실행이 `workflow_run` (`requested` 와
-  `completed`) 을 일으키고, 이것이 기본 브랜치의 `ci-review.yml` 을 돌려 GitHub 이 그 실행에
-  적어 둔 PR 을 판정한다 (목록이 비면 — 포크 PR 이 그렇다 — 열린 PR 전부). 중계를 두는 이유:
-  `pull_request_review` 실행은 이벤트를 일으킨 계정이 승인 대상이면 승인을 기다린다 — Copilot
-  리뷰는 매번 job 없이 `action_required` 로 끝났다 (#574). `workflow_run` 은 승인을 기다리는
-  실행에도 발생하고, 그것이 띄운 실행은 승인이 필요 없다. 그 밖에 매시 7 · 22 · 37 · 52분의
-  schedule 로 열린 PR 전부 (리액션은 워크플로를 발화시키지 못해 리뷰 봇의 👍 는 이 경로로만
-  반영된다), 수동 `workflow_dispatch`. PR 이벤트와 신호 이벤트는 PR 번호마다
-  concurrency 그룹을 하나씩 쓰고 (그룹 이름은 대소문자를 구분하지 않아 브랜치명은 쓰지 않는다),
-  전체 판정 — schedule, 수동 실행, PR 이 실리지 않는 포크의 신호 — 은 따로 한 그룹을 쓴다.
+  으로 직접 판정한다. 리뷰 이벤트 (리뷰 submitted / edited / dismissed, 리뷰 코멘트 created /
+  edited / deleted) 는 **트리거가 없다**: 매시 7 · 22 · 37 · 52분의 schedule 로 열린 PR 전부를
+  판정할 때, 또는 수동 `workflow_dispatch` 로만 반영된다. 리뷰 이벤트 트리거는 이벤트를 일으킨
+  계정이 승인 대상이면 승인을 기다린다 — Copilot 리뷰는 매번 job 없이 `action_required` 로
+  끝났고 (#574), 신호 워크플로 + `workflow_run` 중계도 같았다 (#578 — 판정 실행이 대기 상태를
+  물려받았다, #584). 리액션도 워크플로를 발화시키지 못해 리뷰 봇의 👍 는 같은 경로로 반영된다.
+  PR 이벤트는 PR 번호마다 concurrency 그룹을 하나씩 쓰고 (그룹 이름은 대소문자를 구분하지 않아
+  브랜치명은 쓰지 않는다), 전체 판정 — schedule, 수동 실행 — 은 따로 한 그룹을 쓴다.
 - **신뢰 계정** — 이 계정만 인정될 수 있고, PR 작성자는 제외한다:
   - `author_association` 이 `OWNER` · `MEMBER` · `COLLABORATOR` 인 사람 (공개 저장소라
     외부인 리뷰로는 게이트가 열리지 않는다)
@@ -89,13 +85,11 @@
   붙잡지 않는다. `--all-open` 은 sha 별로 묶어
   한 번씩 쓰고, 한 sha 를 판정한 직후 곧바로 현재 값을 읽고 쓴 뒤에 다음 sha 로 간다. PR 하나의 실패 (API 오류, 모양이 어긋난 응답) 는
   로그를 남기고 건너뛰며, 실행은 종료 코드 1 로 끝난다.
-- **게이트 무결성**: 자동 경로 — `pull_request_target` · `workflow_run` · `schedule` — 는 기본
-  브랜치의 워크플로 파일로 돌고, 그 파일이 판정 스크립트를 기본 브랜치에서 checkout 한다 —
-  `ci-review.yml` 이나 `ci-review-signal.yml` 을 고친 PR 이 자기 head 의 판정 방식을 바꾸지
-  못한다. 수동 `workflow_dispatch` 는 실행자가 고른 ref 의 워크플로 파일로 돈다 — 실행할 수
-  있는 것은 쓰기 권한자뿐이고, 이미 status 를 직접 쓸 수 있는 같은 신뢰 수준이다 (알려진 한계). 신호는 PR 쪽 파일로 돌지만 토큰이 없고 넘기는 것도 없다: 판정은
-  GitHub 이 이벤트 페이로드에 넣은 PR 번호를 읽고 리뷰는 API 로 다시 읽는다. 워크플로는
-  PR 코드를 checkout 하지 않는다.
+- **게이트 무결성**: 자동 경로 — `pull_request_target` · `schedule` — 는 기본 브랜치의 워크플로
+  파일로 돌고, 그 파일이 판정 스크립트를 기본 브랜치에서 checkout 한다 — `ci-review.yml` 을
+  고친 PR 이 자기 head 의 판정 방식을 바꾸지 못한다. 수동 `workflow_dispatch` 는 실행자가 고른
+  ref 의 워크플로 파일로 돈다 — 실행할 수 있는 것은 쓰기 권한자뿐이고, 이미 status 를 직접 쓸 수
+  있는 같은 신뢰 수준이다 (알려진 한계). 워크플로는 PR 코드를 checkout 하지 않는다.
 - **알려진 한계**:
   - 쓰기 권한이 있는 토큰 (사람, 또는 이 저장소의 어떤 워크플로) 은 commit status 를 직접
     쓸 수 있다. **한 번** 쓴 위조는 판정과 다르므로 다음 판정이 덮어쓰지만, schedule 은
@@ -104,25 +98,19 @@
     는 몇 시간 틀린 채로 남을 수 있다.
   - 리뷰 이벤트 없이 리뷰 봇의 👍 만 남으면 다음 판정 (보통 schedule, 즉 몇 시간 뒤) 에야
     반영된다.
-  - 신호는 PR 쪽의 `ci-review-signal.yml` 로 돈다. 그 파일을 지운 PR, 파일이 생기기 전에 딴
-    브랜치는 리뷰 신호를 보내지 않는다 — 그 리뷰는 다음 push (`pull_request_target`) 나
-    schedule 에서 판정된다.
+  - 리뷰 이벤트는 schedule 이나 수동 실행으로만 판정되므로 리뷰 봇의 리뷰나 👍 가 반영되기까지
+    몇 시간 걸릴 수 있다 (best-effort — #574 실측 실행 간격 3.4 ~ 8.7시간). 새 push
+    (`pull_request_target`) 는 더 빨리 판정한다. 리뷰에 이벤트 기반 경로는 없다:
+    `pull_request_review` 직접 트리거 (#574) 도 `workflow_run` 중계 (#578) 도 봇 리뷰에서 승인
+    대기에 걸렸다 (#584).
   - 공개 저장소의 `pull_request_target` 은 2026-12-02 부터 기본 정책으로 막힌다
     ("Securely using pull_request_target"). 저장소가 허용하지 않으면 그때부터 PR 이벤트가
     판정되지 않는다 — 이 체크와 별도로 다룬다.
-  - 승인을 기다리는 신호 실행에도 `workflow_run` 이 발생한다는 것은 GitHub 문서가 직접 말하지
-    않는다. 문서는 `completed` 가 "occurs when a workflow run is completed, regardless of
-    whether the workflow was successful" 라 하고, 승인을 기다리는 실행은 처음부터 `completed`
-    · 결론 `action_required` 로 생긴다 (run 43603239882, attempt 1). 다른 공개 저장소들은
-    그런 실행에 `requested` · `completed` 가 모두 발생한다고 보고한다. 이 저장소에서는 변경이
-    기본 브랜치에 들어간 뒤에야 확인된다 — GitHub 이 `workflow_run` 워크플로를 거기서 돌리기
-    때문이다. 발생하지 않으면 리뷰는 다음 push 나 schedule 에서만 판정되고, PR 이벤트는
-    지금과 같이 판정된다.
   - 쓰기 권한 토큰으로 **반복해** 쓰는 위조는 판정이 이길 수 없다. 그 루프가 그 sha 의
     1000건을 다 쓰면 판정 쓰기가 실패하고 위조가 남는다.
   - 쓸지 말지는 (state, description) 로만 판단한다 — 현재 status 를 누가 썼는지 (출처) 는
     보지 않는다.
-  - 전체 판정 (schedule · 수동 실행 · 포크의 리뷰 신호) 과 PR 단위 판정은 서로 겹칠 수 있다 —
+  - 전체 판정 (schedule · 수동 실행) 과 PR 단위 판정은 서로 겹칠 수 있다 —
     읽기와 쓰기가 원자적이지 않고 쓰기는 신선도를 보지 않는다. 전체 판정의 읽기와 쓰기 사이 수 초
     동안 리뷰나 철회가 들어오면 오래된 판정이 새 값을 덮을 수 있고, 그 PR 의 다음 판정이 바로잡는다.
   - 공개 저장소에서는 저장소 활동이 60일 없으면 schedule 워크플로가 자동으로 꺼진다.
