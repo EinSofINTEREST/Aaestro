@@ -71,6 +71,8 @@ class Connection:
     handle: Any = None
     schemas: dict[str, dict[str, Any]] = field(default_factory=dict)
     """tool 이름 → input schema. 이름만으로는 모델이 인자를 채울 수 없다."""
+    descriptions: dict[str, str] = field(default_factory=dict)
+    """tool 이름 → 서버가 준 설명 — **신뢰하지 않는 입력**이라 모델에 가기 전에 정리된다."""
 
 
 @runtime_checkable
@@ -166,6 +168,14 @@ class McpSession:
         return {
             name: schema for name, schema in self._connection.schemas.items() if name in allowed
         }
+
+    @property
+    def descriptions(self) -> dict[str, str]:
+        """바인딩된 tool 의 서버 설명 — ``schemas`` 와 같은 필터가 적용된다."""
+        if self._connection is None:
+            return {}
+        allowed = set(self.tools)
+        return {n: d for n, d in self._connection.descriptions.items() if n in allowed}
 
     async def initialize(self) -> tuple[str, ...]:
         """Establish the session and collect its tools.

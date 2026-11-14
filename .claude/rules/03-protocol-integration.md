@@ -171,6 +171,17 @@ spec:
 3. **Tool Namespacing**
    - MCP tool 은 `mcp__{server}__{tool}` 로 네임스페이스 — skillset tool 과 충돌 방지
    - 동일 서버 이름 중복 선언 금지 (manifest 검증에서 차단)
+   - tool description 은 서버가 준 설명을 쓰되 **untrusted input** 이다 — 유니코드 범주 `C*`
+     (폭 없는 문자 · bidi 제어 포함, 탭 · 개행 제외) 와 줄 · 문단 구분자는 공백으로,
+     `core.markers.defang`, 1024자 상한 (`MCP_DESCRIPTION_MAX_CHARS`), 뒤에 출처
+     `(from MCP server {server})`. 설명이 없으면 `MCP tool from {server}`.
+     서버 inputSchema 안의 문자열은 키 이름과 상관없이 (`description` · `title` · `examples` ·
+     `$comment` · `x-*` …) 전부 같은 정리를 거친다 (출처 꼬리 없음) — 거부 목록 방식이다.
+     정확히 일치해야 하는 키의 값만 그대로 둔다: `enum` · `const` · `default` · `pattern`
+     (인자 값 계약), `required` · `dependentRequired` · `$ref` · `$id` · `$schema` · `$anchor` ·
+     `$dynamicRef` · `$dynamicAnchor` (이름 · 참조). 딕셔너리 키 이름 (속성 이름) 도 계약이라
+     그대로다. 값이 딕셔너리면 그 키라도 재귀한다 (하위 스키마를 숨기지 못하게).
+     `ask_peer` 는 부를 수 있는 peer (연결이 선언되고 주소가 주입된 것) 이름을 설명에 싣는다 (`peer_spec`)
 
 4. **Tool Filtering**
    - 서버가 노출하는 tool 전체를 무조건 바인딩하지 않는다 —

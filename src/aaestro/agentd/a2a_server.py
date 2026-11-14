@@ -152,6 +152,7 @@ def build_peer_client(manifest: AgentManifest) -> Any:
             max_depth=int(os.environ.get(MAX_DEPTH_ENV, str(_default_max_depth()))),
         ),
         transport=SdkPeerTransport(agent=manifest.name, addresses=reachable),
+        reachable=tuple(sorted(reachable)),
         tickets=(
             TicketSource(agent=manifest.name, base_url=registry[0], credential=registry[1])
             if registry

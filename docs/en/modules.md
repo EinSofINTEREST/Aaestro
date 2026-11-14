@@ -193,6 +193,19 @@ Answer it.
   look-alike angle brackets. A recalled memory's second and later lines are indented under its
   `[memory:…]` line, so a memory cannot start a line that looks like another memory. Only the
   real notation has the real shape. Promptset values keep the id rule above.
+- **The description an MCP server gives its tool is untrusted too.** It goes to the model as the
+  tool's description after control, format and bidi characters (Unicode category `C*`, except tab
+  and newline) and line or paragraph separators become spaces, the notation above is defanged,
+  it is cut at 1024 characters, and `(from MCP server {server})` is appended. Every string
+  inside the tool's input schema (`description`, `title`, `examples`, `$comment`, `x-*`, ...) gets
+  the same cleaning without the origin suffix. Only values under exact-match keys stay
+  untouched: `enum`, `const`, `default`, `pattern` (argument contracts) and `required`,
+  `dependentRequired`, `$ref`, `$id`, `$schema`, `$anchor`, `$dynamicRef`, `$dynamicAnchor`
+  (names and references). Dictionary key names (property names) are contracts and stay as they
+  are. A dictionary under one of those keys is still walked, so a property named `enum` cannot
+  hide its sub-schema. A tool whose server gave
+  no description (or only whitespace) keeps `MCP tool from {server}`. `ask_peer` lists the peers
+  the agent can actually call (connection declared and address injected) in its description.
 - **Syntax that bypasses the fence is refused**, when the promptset is loaded (`MOD_003` — the
   module was published broken, like a missing template file) and again on every render
   (`MOD_004`). The load-time check goes as far as parsing (syntax and refused statements); what

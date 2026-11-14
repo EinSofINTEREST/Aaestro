@@ -534,3 +534,21 @@ async def test_serve_both_binds_control_and_peer_to_the_given_host(uvicorn_spy):
         "control": "127.0.0.1",
         "peer": "127.0.0.1",
     }
+
+
+def test_ask_peer_description_lists_the_reachable_peers():
+    """모델이 누구에게 물을 수 있는지 알아야 한다 (#547)."""
+    from aaestro.agentd.__main__ import _executable_schemas
+    from aaestro.agentd.tools import AgentToolRegistry
+    from aaestro.protocols.a2a.tool import ASK_PEER_SPEC
+
+    class Result:
+        tools = {"ask_peer": ASK_PEER_SPEC}
+
+    class Peers:
+        def peers(self):
+            return ("planner", "writer")
+
+    schemas = _executable_schemas(Result(), AgentToolRegistry(agent="r", peers=Peers()))
+
+    assert "planner, writer" in schemas[0].description

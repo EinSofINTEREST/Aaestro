@@ -6,12 +6,14 @@ agentd 기동 시퀀스 (03 MCP Startup Sequence). 순서를 지키는 것 자�
 
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 
 from aaestro.core.agent import ComponentHealth, HealthState, HealthStatus
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.core.markers import defang
 from aaestro.core.skill import SkillSpec
 from aaestro.core.tools import namespaced
 from aaestro.memory.tool import MEMORY_SEARCH_SPEC, MEMORY_SEARCH_TOOL
@@ -45,6 +47,10 @@ class McpLauncher(Protocol):
         이름만으로는 모델이 인자를 채울 수 없다 — 기동이 이것을 tool registry 로
         흘려보낸다.
         """
+        ...
+
+    def descriptions(self) -> dict[str, str]:
+        """네임스페이스가 붙은 tool 이름 → 서버가 준 설명 (신뢰하지 않는 입력)."""
         ...
 
 
@@ -92,6 +98,82 @@ def _module_error(code: ErrorCode, message: str, agent: str, **details: Any) -> 
     )
 
 
+MCP_DESCRIPTION_MAX_CHARS: Final = 1024
+"""서버 설명의 상한 — 서버가 프롬프트를 마음대로 부풀리지 못하게 한다."""
+
+_EXACT_KEYS: Final = frozenset(
+    {
+        # 인자 값 계약
+        "enum",
+        "const",
+        "default",
+        "pattern",
+        # 이름 · 참조
+        "required",
+        "dependentRequired",
+        "$ref",
+        "$id",
+        "$schema",
+        "$anchor",
+        "$dynamicRef",
+        "$dynamicAnchor",
+    }
+)
+"""정확히 일치해야 하는 스키마 키 — 값을 정리하지 않는다 (거부 목록: 그 밖의 문자열은 전부 정리)."""
+
+
+def _clean_text(raw: str) -> str:
+    """서버 문구를 모델에 싣기 전 정리한다 — 서버 문구는 신뢰하지 않는 입력이다.
+
+    유니코드 범주 C* (폭 없는 문자 · bidi 제어 포함) 와 줄 · 문단 구분자는 공백으로 바꾼 뒤
+    표기를 무력화한다 — 폭 없는 문자를 끼워 defang 을 피하는 길을 막는다. 탭 · 개행은 둔다.
+    """
+    spaced = "".join(
+        " "
+        if (unicodedata.category(c).startswith("C") or unicodedata.category(c) in {"Zl", "Zp"})
+        and c not in "\t\n"
+        else c
+        for c in raw
+    )
+    return defang(spaced).strip()[:MCP_DESCRIPTION_MAX_CHARS].strip()
+
+
+def clean_schema(node: Any) -> Any:
+    """Copy a server input schema with every server-written string cleaned.
+
+    서버 스키마 안의 문자열을 (``description`` · ``title`` · ``examples`` · ``$comment`` ·
+    ``x-*`` 확장 등 이름과 상관없이) 전부 정리한 사본을 돌려줍니다 — 새 키가 생겨도 기본값이
+    "정리" 입니다. ``_EXACT_KEYS`` 의 값만 그대로 둡니다. 딕셔너리 키 이름 (속성 이름) 은
+    인자 계약이라 그대로입니다. 거부 목록 이름의 속성 (``properties: {enum: {...}}``) 이 하위
+    스키마를 숨기지 못하도록, 값이 딕셔너리면 그 키라도 재귀합니다.
+    """
+    if isinstance(node, str):
+        return _clean_text(node)
+    if isinstance(node, dict):
+        return {
+            key: value
+            if key in _EXACT_KEYS and not isinstance(value, dict)
+            else clean_schema(value)
+            for key, value in node.items()
+        }
+    if isinstance(node, list):
+        return [clean_schema(item) for item in node]
+    return node
+
+
+def mcp_tool_description(server: str, raw: str) -> str:
+    """Turn a server-provided description into what the model sees.
+
+    서버가 준 설명은 신뢰하지 않는 입력입니다 (03 MCP Rules 5): 제어문자를 공백으로 바꾸고,
+    프레임워크 표기를 무력화하고, 상한에서 자르고, 출처를 붙입니다. 설명이 없으면
+    기존 문구입니다.
+    """
+    text = _clean_text(raw)
+    if not text:
+        return f"MCP tool from {server}"
+    return f"{text} (from MCP server {server})"
+
+
 def build_tool_registry(
     skillsets: Sequence[LoadedSkillset],
     mcp_servers: dict[str, tuple[str, ...]],
@@ -100,6 +182,7 @@ def build_tool_registry(
     with_memory: bool = False,
     with_peers: bool = False,
     mcp_schemas: Mapping[str, Mapping[str, Any]] | None = None,
+    mcp_descriptions: Mapping[str, str] | None = None,
 ) -> dict[str, SkillSpec]:
     """Merge skillset and MCP tools into one registry.
 
@@ -116,6 +199,8 @@ def build_tool_registry(
             붙지 않았는데 노출하면 모델이 부를 수 없는 tool 을 본다.
         mcp_schemas: Namespaced tool name to its input schema — 이름만 담으면
             모델이 인자를 채울 수 없다.
+        mcp_descriptions: Namespaced tool name to the server's own description —
+            신뢰하지 않는 입력이라 ``mcp_tool_description`` 을 거쳐 실린다.
 
     Returns:
         Tool name to its spec — MCP tool 도 스키마를 담은 spec 이다.
@@ -125,6 +210,7 @@ def build_tool_registry(
     """
     registry: dict[str, SkillSpec] = {}
     schemas = mcp_schemas or {}
+    descriptions = mcp_descriptions or {}
 
     for skillset in skillsets:
         for spec in skillset.tools():
@@ -151,8 +237,8 @@ def build_tool_registry(
                 )
             registry[name] = SkillSpec(
                 name=name,
-                description=f"MCP tool from {server}",
-                parameters=dict(schemas.get(name, {})),
+                description=mcp_tool_description(server, descriptions.get(name, "")),
+                parameters=clean_schema(dict(schemas.get(name, {}))),
             )
 
     if with_memory:
@@ -310,6 +396,7 @@ class Bootstrap:
             with_peers=self._manifest.spec.a2a.enabled,
             # 스키마를 흘리지 않으면 모델이 MCP tool 의 인자를 채울 수 없다
             mcp_schemas=self._mcp.schemas() if self._mcp is not None else None,
+            mcp_descriptions=self._mcp.descriptions() if self._mcp is not None else None,
         )
 
         return BootstrapResult(

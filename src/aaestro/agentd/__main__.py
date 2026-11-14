@@ -46,7 +46,7 @@ from aaestro.memory.tool import MEMORY_SEARCH_TOOL
 from aaestro.observability.logging import LOG_FORMAT_ENV, LOG_LEVEL_ENV
 from aaestro.observability.metrics import METRICS_PORT_ENV, Metrics
 from aaestro.protocols.a2a.card import build_card
-from aaestro.protocols.a2a.tool import ASK_PEER_TOOL
+from aaestro.protocols.a2a.tool import ASK_PEER_TOOL, peer_spec
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
@@ -584,8 +584,11 @@ def _executable_schemas(result: Any, tools: AgentToolRegistry) -> list[SkillSpec
     for name, spec in result.tools.items():
         if name == MEMORY_SEARCH_TOOL and tools.memory is None:
             continue
-        if name == ASK_PEER_TOOL and tools.peers is None:
-            continue
+        if name == ASK_PEER_TOOL:
+            if tools.peers is None:
+                continue
+            # 부를 수 있는 peer 를 설명에 싣는다 — 없는 peer 를 지어내면 A2A_004 로 한 턴이 낭비된다
+            spec = peer_spec(tools.peers.peers())
         if is_mcp_tool(name) and tools.mcp is None:
             # 세션이 없으면 부를 수 없다 — 실행할 수 없는 tool 을 광고하면
             # 모델이 고를 때마다 거부되어 루프에 빠진다
