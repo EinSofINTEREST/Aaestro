@@ -6,25 +6,30 @@
 # job 이 그 PR 의 check 가 되지 않는다. 모든 경로가 같은 context (`Review Presence`) 로 쓴다.
 # job 이름은 일부러 status context 와 다르게 둔다 — 같으면 Ruleset 이 둘 중 무엇을 보는지 모호해진다.
 #
-# PR 이벤트는 pull_request_target 이다 — 기본 브랜치의 워크플로 파일로 돌아서, 이 파일을 고친 PR 이
-# 자기 head 에 success 를 쓰지 못한다. 이 트리거의 일반적 위험 (쓰기 토큰으로 PR 코드를 실행) 은
-# 여기 해당하지 않는다: PR 코드를 checkout 하지 않고 (아래 checkout 은 기본 브랜치), PR 은 API 로
-# 읽기만 한다. PR 에서 온 값 (제목 · 본문 · 브랜치명) 을 셸에 넣지 않는다 — 번호만 env 로 받는다.
-# pull_request_review(_comment) 는 PR 쪽 워크플로 파일로 돈다. 남는 위조 경로 (쓰기 권한 토큰으로
-# status 를 직접 쓰기) 와 schedule 의 한계는 status-checks.md "Known limits" 에 있다.
+# PR 이벤트는 pull_request_target, 리뷰 이벤트는 ci-review-signal.yml (권한 없음) 실행의 workflow_run 으로
+# 받는다 (#578). 둘 다 기본 브랜치의 워크플로 파일로 돌아서, 이 파일이나 신호 파일을 고친 PR 이 자기
+# head 에 success 를 쓰지 못한다. 리뷰 이벤트를 직접 받지 않는 이유: pull_request_review(_comment) 실행은
+# 이벤트를 일으킨 계정 기준으로 승인 대기에 걸려 Copilot 리뷰마다 멈췄다 (#574). 신호 실행이 승인 대기에
+# 걸려도 workflow_run 은 발생한다 (문서에 명시되지 않음 — status-checks.md "Known limits").
+# 이 트리거들의 일반적 위험 (쓰기 토큰으로 PR 코드를 실행) 은 여기 해당하지 않는다: PR 코드를 checkout
+# 하지 않고 (아래 checkout 은 기본 브랜치), PR 은 API 로 읽기만 한다. PR 에서 온 값 (제목 · 본문 ·
+# 브랜치명) 을 셸에 넣지 않는다 — GitHub 이 채운 PR 번호만 env 로 받는다. 남는 위조 경로 (쓰기 권한
+# 토큰으로 status 를 직접 쓰기) 와 schedule 의 한계는 status-checks.md "Known limits" 에 있다.
 name: ci-review
 
 on:
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review]
-  # 판정 근거가 생기거나 사라지는 이벤트 — 리뷰 본문 수정 · 라인 코멘트 삭제 포함
-  pull_request_review:
-    types: [submitted, edited, dismissed]
-  pull_request_review_comment:
-    types: [created, edited, deleted]
+  # 리뷰 · 리뷰 코멘트 이벤트 — 신호 워크플로를 거친다.
+  # requested 는 신호 실행이 승인 대기에 걸려도 곧바로 오고, completed 는 재실행 · 승인 뒤 실행에도 온다.
+  # 둘 다 받아도 같은 판정이면 status 를 다시 쓰지 않는다 (post_status)
+  workflow_run:
+    workflows: [ci-review-signal]
+    types: [requested, completed]
   # 리액션 (Codex 👍) 은 워크플로를 발화시키지 못한다 — 이 경로로만 반영된다.
   # 판정과 다른 status (한 번 쓴 위조 포함) 도 이 실행이 덮어쓴다. 반복해 쓰는 위조는 이기지 못한다.
-  # schedule 은 best-effort 라 늦거나 빠질 수 있고, 정시 (매시 0분) 가 가장 붐비므로 피한다
+  # schedule 은 best-effort 라 수 시간 늦거나 빠질 수 있고 (#574 실측: 간격 3.4 ~ 8.7시간, 평균 6.5시간),
+  # 정시 (매시 0분) 가 가장 붐비므로 피한다
   schedule:
     - cron: "7,22,37,52 * * * *"
   workflow_dispatch:
@@ -35,13 +40,15 @@ permissions:
   issues: read
   statuses: write
 
-# PR 이벤트는 PR 별 그룹, schedule · 수동 실행은 따로 한 그룹이다. GitHub 은 그룹당 대기 실행을 하나만
-# 두고 더 새 실행이 오면 대기 중이던 것을 취소한다 — 한 그룹으로 묶으면 다른 PR 의 이벤트가 철회
-# 이벤트를 지워 리뷰 없는 success 가 남는다. PR 별 그룹에서는 대기 실행을 대신하는 것이 같은 PR 의
-# 더 새 실행이고, 그것이 실행 시점의 상태를 다시 읽으므로 잃는 것이 없다. schedule 과 PR 이벤트는
-# 서로 겹칠 수 있다 — 남는 경합 창은 status-checks.md "Known limits"
+# PR 단위 판정은 PR 번호별 그룹, 전체 판정 (schedule · 수동 실행 · PR 이 실리지 않는 포크의 신호) 은
+# 따로 한 그룹이다. GitHub 은 그룹당 대기 실행을 하나만 두고 더 새 실행이 오면 대기 중이던 것을
+# 취소한다 — 한 그룹으로 묶으면 다른 PR 의 이벤트가 철회 이벤트를 지워 리뷰 없는 success 가 남는다.
+# PR 별 그룹에서는 대기 실행을 대신하는 것이 같은 PR 의 더 새 실행이고, 그것이 실행 시점의 상태를 다시
+# 읽으므로 잃는 것이 없다. 브랜치명은 키에 쓰지 않는다 — 그룹 이름은 대소문자를 구분하지 않아
+# `Feature` 와 `feature` 가 한 그룹이 된다. 전체 판정과 PR 단위 판정은 서로 겹칠 수 있다 — 남는 경합
+# 창은 status-checks.md "Known limits"
 concurrency:
-  group: ci-review-${{ github.event.pull_request.number || 'all-open' }}
+  group: ci-review-${{ github.event.pull_request.number || github.event.workflow_run.pull_requests[0].number || 'all-open' }}
   cancel-in-progress: false
 
 jobs:
@@ -59,6 +66,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           NUMBER: ${{ github.event.pull_request.number }}
+          # GitHub 이 채운 신호 실행의 PR 목록 — 포크 PR 이면 비어 있다 (그때는 열린 PR 전부를 판정)
+          PULLS: ${{ toJSON(github.event.workflow_run.pull_requests) }}
           # docs/en/ci/status-checks.md "Review Presence" 와 동기화 유지 (쉼표 구분)
           REVIEW_BOTS: chatgpt-codex-connector[bot],copilot-pull-request-reviewer[bot],coderabbitai[bot]
         run: |
@@ -69,8 +78,14 @@ jobs:
             echo "::warning::$script 가 기본 브랜치에 없습니다 — Review Presence 를 판정하지 않습니다"
             exit 0
           fi
+          args=()
           if [ -n "$NUMBER" ]; then
-            python3 "$script" --repo "$REPO" --pr "$NUMBER"
-          else
-            python3 "$script" --repo "$REPO" --all-open
+            args=(--pr "$NUMBER")
+          elif [ "$GITHUB_EVENT_NAME" = workflow_run ]; then
+            mapfile -t numbers < <(jq -r '.[]?.number' <<<"$PULLS")
+            for n in "${numbers[@]}"; do args+=(--pr "$n"); done
           fi
+          if [ ${#args[@]} -eq 0 ]; then
+            args=(--all-open)
+          fi
+          python3 "$script" --repo "$REPO" "${args[@]}"
