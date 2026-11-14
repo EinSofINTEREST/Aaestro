@@ -48,7 +48,7 @@ async def launcher(echo_image: str):  # noqa: F811
     """실제 컨테이너를 띄우는 launcher — finalizer 가 반드시 정리한다."""
     client = CliDockerClient()
     agents = AgentLauncher(
-        engine=DockerEngine(client=client, network=TEST_NETWORK),
+        engine=DockerEngine(client=client, network=TEST_NETWORK, stop_grace_s=5.0),
         ports=A2APortAllocator(port_range=PORT_RANGE),
     )
     try:
@@ -106,7 +106,7 @@ async def test_an_exhausted_range_fails_loudly(echo_image):  # noqa: F811
     """조용히 겹쳐 주면 원인이 포트라는 것이 드러나지 않는다."""
     client = CliDockerClient()
     agents = AgentLauncher(
-        engine=DockerEngine(client=client, network=TEST_NETWORK),
+        engine=DockerEngine(client=client, network=TEST_NETWORK, stop_grace_s=5.0),
         # 한 자리뿐인 범위 — 두 번째 기동이 막혀야 한다
         ports=A2APortAllocator(port_range=(9400, 9400)),
     )
