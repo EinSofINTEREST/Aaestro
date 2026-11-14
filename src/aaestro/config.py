@@ -437,7 +437,6 @@ class MemoryConfig(BaseModel):
 
     backend: Literal["sqlite", "postgres"] = "sqlite"
     index_lag_target_s: float = Field(default=5.0, gt=0)
-    run_scope_retention_days: int = Field(default=30, gt=0)
     # sqlite 는 파일 경로, postgres 는 DSN. DSN 은 자격증명을 담으므로 설정
     # 파일이 아니라 AAESTRO_MEMORY__DSN 으로 주입한다 (01 Configuration Strategy)
     path: str = ":memory:"

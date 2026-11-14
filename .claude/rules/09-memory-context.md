@@ -32,8 +32,10 @@
 
 ### Scope Rules
 
-1. **run scope**: run 종료 후 read-only 전환 — 보존 기간(기본 30일, checkpoint 와 동일)
-   후 삭제. Service run 은 iteration 이 이어지는 동안 계속 누적 + compaction 적용.
+1. **run scope**: run 종료 후 read-only 전환 — 시간이 지났다는 이유로 지우지 않는다 (기억에
+   TIMEOUT 은 없다 — 지울 기억은 메모리 정리 판정과 운영자 조작이 정한다). Service run 은 iteration 이 이어지는 동안 계속 누적 + compaction 적용.
+   > **구현 상태**: 운영 경로의 토큰 · 레지스트리 판정은 아직 run space 를 싣지 않는다 — run 참여 판정과
+   > read-only 전환은 #468 이 구현한다.
    Cross-group 배선 그래프에서도 run 참여 노드 전원이 접근 (run 이 곧 경계)
 2. **local scope**: 컨테이너 재시작/재배포/그룹 이동과 무관하게 유지 — 에이전트 이름 기준.
    에이전트 버전 교체 시에도 승계 (기억은 이름에, 계약은 버전에)

@@ -772,7 +772,6 @@ decision:
 memory:
   backend: sqlite               # sqlite (dev) | postgres (prod)
   index_lag_target_s: 5         # 비동기 인덱싱 목표 지연
-  run_scope_retention_days: 30  # run scope 보존 (checkpoint 와 동일)
 
 observability:
   log_level: DEBUG
