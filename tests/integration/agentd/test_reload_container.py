@@ -23,7 +23,6 @@ import pytest
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-BASE_IMAGE = "aaestro/agent-base:0.1.0"
 TOKEN = "reload-test-token"  # noqa: S105 — 테스트 전용
 READY_TIMEOUT_S = 60.0
 
@@ -51,20 +50,6 @@ pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(not docker_available(), reason="docker daemon unavailable"),
 ]
-
-
-@pytest.fixture(scope="module")
-def base_image() -> str:
-    """지금 소스로 base 를 굽는다 — 옛 이미지면 고치기 전 agentd 를 검증하게 된다."""
-    docker(
-        "build",
-        "-t",
-        BASE_IMAGE,
-        "-f",
-        str(REPO_ROOT / "deployments" / "docker" / "agent-base.Dockerfile"),
-        str(REPO_ROOT),
-    )
-    return BASE_IMAGE
 
 
 @pytest.fixture

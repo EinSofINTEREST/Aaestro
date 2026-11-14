@@ -24,7 +24,6 @@ from aaestro.runtime.spec import A2A_PORT_ENV
 from tests.integration.runtime.test_docker_lifecycle import (
     CliDockerClient,
     docker,
-    echo_image,  # noqa: F401 — fixture
     requires_docker,
 )
 
@@ -44,7 +43,7 @@ def a2a_manifest(name: str) -> AgentManifest:
 
 
 @pytest.fixture
-async def launcher(echo_image: str):  # noqa: F811
+async def launcher(echo_image: str):
     """실제 컨테이너를 띄우는 launcher — finalizer 가 반드시 정리한다."""
     client = CliDockerClient()
     agents = AgentLauncher(
@@ -102,7 +101,7 @@ async def test_a_stopped_agent_returns_its_port(launcher):
 
 
 @requires_docker
-async def test_an_exhausted_range_fails_loudly(echo_image):  # noqa: F811
+async def test_an_exhausted_range_fails_loudly(echo_image):
     """조용히 겹쳐 주면 원인이 포트라는 것이 드러나지 않는다."""
     client = CliDockerClient()
     agents = AgentLauncher(
