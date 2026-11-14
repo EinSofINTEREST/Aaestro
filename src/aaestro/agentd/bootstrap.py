@@ -6,10 +6,13 @@ agentd 기동 시퀀스 (03 MCP Startup Sequence). 순서를 지키는 것 자�
 
 from __future__ import annotations
 
+import json
 import unicodedata
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
+
+import structlog
 
 from aaestro.core.agent import ComponentHealth, HealthState, HealthStatus
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
@@ -97,6 +100,12 @@ def _module_error(code: ErrorCode, message: str, agent: str, **details: Any) -> 
         details=details,
     )
 
+
+log = structlog.get_logger(__name__)
+
+# 정리 뒤 직렬화 크기 상한 — 수십 개 속성의 큰 스키마도 수 KiB 라 정상 서버는 걸리지 않고,
+# 한 도구가 매 턴 프롬프트를 부풀리는 것만 막는다
+MCP_SCHEMA_MAX_BYTES: Final = 32 * 1024
 
 MCP_DESCRIPTION_MAX_CHARS: Final = 1024
 """서버 설명의 상한 — 서버가 프롬프트를 마음대로 부풀리지 못하게 한다."""
@@ -275,10 +284,23 @@ def build_tool_registry(
                     tool=name,
                     mcp_server=server,
                 )
+            parameters = clean_schema(dict(schemas.get(name, {})))
+            size = len(json.dumps(parameters, ensure_ascii=False).encode())
+            if size > MCP_SCHEMA_MAX_BYTES:
+                # 거절이 아니라 광고 생략 — 한 도구가 서버 전체 기동을 막지 않게 한다
+                log.warning(
+                    "mcp tool schema too large, tool not advertised",
+                    agent=agent,
+                    mcp_server=server,
+                    tool=name,
+                    schema_bytes=size,
+                    max_bytes=MCP_SCHEMA_MAX_BYTES,
+                )
+                continue
             registry[name] = SkillSpec(
                 name=name,
                 description=mcp_tool_description(server, descriptions.get(name, "")),
-                parameters=clean_schema(dict(schemas.get(name, {}))),
+                parameters=parameters,
             )
 
     if with_memory:
