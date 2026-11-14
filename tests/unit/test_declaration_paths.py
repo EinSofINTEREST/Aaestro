@@ -10,6 +10,7 @@ HTTP 테스트는 ASGI scope 를 직접 만든다 — httpx 는 ``..`` 구간을
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -20,6 +21,7 @@ from aaestro.authoring import Author
 from aaestro.catalog import Catalog
 from aaestro.core.errors import AaestroError, ErrorCode
 from aaestro.materials import InMemoryMaterialStore
+from aaestro.modules.registry import inside
 from aaestro.orchestrator.control import create_app
 from aaestro.orchestrator.runstore import InMemoryRunStore
 
@@ -233,3 +235,28 @@ def test_a_module_behind_a_link_that_leaves_the_root_is_not_loaded(workspace, tm
 
     assert exc_info.value.code == ErrorCode.MOD_001
     assert "planner" not in listing.items
+
+
+def test_a_loop_that_resolve_returns_unraised_is_still_outside(workspace, monkeypatch):
+    """3.13+ resolve() 는 순환에서 링크가 남은 경로를 예외 없이 돌려준다 — 흉내."""
+    (workspace / "agents" / "loop-a").symlink_to(workspace / "agents" / "loop-b")
+    (workspace / "agents" / "loop-b").symlink_to(workspace / "agents" / "loop-a")
+    real_resolve = Path.resolve
+
+    def resolve_like_313(self: Path, strict: bool = False) -> Path:
+        return self if self.name.startswith("loop-") else real_resolve(self, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", resolve_like_313)
+
+    assert inside(workspace / "agents", workspace / "agents" / "loop-a") is None
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root 는 mode 000 디렉토리도 읽는다")
+def test_an_unreadable_directory_is_outside_on_every_python(workspace):
+    blocked = workspace / "agents" / "blocked"
+    blocked.mkdir()
+    blocked.chmod(0o000)
+    try:
+        assert inside(workspace / "agents", blocked / "manifest.yaml") is None
+    finally:
+        blocked.chmod(0o755)
