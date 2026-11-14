@@ -216,7 +216,8 @@ Answer it.
   `[operator steer-quoted]`, `[tool error-quoted]` and `[memory-quoted:`. Variants that read
   the same are caught too: case, spaces inside and around the brackets, full-width brackets,
   look-alike angle brackets, and format or control characters slipped between the letters
-  (Unicode category C*, U+2028, U+2029 — not tab or newline). Those characters are only skipped
+  (Unicode category C* except whitespace; whitespace such as CR, U+0085, U+2028 and U+2029 is
+  accepted only where a space is). Those characters are only skipped
   while matching; outside the notation they are left as they are. A recalled memory's second and later lines are indented under its
   `[memory:…]` line, so a memory cannot start a line that looks like another memory. Only the
   real notation has the real shape. Promptset values keep the id rule above.

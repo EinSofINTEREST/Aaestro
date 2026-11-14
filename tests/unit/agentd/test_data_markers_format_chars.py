@@ -13,7 +13,7 @@ from aaestro.memory.entry import MemoryEntry, MemorySource
 from aaestro.memory.recall import ScoredEntry, render_context
 from aaestro.modules.memoryset import MemoryKind
 
-GAP = "​‮"
+GAP = "\u200b\u202e"
 FORGED = "\n".join(
     GAP.join(notation)
     for notation in (

@@ -105,11 +105,12 @@ def _spread(word: str) -> str:
 
 
 def _is_gap(char: str) -> bool:
-    """표기 안에 끼워도 표기로 읽힐 수 있는 문자 — 범주 C* 와 줄 · 문단 구분자 (탭 · 개행 제외).
+    """표기 안에 끼워도 표기로 읽힐 수 있는 문자 — 범주 C* 중 공백이 아닌 것.
 
-    `aaestro.agentd.bootstrap._clean_text` 와 같은 부류다."""
-    category = unicodedata.category(char)
-    return char not in "\t\n" and (category[0] == "C" or category in {"Zl", "Zp"})
+    공백 (CR · U+0085 · U+2028 · U+2029 등 C* · Zl · Zp 에 드는 것 포함) 은 끼움 문자가 아니라
+    정규식의 ``\\s`` 가 다룬다 — 끼움 문자로 바꾸면 이름과 id 사이의 구분자가 사라져 표기 끝 판정이
+    id 를 이름의 연속으로 본다."""
+    return not char.isspace() and unicodedata.category(char)[0] == "C"
 
 
 def _gap_table(text: str) -> dict[int, str]:
@@ -153,8 +154,9 @@ def defang(text: str) -> str:
     - 괄호 머리말은 이름 뒤에 ``-quoted`` 를 붙인 꼴로 (``[aaestro-quoted]`` ·
       ``[operator steer-quoted]`` · ``[tool error-quoted]`` · ``[memory-quoted:``).
 
-    표기 글자 사이에 끼워진 형식 · 제어 문자 (유니코드 범주 C* — 제로폭 문자 · bidi 제어 · BOM —
-    와 줄 · 문단 구분자 U+2028 · U+2029, 탭 · 개행 제외) 는 몇 개든 건너뛰고 찾습니다
+    표기 글자 사이에 끼워진 형식 · 제어 문자 (유니코드 범주 C* 중 공백이 아닌 것 — 제로폭 문자 ·
+    bidi 제어 · BOM · 공백 아닌 C0/C1 제어 문자) 는 몇 개든 건너뛰고 찾습니다. 공백 (CR · U+0085 ·
+    U+2028 · U+2029 포함) 은 지금처럼 공백 자리에서만 받습니다
     (예: ``[operator`` 뒤에 U+200B). 그 문자들을 지우거나 바꾸지는 않습니다 — 이모지 ZWJ 시퀀스 ·
     bidi 텍스트 같은 정상 데이터가 그대로 남도록, 바뀌는 것은 표기로 읽힌 구간뿐이고 그 구간은
     끼워진 문자 없이 대체 표기가 됩니다. 낱말 사이에서는 끼움 문자도 공백처럼 구분자로 받습니다.
