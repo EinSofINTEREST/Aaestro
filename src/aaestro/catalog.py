@@ -29,7 +29,7 @@ from aaestro.core.topology import GraphTopology
 from aaestro.core.yamlio import YamlReadError, load_yaml_file
 from aaestro.modules.memoryset import MemorysetManifest
 from aaestro.modules.promptset import PromptsetManifest
-from aaestro.modules.registry import ModuleRegistry, RegistryRoots
+from aaestro.modules.registry import ModuleRegistry, RegistryRoots, inside
 from aaestro.modules.skillpack import SkillpackLoader
 from aaestro.modules.skillset import SkillsetManifest
 
@@ -137,19 +137,6 @@ def contained(root: Path, kind: str, name: str, *parts: str) -> Path:
     # 검사한 **정규 경로**를 돌려준다 — 원래 경로를 돌려주면 검사 뒤에 링크가 바뀌었을 때
     # 쓰기·삭제·마운트가 새 대상을 따라간다
     return resolved
-
-
-def inside(root: Path, path: Path) -> Path | None:
-    """``path`` 의 정규 경로가 ``root`` 안이면 그 경로, 아니면 None.
-
-    링크 순환이나 읽을 수 없는 구간은 해석 자체가 실패한다 — 그것도 밖으로 본다.
-    """
-    try:
-        resolved = path.resolve()
-        base = root.resolve()
-    except (OSError, RuntimeError):
-        return None
-    return resolved if resolved.is_relative_to(base) else None
 
 
 def _invalid(path: Path, err: ValidationError) -> NoReturn:
