@@ -166,7 +166,7 @@ async def test_steer_during_a_model_call_waits_for_the_boundary():
     await executor.execute(make_task())
 
     first, second, third = (messages for _s, messages, _t in model.requests)
-    assert first == (UserTurn(parts=("prompt:planner",)),)
+    assert [m.parts[1:] for m in first] == [("prompt:planner",)]  # 맨 앞은 실행 맥락 블록
     assert second[-1] == steer_turn("mid-call")
     # 이미 보낸 것은 그대로 prefix 로 남는다 — 뒤에만 붙는다
     assert third[: len(second)] == second
@@ -226,7 +226,12 @@ async def test_without_a_steer_the_messages_are_byte_identical_to_before():
 
     await executor.execute(make_task())
 
-    assert [wire(messages) for _s, messages, _t in model.requests] == MESSAGES_BEFORE_STEER_EXISTED
+    # 실행 맥락 블록 (날짜가 실제 시계) 은 steer 와 무관하니 떼고 비교한다
+    stripped = [
+        (UserTurn(parts=messages[0].parts[1:]), *messages[1:])
+        for _s, messages, _t in model.requests
+    ]
+    assert [wire(messages) for messages in stripped] == MESSAGES_BEFORE_STEER_EXISTED
 
 
 async def test_without_a_steer_no_steer_event_is_emitted():
@@ -516,7 +521,7 @@ class Overlap:
 
         async def by_prompt(system, messages, tools):
             """한 실행기 안에서 두 실행을 구분한다 — 태스크 입력으로 모델을 고른다."""
-            return await opening[messages[0].parts[0]].run(system, messages, tools)
+            return await opening[messages[0].parts[1]].run(system, messages, tools)
 
         self.tools = HookedTools()
         self.tools.during["search"] = self._hold
@@ -552,7 +557,7 @@ async def test_a_later_run_with_the_same_task_id_cannot_take_over_the_steers():
 
     assert overlap.first_model.requests[1][1][-1] == steer_turn("for the first run only")
     assert all(
-        not isinstance(m, UserTurn) or m.parts == ("second",)
+        not isinstance(m, UserTurn) or m.parts[1:] == ("second",)
         for m in overlap.second_model.requests[1][1]
     )
 
