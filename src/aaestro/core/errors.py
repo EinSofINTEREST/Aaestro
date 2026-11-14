@@ -289,6 +289,20 @@ RATE_LIMIT_RETRY = RetryPolicy(
 )
 
 
+# 결정 호출 전용 — 총 대기가 decision.timeout_s(기본 5초) 안에 들어와야 한다.
+# rate limit 도 한 번만 다시 두드리고, 소진하면 unavailable 로 원래 경로 (01 Decision Models 2)
+DECISION_RETRY = RetryPolicy(
+    max_attempts=2,
+    initial_delay_s=0.5,
+    max_delay_s=1,
+    retryable_categories=(
+        ErrorCategory.NETWORK,
+        ErrorCategory.TIMEOUT,
+        ErrorCategory.RATE_LIMIT,
+    ),
+)
+
+
 class CircuitState(StrEnum):
     """서킷브레이커 상태 — 메트릭 ``aaestro_circuit_state`` 와 대응."""
 
