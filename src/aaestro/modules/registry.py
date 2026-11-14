@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import os
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NoReturn
@@ -196,7 +198,7 @@ class ModuleRegistry:
                 message=f"module not found: {ref}",
                 details={"module_ref": ref, "expected_path": str(manifest_file)},
             )
-        if not _within(root, manifest_file):
+        if inside(root, manifest_file) is None:
             # 모듈 루트 안의 링크가 밖을 가리키면 루트 밖 코드와 선언을 모듈로 로드한다 (#273)
             raise AaestroError(
                 category=ErrorCategory.MODULE,
@@ -229,11 +231,29 @@ class ModuleRegistry:
         return path, document
 
 
-def _within(root: Path, path: Path) -> bool:
-    """정규 경로가 루트 안인가 — 링크 순환처럼 해석이 실패하면 밖으로 본다."""
+def inside(root: Path, path: Path) -> Path | None:
+    """``path`` 의 정규 경로가 ``root`` 안이면 그 경로, 아니면 None.
+
+    링크 순환이나 읽을 수 없는 구간은 밖으로 본다. Python 3.13+ 의 non-strict ``resolve()`` 는
+    순환에서 예외 없이 링크가 남은 경로를 돌려주고 (3.12 는 RuntimeError), 권한 없는 구간도
+    무시하므로, 해석을 마친 경로에 링크가 남아 있는지 직접 확인한다 — 이 확인의 OSError (3.12 의
+    ``is_symlink`` 는 EACCES 를 던진다) 도 밖이다. 없는 경로는 허용해야 해서 strict 를 쓰지 못한다.
+    """
     try:
-        return path.resolve().is_relative_to(root.resolve())
+        resolved = path.resolve()
+        base = root.resolve()
+        if any(_is_link(part) for part in (resolved, *resolved.parents)):
+            return None
     except (OSError, RuntimeError):
+        return None
+    return resolved if resolved.is_relative_to(base) else None
+
+
+def _is_link(path: Path) -> bool:
+    """없는 경로는 링크가 아니다. 권한 없는 구간은 is_symlink 가 버전마다 달라 lstat 로 본다."""
+    try:
+        return stat.S_ISLNK(os.lstat(path).st_mode)
+    except (FileNotFoundError, NotADirectoryError):
         return False
 
 

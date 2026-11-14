@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.modules.registry import inside
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -203,9 +204,8 @@ class FilesystemArtifactStore:
 
     def _path_for(self, key: str) -> Path:
         """key 를 저장 경로로 — 검증된 key 만 들어온다."""
-        resolved = (self.root / self.scope / key).resolve()
-        root = (self.root / self.scope).resolve()
-        if not resolved.is_relative_to(root):
+        resolved = inside(self.root / self.scope, self.root / self.scope / key)
+        if resolved is None:
             # 검증을 통과해도 심볼릭 링크로 벗어날 수 있다 — 마지막 방어선
             raise invalid_key(key, "key resolves outside the store root")
         return resolved
