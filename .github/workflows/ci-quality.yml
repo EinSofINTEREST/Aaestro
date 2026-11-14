@@ -66,7 +66,7 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --frozen
-      # 커버리지 게이트(≥ 70%)는 make test 내부의 pytest-cov 설정이 강제한다
+      # 커버리지 게이트(≥ 70%)는 make test 명령줄의 pytest-cov 옵션이 강제한다
       - run: make test
 
   integration:
