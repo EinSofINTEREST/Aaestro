@@ -6,12 +6,14 @@ agentd 기동 시퀀스 (03 MCP Startup Sequence). 순서를 지키는 것 자�
 
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 
 from aaestro.core.agent import ComponentHealth, HealthState, HealthStatus
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.core.markers import defang
 from aaestro.core.skill import SkillSpec
 from aaestro.core.tools import namespaced
 from aaestro.memory.tool import MEMORY_SEARCH_SPEC, MEMORY_SEARCH_TOOL
@@ -45,6 +47,10 @@ class McpLauncher(Protocol):
         이름만으로는 모델이 인자를 채울 수 없다 — 기동이 이것을 tool registry 로
         흘려보낸다.
         """
+        ...
+
+    def descriptions(self) -> dict[str, str]:
+        """네임스페이스가 붙은 tool 이름 → 서버가 준 설명 (신뢰하지 않는 입력)."""
         ...
 
 
@@ -92,6 +98,122 @@ def _module_error(code: ErrorCode, message: str, agent: str, **details: Any) -> 
     )
 
 
+MCP_DESCRIPTION_MAX_CHARS: Final = 1024
+"""서버 설명의 상한 — 서버가 프롬프트를 마음대로 부풀리지 못하게 한다."""
+
+_KEEP_KEYS: Final = frozenset(
+    {
+        # 인자 값 계약
+        "enum",
+        "const",
+        "default",
+        "pattern",
+        "format",
+        # 이름 · 참조
+        "required",
+        "dependentRequired",
+        "$ref",
+        "$id",
+        "$schema",
+        "$anchor",
+        "$dynamicRef",
+        "$dynamicAnchor",
+    }
+)
+"""스키마 위치에서 값을 통째로 보존하는 키 — 정리도 재귀도 하지 않는다."""
+_SCHEMA_MAP_KEYS: Final = frozenset(
+    {"properties", "patternProperties", "$defs", "definitions", "dependentSchemas"}
+)
+"""이름 → 하위 스키마 맵 — 키 이름은 그대로, 값은 스키마로 재귀한다."""
+_SUBSCHEMA_KEYS: Final = frozenset(
+    {
+        "items",
+        "prefixItems",
+        "additionalProperties",
+        "unevaluatedProperties",
+        "unevaluatedItems",
+        "propertyNames",
+        "contains",
+        "not",
+        "if",
+        "then",
+        "else",
+        "allOf",
+        "anyOf",
+        "oneOf",
+    }
+)
+"""하위 스키마 또는 그 목록 — 스키마로 재귀한다. 그 밖의 키는 데이터 위치다."""
+
+
+def _clean_text(raw: str) -> str:
+    """서버 문구를 모델에 싣기 전 정리한다 — 서버 문구는 신뢰하지 않는 입력이다.
+
+    순서: 유니코드 범주 C* (폭 없는 문자 · bidi 제어 포함) 와 줄 · 문단 구분자를 공백으로
+    (탭 · 개행은 둔다) → strip → 상한에서 자르기 → 표기 무력화. 무력화가 마지막이라 잘린 꼬리가
+    표기가 되지 못한다. 상한은 무력화 전 길이 기준이라 결과는 무력화 접미사만큼 길 수 있다.
+    """
+    spaced = "".join(
+        " "
+        if (unicodedata.category(c).startswith("C") or unicodedata.category(c) in {"Zl", "Zp"})
+        and c not in "\t\n"
+        else c
+        for c in raw
+    )
+    return defang(spaced.strip()[:MCP_DESCRIPTION_MAX_CHARS].strip())
+
+
+def _clean_data(node: Any) -> Any:
+    """데이터 위치 — 스키마로 해석하지 않고 안의 모든 문자열을 정리한다 (키 이름은 그대로)."""
+    if isinstance(node, str):
+        return _clean_text(node)
+    if isinstance(node, dict):
+        return {key: _clean_data(value) for key, value in node.items()}
+    if isinstance(node, list):
+        return [_clean_data(item) for item in node]
+    return node
+
+
+def clean_schema(node: Any) -> Any:
+    """Copy a server input schema with every server-written string cleaned.
+
+    스키마 위치와 데이터 위치를 구분해 정리한 사본을 돌려줍니다. 스키마 위치에서는 인자
+    계약 · 이름 · 참조 키 (``_KEEP_KEYS``) 의 값을 통째로 보존하고, 하위 스키마를 담는 키
+    (``properties`` 의 값들, ``items``, ``allOf`` …) 는 스키마로 재귀합니다. 그 밖의 모든 키
+    (``description`` · ``title`` · ``examples`` · ``$comment`` · ``x-*`` · 모르는 키) 는 데이터
+    위치라 안의 문자열을 키 이름과 무관하게 정리합니다 — 새 키의 기본값은 "정리" 입니다.
+    딕셔너리 키 이름 (속성 이름) 은 인자 계약이라 그대로입니다.
+    """
+    if isinstance(node, list):
+        return [clean_schema(item) for item in node]
+    if not isinstance(node, dict):
+        return node
+    out: dict[str, Any] = {}
+    for key, value in node.items():
+        if key in _KEEP_KEYS:
+            out[key] = value
+        elif key in _SCHEMA_MAP_KEYS and isinstance(value, dict):
+            out[key] = {name: clean_schema(sub) for name, sub in value.items()}
+        elif key in _SUBSCHEMA_KEYS:
+            out[key] = clean_schema(value)
+        else:
+            out[key] = _clean_data(value)
+    return out
+
+
+def mcp_tool_description(server: str, raw: str) -> str:
+    """Turn a server-provided description into what the model sees.
+
+    서버가 준 설명은 신뢰하지 않는 입력입니다 (03 MCP Rules 5): 제어문자를 공백으로 바꾸고,
+    프레임워크 표기를 무력화하고, 상한에서 자르고, 출처를 붙입니다. 설명이 없으면
+    기존 문구입니다.
+    """
+    text = _clean_text(raw)
+    if not text:
+        return f"MCP tool from {server}"
+    return f"{text} (from MCP server {server})"
+
+
 def build_tool_registry(
     skillsets: Sequence[LoadedSkillset],
     mcp_servers: dict[str, tuple[str, ...]],
@@ -100,6 +222,7 @@ def build_tool_registry(
     with_memory: bool = False,
     with_peers: bool = False,
     mcp_schemas: Mapping[str, Mapping[str, Any]] | None = None,
+    mcp_descriptions: Mapping[str, str] | None = None,
 ) -> dict[str, SkillSpec]:
     """Merge skillset and MCP tools into one registry.
 
@@ -116,6 +239,8 @@ def build_tool_registry(
             붙지 않았는데 노출하면 모델이 부를 수 없는 tool 을 본다.
         mcp_schemas: Namespaced tool name to its input schema — 이름만 담으면
             모델이 인자를 채울 수 없다.
+        mcp_descriptions: Namespaced tool name to the server's own description —
+            신뢰하지 않는 입력이라 ``mcp_tool_description`` 을 거쳐 실린다.
 
     Returns:
         Tool name to its spec — MCP tool 도 스키마를 담은 spec 이다.
@@ -125,6 +250,7 @@ def build_tool_registry(
     """
     registry: dict[str, SkillSpec] = {}
     schemas = mcp_schemas or {}
+    descriptions = mcp_descriptions or {}
 
     for skillset in skillsets:
         for spec in skillset.tools():
@@ -151,8 +277,8 @@ def build_tool_registry(
                 )
             registry[name] = SkillSpec(
                 name=name,
-                description=f"MCP tool from {server}",
-                parameters=dict(schemas.get(name, {})),
+                description=mcp_tool_description(server, descriptions.get(name, "")),
+                parameters=clean_schema(dict(schemas.get(name, {}))),
             )
 
     if with_memory:
@@ -310,6 +436,7 @@ class Bootstrap:
             with_peers=self._manifest.spec.a2a.enabled,
             # 스키마를 흘리지 않으면 모델이 MCP tool 의 인자를 채울 수 없다
             mcp_schemas=self._mcp.schemas() if self._mcp is not None else None,
+            mcp_descriptions=self._mcp.descriptions() if self._mcp is not None else None,
         )
 
         return BootstrapResult(

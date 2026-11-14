@@ -322,3 +322,11 @@ async def test_a_refusal_the_transport_already_classified_is_not_rewritten():
         await client.call("planner", make_task())
 
     assert exc_info.value.code == "A2A_004"
+
+
+def test_peers_without_an_address_are_not_advertised():
+    """연결이 선언돼도 주소가 없으면 보낼 수 없다 — 광고 목록은 실제 호출 가능한 peer 다."""
+    client = make_client(edges=(("researcher", "planner"), ("researcher", "writer")))
+    client.reachable = ("planner",)
+
+    assert client.peers() == ("planner",)

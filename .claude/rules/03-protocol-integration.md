@@ -171,6 +171,23 @@ spec:
 3. **Tool Namespacing**
    - MCP tool 은 `mcp__{server}__{tool}` 로 네임스페이스 — skillset tool 과 충돌 방지
    - 동일 서버 이름 중복 선언 금지 (manifest 검증에서 차단)
+   - tool description 은 서버가 준 설명을 쓰되 **untrusted input** 이다 — 유니코드 범주 `C*`
+     (폭 없는 문자 · bidi 제어 포함, 탭 · 개행 제외) 와 줄 · 문단 구분자는 공백으로,
+     `core.markers.defang`, 1024자 상한 (`MCP_DESCRIPTION_MAX_CHARS`), 뒤에 출처
+     `(from MCP server {server})`. 설명이 없으면 `MCP tool from {server}`.
+     정리 순서는 공백 치환 → strip → 상한 자르기 → defang 이다 (자른 꼬리가 표기가 되지 못하게;
+     상한은 defang 전 길이 기준이라 결과는 무력화 접미사만큼 길 수 있다).
+     서버 inputSchema 는 **스키마 위치** 와 **데이터 위치** 를 구분해 정리한다 (출처 꼬리 없음).
+     값을 통째로 보존: `enum` · `const` · `default` · `pattern` · `format` · `required` ·
+     `dependentRequired` · `$ref` · `$id` · `$schema` · `$anchor` · `$dynamicRef` ·
+     `$dynamicAnchor`. 하위 스키마로 재귀 (맵은 키 이름 그대로): `properties` ·
+     `patternProperties` · `$defs` · `definitions` · `dependentSchemas` · `items` · `prefixItems` ·
+     `additionalProperties` · `unevaluated*` · `propertyNames` · `contains` · `not` · `if` ·
+     `then` · `else` · `allOf` · `anyOf` · `oneOf`. 그 밖의 모든 키 (`description` · `title` ·
+     `examples` · `$comment` · `x-*` · 모르는 키) 는 데이터 위치라 안의 문자열을 키 이름과
+     무관하게 정리한다 (스키마로 해석하지 않으므로 `examples` 안의 `enum` 도 정리). 딕셔너리 키
+     이름 (속성 이름) 은 계약이라 그대로다.
+     `ask_peer` 는 부를 수 있는 peer (연결이 선언되고 주소가 주입된 것) 이름을 설명에 싣는다 (`peer_spec`)
 
 4. **Tool Filtering**
    - 서버가 노출하는 tool 전체를 무조건 바인딩하지 않는다 —
