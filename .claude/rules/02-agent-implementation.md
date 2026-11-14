@@ -392,6 +392,9 @@ POST /v1/drain           # graceful drain 개시
    깨진 JSON · UTF-8 본문이 인증보다 먼저 거절된다 (#462). 토큰이 없으면 본문과 무관하게 같은 401 이다.
    라우팅보다도 먼저 본다 (`http_auth.AdmitBeforeRouting`) — 토큰이 없으면 없는 경로 · 틀린 메서드도
    같은 401 이라 404 · 405 + `Allow` 로 라우트 표가 새지 않는다
+   `/invoke` · `/stream` 의 식별자 (`task_id` · `run_id` · `node_id` · `trace` 의 `trace_id` · `span_id` ·
+   `graph`) 는 A2A 본문과 같은 규칙 (`core.identifiers`) 으로 거르고, 어긋나면 `VAL_002` (400) 이다 —
+   `details` 에는 필드 이름과 사유 종류만 싣고 받은 값은 싣지 않는다
 4. `GET /health` 는 무인증 — Docker healthcheck 가 직접 호출. 검사하는 라우터 밖에 둔 유일한 라우트이고,
    API 문서 경로는 열지 않는다. 다른 메서드(`HEAD` 포함)는 닫힌 경로와 같은 401 이다
 5. `/steer` 의 `queued` 는 **접수이지 반영이 아니다** (Execution Loop — Steering). 진행 중이
