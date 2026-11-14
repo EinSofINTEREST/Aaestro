@@ -373,5 +373,13 @@ async def test_execute_openai_compat_tool_turn_is_continued_by_anthropic_mid_con
     }
     assert results == {
         "role": "user",
-        "content": [{"type": "tool_result", "tool_use_id": "call_1", "content": "42"}],
+        "content": [
+            {
+                "type": "tool_result",
+                "tool_use_id": "call_1",
+                "content": "42",
+                # 마지막 user 블록의 증분 캐시 breakpoint (#554)
+                "cache_control": {"type": "ephemeral"},
+            }
+        ],
     }

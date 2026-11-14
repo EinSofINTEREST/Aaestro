@@ -23,6 +23,7 @@ from aaestro.core.manifest import ModelConfig
 from aaestro.core.skill import SkillSpec
 
 MODEL = "claude-sonnet-5"
+EPHEMERAL = {"type": "ephemeral"}
 OPENING = [UserTurn(parts=("prompt",))]
 
 
@@ -388,7 +389,10 @@ async def test_system_goes_in_its_own_field_not_the_user_message():
         }
     ]
     assert request["messages"] == [
-        {"role": "user", "content": [{"type": "text", "text": "prompt"}]}
+        {
+            "role": "user",
+            "content": [{"type": "text", "text": "prompt", "cache_control": EPHEMERAL}],
+        }
     ]
 
 
@@ -429,7 +433,13 @@ async def test_tool_results_answer_the_tool_use_they_belong_to():
         "role": "user",
         "content": [
             {"type": "tool_result", "tool_use_id": "t1", "content": "found"},
-            {"type": "tool_result", "tool_use_id": "t2", "content": "boom", "is_error": True},
+            {
+                "type": "tool_result",
+                "tool_use_id": "t2",
+                "content": "boom",
+                "is_error": True,
+                "cache_control": EPHEMERAL,
+            },
         ],
     }
 
@@ -495,6 +505,26 @@ async def wire_of(conversation: list) -> list[dict]:
     return provider.client.messages.requests[0]["messages"]
 
 
+def strip_breakpoints(wire: list[dict]) -> list[dict]:
+    return [
+        {
+            **m,
+            "content": [{k: v for k, v in b.items() if k != "cache_control"} for b in m["content"]],
+        }
+        for m in wire
+    ]
+
+
+def breakpoints(request: dict) -> list[tuple[str, int]]:
+    """요청 안의 cache_control 위치 — (영역, 메시지 번호)."""
+    found = [("system", 0)] * sum("cache_control" in b for b in request.get("system", []))
+    for i, m in enumerate(request["messages"]):
+        found += [("messages", i)] * sum(
+            isinstance(b, dict) and "cache_control" in b for b in m["content"]
+        )
+    return found
+
+
 async def test_a_steer_after_tool_results_does_not_put_two_user_messages_in_a_row():
     """이 provider 는 도구 결과도 ``user`` 다 — steer 를 따로 보내면 user 가 연속된다.
 
@@ -512,7 +542,9 @@ async def test_a_steer_after_tool_results_does_not_put_two_user_messages_in_a_ro
         {"type": "text", "text": "[operator steer]\nfirst"},
         {"type": "text", "text": "[operator steer]\nsecond"},
     ]
-    assert sent[4]["content"] == [{"type": "tool_result", "tool_use_id": "t2", "content": "more"}]
+    assert sent[4]["content"] == [
+        {"type": "tool_result", "tool_use_id": "t2", "content": "more", "cache_control": EPHEMERAL}
+    ]
 
 
 WIRE_BEFORE_STEER_EXISTED = (
@@ -542,4 +574,89 @@ async def test_without_a_steer_the_wire_is_byte_identical_to_before():
 
     sent = await wire_of(conversation)
 
-    assert json.dumps(sent, sort_keys=True).encode() == WIRE_BEFORE_STEER_EXISTED.encode()
+    assert (
+        json.dumps(strip_breakpoints(sent), sort_keys=True).encode()
+        == WIRE_BEFORE_STEER_EXISTED.encode()
+    )
+
+
+# --- 대화 증분 캐시 breakpoint (#554) --------------------------------------------
+
+
+async def test_the_last_block_of_the_last_message_carries_the_breakpoint():
+    conversation = [*OPENING, *tool_round("t1", "found")]
+
+    sent = await wire_of(conversation)
+
+    assert sent[-1]["content"][-1]["cache_control"] == EPHEMERAL
+    assert all("cache_control" not in b for m in sent[:-1] for b in m["content"])
+
+
+async def test_a_steer_text_block_is_the_last_block_that_carries_it():
+    steer = UserTurn(parts=("[operator steer]\nfirst",))
+
+    sent = await wire_of([*OPENING, *tool_round("t1", "found"), steer])
+
+    assert "cache_control" not in sent[-1]["content"][0]
+    assert sent[-1]["content"][-1]["cache_control"] == EPHEMERAL
+
+
+async def test_breakpoints_stay_at_two_and_never_linger_on_earlier_turns():
+    """공유 턴 객체에 달면 다음 호출에 옛 breakpoint 가 남아 4개 상한을 넘는다."""
+    provider = model(Message([Block(type="text", text="done")]))
+    conversation = [*OPENING, *tool_round("t1", "found")]
+
+    await provider.run("sys", conversation, [])
+    conversation += tool_round("t2", "more")
+    await provider.run("sys", conversation, [])
+
+    for request, last in zip(provider.client.messages.requests, (2, 4), strict=True):
+        assert breakpoints(request) == [("system", 0), ("messages", last)]
+
+
+async def test_usage_aggregation_is_unchanged_by_the_breakpoint():
+    usage = Usage(
+        input_tokens=10,
+        output_tokens=5,
+        cache_creation_input_tokens=100,
+        cache_read_input_tokens=1000,
+    )
+    provider = model(Message([Block(type="text", text="done")], usage))
+
+    response = await provider.run("sys", OPENING, [])
+
+    assert response.usage.input_tokens == 1110
+
+
+async def test_an_assistant_last_request_puts_the_breakpoint_on_the_user_before_it():
+    """thinking 블록은 cache_control 필드가 없다 — assistant 메시지에는 달지 않는다."""
+    raw = [{"type": "thinking", "thinking": "hm", "signature": "sig"}]
+    turn = AssistantTurn(content="", raw=raw)
+
+    sent = await wire_of([*OPENING, turn])
+
+    assert sent[1]["content"] == [{"type": "thinking", "thinking": "hm", "signature": "sig"}]
+    assert sent[0]["content"][-1]["cache_control"] == EPHEMERAL
+
+
+async def test_provider_blocks_are_sent_back_untouched_and_unshared():
+    """SDK 객체 · 공유 dict 원본을 바꾸지 않는다 — 두 번 불러도 요청마다 breakpoint 는 둘이다."""
+    shared = {"type": "tool_use", "id": "t1", "name": "search", "input": {}}
+    snapshot = dict(shared)
+    sdk_block = Block(type="tool_use", id="t2", name="search", input={})
+    conversation = [
+        *OPENING,
+        AssistantTurn(content="", tool_calls=(ToolCall(id="t1", name="search"),), raw=[shared]),
+        ToolTurn(outcomes=(ToolOutcome(call_id="t1", content="r"),)),
+        AssistantTurn(content="", tool_calls=(ToolCall(id="t2", name="search"),), raw=[sdk_block]),
+        ToolTurn(outcomes=(ToolOutcome(call_id="t2", content="r"),)),
+    ]
+    provider = model(Message([Block(type="text", text="done")]))
+
+    await provider.run("sys", conversation, [])
+    await provider.run("sys", conversation, [])
+
+    assert shared == snapshot
+    assert not hasattr(sdk_block, "cache_control")
+    for request in provider.client.messages.requests:
+        assert breakpoints(request) == [("system", 0), ("messages", 4)]

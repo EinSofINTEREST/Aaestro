@@ -118,7 +118,7 @@ class AnthropicModel:
         request: dict[str, Any] = {
             "model": self.config.name,
             "max_tokens": self.config.max_tokens or DEFAULT_MAX_TOKENS,
-            "messages": to_message_params(messages),
+            "messages": _with_conversation_breakpoint(to_message_params(messages)),
         }
         if system:
             # 같은 에이전트 버전의 시스템 자리는 매 호출 같다 — 끝 블록의 breakpoint 가
@@ -245,6 +245,23 @@ def to_message_params(messages: Sequence[Message]) -> list[dict[str, Any]]:
             params[-1]["content"] = [*params[-1]["content"], *param["content"]]
             continue
         params.append(param)
+    return params
+
+
+def _with_conversation_breakpoint(params: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Put the incremental cache breakpoint on the last block of the last user message.
+
+    다음 호출이 이번 호출까지의 대화 prefix 를 캐시에서 읽는다. user 메시지는 어댑터가 매번 새로
+    만든 dict 라 안전하다 — assistant 메시지 (모델이 돌려준 원본 블록, thinking 은 cache_control
+    필드가 없고 바꾸면 400) 는 건드리지 않는다. assistant 로 끝나는 요청이면 그 앞의 user 메시지다.
+    """
+    for i in range(len(params) - 1, -1, -1):
+        if params[i]["role"] != "user":
+            continue
+        content = params[i]["content"]
+        block = {**content[-1], "cache_control": {"type": "ephemeral"}}
+        patched = {**params[i], "content": [*content[:-1], block]}
+        return [*params[:i], patched, *params[i + 1 :]]
     return params
 
 
