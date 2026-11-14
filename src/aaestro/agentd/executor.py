@@ -772,7 +772,7 @@ class Executor:
             raise _tool_error(call.name, task, self._agent, err) from err
 
         try:
-            outcome = tool_outcome(call, result)
+            outcome, event_value = _serialize_result(call, result)
         except Exception as err:
             # default=str 이 부르는 __str__ 은 무엇이든 던질 수 있다 (CancelledError 는 안 잡힌다).
             # 도구는 이미 실행됐다 — "호출 실패" 로 읽히면 모델이 부수효과 도구를 다시 부른다
@@ -786,7 +786,7 @@ class Executor:
             ) from err
 
         self._record_tool(call.name, status=STATUS_COMPLETED)
-        return result, outcome
+        return event_value, outcome
 
     def _record_tool(self, tool: str, *, status: str) -> None:
         """tool 호출을 메트릭에 남긴다 — telemetry 미주입 시 무동작."""
@@ -1206,6 +1206,32 @@ def _answered_by(response: ModelResponse, link: ModelLink) -> ModelResponse:
     return replace(response, usage=usage.model_copy(update={"model": model, "provider": provider}))
 
 
+def _serialize_result(call: ToolCall, result: Any) -> tuple[ToolOutcome, Any]:
+    """도구 결과를 **한 번** 직렬화해 (모델이 읽을 결과, 이벤트에 실을 값) 을 만든다.
+
+    이벤트 값은 모델 본문과 같은 JSON 문자열을 ``json.loads`` 한 것이다 — ``__str__`` 이 호출마다
+    다르거나 두 번째에 던져도 둘이 갈리지 않고, 실패는 호출자의 보호 구역 안에서 한 번만 난다.
+    SSE 는 ``model_dump_json`` 으로 직렬화하므로 JSON 기본 타입이 아닌 객체가 그대로 실리면
+    스트림이 끊긴다 (#563). MCP 래퍼는 ``is_error`` 를 소비자가 볼 수 있게
+    ``{"content", "is_error"}`` 모양을 유지한다. JSON 이 아닌 수 (NaN · ±inf) 는 모델 본문에는
+    ``NaN`` · ``Infinity`` 로 가지만 이벤트의 pydantic 직렬화에서는 ``null`` 이 된다
+    — 받아들인 차이다.
+    """
+    is_wrapper = hasattr(result, "is_error")
+    is_error = bool(getattr(result, "is_error", False))
+    payload = getattr(result, "content", result) if is_wrapper else result
+    value: Any
+    if isinstance(payload, str):
+        content, value = payload, payload
+    else:
+        content = json.dumps(payload, ensure_ascii=False, default=str)
+        value = json.loads(content)
+    if is_wrapper:
+        value = {"content": value, "is_error": is_error}
+    # 직렬화한 뒤에 바꾼다 — 키와 중첩된 값까지 한 번에 덮고, 바꾼 글자는 JSON 을 깨지 않는다
+    return ToolOutcome(call_id=call.id, content=defang(content), is_error=is_error), value
+
+
 def tool_outcome(call: ToolCall, result: Any) -> ToolOutcome:
     """Turn a tool's return value into what the model reads back.
 
@@ -1217,14 +1243,7 @@ def tool_outcome(call: ToolCall, result: Any) -> ToolOutcome:
     모두 여기를 지난다). 그 안의 경계 표시 · ``[aaestro]`` 안내 모양 글은 대화에 들어가기 전에
     무력화한다 — 진짜 경계 · 안내와 같은 모양으로 모델에 가지 않게 (03 MCP Rules 5).
     """
-    is_error = bool(getattr(result, "is_error", False))
-    payload = getattr(result, "content", result) if hasattr(result, "is_error") else result
-    if isinstance(payload, str):
-        content = payload
-    else:
-        content = json.dumps(payload, ensure_ascii=False, default=str)
-    # 직렬화한 뒤에 바꾼다 — 키와 중첩된 값까지 한 번에 덮고, 바꾼 글자는 JSON 을 깨지 않는다
-    return ToolOutcome(call_id=call.id, content=defang(content), is_error=is_error)
+    return _serialize_result(call, result)[0]
 
 
 MAX_TOOL_FAILURE_TEXT_CHARS: Final = 1000

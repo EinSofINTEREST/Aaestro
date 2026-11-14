@@ -582,6 +582,108 @@ async def test_stream_reports_tool_failure_on_the_result_event():
     assert isinstance(events[-1], DoneEvent)
 
 
+class _StrOnly:
+    def __str__(self) -> str:
+        return "str-only"
+
+
+async def test_stream_with_non_json_result_reaches_done_and_matches_model_body():
+    """JSON 기본 타입이 아닌 결과도 SSE 직렬화(model_dump_json)를 지나 done 까지 간다 (#563)."""
+    tools = FakeTools().script("search", result={"v": _StrOnly()})
+    executor, model, _ = make_executor([calls("search"), text("done")], tools)
+
+    events = [e async for e in executor.stream(make_task())]
+
+    assert isinstance(events[-1], DoneEvent)
+    (result_event,) = [e for e in events if isinstance(e, ToolResultEvent)]
+    result_event.model_dump_json()
+    assert result_event.result == {"v": "str-only"}
+    *_, results = model.requests[1][1]
+    assert json.loads(results.outcomes[0].content) == result_event.result
+
+
+async def test_stream_keeps_mcp_wrapper_shape_with_is_error():
+    tools = FakeTools().script(
+        "mcp", result=McpToolResult(content={"v": _StrOnly()}, is_error=True)
+    )
+    executor, model, _ = make_executor([calls("mcp"), text("done")], tools)
+
+    events = [e async for e in executor.stream(make_task())]
+
+    assert isinstance(events[-1], DoneEvent)
+    (event,) = [e for e in events if isinstance(e, ToolResultEvent)]
+    event.model_dump_json()
+    assert event.result["is_error"] is True
+    *_, results = model.requests[1][1]
+    assert json.loads(results.outcomes[0].content) == event.result["content"]
+
+
+class _StrFlaky:
+    """첫 직렬화는 성공하고 이후에는 던진다 / 호출마다 다른 글을 낸다."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def __str__(self) -> str:
+        self.calls += 1
+        if self.calls > 1:
+            raise RuntimeError("second call")
+        return f"once-{self.calls}"
+
+
+class _StrCounting:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def __str__(self) -> str:
+        self.calls += 1
+        return f"call-{self.calls}"
+
+
+async def test_result_is_serialized_once_even_if_str_fails_the_second_time():
+    flaky = _StrFlaky()
+    tools = FakeTools().script("search", result={"v": flaky})
+    executor, model, _ = make_executor([calls("search"), text("done")], tools)
+
+    events = [e async for e in executor.stream(make_task())]
+
+    assert isinstance(events[-1], DoneEvent)
+    (event,) = [e for e in events if isinstance(e, ToolResultEvent)]
+    assert event.error is None
+    assert event.result == {"v": "once-1"}
+    assert flaky.calls == 1
+
+
+async def test_model_body_and_event_share_one_serialization():
+    counting = _StrCounting()
+    tools = FakeTools().script("search", result={"v": counting})
+    executor, model, _ = make_executor([calls("search"), text("done")], tools)
+
+    events = [e async for e in executor.stream(make_task())]
+
+    (event,) = [e for e in events if isinstance(e, ToolResultEvent)]
+    *_, results = model.requests[1][1]
+    assert json.loads(results.outcomes[0].content) == event.result == {"v": "call-1"}
+
+
+async def test_stream_keeps_plain_results_and_drops_result_on_failure():
+    tools = (
+        FakeTools()
+        .script("a", result="text")
+        .script("b", result={"k": [1, "x"]})
+        .script("c", result={(1, 2): 3})
+    )
+    executor, _, _ = make_executor([calls("a", "b", "c"), text("done")], tools)
+
+    events = [e async for e in executor.stream(make_task())]
+
+    by_tool = {e.tool: e for e in events if isinstance(e, ToolResultEvent)}
+    assert by_tool["a"].result == "text"
+    assert by_tool["b"].result == {"k": [1, "x"]}
+    assert by_tool["c"].result is None
+    assert by_tool["c"].error is not None
+
+
 async def test_stream_reports_max_turns_as_error_event():
     tools = FakeTools().script("search")
     executor, _, _ = make_executor([calls("search")], tools, max_turns=2)
