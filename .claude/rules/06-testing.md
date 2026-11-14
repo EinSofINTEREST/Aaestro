@@ -376,7 +376,11 @@ async def test_cancel_inflight_task_cleans_up_tools():
 
 - 프레임워크 오버헤드 벤치마크: Control API 왕복, state 병합, 템플릿 렌더
 - `pytest-benchmark` 사용. 측정은 `make bench` (직렬) — `make test` 는 `-n auto` 라 xdist 아래에서
-  벤치마크 측정이 꺼진다 (테스트는 한 번 실행). 회귀 비교 · CI 경고는 아직 없다 (#565)
+  벤치마크 측정이 꺼진다 (테스트는 한 번 실행). 회귀는 CI 가 **경고** 한다 (#565):
+  main push 의 `make bench` 결과가 기준선 아티팩트 (`bench-baseline`) 가 되고, PR 의 정보성 job
+  (`Benchmark Regression`, `ci-bench.yml`) 이 그것과 비교해 평균이 25% 이상 느려지면 annotation ·
+  job summary 로 알린다. 머지 게이트가 아니다. 비교 결과 · 기준선 없음 · 읽을 수 없는 입력으로는 실패하지 않고,
+  벤치마크 테스트가 실패하면 job 이 실패한다 (정보성 체크 — 머지를 막지 않음)
 
 ```python
 def test_bench_topology_validation(benchmark):
@@ -424,6 +428,7 @@ make test-integration   # PR gate (Docker 가용 환경)
 - `ci-convention.yml` — Commit Lint / PR Title Lint / Linked Issue Check
   (+ 정보성 Branch Name Lint)
 - `ci-docs.yml` — Docs Sync Check (docs/en ↔ docs/ko 구조 미러 + 언어 선택자)
+- `ci-bench.yml` — Benchmark Regression (정보성, PR 게이트 아님)
 - `ci-nightly.yml` — E2E Test (schedule 02:00 KST, PR gate 아님)
 
 ## Smoke Testing

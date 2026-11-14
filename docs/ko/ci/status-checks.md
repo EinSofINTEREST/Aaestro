@@ -29,6 +29,7 @@
 | `Docs Sync Check` | `ci-docs.yml` / `docs-sync` | `docs/en` ↔ `docs/ko` 구조 미러 + 언어 선택자 존재 검증 | Yes |
 | `Review Presence` | `ci-review.yml` / `judge` (commit status) | 리뷰로 인정할 것이 최소 1개인지 보고 — [Review Presence](#review-presence) 참고. 정보성이며 머지 게이트 아님 (Ruleset 미등록) | No |
 | `Review Presence Signal` | `ci-review-signal.yml` / `signal` | 리뷰 이벤트를 받아 `ci-review.yml` 을 `workflow_run` 으로 깨우는 권한 없는 중계 — [Review Presence](#review-presence) 참고. 자기 결과는 의미가 없고, 봇 리뷰에서는 `action_required` 로 남는다 | No |
+| `Benchmark Regression` | `ci-bench.yml` / `bench` | main push 에서 `make bench` JSON 을 `bench-baseline` artifact 로 저장, PR 에서는 그것과 비교해 평균이 25% 이상 느려지면 경고 (annotation + summary). 입력을 읽을 수 없거나 기준선이 없으면 비교를 생략. 실패하지 않는다 — 정보성, 머지 게이트 아님 | No |
 | `Branch Name Lint` | `ci-convention.yml` / `branch-lint` | `{카테고리}/#{이슈번호}/{요약}` 위반 경고 — 정보성 | No |
 | `E2E Test` | `ci-nightly.yml` / `e2e` | Nightly 전체 스택 실행 (fake LLM provider) — 머지 게이트 아님 | No |
 

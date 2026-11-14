@@ -75,8 +75,10 @@ command line only, so plain `pytest` runs do not pay for instrumentation. `make 
 (`-n auto`, pytest-xdist; coverage is merged across workers). Partial runs such as
 `uv run pytest tests/unit/core` stay serial by default because worker start-up costs more than
 a few tests. Benchmarks are measured by `make bench` (serial); under xdist pytest-benchmark disables
-measurement, so `make test` only runs them once. Regression comparison and a CI warning do not
-exist yet (#565). The 90%+ (critical paths) and 100%
+measurement, so `make test` only runs them once. A CI job (`Benchmark Regression`, `ci-bench.yml`)
+saves the `make bench` result of every main push as the `bench-baseline` artifact and, on PRs, compares against it,
+warning (annotation + job summary) when a mean is 25% or more slower. It is not a merge gate. A slowdown, a missing baseline or unreadable input never fails it;
+a failing benchmark test does (informational check, does not block the merge) (#565). The 90%+ (critical paths) and 100%
 (error-conversion paths) figures are review targets, not separate CI gates.
 Check names and merge-gate wiring: [ci/status-checks.md](ci/status-checks.md).
 
