@@ -34,9 +34,17 @@ class Block:
 
 
 class Usage:
-    def __init__(self, input_tokens: int = 0, output_tokens: int = 0) -> None:
+    def __init__(
+        self,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        cache_creation_input_tokens: int | None = None,
+        cache_read_input_tokens: int | None = None,
+    ) -> None:
         self.input_tokens = input_tokens
         self.output_tokens = output_tokens
+        self.cache_creation_input_tokens = cache_creation_input_tokens
+        self.cache_read_input_tokens = cache_read_input_tokens
 
 
 class Message:
@@ -206,6 +214,17 @@ async def test_usage_is_collected():
     assert response.usage.output_tokens == 45
 
 
+async def test_usage_input_tokens_include_cache_creation_and_read():
+    """응답의 input_tokens 는 캐시 토큰을 뺀 값 — 합치지 않으면 prefix 만큼 적게 집계된다."""
+    usage = Usage(20, 45, cache_creation_input_tokens=100, cache_read_input_tokens=3)
+    provider = model(Message([Block(type="text", text="x")], usage=usage))
+
+    response = await provider.run("", OPENING, [])
+
+    assert response.usage.input_tokens == 123
+    assert response.usage.output_tokens == 45
+
+
 async def test_unreadable_response_is_llm_004():
     """조용히 빈 응답으로 처리하면 태스크가 성공한 것처럼 끝난다."""
     provider = model(Message([Block(type="tool_use")]))  # id/name 없음
@@ -360,7 +379,14 @@ async def test_system_goes_in_its_own_field_not_the_user_message():
     await provider.run("You are a researcher.", OPENING, [])
 
     request = provider.client.messages.requests[0]
-    assert request["system"] == "You are a researcher."
+    # 마지막 블록의 cache_control 이 프롬프트 캐시 breakpoint 다 (#548)
+    assert request["system"] == [
+        {
+            "type": "text",
+            "text": "You are a researcher.",
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
     assert request["messages"] == [
         {"role": "user", "content": [{"type": "text", "text": "prompt"}]}
     ]

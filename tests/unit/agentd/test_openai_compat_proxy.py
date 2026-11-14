@@ -349,7 +349,7 @@ async def test_execute_rate_limited_openai_compat_hands_the_same_turn_to_anthrop
     assert "claude answers" in json.dumps(result.output)
     assert stack.provider.attempts == RATE_LIMIT_ATTEMPTS
     [request] = claude.requests
-    assert request["system"] == "operator rules"
+    assert request["system"][0]["text"] == "operator rules"
     assert [message["role"] for message in request["messages"]] == ["user"]
 
 
