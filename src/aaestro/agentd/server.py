@@ -24,6 +24,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from aaestro.core.agent import HealthState, HealthStatus, TaskKey, TaskRequest, TaskResult
 from aaestro.core.errors import AaestroError, AaestroErrorPayload, ErrorCategory, ErrorCode
 from aaestro.core.events import DoneEvent, ErrorEvent, TaskEvent, ToolCallEvent, ToolResultEvent
+from aaestro.core.identifiers import identifier_problem
 from aaestro.core.tools import is_mcp_tool
 from aaestro.http_auth import AdmitBeforeRouting, admit_first, require_token
 from aaestro.http_errors import request_validation_error, status_for, unroutable_problem
@@ -340,6 +341,7 @@ def create_app(runtime: AgentRuntime, *, token: str | None = None) -> FastAPI:
         """태스크를 동기 실행한다 (202+polling 아님)."""
         _reject_when_draining(runtime)
         task = _unverified(task)
+        _reject_bad_identifiers(task, runtime.agent)
         async with runtime.semaphore:
             running = asyncio.create_task(runtime.executor.execute(task))
             runtime.track(task.key, running)
@@ -354,6 +356,7 @@ def create_app(runtime: AgentRuntime, *, token: str | None = None) -> FastAPI:
         """태스크 이벤트를 SSE 로 스트리밍한다."""
         _reject_when_draining(runtime)
         task = _unverified(task)
+        _reject_bad_identifiers(task, runtime.agent)
 
         async def events() -> AsyncIterator[bytes]:
             async with runtime.semaphore:
@@ -449,6 +452,31 @@ def _reject_when_draining(runtime: AgentRuntime) -> None:
             agent=runtime.agent,
             retryable=True,
         )
+
+
+def _reject_bad_identifiers(task: TaskRequest, agent: str) -> None:
+    """호출자가 고른 식별자를 A2A 본문과 같은 규칙으로 거른다 — 받은 값은 사유에 싣지 않는다."""
+    fields = {
+        "task_id": task.task_id,
+        "run_id": task.run_id,
+        "node_id": task.node_id,
+        "trace.trace_id": task.trace.trace_id,
+        "trace.span_id": task.trace.span_id,
+        "trace.graph": task.trace.graph,
+    }
+    for name, value in fields.items():
+        # node_id · span_id · graph 는 선택 필드 — 없는 것은 검사하지 않는다
+        if value is None:
+            continue
+        problem = identifier_problem(value)
+        if problem is not None:
+            raise AaestroError(
+                category=ErrorCategory.VALIDATION,
+                code=ErrorCode.VAL_002,
+                message="task identifier is malformed",
+                agent=agent,
+                details={"field": name, "reason": problem.value},
+            )
 
 
 def _unverified(task: TaskRequest) -> TaskRequest:
