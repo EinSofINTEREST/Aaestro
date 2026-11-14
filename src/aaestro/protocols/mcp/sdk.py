@@ -96,6 +96,7 @@ async def _load_tools(connection: Connection) -> Connection:
         protocol_version=connection.protocol_version,
         handle=live,
         schemas={tool.name: dict(tool.input_schema or {}) for tool in listed.tools},
+        descriptions={tool.name: tool.description or "" for tool in listed.tools},
     )
 
 

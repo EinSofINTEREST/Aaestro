@@ -111,6 +111,9 @@ class A2AClient:
     metrics: Metrics | None = None
     tickets: TicketSource | None = None
     """레지스트리 모드의 신원 증명 — 있으면 per-edge token 대신 피호출자 하나에만 쓰는 표."""
+    reachable: tuple[str, ...] | None = None
+    """실제로 보낼 수 있는 peer (연결이 선언되고 주소가 주입된 것) — 조립하는 쪽이 계산해 넘긴다.
+    None 이면 연결 선언 전체다 (주소 표가 없는 대역용)."""
     _telemetry: A2aTelemetry | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
@@ -121,7 +124,11 @@ class A2AClient:
         """Peers this agent may call.
 
         부를 수 있는 peer 목록 — 에이전트는 주소를 직접 알지 못합니다.
+        ``reachable`` 가 주어지면 그것입니다 — 보낼 수 없는 peer 를 모델에 광고하면
+        한 턴이 낭비됩니다.
         """
+        if self.reachable is not None:
+            return self.reachable
         return self.allowlist.peers_of(self.agent)
 
     def _breaker(self, callee: str) -> CircuitBreaker:

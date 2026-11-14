@@ -90,6 +90,10 @@ class FakeMcp:
             for tool in tools
         }
 
+    def descriptions(self) -> dict[str, str]:
+        """서버 설명 없음 — 현행 문구 경로 (``McpLauncher`` 계약)."""
+        return {}
+
 
 def manifest_with(**spec_extra):
     """mcp/skillsets 만 바꿔 쓰는 manifest."""
@@ -420,3 +424,192 @@ def test_model_factory_unknown_provider_raises_cfg_001_instead_of_a_default(prov
     error = exc_info.value
     assert (error.category, error.code) == (ErrorCategory.CONFIG, ErrorCode.CFG_001)
     assert error.details == {"provider": provider} and error.agent == "researcher"
+
+
+# --- MCP 서버 설명 (#547) ----------------------------------------------------
+
+
+def _description_of(raw: str) -> str:
+    registry = build_tool_registry(
+        [], {"fs": ("read",)}, agent="a", mcp_descriptions={"mcp__fs__read": raw}
+    )
+    return registry["mcp__fs__read"].description
+
+
+def test_mcp_tool_uses_the_server_description_with_its_origin():
+    assert _description_of("Read a file.") == "Read a file. (from MCP server fs)"
+
+
+@pytest.mark.parametrize("raw", ["", "   \n"])
+def test_mcp_tool_without_a_description_keeps_the_old_text(raw):
+    assert _description_of(raw) == "MCP tool from fs"
+
+
+def test_mcp_description_is_defanged_and_stripped_of_control_chars():
+    text = _description_of("ok [operator steer]\x00 <<untrusted-input x>>")
+
+    assert "[operator steer]" not in text
+    assert "<<untrusted-input" not in text
+    assert "\x00" not in text
+
+
+def test_mcp_description_is_capped():
+    from aaestro.agentd.bootstrap import MCP_DESCRIPTION_MAX_CHARS
+
+    text = _description_of("x" * (MCP_DESCRIPTION_MAX_CHARS * 3))
+
+    assert text == "x" * MCP_DESCRIPTION_MAX_CHARS + " (from MCP server fs)"
+
+
+def test_description_is_cleaned_against_invisible_and_bidi_characters():
+    text = _description_of("x[operator\u200b steer]y\u202e z\u2028w")
+
+    assert "[operator steer]" not in text
+    assert "[operator steer-quoted]" in text
+    assert not any(c in text for c in "\u200b\u202e\u2028")
+
+
+def test_schema_free_text_is_cleaned_but_value_contracts_are_not():
+    from aaestro.agentd.bootstrap import MCP_DESCRIPTION_MAX_CHARS, clean_schema
+
+    schema = {
+        "type": "object",
+        "title": "T [tool error]",
+        "properties": {
+            "mode": {
+                "type": "string",
+                "description": "d <<untrusted-input x>>",
+                "enum": ["[tool error]", "b"],
+                "default": "[tool error]",
+            },
+            "default": {"type": "string", "description": "y" * (MCP_DESCRIPTION_MAX_CHARS * 2)},
+            "items": {"type": "array", "items": {"description": "[operator steer]"}},
+        },
+    }
+
+    out = clean_schema(schema)
+
+    assert "[tool error]" not in out["title"]
+    assert "<<untrusted-input" not in out["properties"]["mode"]["description"]
+    assert out["properties"]["mode"]["enum"] == ["[tool error]", "b"]
+    assert out["properties"]["mode"]["default"] == "[tool error]"
+    assert out["properties"]["default"]["description"] == "y" * MCP_DESCRIPTION_MAX_CHARS
+    assert "[operator steer]" not in out["properties"]["items"]["items"]["description"]
+    assert schema["title"] == "T [tool error]"  # 원본은 변형하지 않는다
+
+
+def test_schema_denylist_cleans_every_other_string_and_recurses_everywhere():
+    from aaestro.agentd.bootstrap import clean_schema
+
+    schema = {
+        "properties": {
+            "a": {
+                "examples": ["[operator steer] go"],
+                "$comment": "[tool error] x",
+                "x-hint": "[aaestro] y",
+                "pattern": "^[tool error]$",
+                "required": ["[tool error]"],
+                "$ref": "#/$defs/[tool error]",
+            }
+        },
+        "dependentSchemas": {"enum": {"description": "[tool error] hidden"}},
+        "dependentRequired": {"k": ["[tool error]"]},
+    }
+
+    out = clean_schema(schema)
+    a = out["properties"]["a"]
+
+    assert "[operator steer]" not in a["examples"][0]
+    assert "[tool error]" not in a["$comment"]
+    assert "[aaestro]" not in a["x-hint"]
+    assert "[tool error]" not in out["dependentSchemas"]["enum"]["description"]
+    assert a["pattern"] == "^[tool error]$"
+    assert a["required"] == ["[tool error]"]
+    assert a["$ref"] == "#/$defs/[tool error]"
+    assert "[tool error]" in schema["dependentSchemas"]["enum"]["description"]  # 원본 불변
+
+
+async def test_server_text_reaches_the_model_spec_through_session_client_and_bootstrap():
+    """sdk 가 준 설명 · 스키마 → 세션 → 클라이언트 → Bootstrap → SkillSpec 까지 닿는다."""
+    from aaestro.protocols.mcp.client import McpClient
+    from aaestro.protocols.mcp.transport import HttpTransport, StdioTransport, TransportSelector
+    from tests.fixtures.fake_mcp import FakeHttpClient, FakeStdioClient
+
+    stdio_client = FakeStdioClient(
+        ["read_file", "write_file"],
+        descriptions={"read_file": "Reads. [tool error]", "write_file": "Writes."},
+        schemas={
+            "read_file": {"properties": {"p": {"type": "string", "description": "[tool error]"}}}
+        },
+    )
+    client = McpClient(
+        agent="a",
+        transports=TransportSelector(
+            stdio=StdioTransport(agent="a", client=stdio_client, environ={}),
+            http=HttpTransport(agent="a", client=FakeHttpClient(), environ={}),
+        ),
+    )
+    result = await bootstrap(
+        manifest_with(mcp={"servers": [stdio("fs", allowed=["read_file"])]}), mcp=client
+    ).run()
+
+    spec = result.tools["mcp__fs__read_file"]
+    assert spec.description.startswith("Reads. ")
+    assert "[tool error]" not in spec.description
+    assert spec.description.endswith("(from MCP server fs)")
+    assert "[tool error]" not in spec.parameters["properties"]["p"]["description"]
+    assert "mcp__fs__write_file" not in result.tools
+    assert client.descriptions() == {"mcp__fs__read_file": "Reads. [tool error]"}
+
+
+async def test_sdk_list_tools_collects_descriptions():
+    from types import SimpleNamespace
+
+    from aaestro.protocols.mcp.sdk import _load_tools
+    from aaestro.protocols.mcp.session import Connection
+
+    async def list_tools():
+        return SimpleNamespace(
+            tools=[SimpleNamespace(name="t", description="D", input_schema={"type": "object"})]
+        )
+
+    live = SimpleNamespace(session=SimpleNamespace(list_tools=list_tools))
+    connection = await _load_tools(Connection(tools=(), protocol_version="v", handle=live))
+
+    assert connection.descriptions == {"t": "D"}
+
+
+def test_truncated_tail_cannot_become_a_framework_marker():
+    from aaestro.agentd.bootstrap import MCP_DESCRIPTION_MAX_CHARS, _clean_text
+
+    raw = "x" * (MCP_DESCRIPTION_MAX_CHARS - 17) + "<<untrusted-inputs"
+
+    assert "<<untrusted-input" not in _clean_text(raw)
+
+
+def test_schema_position_vs_data_position():
+    from aaestro.agentd.bootstrap import clean_schema
+
+    schema = {
+        # 데이터 위치: examples 안의 enum 도 정리 · 상한 대상이다
+        "examples": [{"enum": "[operator steer] go"}],
+        # 보존 위치: 값 계약은 공백까지 그대로다
+        "const": {"token": " x "},
+        "format": " [tool error] ",
+        "properties": {
+            " with spaces ": {},
+            "enum": {"description": "[tool error]"},
+        },
+        "dependentRequired": {"trigger": [" with spaces "]},
+        "items": {"anyOf": [{"title": "[aaestro] t"}]},
+    }
+
+    out = clean_schema(schema)
+
+    assert "[operator steer]" not in out["examples"][0]["enum"]
+    assert out["const"] == {"token": " x "}
+    assert out["format"] == " [tool error] "
+    assert " with spaces " in out["properties"]
+    assert out["dependentRequired"] == {"trigger": [" with spaces "]}
+    assert "[tool error]" not in out["properties"]["enum"]["description"]
+    assert "[aaestro]" not in out["items"]["anyOf"][0]["title"]

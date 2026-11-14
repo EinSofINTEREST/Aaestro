@@ -97,6 +97,17 @@ class McpClient:
             for tool, schema in session.schemas.items()
         }
 
+    def descriptions(self) -> dict[str, str]:
+        """Namespaced tool name to the description its server gave.
+
+        서버가 준 설명 — 신뢰하지 않는 입력이므로 모델에 싣기 전에 정리해야 합니다.
+        """
+        return {
+            namespaced(server, tool): text
+            for server, session in self.sessions.items()
+            for tool, text in session.descriptions.items()
+        }
+
     async def call_tool(self, name: str, arguments: Mapping[str, Any]) -> ToolResult:
         """Call a namespaced MCP tool.
 

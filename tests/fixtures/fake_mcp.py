@@ -64,14 +64,27 @@ class FakeTransport:
 class FakeStdioClient:
     """자식 프로세스 기동을 스크립트하는 stdio 클라이언트 대역."""
 
-    def __init__(self, tools: list[str] | None = None) -> None:
+    def __init__(
+        self,
+        tools: list[str] | None = None,
+        *,
+        descriptions: dict[str, str] | None = None,
+        schemas: dict[str, dict[str, Any]] | None = None,
+    ) -> None:
         self._tools = tuple(tools or ["read_file"])
+        self._descriptions = descriptions or {}
+        self._schemas = schemas or {}
         self.spawned: list[tuple[list[str], dict[str, str]]] = []
         self.terminated = 0
 
     async def spawn(self, *, command: list[str], env: dict[str, str]) -> Connection:
         self.spawned.append((command, env))
-        return Connection(tools=self._tools, protocol_version=SUPPORTED_VERSION)
+        return Connection(
+            tools=self._tools,
+            protocol_version=SUPPORTED_VERSION,
+            schemas=self._schemas,
+            descriptions=self._descriptions,
+        )
 
     async def call(self, connection: Connection, tool: str, arguments: Any) -> ToolResult:
         return ToolResult(content=tool)

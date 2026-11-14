@@ -121,7 +121,12 @@ class AnthropicModel:
             "messages": to_message_params(messages),
         }
         if system:
-            request["system"] = system
+            # 같은 에이전트 버전의 시스템 자리는 매 호출 같다 — 끝 블록의 breakpoint 가
+            # tools 와 system 을 한 prefix 로 캐시한다. prefix 가 모델별 최소 캐시 길이보다
+            # 짧으면 캐시되지 않는다
+            request["system"] = [
+                {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
+            ]
         if self.config.effort is not None:
             # sampling 파라미터는 현재 API 가 받지 않는다 — effort 가 그 자리다
             request["output_config"] = {"effort": self.config.effort}
@@ -198,9 +203,14 @@ class AnthropicModel:
                 for block in blocks
                 if block.type == "tool_use"
             )
+            raw = message.usage
             usage = ModelUsage(
-                input_tokens=message.usage.input_tokens,
-                output_tokens=message.usage.output_tokens,
+                # 응답의 input_tokens 는 캐시에 쓰고 읽은 토큰을 뺀 값이다 — 합쳐야
+                # openai-compat 의 prompt_tokens 와 같은 뜻의 입력 집계가 된다
+                input_tokens=raw.input_tokens
+                + (raw.cache_creation_input_tokens or 0)
+                + (raw.cache_read_input_tokens or 0),
+                output_tokens=raw.output_tokens,
             )
         except (AttributeError, TypeError, ValueError) as err:
             # 응답 모양이 계약과 다르면 그대로 흘려보내지 않는다 — 조용히 빈

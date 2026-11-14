@@ -312,3 +312,16 @@ def test_only_declared_directions_are_reachable():
     )
 
     assert narrowed == {"planner": "http://a:1"}
+
+
+def test_built_peer_client_advertises_only_peers_with_an_address(monkeypatch):
+    """연결은 선언됐지만 주소가 주입되지 않은 peer 는 build_peer_client 경로에서 광고되지 않는다."""
+    from aaestro.agentd.a2a_server import EDGES_ENV, PEERS_ENV, SECRET_ENV, build_peer_client
+
+    monkeypatch.setenv(EDGES_ENV, "researcher>planner,researcher>writer")
+    monkeypatch.setenv(PEERS_ENV, "planner=agent-planner:19101")
+    monkeypatch.setenv(SECRET_ENV, "unit-secret")
+
+    client = build_peer_client(manifest("researcher"))
+
+    assert client is not None and client.peers() == ("planner",)

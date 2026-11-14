@@ -1,24 +1,7 @@
 # Code Style and Conventions
 
-## Core Principles
-
-### Readability First
-- Code should be self-documenting
-- Clear naming over clever code
-- Simplicity over complexity
-- Remove unnecessary code
-
-### Minimal Comments
-- Only comment WHY, not WHAT
-- Code should explain itself through naming
-- Remove commented-out code
-- Avoid redundant comments
-
-### No Over-Engineering
-- Solve current problems, not future ones
-- Avoid premature abstraction
-- Delete unused code completely
-- Keep it simple
+공통 코드 품질 원칙 (가독성 · 과설계 금지 · 주석은 왜 · 에러 삼키기 금지 · magic number · mutable default · 함수 50줄 / 인자 5개)
+은 하네스 `04-engineering.md` 다. 이 문서는 본 저장소의 도구 · 표기 · 형식 값만 적는다.
 
 ## Python Style Guide
 
@@ -120,22 +103,7 @@ async def invoke(self, task: dict) -> dict: ...
    raise AaestroError(..., message="Failed to resolve module ref.")
    ```
 
-3. **금지 패턴**
-   ```python
-   # Bad — bare except
-   try: ...
-   except: ...
-
-   # Bad — 삼키기
-   except McpError:
-       pass
-
-   # Bad — Exception 광역 캐치 (최상위 boundary 핸들러 제외)
-   except Exception: ...
-   ```
-
-4. **원인 체인 보존**: 변환 시 반드시 `raise ... from err`
-5. Boundary 변환 규칙은 [05-error-handling.md](05-error-handling.md) 를 따른다
+3. 원인 체인 보존 (`raise ... from err`) 과 boundary 변환 규칙은 [05-error-handling.md](05-error-handling.md) 를 따른다
 
 ### Async Conventions
 
@@ -151,17 +119,11 @@ async def invoke(self, task: dict) -> dict: ...
 
 ### Function Design
 
-1. **Small Functions**: Max 50 lines — 초과 시 분리
-2. **Parameter Count**: Max 5 — 초과 시 pydantic 모델/dataclass 로 묶기
-   ```python
-   # Good
-   async def start(self, manifest: AgentManifest, opts: StartOptions) -> AgentHandle: ...
-   ```
-3. **Keyword-only 권장**: 불리언/옵션 인자는 `*,` 이후에
+1. **Keyword-only 권장**: 불리언/옵션 인자는 `*,` 이후에
    ```python
    async def stop(self, handle: AgentHandle, *, force: bool = False) -> None: ...
    ```
-4. **반환 일관성**: 같은 함수에서 `None`/값 혼합 반환으로 의미 표현 금지 —
+2. **반환 일관성**: 같은 함수에서 `None`/값 혼합 반환으로 의미 표현 금지 —
    부재는 예외 또는 명시적 `| None` 타입으로
 
 ### Pydantic Model Design
@@ -183,33 +145,11 @@ class AgentManifest(BaseModel):
 
 ### Comments
 
-**Language Policy**:
-- **Primary**: Korean (한국어)
-- **Secondary**: English (영어)
-- **Style**: 한국어 설명 + 영어 기술 용어 자연 혼용
+주석은 한국어 (하네스 `04-engineering.md` 표기). TODO 는 맥락을 포함한다:
 
-**Principles**:
-- Keep comments minimal and essential
-- Explain WHY, never WHAT
-
-1. **Inline Comments**: 이유를 설명
-   ```python
-   # Good — 이유를 설명
-   # provider SDK 자체 재시도와 중복되면 backoff 가 곱해지므로 비활성화
-   client = Anthropic(max_retries=0)
-
-   # Bad — 당연한 내용
-   # 클라이언트를 생성한다
-   client = Anthropic(max_retries=0)
-   ```
-
-2. **TODO Comments**: 맥락 포함
-   ```python
-   # Good
-   # TODO(juhyuni): registry backend 를 Postgres 로 교체 시 여기 캐시 무효화 필요
-   # Bad
-   # TODO: fix this
-   ```
+```python
+# TODO(juhyuni): registry backend 를 Postgres 로 교체 시 여기 캐시 무효화 필요
+```
 
 ### Docstrings
 
@@ -314,45 +254,7 @@ runtime:
 
 ## Anti-Patterns to Avoid
 
-### 1. Magic Numbers
-```python
-# Bad
-if attempt > 3: ...
-
-# Good
-MAX_ATTEMPTS = 3
-if attempt > MAX_ATTEMPTS: ...
-```
-
-### 2. Mutable Default Arguments
-```python
-# Bad
-def build(self, tools: list[Tool] = []) -> ...: ...
-
-# Good
-def build(self, tools: list[Tool] | None = None) -> ...:
-    tools = tools or []
-```
-
-### 3. Deep Nesting → Guard Clauses
-```python
-# Bad
-if a:
-    if b:
-        if c:
-            do()
-
-# Good
-if not a:
-    return
-if not b:
-    return
-if not c:
-    return
-do()
-```
-
-### 4. Global Mutable State
+### 1. Global Mutable State
 ```python
 # Bad — 모듈 전역 레지스트리 변형
 REGISTRY: dict[str, Agent] = {}
@@ -361,10 +263,10 @@ REGISTRY: dict[str, Agent] = {}
 class ModuleRegistry: ...
 ```
 
-### 5. God Objects
+### 2. God Objects
 - "Manager", "Helper", "Util" 성격의 만능 클래스 금지 — 역할 단위로 분리
 
-### 6. String-Typed Contracts
+### 3. String-Typed Contracts
 ```python
 # Bad
 status = "done"
@@ -374,117 +276,20 @@ class TaskStatus(StrEnum):
     COMPLETED = "completed"
 ```
 
-## Logging Standards
+## Git Commit / Branch / PR Conventions
 
-구조화 로깅 상세 규칙([05-error-handling.md](05-error-handling.md))을 따른다. 요지:
+공통 체계 (접두사 3분리 · 한국어 명사형 커밋 · 브랜치 `{category}/#{이슈번호}/{kebab-요약}` 30자 이내 · PR 본문) 는 하네스 `03-conventions.md`.
+아래는 CI 가 강제하는 본 저장소의 값이다 (`ci-convention.yml`):
 
-```python
-# Good — structured fields, 영어 메시지
-log.info("agent ready", agent=self.name, agent_version=self.version,
-         duration_ms=elapsed_ms)
+| 대상 | 정규식 | 예 |
+|---|---|---|
+| 커밋 | `^\[(FEAT\|FIX\|REFAC\|DOCS\|CHORE)\]: .+` | `[FEAT]: Docker 런타임 컨테이너 lifecycle 제어 구현` |
+| PR 제목 | `^\[(FEAT\|FIX\|REFAC\|DOCS\|CHORE)#[0-9]+\]:? .+` | `[DOCS#2] 룰셋 재작성` |
+| 브랜치 (정보성 경고) | `^(feature\|fix\|refactor\|docs\|chore)/#[0-9]+/[a-z0-9-]{1,30}$` | `feature/#3/docker-runtime-lifecycle` |
 
-# Bad — 보간 문자열
-log.info(f"agent {self.name} ready in {elapsed_ms}ms")
-```
-
-## Git Commit Conventions
-
-### Commit Message Format
-```
-[{카테고리}]: {변경 내용}
-```
-
-### 카테고리 (Categories)
-
-- **FEAT**: feature, 기능 구현 및 추가
-- **FIX**: fix, 버그 수정
-- **REFAC**: refactor, 구조 변경, 메소드 구조 변경 및 리팩토링
-- **DOCS**: documentation, 문서 작업 및 프롬프트 변경, 주석 등 설명 요소 작성
-- **CHORE**: chore, 빌드/설정/의존성 등 코드 외적 작업
-
-### 변경 내용 작성 규칙
-
-**⚠️ 중요: 모든 커밋 메시지는 한국어로 작성해야 합니다.**
-
-1. **언어**: 반드시 한국어로 작성 (영어 사용 금지)
-2. **형식**: 명사형 종결 (예: "구현", "수정", "추가")
-3. **내용**: 변경 내용의 전체적인 요약, 각 모듈 단위의 변경점을 명확히 기술
-
-### Examples
-
-```
-[FEAT]: Docker 런타임 컨테이너 lifecycle 제어 구현
-
-- DockerRuntime.start/stop/health 메소드 구현
-- exponential backoff 기반 재시작 정책 추가
-- 컨테이너 리소스 limit 적용 (manifest 기반)
-```
-
-```
-[FIX]: MCP transport 단절 시 세션 재연결 처리 개선
-
-- 단절 감지 시 MCP_004 retryable 에러로 변환
-- 재연결 backoff 및 실패 누적 시 unhealthy 전환 로직 추가
-```
-
-```
-[REFAC]: 그래프 토폴로지 검증 로직 분리
-
-- builder 에서 topology 검증을 TopologyValidator 로 추출
-- 검증 실패 케이스별 GRAPH_001 세부 메시지 정리
-```
-
-### Branch Naming Convention
-
-```
-{카테고리}/#{이슈번호}/{핵심-변경-대상-요약}
-```
-
-#### 브랜치 대분류
-
-- **feature/**: 새로운 기능 구현 및 추가 (FEAT 커밋 대응)
-- **fix/**: 버그 수정 (FIX 커밋 대응)
-- **refactor/**: 구조 변경 및 리팩토링 (REFAC 커밋 대응)
-- **docs/**: 문서 작업 (DOCS 커밋 대응)
-- **chore/**: 설정/빌드 작업 (CHORE 커밋 대응)
-
-#### 브랜치명 작성 규칙
-
-1. **형식**: `{카테고리}/#{이슈번호}/{핵심-변경-대상-요약}`
-2. **이슈번호**: GitHub 이슈 번호를 `#` 접두사와 함께 표기 (예: `#15`)
-3. **핵심 변경 대상 요약**: 영문 소문자, 단어 구분은 하이픈(-), 30자 이내
-
-#### Branch Name Examples
-
-```bash
-feature/#3/docker-runtime-lifecycle
-feature/#4/mcp-session-manager
-feature/#5/a2a-connection-allowlist
-feature/#6/graph-topology-validator
-
-fix/#12/mcp-reconnect-backoff
-refactor/#9/extract-topology-validator
-docs/#2/ruleset-langgraph
-chore/#7/uv-lockfile-ci
-```
-
-## Test Conventions
-
-테스트 상세는 [06-testing.md](06-testing.md). 스타일 요지:
-
-```python
-# Pattern: test_<function>_<scenario>_<expected>
-async def test_start_invalid_manifest_raises_mod_003(): ...
-
-# Arrange / Act / Assert 구조 유지
-async def test_invoke_success():
-    # Arrange
-    runtime = make_fake_runtime()
-    # Act
-    result = await runtime.invoke(handle, make_task())
-    # Assert
-    assert result.status == TaskStatus.COMPLETED
-```
+- 커밋 카테고리: FEAT (기능) · FIX (버그) · REFAC (구조 변경) · DOCS (문서 · 프롬프트 · 주석) · CHORE (빌드 · 설정 · 의존성). `HOTFIX` 는 이슈에만 있다.
+- 커밋 본문은 모듈 단위 변경점을 불릿으로. 문서 갱신은 `[DOCS]: ... (en+ko)` 로 표기 (아래 Documentation).
+- 테스트 이름 · 구조는 [06-testing.md](06-testing.md).
 
 ## Documentation
 
@@ -535,17 +340,11 @@ async def test_invoke_success():
 
 ## Code Review Checklist
 
-Before submitting code for review, ensure:
+범용 항목 (주석 처리된 코드 · magic number · 함수 크기 · 테스트 포함) 은 하네스 `04-engineering.md` · `05-verification.md`. 본 저장소 고유:
 
-- [ ] No commented-out code
-- [ ] No magic numbers
 - [ ] Type hints on all public APIs (mypy 통과)
-- [ ] Error handling follows boundary rules (05)
-- [ ] `raise ... from err` 로 원인 체인 보존
-- [ ] Functions are small (< 50 lines)
-- [ ] No deep nesting (< 4 levels)
+- [ ] Error handling follows boundary rules (05), `raise ... from err`
 - [ ] Async cleanup guaranteed (try/finally)
-- [ ] Tests are included (에러 경로 포함)
-- [ ] Logging includes standard context fields
-- [ ] Comments explain WHY, not WHAT
+- [ ] Logging includes standard context fields (05)
 - [ ] ruff format / ruff check 통과
+- [ ] 문서 변경은 en + ko 동시 (Documentation)
