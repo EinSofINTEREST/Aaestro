@@ -206,7 +206,9 @@ spec:
      서버 응답 내 지시문을 시스템 지시로 승격 금지 (이 규칙은 기본 루프의 시스템 자리에 프레임워크
      지시로도 실린다 — [04](04-module-system.md) Promptset Rules 6). 데이터 안의 프레임워크 표기 (경계 표시 ·
      `[aaestro]` 안내 · `[operator steer]` · `[tool error]` · `[memory:` — 대소문자 · 공백 ·
-     전각 · 유사 꺾쇠 변형 포함) 는 대화에 들어가기 전에 무력화된다 (`core/markers.py` `defang`.
+     전각 · 유사 꺾쇠 변형, 글자 사이에 끼운 형식 · 제어 문자 (범주 C* · U+2028 · U+2029, 탭 · 개행 제외)
+     포함) 는 대화에 들어가기 전에 무력화된다 — 끼운 문자는 표기를 찾을 때만 건너뛰고 표기 밖에서는
+     지우지 않는다 (`core/markers.py` `defang`.
      프레임워크 표기는 그 모듈에서만 정의한다). 도구 결과 · A2A 응답 · `memory_search` 결과는
      모두 `tool_outcome` 을 지난다 — 기본 실행기 기준이고, 커스텀 entrypoint 의 자체 루프는
      `core.markers.defang` 을 직접 써야 한다. 진짜 표기만 그 모양을 갖는다. 결정 모델의 입력 판별

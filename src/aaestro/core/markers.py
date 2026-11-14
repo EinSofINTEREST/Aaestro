@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 
 OPEN_MARK = "<<untrusted-input {id}>>"
@@ -51,6 +52,15 @@ _OPEN_BRACKET = "\\[\uff3b"
 _CLOSE_BRACKET = "\\]\uff3d"
 _COLON = ":\uff1a"
 
+_GAP = "\x00"
+"""표기 글자 사이에 끼워진 형식 · 제어 문자를 매칭에서 대신하는 글자.
+
+`_gap_table` 이 끼움 문자를 모두 이것으로 바꾼다.
+
+그 자체도 범주 Cc 라 원문의 NUL (U+0000) 은 바뀌지 않고 같은 자리에 선다."""
+
+_SPACE_OR_GAP = rf"[\s{_GAP}]"
+
 
 @dataclass(frozen=True)
 class _Notation:
@@ -66,10 +76,10 @@ def _bracket(header: str) -> _Notation:
     if head is None:
         raise ValueError(f"not a bracket header: {header!r}")
     name, terminator = head.group(1), head.group(2)
-    words = r"\s+".join(re.escape(word) for word in name.split())
+    words = f"{_SPACE_OR_GAP}+".join(_spread(word) for word in name.split())
     closing = _CLOSE_BRACKET if terminator == "]" else _COLON
     return _Notation(
-        pattern=rf"[{_OPEN_BRACKET}]\s*{words}\s*[{closing}]",
+        pattern=rf"[{_OPEN_BRACKET}]{_SPACE_OR_GAP}*{words}{_SPACE_OR_GAP}*[{closing}]",
         replacement=f"[{name}{QUOTE_SUFFIX}{terminator}",
     )
 
@@ -80,12 +90,33 @@ def _mark(mark: str) -> _Notation:
     if head is None:
         raise ValueError(f"not a boundary mark: {mark!r}")
     name = head.group(1)
-    words = r"\s*-\s*".join(re.escape(word) for word in name.split("-"))
-    opener = rf"(?:[{_ANGLE}]\s*[{_ANGLE}]|{_DOUBLE_ANGLE})"
+    words = f"{_SPACE_OR_GAP}*-{_SPACE_OR_GAP}*".join(_spread(word) for word in name.split("-"))
+    opener = rf"(?:[{_ANGLE}]{_SPACE_OR_GAP}*[{_ANGLE}]|{_DOUBLE_ANGLE})"
     # 뒤에 이름 글자가 이어지면 다른 단어다 (``<<untrusted-inputs`` 는 표기가 아니다)
     return _Notation(
-        pattern=rf"{opener}\s*{words}(?![\w-])", replacement=f"{QUOTED_MARK_OPENER}{name}"
+        pattern=rf"{opener}{_SPACE_OR_GAP}*{words}(?!{_GAP}*[\w-])",
+        replacement=f"{QUOTED_MARK_OPENER}{name}",
     )
+
+
+def _spread(word: str) -> str:
+    """낱말의 글자 사이마다 끼워진 문자 (`_GAP`) 를 허용하는 꼴."""
+    return f"{_GAP}*".join(re.escape(char) for char in word)
+
+
+def _is_gap(char: str) -> bool:
+    """표기 안에 끼워도 표기로 읽힐 수 있는 문자 — 범주 C* 와 줄 · 문단 구분자 (탭 · 개행 제외).
+
+    `aaestro.agentd.bootstrap._clean_text` 와 같은 부류다."""
+    category = unicodedata.category(char)
+    return char not in "\t\n" and (category[0] == "C" or category in {"Zl", "Zp"})
+
+
+def _gap_table(text: str) -> dict[int, str]:
+    """``text`` 에 든 끼움 문자 → `_GAP`.
+
+    서로 다른 글자만 보므로 비용이 길이가 아니라 글자 종류에 비례한다."""
+    return {ord(char): _GAP for char in set(text) if _is_gap(char)}
 
 
 _DATA_FORGEABLE: tuple[_Notation, ...] = (
@@ -122,11 +153,28 @@ def defang(text: str) -> str:
     - 괄호 머리말은 이름 뒤에 ``-quoted`` 를 붙인 꼴로 (``[aaestro-quoted]`` ·
       ``[operator steer-quoted]`` · ``[tool error-quoted]`` · ``[memory-quoted:``).
 
-    결정적이고 멱등입니다 (대체 표기는 다시 걸리지 않는다). 범위 밖: 제로폭 문자 (U+200B 등) 를
-    끼워 넣은 꼴, 위에 적지 않은 유사 문자 (키릴 문자 등) — 진짜 표기와 바이트가 다르고, 모델이
-    그것을 표기로 읽을지는 이 함수가 보장하지 않습니다.
+    표기 글자 사이에 끼워진 형식 · 제어 문자 (유니코드 범주 C* — 제로폭 문자 · bidi 제어 · BOM —
+    와 줄 · 문단 구분자 U+2028 · U+2029, 탭 · 개행 제외) 는 몇 개든 건너뛰고 찾습니다
+    (예: ``[operator`` 뒤에 U+200B). 그 문자들을 지우거나 바꾸지는 않습니다 — 이모지 ZWJ 시퀀스 ·
+    bidi 텍스트 같은 정상 데이터가 그대로 남도록, 바뀌는 것은 표기로 읽힌 구간뿐이고 그 구간은
+    끼워진 문자 없이 대체 표기가 됩니다. 낱말 사이에서는 끼움 문자도 공백처럼 구분자로 받습니다.
+
+    결정적이고 멱등입니다 (대체 표기는 다시 걸리지 않는다). 범위 밖: 위에 적지 않은 유사 문자
+    (키릴 문자 등) — 진짜 표기와 바이트가 다르고, 모델이 그것을 표기로 읽을지는 이 함수가 보장하지
+    않습니다.
     """
-    return _FORGEABLE.sub(_quoted, text)
+    table = _gap_table(text)
+    # 끼움 문자를 한 글자로 바꾼 같은 길이 사본에서 찾고 바꾸기는 원문에 — 표기 밖은 원문 그대로
+    probe = text.translate(table) if table else text
+    pieces: list[str] = []
+    end = 0
+    for match in _FORGEABLE.finditer(probe):
+        pieces += (text[end : match.start()], _quoted(match))
+        end = match.end()
+    if not pieces:
+        return text
+    pieces.append(text[end:])
+    return "".join(pieces)
 
 
 def _quoted(match: re.Match[str]) -> str:
