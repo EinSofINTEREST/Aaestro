@@ -695,11 +695,12 @@ def test_an_agents_sidecar_is_reached_only_through_the_proxy_decided_per_tool(pl
     hardening = docker(
         "inspect", "-f",
         "{{.Config.User}} {{.HostConfig.ReadonlyRootfs}} {{json .HostConfig.CapDrop}} "
-        "{{json .HostConfig.SecurityOpt}} {{json .HostConfig.PortBindings}}",
+        "{{json .HostConfig.SecurityOpt}} {{json .HostConfig.PortBindings}} "
+        "{{json .HostConfig.Init}}",
         SIDECAR,
     )  # fmt: skip
     assert hardening.split() == [
-        "1000:1000", "true", '["ALL"]', '["no-new-privileges:true"]', "{}",
+        "1000:1000", "true", '["ALL"]', '["no-new-privileges:true"]', "{}", "true",
     ], hardening  # fmt: skip
     assert run_in(RESEARCHER, DIRECT_SIDECAR).startswith("BLOCKED"), "프록시를 건너뛰는 길이 있다"
 

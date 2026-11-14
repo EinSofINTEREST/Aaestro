@@ -39,6 +39,7 @@ def spec_kwargs(image: str, name: str) -> dict[str, Any]:
         "read_only": True,
         "cap_drop": ["ALL"],
         "security_opt": ["no-new-privileges:true"],  # 에이전트 기본 스펙의 HARDENED_SECURITY_OPT
+        "init": True,  # 에이전트 기본 스펙의 HARDENED_INIT (#570)
         "tmpfs": {"/tmp": "size=64m", "/workspace": "size=64m"},  # noqa: S108 — 컨테이너 안 경로다
         "volumes": {},
         "labels": {"aaestro.contract": "1"},
@@ -95,12 +96,12 @@ def test_the_security_settings_reach_the_container(client, container):
         "--format",
         " ".join(
             f"{{{{.HostConfig.{field}}}}}"
-            for field in ("ReadonlyRootfs", "PidsLimit", "NanoCpus", "Memory", "CapDrop")
+            for field in ("ReadonlyRootfs", "PidsLimit", "NanoCpus", "Memory", "CapDrop", "Init")
         ),
         container,
     )
 
-    assert raw.split() == ["true", "256", "500000000", "268435456", "[ALL]"]
+    assert raw.split() == ["true", "256", "500000000", "268435456", "[ALL]", "true"]
 
 
 def test_find_resolves_a_name_to_the_live_id_only(client, container):

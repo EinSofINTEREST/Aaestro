@@ -10,6 +10,7 @@ import asyncio
 import json
 import shutil
 import subprocess
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Iterator
@@ -22,7 +23,7 @@ import yaml
 from aaestro.core.agent import HealthState, HealthStatus
 from aaestro.core.errors import AaestroError
 from aaestro.core.manifest import AgentManifest
-from aaestro.runtime.docker.engine import ContainerHandle, DockerEngine
+from aaestro.runtime.docker.engine import DEFAULT_STOP_GRACE_S, ContainerHandle, DockerEngine
 from aaestro.runtime.docker.errors import ImageMissingError, NetworkIsolationError
 from aaestro.runtime.health import HealthMonitor
 from aaestro.runtime.lifecycle import AgentLifecycle, AgentState
@@ -36,6 +37,11 @@ ECHO_MANIFEST = REPO_ROOT / "agents" / "echo" / "manifest.yaml"
 TEST_NETWORK = "aaestro-net-lifecycle"
 TOKEN = "integration-token"  # noqa: S105
 DOCKER_BIN = shutil.which("docker")
+STOP_AFTER_START_LIMIT_S = 10.0
+"""기동 직후 정지의 상한 — 기본 유예 (30초) 보다 훨씬 짧아야 SIGTERM 으로 끝난 것이다 (#570)."""
+GRACEFUL_EXIT_CODES = (0, 143)
+"""SIGTERM 경로의 종료 코드 — 143 은 tini 가 전달한 SIGTERM 으로 끝남, 0 은 agentd 의 정상 종료.
+137 (SIGKILL) · 1 (기동 실패) 은 정지가 아니다."""
 
 
 def docker(*args: str, check: bool = True) -> str:
@@ -146,6 +152,8 @@ class CliDockerClient:
             f"--cpus={kwargs['nano_cpus'] / 1_000_000_000}",
             "-P",
         ]
+        if kwargs.get("init"):
+            args.append("--init")
         for capability in kwargs.get("cap_drop", ()):
             args.append(f"--cap-drop={capability}")
         for path, options in kwargs.get("tmpfs", {}).items():
@@ -412,3 +420,30 @@ async def test_health_reports_healthy_through_the_monitor(engine):
     await wait_ready(monitor)
 
     assert monitor.last_status is HealthState.HEALTHY
+
+
+@requires_docker
+async def test_a_stop_right_after_start_ends_on_sigterm_not_the_grace(engine):
+    """#570 — agentd 가 PID 1 이면 기동 중 SIGTERM 이 무시돼 정지가 유예 (30초) 를 다 썼다.
+
+    기본 유예로 띄워 1초 뒤 정지한다. init (tini) 이 SIGTERM 을 전달하면 유예보다 훨씬 짧게,
+    SIGKILL (137) 이 아닌 종료 코드로 끝난다.
+    """
+    _, client = engine
+    default_grace = DockerEngine(client=client, network=TEST_NETWORK)
+    assert default_grace.stop_grace_s == DEFAULT_STOP_GRACE_S
+    handle = await default_grace.start(echo_spec())
+    await asyncio.sleep(1)
+    # 정지 실패는 `stop` 이 WARN 으로 삼킨다 — 상태로 정지 전후를 증명한다
+    before = json.loads(docker("inspect", "-f", "{{json .State}}", handle.container_id))
+    assert before["Running"] is True, before
+
+    began = time.monotonic()
+    await default_grace.stop(handle, remove=False)
+    elapsed_s = time.monotonic() - began
+
+    state = json.loads(docker("inspect", "-f", "{{json .State}}", handle.container_id))
+    assert elapsed_s < STOP_AFTER_START_LIMIT_S, elapsed_s
+    assert (state["Running"], state["Status"]) == (False, "exited"), state
+    assert state["ExitCode"] in GRACEFUL_EXIT_CODES, state
+    assert state["OOMKilled"] is False, state

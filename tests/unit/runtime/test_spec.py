@@ -381,3 +381,11 @@ def test_to_docker_kwargs_sets_a_private_cgroup_namespace():
     rendered = build_container_spec(agent_manifest()).to_docker_kwargs()
 
     assert rendered["cgroupns"] == "private"
+
+
+def test_to_docker_kwargs_runs_an_init_as_pid_1():
+    """PID 1 은 핸들러 없는 SIGTERM 을 무시한다 — 기동 중 정지가 유예를 다 쓴다 (#570)."""
+    built = build_container_spec(agent_manifest())
+
+    assert built.to_docker_kwargs()["init"] is True
+    assert built.hardening_kwargs()["init"] is True
