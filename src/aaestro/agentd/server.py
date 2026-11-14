@@ -374,6 +374,7 @@ def create_app(runtime: AgentRuntime, *, token: str | None = None) -> FastAPI:
     @router.post("/cancel/{task_id}", response_model=Acknowledgement)
     async def cancel(task_id: str) -> Acknowledgement:
         """진행 중 태스크를 취소한다."""
+        _reject_bad_identifier("task_id", task_id, runtime.agent)
         if not runtime.cancel(task_id):
             raise AaestroError(
                 category=ErrorCategory.NOT_FOUND,
@@ -403,6 +404,7 @@ def create_app(runtime: AgentRuntime, *, token: str | None = None) -> FastAPI:
         steer 를 모르는 실행기(커스텀 entrypoint, echo)는 501 로 답한다 — 200 으로 삼키면
         운영자가 방향이 바뀐 줄 안다. 본문은 `/reload` 와 같은 ``unsupported`` 다.
         """
+        _reject_bad_identifier("task_id", task_id, runtime.agent)
         if not await runtime.steer(task_id, body.text, by=body.by):
             return JSONResponse(
                 status_code=status.HTTP_501_NOT_IMPLEMENTED,
@@ -466,17 +468,21 @@ def _reject_bad_identifiers(task: TaskRequest, agent: str) -> None:
     }
     for name, value in fields.items():
         # node_id · span_id · graph 는 선택 필드 — 없는 것은 검사하지 않는다
-        if value is None:
-            continue
-        problem = identifier_problem(value)
-        if problem is not None:
-            raise AaestroError(
-                category=ErrorCategory.VALIDATION,
-                code=ErrorCode.VAL_002,
-                message="task identifier is malformed",
-                agent=agent,
-                details={"field": name, "reason": problem.value},
-            )
+        if value is not None:
+            _reject_bad_identifier(name, value, agent)
+
+
+def _reject_bad_identifier(name: str, value: str, agent: str) -> None:
+    """식별자 하나를 거른다 — 본문 필드와 경로의 task_id 가 같은 거절 형식을 쓴다."""
+    problem = identifier_problem(value)
+    if problem is not None:
+        raise AaestroError(
+            category=ErrorCategory.VALIDATION,
+            code=ErrorCode.VAL_002,
+            message="task identifier is malformed",
+            agent=agent,
+            details={"field": name, "reason": problem.value},
+        )
 
 
 def _unverified(task: TaskRequest) -> TaskRequest:

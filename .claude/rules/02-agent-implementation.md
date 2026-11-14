@@ -394,7 +394,8 @@ POST /v1/drain           # graceful drain 개시
    같은 401 이라 404 · 405 + `Allow` 로 라우트 표가 새지 않는다
    `/invoke` · `/stream` 의 식별자 (`task_id` · `run_id` · `node_id` · `trace` 의 `trace_id` · `span_id` ·
    `graph`) 는 A2A 본문과 같은 규칙 (`core.identifiers`) 으로 거르고, 어긋나면 `VAL_002` (400) 이다 —
-   `details` 에는 필드 이름과 사유 종류만 싣고 받은 값은 싣지 않는다
+   `details` 에는 필드 이름과 사유 종류만 싣고 받은 값은 싣지 않는다. `/cancel/{task_id}` · `/steer/{task_id}` 의
+   경로 `task_id` 도 같다 — 형식이 맞고 진행 중이 아닌 id 만 `NF_001` 이다 (steer 미지원 501 보다 먼저 본다)
 4. `GET /health` 는 무인증 — Docker healthcheck 가 직접 호출. 검사하는 라우터 밖에 둔 유일한 라우트이고,
    API 문서 경로는 열지 않는다. 다른 메서드(`HEAD` 포함)는 닫힌 경로와 같은 401 이다
 5. `/steer` 의 `queued` 는 **접수이지 반영이 아니다** (Execution Loop — Steering). 진행 중이
