@@ -466,6 +466,14 @@ async def execute(self, task: TaskRequest) -> TaskResult:
    기억은 `defang` 이 무력화하고, 태스크 입력 (promptset 값) 은 경계 표시 안에 그대로 놓인다 —
    진짜 블록은 첫 user 턴의 첫 part 하나뿐이고, 진짜 경계 안내는 렌더된 텍스트 (두 번째 part) 맨 앞의 하나뿐이라고 프레임워크 지시가 말한다 (다른 자리의 안내는 데이터). 그 뒤에 렌더된
    템플릿, 회상 블록이 온다. 기본 루프만 대상이다 (커스텀 entrypoint · echo 제외)
+10. **Tool Result Cap**: 성공한 결과 (MCP `is_error` wrapper 결과 포함 — 기본 실행기의 tool 결과와
+   `tool_outcome` 을 지나는 A2A 응답 · `memory_search` 결과) 에도 상한이 있다 — 직렬화한 본문이
+   `MAX_TOOL_RESULT_CHARS` (20000자) 를 넘으면 `defang` 앞에서 자르고 끝에 평문
+   `(truncated: original size N characters, limit M)` 을 붙인다. 프레임워크 표기가 아니다 (`[aaestro]`
+   머리말 없음 — 데이터 자리의 글). 상한은 `defang` 전 직렬화 길이 기준이라 무력화로 늘어난 만큼
+   넘을 수 있다. 잘린 결과의 스트림 `ToolResultEvent` 값은 객체가 아니라 같은 문자열이다. WARN (`tool result truncated` — `agent`, `task_id`,
+   `tool`, `original_chars`, `limit`, 값은 싣지 않는다) 을 남긴다. 한 결과가 컨텍스트와 비용을 통째로
+   차지하지 않게 하는 상한이다 — 큰 산출물은 artifact 참조로 (Output Discipline)
 
 ### Steering — 턴 경계의 운영자 지시
 
