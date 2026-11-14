@@ -229,7 +229,7 @@ Answer it.
   그대로 — 과 `items` · `allOf` · `anyOf` · `not` · `if` 등) 는 스키마로 재귀합니다. 그 밖의 모든
   키 (`description` · `title` · `examples` · `$comment` · `x-*` · 모르는 키) 는 데이터 위치라
   안의 문자열을 키 이름과 무관하게 정리합니다 (`examples` 안의 `enum` 도 정리). 속성 이름은 계약이라
-  그대로입니다. 서버가 설명을 주지 않았거나 공백뿐이면 `MCP tool from {server}` 를 그대로 씁니다.
+  그대로입니다. 정리한 입력 스키마의 직렬화가 32 KiB 를 넘는 도구는 모델에 광고하지 않고 WARN (`agent` · `mcp_server` · `tool` · `schema_bytes` · `max_bytes`) 을 남깁니다 (기동은 계속). 서버가 설명을 주지 않았거나 공백뿐이면 `MCP tool from {server}` 를 그대로 씁니다.
   `ask_peer` 는 설명에 이 에이전트가 실제로 부를 수 있는 (연결이 선언되고 주소가 주입된) peer 이름을 싣습니다.
 - **경계를 우회하는 구문은 거절합니다.** promptset 을 로드할 때 (`MOD_003` — 템플릿 파일이 없는
   것과 같이 모듈이 잘못 게시된 것), 그리고 렌더할 때마다 다시 (`MOD_004`) 검사합니다. 로드 시점

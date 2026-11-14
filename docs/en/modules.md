@@ -250,7 +250,7 @@ Answer it.
   names stay as they are, plus `items`, `allOf`, `anyOf`, `not`, `if` and the like) are walked as
   schemas. Every other key (`description`, `title`, `examples`, `$comment`, `x-*`, unknown keys)
   is data: all strings inside are cleaned whatever their keys are called, so an `enum` inside
-  `examples` is cleaned too. Property names are contracts and stay untouched. A tool whose server
+  `examples` is cleaned too. Property names are contracts and stay untouched. A tool whose cleaned input schema serializes to more than 32 KiB is not advertised to the model (a WARN with `agent`, `mcp_server`, `tool`, `schema_bytes`, `max_bytes` is logged; startup continues). A tool whose server
   gave no description (or only whitespace) keeps `MCP tool from {server}`. `ask_peer` lists the
   peers the agent can actually call (connection declared and address injected) in its
   description.
