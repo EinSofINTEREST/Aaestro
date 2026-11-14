@@ -30,6 +30,7 @@ as PR merge gates. The GitHub Ruleset and the PR template must match these names
 | `Docs Sync Check` | `ci-docs.yml` / `docs-sync` | `docs/en` ↔ `docs/ko` structure mirror + language selector presence | Yes |
 | `Review Presence` | `ci-review.yml` / `judge` (commit status) | Reports whether ≥ 1 review counts — see [Review Presence](#review-presence). Informational, not a merge gate (not in the Ruleset) | No |
 | `Review Presence Signal` | `ci-review-signal.yml` / `signal` | Permissionless relay of review events that wakes `ci-review.yml` through `workflow_run` — see [Review Presence](#review-presence). Its own result means nothing; a bot's review leaves it `action_required` | No |
+| `Benchmark Regression` | `ci-bench.yml` / `bench` | Saves `make bench` JSON as the `bench-baseline` artifact on main pushes; on PRs compares against it and warns (annotation + summary) at ≥ 25% slower mean. Unreadable input or a missing baseline skips the comparison. Never fails — informational, not a merge gate | No |
 | `Branch Name Lint` | `ci-convention.yml` / `branch-lint` | Warns on `{category}/#{issue}/{summary}` violations — informational | No |
 | `E2E Test` | `ci-nightly.yml` / `e2e` | Nightly full-stack run with fake LLM provider — not a merge gate | No |
 
