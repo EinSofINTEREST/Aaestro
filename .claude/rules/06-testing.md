@@ -200,31 +200,6 @@ def make_graph(nodes: list[str], edges: list[tuple[str, str]]) -> GraphTopology:
 - 테스트용 yaml manifest/graph 는 `tests/fixtures/manifests/` 에 — 실제 스키마로 로드해
   사용 (스키마와 fixture 의 드리프트 방지)
 
-### Table-Driven Tests
-
-다중 시나리오는 `pytest.mark.parametrize` 사용:
-
-```python
-@pytest.mark.parametrize(
-    ("ref", "expected_type", "expected_name", "expected_version"),
-    [
-        ("skillsets/web-search@0.2.0", "skillsets", "web-search", "0.2.0"),
-        ("agents/planner@1.0.0", "agents", "planner", "1.0.0"),
-    ],
-)
-def test_parse_ref_valid(ref, expected_type, expected_name, expected_version):
-    parsed = ModuleRef.parse(ref)
-    assert (parsed.type, parsed.name, parsed.version) == (
-        expected_type, expected_name, expected_version)
-
-
-@pytest.mark.parametrize("ref", ["web-search", "skillsets/x@latest", "skillsets/@1.0.0"])
-def test_parse_ref_invalid_raises(ref):
-    with pytest.raises(AaestroError) as exc_info:
-        ModuleRef.parse(ref)
-    assert exc_info.value.code == "MOD_001"
-```
-
 ## Integration Testing
 
 ### Docker Runtime Tests
