@@ -25,6 +25,7 @@ from aaestro.core.errors import (
 )
 from aaestro.observability.logging import LogField
 from aaestro.resilience import retrying
+from tests.fixtures.waiting import reached
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -173,7 +174,7 @@ async def test_cancellation_propagates_while_waiting():
         raise network_error()
 
     task = asyncio.create_task(retrying(NETWORK_RETRY, op, rng=fixed_rng()))
-    await entered.wait()
+    await reached(entered, task)
     await asyncio.sleep(0)
     task.cancel()
 

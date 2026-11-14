@@ -80,6 +80,7 @@ async def test_start_runs_each_sidecar_hardened_on_its_own_internal_network():
     assert browser["cap_drop"] == ["ALL"]
     assert browser["security_opt"] == ["no-new-privileges:true"]
     assert browser["cgroupns"] == "private"
+    assert browser["init"] is True
     assert browser["restart_policy"] == {"Name": "on-failure", "MaximumRetryCount": 5}
     assert browser["nano_cpus"] == 500_000_000
     assert browser["mem_limit"] == 512 * 1024 * 1024
@@ -220,6 +221,20 @@ async def test_reattach_replaces_a_sidecar_that_lost_its_hardening(hardening):
     await sidecars.start(manifest, {})
     first = docker.find("aaestro-researcher--mcp-search")
     docker.hardening_by_id[first] = hardening
+
+    await sidecars.start(manifest, {}, reuse=True)
+
+    assert first in docker.removed
+
+
+async def test_reattach_replaces_a_sidecar_that_runs_without_init():
+    """init 만 빠진 사이드카 — 나머지 경화가 정상이어도 PID 1 이 SIGTERM 을 무시한다 (#570)."""
+    docker = FakeDockerClient()
+    sidecars = McpSidecars(docker)
+    manifest = with_servers(SEARCH)
+    await sidecars.start(manifest, {})
+    first = docker.find("aaestro-researcher--mcp-search")
+    docker.hardening_by_id[first] = {**docker.hardening_of(first), "Init": None}
 
     await sidecars.start(manifest, {}, reuse=True)
 

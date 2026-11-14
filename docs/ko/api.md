@@ -643,6 +643,10 @@ steer 할 수 없는 것: 턴 경계는 LLM tool 루프에만 있고, 에이전�
 누가 시도했는지와 함께 로그에 남긴다 (`run steer refused`). 지시 본문은 로그에 남기지 않는다
 (길이만). 태스크 스트림의 `steer` 이벤트에는 실린다.
 
+### 태스크 스트림의 도구 결과
+
+`tool_result` 이벤트는 모델이 읽는 것과 같은 방식으로 JSON 변환한 도구 결과를 싣는다 (문자열은 그대로이고, 그 밖의 값은 JSON 직렬화를 한 번 거치며 JSON 타입이 아닌 것은 `str()` 로 쓴다). MCP 결과는 `{"content", "is_error"}` 모양을 유지해 소비자가 도구가 보고한 오류를 볼 수 있다. JSON 이 담지 못하는 수 (`NaN`, `±inf`) 는 이벤트에서 `null` 이고 모델 본문에는 그대로 남는다. 그래도 직렬화할 수 없는 이벤트는 스트림을 끊지 않고 종류별로 대체한다. `tool_result` 는 `result` 없이 `error` (MCP 도구는 `MCP_003`, 그 밖은 `SKILL_001`, `tool result not serializable: <tool>`) 를 실어 보내고, `tool_call` 은 `arguments` 를 비워 보내고, `done` · `error` 는 스트림을 끝내는 `error` 이벤트 하나 (`INTERNAL_001`) 로 바꾸고, 그 밖의 이벤트 (`token` · `steer` 등) 는 `WARN` 만 남기고 건너뛴다. 실패를 알리는 것은 종료 이벤트의 대체뿐이라, 스트림이 태스크 실패를 알린 뒤 계속 이어지지 않는다.
+
 ## 권한 레지스트리
 
 에이전트가 도는 동안 바뀌는 권한은 **에이전트 컨테이너 밖에서, 요청마다** 판정한다 — 에이전트는
@@ -1033,7 +1037,7 @@ manifest 가 `env_allowlist` 에 올려도 실 키는 프록시에만 있다. �
 - **재부착도 격리를 확인한다.** 재시작 뒤 배포는 에이전트 네트워크가 내부 네트워크이고 각 컨테이너가 그
   네트워크에만 붙어 있고, 기동 스펙이 거는 경화 설정(`CapDrop` 에 `ALL`, 읽기 전용 루트 파일시스템,
   사용자 `1000:1000`, PID limit (`DEFAULT_PID_LIMIT`, 256), 키별 유효값이 스펙과 같은
-  `security_opt` — 항목을 더하거나 뒤에서 덮으면 거절)이 그대로이며 그것을 무력화하는 설정
+  `security_opt` — 항목을 더하거나 뒤에서 덮으면 거절, PID 1 의 init 프로세스(`Init`))이 그대로이며 그것을 무력화하는 설정
   (privileged, 추가 capability, 호스트 PID · IPC · user · 네트워크 · UTS · cgroup 네임스페이스,
   비어 있는 `MaskedPaths` 또는 `ReadonlyPaths`, 기동 스펙이 걸지 않은 `Devices` · `DeviceRequests` ·
   `DeviceCgroupRules`)이 없고, 마운트가 기동 스펙이 건 것(읽기 전용 선언 마운트, 선언한 볼륨,
@@ -1191,7 +1195,9 @@ runtime 이 에이전트보다 먼저 `aaestro-<agent>--mcp-<server>` 라는 이
   사이드카를 쓰는 그래프는 거부한다(`CFG_001`) — 에이전트를 사이드카에 직접 이으면 도구 판정이 에이전트
   컨테이너 안의 검사로 떨어지기 때문이다.
 - **에이전트와 같은 방호.** 에이전트와 사이드카는 같은 경화 집합을 한 곳(`runtime/spec.py`)에서 가져온다. uid 1000, 쓸 수 있는 `/tmp`(`HOME` 도 여기)만 둔 읽기 전용 루트 파일시스템,
-  `cap-drop ALL`, `no-new-privileges`, PID 상한. 네트워크는 다르다 — 에이전트 자신의 control·(선택)
+  `cap-drop ALL`, `no-new-privileges`, PID 상한, PID 1 의 init 프로세스(`--init` — `SIGTERM` 을 전달하고
+  좀비를 거둬, 기동 직후의 정지가 정지 유예를 다 쓰지 않는다). init 이 경화 집합에 들기 전에 만든
+  컨테이너는 첫 재부착에서 `Init` 대조에 걸려 다른 경화 불일치와 같이 다뤄진다. 네트워크는 다르다 — 에이전트 자신의 control·(선택)
   A2A 포트는 루프백에 바인딩하고, 사이드카는 포트 매핑이 전혀 없다. 선언하지 않은 리소스는 에이전트
   기본값(CPU 1, 1Gi)이고, 사이드카는 레플리카 수와 무관하게 하나씩 그룹 quota 에 합산된다.
 - **환경.** 서버의 `env_allowlist` 만, 그리고 프록시가 켜져 있으면 소유 에이전트의 `HTTPS_PROXY` — 사이드카의

@@ -281,7 +281,7 @@ def verify_started_hardening(
 def hardening_gaps(found: Mapping[str, Any], expected: Mapping[str, Any]) -> list[str]:
     """`docker inspect` 값에서 경화가 어긋난 필드 이름 — 없으면 빈 목록.
 
-    ``expected`` 는 그 컨테이너를 만든 생성 인자(user · cap_drop · read_only · security_opt ·
+    ``expected`` 는 그 컨테이너를 만든 생성 인자(user · cap_drop · read_only · security_opt · init ·
     pids_limit · tmpfs · volumes)다 — 에이전트는 `ContainerSpec.hardening_kwargs()`, 사이드카는
     `sidecar_kwargs`.
     필드 목록이 아니라 부류를 본다: 생성 인자가 건 설정이 빠진 것, 그리고 걸려 있어도 뜻을 잃게
@@ -302,6 +302,9 @@ def hardening_gaps(found: Mapping[str, Any], expected: Mapping[str, Any]) -> lis
         wrong.append("CapDrop")
     if expected.get("read_only") and found.get("ReadonlyRootfs") is not True:
         wrong.append("ReadonlyRootfs")
+    # 꺼진 init 은 `null` (미지정) 또는 `false` 로 보인다 — 둘 다 PID 1 이 tini 가 아니다
+    if expected.get("init") and found.get("Init") is not True:
+        wrong.append("Init")
     if found.get("User") != expected.get("user"):
         wrong.append("User")
     if security_opt_map(found.get("SecurityOpt")) != security_opt_map(expected.get("security_opt")):

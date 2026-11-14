@@ -537,6 +537,7 @@ DEFAULT_READONLY_PATHS = ["/proc/bus", "/proc/sys"]
 
 GOOD_HARDENING = {
     "CapDrop": ["ALL"],
+    "Init": True,
     "ReadonlyRootfs": True,
     "User": "1000:1000",
     "SecurityOpt": ["no-new-privileges:true"],  # 에이전트 기본 스펙이 싣는 HARDENED_SECURITY_OPT
@@ -579,6 +580,9 @@ async def test_verify_isolation_accepts_a_hardened_container():
         ("CapDrop", None),
         ("CapDrop", ["NET_RAW"]),
         ("ReadonlyRootfs", False),
+        # 재부착한 컨테이너가 init 없이 떠 있으면 PID 1 이 SIGTERM 을 무시한다 (#570)
+        ("Init", None),
+        ("Init", False),
         ("User", ""),
         ("User", "0:0"),
     ],
@@ -1039,6 +1043,7 @@ def inspect_shape(kwargs):
     return {
         "CapDrop": kwargs["cap_drop"],
         "ReadonlyRootfs": kwargs["read_only"],
+        "Init": kwargs.get("init"),
         "User": kwargs["user"],
         "SecurityOpt": kwargs.get("security_opt"),
         "PidsLimit": kwargs["pids_limit"],
@@ -1049,7 +1054,8 @@ def inspect_shape(kwargs):
 
 
 HARDENING_KEYS = (
-    "pids_limit", "user", "read_only", "cap_drop", "security_opt", "cgroupns", "tmpfs", "volumes"
+    "pids_limit", "user", "read_only", "cap_drop", "security_opt", "cgroupns", "init", "tmpfs",
+    "volumes",
 )  # fmt: skip
 
 

@@ -44,6 +44,30 @@ async def until(predicate: Callable[[], bool], *, timeout_s: float = DEFAULT_TIM
         await asyncio.sleep(POLL_S)
 
 
+async def reached(
+    event: asyncio.Event, task: asyncio.Future, *, timeout_s: float = DEFAULT_TIMEOUT_S
+) -> None:
+    """Wait for ``event`` while the task that should set it is still running.
+
+    이벤트를 세워야 할 태스크가 먼저 끝났다면 (예외로 죽은 경우) 그 예외를 바로 올린다 —
+    상한 없는 ``event.wait()`` 는 그 실패를 hang 으로 바꾼다 (#568).
+
+    Raises:
+        AssertionError: If the task ended without setting the event, or the deadline passed.
+    """
+    waiter = asyncio.ensure_future(event.wait())
+    try:
+        await asyncio.wait({waiter, task}, timeout=timeout_s, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        waiter.cancel()
+    if event.is_set():
+        return
+    if task.done() and not task.cancelled() and task.exception() is not None:
+        raise task.exception()
+    outcome = task.result() if task.done() and not task.cancelled() else "still running"
+    raise AssertionError(f"event was not set within {timeout_s}s (task: {outcome!r})")
+
+
 async def spin(rounds: int) -> None:
     """Yield the event loop a fixed number of times.
 
@@ -54,4 +78,4 @@ async def spin(rounds: int) -> None:
         await asyncio.sleep(0)
 
 
-__all__ = ["DEFAULT_TIMEOUT_S", "spin", "until"]
+__all__ = ["DEFAULT_TIMEOUT_S", "reached", "spin", "until"]

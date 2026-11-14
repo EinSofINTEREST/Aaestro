@@ -679,6 +679,10 @@ delegated to a peer over A2A is not addressable from here — steer the node tha
 Refused instructions are logged by the control plane too (`run steer refused`), with who tried. The instruction text is not written to logs (only its length); the `steer` event
 on the task stream carries it.
 
+### Tool results on the task stream
+
+A `tool_result` event carries the tool's result converted to JSON the same way the model reads it (a string stays a string; other values go through one JSON serialization, with anything that is not a JSON type written as its `str()`). An MCP result keeps its `{"content", "is_error"}` shape so a consumer can see a tool-reported error. Numbers JSON cannot carry (`NaN`, `±inf`) are `null` in the event while the model's text keeps them. If an event still cannot be serialized, the stream does not break: the event is replaced by kind: a `tool_result` is sent with no `result` and an `error` (`MCP_003` for an MCP tool, otherwise `SKILL_001`; `tool result not serializable: <tool>`); a `tool_call` is sent with empty `arguments`; a `done` or `error` is replaced by one `error` event (`INTERNAL_001`) that ends the stream; any other event (such as `token` or `steer`) is skipped with a `WARN`. Only the terminal replacement reports a failure, so a stream never says the task failed and then keeps going.
+
 ## Access registry
 
 Permissions that change while agents run are decided **outside the agent's container, per
@@ -1094,8 +1098,8 @@ outside address fails. The proxy is the only way out.
   agent network is internal and each of its containers is attached to that network alone, and the
   container still carries the hardening the start spec sets (`CapDrop` has `ALL`, a read-only root
   filesystem, user `1000:1000`, the PID limit (`DEFAULT_PID_LIMIT`, 256), and a `security_opt` whose
-  effective value per key equals the spec's — adding an entry or overriding one later is refused)
-  and nothing that voids it (privileged, added capabilities, host PID / IPC / user / network /
+  effective value per key equals the spec's — adding an entry or overriding one later is refused,
+  and an init process as PID 1 (`Init`) and nothing that voids it (privileged, added capabilities, host PID / IPC / user / network /
   UTS / cgroup namespaces, an empty `MaskedPaths` or `ReadonlyPaths`, and `Devices`,
   `DeviceRequests` or `DeviceCgroupRules` the start spec did not set). Its mounts must be exactly
   the ones the start spec sets: the read-only declaration mounts, the declared volumes and the
@@ -1268,7 +1272,10 @@ URL.
   sidecar directly would leave the tool decisions to a check inside the agent's container.
 - **Hardened like an agent.** Agents and sidecars take the same hardening set from one place
   (`runtime/spec.py`): uid 1000, a read-only root filesystem with a writable `/tmp` (also
-  `HOME`), `cap-drop ALL`, `no-new-privileges`, and a PID limit. Networking differs: the agent's
+  `HOME`), `cap-drop ALL`, `no-new-privileges`, a PID limit, and an init process as PID 1
+  (`--init` — it forwards `SIGTERM` and reaps zombies, so a stop right after start does not wait
+  out the grace period). Containers created before init joined the set fail the `Init` check on
+  their first reattach and are treated like any other hardening mismatch. Networking differs: the agent's
   own control and optional A2A ports bind to loopback, while a sidecar has no port mapping at all.
   Undeclared
   resources default to the agent default (1 CPU, 1Gi), and each sidecar counts toward the group quota

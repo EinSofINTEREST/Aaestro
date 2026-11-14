@@ -7,20 +7,23 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+from aaestro.agentd import server as server_module
 from aaestro.agentd.echo import EchoExecutor
 from aaestro.agentd.executor import MAX_STEER_CHARS, Executor, UserTurn
-from aaestro.agentd.server import AgentRuntime, create_app
+from aaestro.agentd.server import AgentRuntime, _sse_frame, create_app
 from aaestro.core.agent import ComponentHealth, HealthState, HealthStatus, TaskResult, TaskStatus
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
-from aaestro.core.events import DoneEvent, TokenEvent
+from aaestro.core.events import DoneEvent, TokenEvent, ToolCallEvent, ToolResultEvent
 from aaestro.core.markers import STEER_HEADER
 from tests.fixtures.builders import make_task
 from tests.fixtures.fake_model import FakeModel, FakeTools, calls, text
+from tests.fixtures.waiting import reached
 
 TOKEN = "agent-token"
 AUTH = {"authorization": f"Bearer {TOKEN}"}
@@ -238,6 +241,116 @@ def test_stream_emits_sse_events():
 
     assert body.count("data: ") == 2
     assert '"type":"token"' in body.replace(" ", "")
+
+
+class _UnserializableEvents(FakeExecutor):
+    """JSON 왕복은 통과하지만 pydantic 직렬화에서 터지는 결과를 내는 실행기."""
+
+    def __init__(self, value) -> None:
+        super().__init__()
+        self._value = value
+
+    async def stream(self, task):
+        yield ToolResultEvent(task_id=task.task_id, tool="search", result=self._value)
+        yield DoneEvent(task_id=task.task_id, output={"content": "done"})
+
+
+def _deep(n: int):
+    value: list = []
+    for _ in range(n):
+        value = [value]
+    return value
+
+
+@pytest.mark.parametrize("value", [{"v": "\ud800"}, _deep(260)], ids=["surrogate", "deep"])
+def test_stream_survives_an_event_that_cannot_be_serialized(value):
+    client, _ = make_client(_UnserializableEvents(value))
+
+    with client.stream("POST", "/v1/stream", json=task_payload(), headers=AUTH) as response:
+        events = [
+            json.loads(line.removeprefix("data: "))
+            for line in "".join(response.iter_text()).splitlines()
+            if line.startswith("data: ")
+        ]
+
+    assert [e["type"] for e in events] == ["tool_result", "done"]
+    assert events[0]["result"] is None
+    assert events[0]["error"]["code"] == "SKILL_001"
+    assert events[0]["error"]["message"] == "tool result not serializable: search"
+
+
+def test_sse_frame_uses_the_mcp_code_for_an_mcp_tool():
+    event = ToolResultEvent(task_id="t", tool="mcp__fs__read", result={"v": "\ud800"})
+
+    body = json.loads(_sse_frame(event, "researcher").decode().removeprefix("data: "))
+
+    assert body["result"] is None
+    assert body["error"]["code"] == "MCP_003"
+
+
+def test_sse_frame_replaces_a_non_tool_event_with_an_internal_error():
+    event = DoneEvent(task_id="t", output={"v": "\ud800"})
+
+    body = json.loads(_sse_frame(event, "researcher").decode().removeprefix("data: "))
+
+    assert body["type"] == "error"
+    assert body["error"]["code"] == "INTERNAL_001"
+    assert body["error"]["category"] == "internal"
+
+
+def _frame_body(frame: bytes) -> dict:
+    return json.loads(frame.decode().removeprefix("data: "))
+
+
+def test_stream_with_unserializable_tool_call_arguments_keeps_going_without_an_error_event():
+    class Events(FakeExecutor):
+        async def stream(self, task):
+            yield ToolCallEvent(task_id=task.task_id, tool="search", arguments={"a": _deep(260)})
+            yield ToolResultEvent(task_id=task.task_id, tool="search", result="ok")
+            yield DoneEvent(task_id=task.task_id, output={"content": "done"})
+
+    client, _ = make_client(Events())
+
+    with client.stream("POST", "/v1/stream", json=task_payload(), headers=AUTH) as response:
+        events = [
+            json.loads(line.removeprefix("data: "))
+            for line in "".join(response.iter_text()).splitlines()
+            if line.startswith("data: ")
+        ]
+
+    assert [e["type"] for e in events] == ["tool_call", "tool_result", "done"]
+    assert events[0]["arguments"] == {}
+
+
+def test_sse_frame_skips_a_non_terminal_event_that_cannot_be_serialized():
+    event = TokenEvent(task_id="t", text="\ud800")
+
+    assert _sse_frame(event, "researcher") == b""
+
+
+def test_sse_frame_replacements_survive_surrogates_in_task_id_and_tool():
+    bad = "\ud800x"
+    result = ToolResultEvent(task_id=bad, tool=bad, result="ok")
+    call = ToolCallEvent(task_id=bad, tool=bad)
+    done = DoneEvent(task_id=bad)
+
+    for event, kind in ((result, "tool_result"), (call, "tool_call"), (done, "error")):
+        body = _frame_body(_sse_frame(event, "researcher"))
+        assert body["type"] == kind
+    assert _frame_body(_sse_frame(result, "researcher"))["error"]["code"] == "SKILL_001"
+
+
+def test_sse_frame_falls_back_to_a_fixed_frame_when_the_replacement_fails(monkeypatch):
+    def boom(event, agent):
+        raise RuntimeError("no")
+
+    monkeypatch.setattr(server_module, "_replacement", boom)
+
+    body = _frame_body(_sse_frame(DoneEvent(task_id="t", output={"v": "\ud800"}), "researcher"))
+
+    assert body["type"] == "error"
+    assert body["error"]["code"] == "INTERNAL_001"
+    assert _sse_frame(ToolCallEvent(task_id="t", tool="x", arguments={"a": _deep(260)}), "r") == b""
 
 
 # --- card / cancel / reload / drain -----------------------------------------
@@ -541,7 +654,7 @@ async def test_drain_waits_for_inflight_tasks():
     task = make_task(task_id="t-drain")
     running = asyncio.create_task(runtime.executor.execute(task))
     runtime.track(task.key, running)
-    await executor.running.wait()
+    await reached(executor.running, running)
 
     await runtime.drain()
 
@@ -635,7 +748,7 @@ async def test_the_cancel_endpoint_stops_the_task_the_invoke_endpoint_is_running
         # 본문의 호출자 주장은 버려진다 — 취소가 찾는 것은 Control API 의 태스크다
         body = {**task_payload(task_id="t-http"), "caller": "writer"}
         invoking = asyncio.create_task(client.post("/v1/invoke", json=body, headers=AUTH))
-        await executor.running.wait()
+        await reached(executor.running, invoking)
 
         canceled = await client.post("/v1/cancel/t-http", headers=AUTH)
         response = await invoking

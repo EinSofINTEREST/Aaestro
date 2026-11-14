@@ -39,6 +39,7 @@ from aaestro.core.events import (
 from aaestro.core.markers import STEER_HEADER
 from tests.fixtures.builders import make_task
 from tests.fixtures.fake_model import FakeModel, FakeTools, calls, text
+from tests.fixtures.waiting import reached
 
 TASK_ID = "task-0001"
 
@@ -425,7 +426,7 @@ async def test_the_queue_is_gone_once_the_task_is_cancelled():
 
     tools.during["search"] = block
     running = asyncio.create_task(executor.execute(make_task()))
-    await started.wait()
+    await reached(started, running)
     await executor.steer(TASK_ID, "never applied", by="alice")
 
     running.cancel()
@@ -458,7 +459,7 @@ async def test_a_peer_task_with_the_same_id_is_not_reachable_by_an_operator_stee
     tools.during["search"] = block
     peer_task = make_task().model_copy(update={"caller": "peer"})
     running = asyncio.create_task(executor.execute(peer_task))
-    await started.wait()
+    await reached(started, running)
 
     with pytest.raises(AaestroError) as exc_info:
         await executor.steer(TASK_ID, "meant for someone else", by="alice")
@@ -538,7 +539,7 @@ class Overlap:
 
     async def start_first(self) -> asyncio.Task:
         running = asyncio.create_task(self.executor.execute(make_task(input={"who": "first"})))
-        await self.entered.wait()
+        await reached(self.entered, running)
         return running
 
     def second(self):

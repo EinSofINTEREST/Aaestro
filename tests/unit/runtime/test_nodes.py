@@ -18,6 +18,7 @@ from aaestro.core.topology import NodeSpec
 from aaestro.runtime import nodes as nodes_module
 from aaestro.runtime.nodes import ControlNodeRuntime
 from tests.fixtures.builders import make_task
+from tests.fixtures.waiting import reached
 
 
 @pytest.fixture(autouse=True)
@@ -187,7 +188,7 @@ class Running:
 async def start(runtime, node_id: str, task_id: str, run_id: str = "run-1") -> Running:
     client = runtime.clients[node_id]
     running = Running(runtime, client, node_id, task_id, run_id)
-    await client.started.wait()
+    await reached(client.started, running._call)
     return running
 
 
@@ -220,7 +221,7 @@ async def test_steer_reaches_the_replica_that_took_the_task():
     took_the_task, other = replicas
     runtime = ControlNodeRuntime(clients=RoundRobin())
     call = asyncio.create_task(runtime.invoke(node(), make_task(task_id="t-1", run_id="run-1")))
-    await took_the_task.started.wait()
+    await reached(took_the_task.started, call)
 
     await runtime.steer("run-1", "go", by="alice")
     took_the_task.release.set()
@@ -255,7 +256,7 @@ async def test_a_node_with_several_tasks_is_not_told_to_name_the_node():
     runtime = ControlNodeRuntime(clients={"planner": client})
     first = Running(runtime, client, "planner", "t-1")
     second = Running(runtime, client, "planner", "t-2")
-    await client.started.wait()
+    await reached(client.started, first._call)
     await asyncio.sleep(0)
 
     with pytest.raises(AaestroError) as named:
