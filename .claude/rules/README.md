@@ -153,9 +153,10 @@ Essential for:
 ### [08-workflow.md](08-workflow.md)
 **AI Workflow Conventions — project-specific part**
 
-The common workflow rules (issue-first, autonomous progression and its four exception zones,
-commit-per-TODO, PR auto-creation, least privilege, label / issue-type mapping, decision records,
-sub-agent orchestration with model tiers) live in the user-level harness `~/.claude/rules/`.
+The common workflow rules (issue-first and pre-start issue validation, autonomous progression and its
+four exception zones, commit-per-TODO, PR auto-creation and the four required PR sections, least
+privilege, label / issue-type mapping, decision records, delegation loop with model tiers and the Codex
+external executor) live in the user-level harness `~/.claude/rules/`.
 This file keeps only what the harness delegates to the project:
 
 - Mapping table: legacy "규약 N" numbers → harness files (CI error messages cite the numbers)
@@ -261,46 +262,14 @@ Key for:
 - Retry with backoff, circuit-break unhealthy agents
 - Monitor and alert proactively
 
-### 5. Maintainability
-- Write clear, documented code
-- Follow Python best practices
-- Comprehensive testing
-- Keep dependencies minimal
-
 ## Development Workflow
 
-### Before Writing Code
-
-1. **Understand the Requirement**
-   - What problem are we solving?
-   - Which layer does this affect (orchestration / runtime / protocol / module)?
-   - Are there existing patterns to follow?
-
-2. **Review Relevant Rules**
-   - Check the appropriate ruleset section
-   - Understand interfaces and patterns
-   - Review error handling requirements
-   - Plan test coverage
-
-3. **Design Before Implementation**
-   - Sketch the control flow
-   - Identify isolation boundaries being crossed
-   - Plan for failure cases
-   - Consider performance impact
-
-### While Writing Code
-
-1. **Follow the Style Guide** ([07-code-style.md](07-code-style.md))
-2. **Follow the Architecture Rules** — use prescribed interfaces and layer boundaries
-3. **Write Tests Alongside** — unit tests for logic, integration tests for wiring
-4. **Keep it Simple** — no premature abstraction, no dead code
-
-### After Writing Code
-
-1. **Self-Review** (Use [07-code-style.md](07-code-style.md) checklist)
-2. **Quality Checks** — ruff, mypy, pytest, coverage ≥ 70%
-3. **Integration Verification** — run the affected graph in the dev environment,
-   check metrics and logs, document new configurations
+The common workflow (issue-first, delegation, verification, PR conventions) is the
+user-level harness `~/.claude/rules/`; this ruleset holds the domain rules and this
+project's own values only. Before writing code, read the section of 01 ~ 05 / 09 for the
+layer you touch, then check the isolation boundaries you cross and plan error paths
+and tests. Quality checks: `make check` (ruff, mypy, pytest, coverage ≥ 70%); for wiring
+changes also run the affected graph in the dev environment.
 
 ## Common Patterns
 
@@ -386,13 +355,6 @@ These rules are living documents and should evolve with the project:
 - Architecture overview: `docs/en/architecture.md`
 - CI conventions & status checks: `docs/en/ci/`
 - Runbooks: `docs/en/runbooks/` (운영 구현과 함께 추가 예정)
-
-## Getting Help
-
-- Review the relevant ruleset section first
-- Check existing code for examples
-- Ask in team chat with specific questions
-- Reference the ruleset section in your question
 
 ---
 
