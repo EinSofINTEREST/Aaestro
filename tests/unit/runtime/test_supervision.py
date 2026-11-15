@@ -13,7 +13,7 @@ import asyncio
 from pathlib import Path
 
 import yaml
-from prometheus_client import CollectorRegistry
+from prometheus_client import CollectorRegistry, generate_latest
 
 from aaestro.core.agent import ComponentHealth, HealthState, HealthStatus
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
@@ -73,6 +73,10 @@ class ScriptedHealth:
         if self._results:
             return self._results.pop(0)
         return HealthStatus(status=HealthState.HEALTHY)
+
+
+def unhealthy() -> HealthStatus:
+    return HealthStatus(status=HealthState.UNHEALTHY)
 
 
 def healthy() -> HealthStatus:
@@ -290,11 +294,34 @@ async def test_the_health_gauge_is_filled():
     metrics = Metrics(registry=CollectorRegistry())
     agents = launcher(StepSleep(0), metrics=metrics)
     await start_with(agents, [healthy()])
-    gauge = metrics.gauge("aaestro_agent_health").labels(agent="echo")
+    gauge = metrics.gauge("aaestro_agent_health").labels(agent="echo", replica="0")
 
     await until(lambda: gauge._value.get() == 1.0)
 
     assert gauge._value.get() == 1.0
+    await agents.stop_all()
+
+
+async def test_health_series_is_per_replica_and_removed_on_stop():
+    """레플리카마다 시계열이 갈리고 정지하면 지운다 — 남으면 AgentDown 이 계속 발화한다 (#528)."""
+    metrics = Metrics(registry=CollectorRegistry())
+    agents = launcher(StepSleep(0), metrics=metrics)
+    for replica, result in ((0, healthy()), (1, unhealthy())):
+        launched = await agents.start(manifest(), replica=replica)
+        launched.client.health = ScriptedHealth([result] * 5).health  # type: ignore[method-assign]
+    name, reg = "aaestro_agent_health", metrics.registry
+
+    def value(replica: str) -> float | None:
+        # labels() 는 없는 시계열을 만들어 버리므로 registry 를 직접 읽는다
+        return reg.get_sample_value(name, {"agent": "echo", "replica": replica})
+
+    await until(lambda: value("0") == 1.0 and value("1") == 0.0)
+
+    await agents.stop("echo", replica=1)
+
+    text = generate_latest(metrics.registry).decode()
+    assert 'aaestro_agent_health{agent="echo",replica="0"}' in text
+    assert 'aaestro_agent_health{agent="echo",replica="1"}' not in text
     await agents.stop_all()
 
 

@@ -38,7 +38,7 @@ groups:
         for: 3m
         labels: {severity: critical}
         annotations:
-          summary: "Agent {{ $labels.agent }} unhealthy for 3m"
+          summary: "Agent {{ $labels.agent }} replica {{ $labels.replica }} unhealthy for 3m"
           runbook: "docs/en/runbooks/incident-response.md#agentdown"
 
       - alert: ContainerRestartLoop

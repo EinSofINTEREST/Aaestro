@@ -284,7 +284,7 @@ async def test_health_metric_tracks_the_result():
     await monitor.check_once()
 
     gauge = metrics.gauge("aaestro_agent_health")
-    assert gauge.labels(agent="researcher")._value.get() == 1
+    assert gauge.labels(agent="researcher", replica="0")._value.get() == 1
 
 
 async def test_health_metric_drops_on_failure():
@@ -294,7 +294,20 @@ async def test_health_metric_drops_on_failure():
     await monitor.check_once()
 
     gauge = metrics.gauge("aaestro_agent_health")
-    assert gauge.labels(agent="researcher")._value.get() == 0
+    assert gauge.labels(agent="researcher", replica="0")._value.get() == 0
+
+
+async def test_health_gauge_keeps_replicas_apart():
+    metrics = Metrics()
+    first = make_monitor(FakeProbe([unhealthy()]), metrics=metrics, replica=0)
+    second = make_monitor(FakeProbe([healthy()]), metrics=metrics, replica=1)
+
+    await first.check_once()
+    await second.check_once()
+
+    gauge = metrics.gauge("aaestro_agent_health")
+    assert gauge.labels(agent="researcher", replica="0")._value.get() == 0
+    assert gauge.labels(agent="researcher", replica="1")._value.get() == 1
 
 
 def test_running_gauge_tracks_containers():

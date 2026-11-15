@@ -18,7 +18,7 @@
     {"title": "Restarts by reason", "type": "timeseries",
      "targets": [{"expr": "sum by (reason) (increase(aaestro_container_restarts_total{agent=\"$agent\"}[1h]))"}]},
     {"title": "Health", "type": "stat",
-     "targets": [{"expr": "aaestro_agent_health{agent=\"$agent\"}"}]},
+     "targets": [{"expr": "min by (agent) (aaestro_agent_health{agent=\"$agent\"})"}]},
     {"title": "Recall tokens injected", "type": "timeseries",
      "targets": [{"expr": "aaestro_memory_recall_injected_tokens{agent=\"$agent\"}"}]},
     {"title": "Recall filter outcomes", "type": "timeseries",
