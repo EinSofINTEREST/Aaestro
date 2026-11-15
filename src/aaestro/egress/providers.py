@@ -33,6 +33,7 @@ from aaestro.egress.connect import (
     is_public,
     resolve,
 )
+from aaestro.egress.redact import error_body, redact
 
 log = structlog.get_logger(__name__)
 
@@ -55,8 +56,22 @@ COMMON_REQUEST_HEADERS = frozenset({"content-type", "accept", "accept-encoding",
 범위(조직·프로젝트 헤더)나 자격 해석(``api-key`` 류를 먼저 읽는 게이트웨이)을 에이전트가 바꾼다.
 이름을 하나씩 막아서는 닫히지 않는다. ``content-length`` 는 전송 계층이 본문에서 다시 계산한다."""
 
-_NOT_RETURNED = frozenset({"set-cookie", "set-cookie2"})
-"""에이전트에게 돌려주지 않는 응답 헤더 — upstream 의 세션 상태는 프록시를 건너지 않는다."""
+RETURNED_HEADERS = frozenset(
+    {
+        "content-type", "content-encoding", "request-id", "x-request-id",
+        "retry-after", "retry-after-ms", "x-should-retry",
+    }
+)  # fmt: skip
+RETURNED_HEADER_PREFIXES = ("anthropic-ratelimit-", "x-ratelimit-")
+"""에이전트에게 돌려주는 응답 헤더 — 허용 목록이다 (#390).
+
+본문 해석(``content-type`` · 원문 그대로 흘리는 2xx 의 ``content-encoding``), SDK 가 읽는
+요청 id · 재시도 힌트, rate limit 헤더뿐. 요청 헤더를 되비추는 upstream(디버그 에코 ·
+게이트웨이)은 주입한 키를 아무 이름으로나 돌려줄 수 있어 이름을 하나씩 막아서는 닫히지 않는다 —
+쿠키(upstream 세션)도 여기서 빠진다. 남는 값도 가린다."""
+
+_BODY_HEADERS = frozenset({"content-type", "content-encoding"})
+"""프록시가 다시 쓴 에러 본문에는 맞지 않는 헤더 — JSON 으로 새로 직렬화하고 디코딩한 뒤다."""
 
 
 @dataclass(frozen=True)
@@ -160,15 +175,28 @@ def create_provider_app(
                 exc_info=err,
             )
             return _error(502, "provider unreachable")
-        return StreamingResponse(
-            answer.aiter_raw(),
+        returned = {
+            name: redact(value, upstream.api_key)
+            for name, value in answer.headers.items()
+            if _returned(name)
+        }
+        if answer.is_success:
+            # 2xx 는 원문 그대로 흘린다 — 버퍼링하면 모델 스트리밍이 깨진다. 성공 본문에 요청을
+            # 되비추는 upstream 은 위협 모델 밖으로 둔다 (#390)
+            return StreamingResponse(
+                answer.aiter_raw(),
+                status_code=answer.status_code,
+                headers=returned,
+                background=BackgroundTask(answer.aclose),
+            )
+        try:
+            body = await error_body(answer, upstream.api_key)
+        finally:
+            await answer.aclose()
+        return JSONResponse(
             status_code=answer.status_code,
-            headers={
-                k: v
-                for k, v in answer.headers.items()
-                if k.lower() not in _HOP_BY_HOP | _NOT_RETURNED
-            },
-            background=BackgroundTask(answer.aclose),
+            content=body,
+            headers={k: v for k, v in returned.items() if k.lower() not in _BODY_HEADERS},
         )
 
     return app
@@ -219,6 +247,11 @@ def _refusal(verdict: Any, target: str, mode: EgressMode) -> Response | None:
         return None
     log.info("provider call denied", error_code="ACC_001", **fields)
     return _error(403, "model API denied for this agent", code="ACC_001")
+
+
+def _returned(name: str) -> bool:
+    lowered = name.lower()
+    return lowered in RETURNED_HEADERS or lowered.startswith(RETURNED_HEADER_PREFIXES)
 
 
 def _forgetful_jar() -> CookieJar:
@@ -285,6 +318,8 @@ __all__ = [
     "OPENAI_COMPAT_ENDPOINTS",
     "OPENAI_COMPAT_KEY_HEADER",
     "OPENAI_COMPAT_KEY_SCHEME",
+    "RETURNED_HEADERS",
+    "RETURNED_HEADER_PREFIXES",
     "Upstream",
     "create_provider_app",
 ]
