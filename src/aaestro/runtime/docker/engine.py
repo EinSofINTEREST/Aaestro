@@ -282,8 +282,8 @@ def hardening_gaps(found: Mapping[str, Any], expected: Mapping[str, Any]) -> lis
     """`docker inspect` 값에서 경화가 어긋난 필드 이름 — 없으면 빈 목록.
 
     ``expected`` 는 그 컨테이너를 만든 생성 인자(user · cap_drop · read_only · security_opt · init ·
-    pids_limit · tmpfs · volumes)다 — 에이전트는 `ContainerSpec.hardening_kwargs()`, 사이드카는
-    `sidecar_kwargs`.
+    pids_limit · tmpfs · volumes)에 기동 때 기록한 `runtime` 을 더한 것이다 — 에이전트는
+    `ContainerSpec.hardening_kwargs()`, 사이드카는 `sidecar_kwargs`.
     필드 목록이 아니라 부류를 본다: 생성 인자가 건 설정이 빠진 것, 그리고 걸려 있어도 뜻을 잃게
     만드는 설정(privileged 는 CapDrop 과 무관하게 모든 capability 를 주고, 호스트 · 다른 컨테이너와
     공유하는 네임스페이스도 같다). `security_opt` 는 키별 유효값이 생성 인자와 같아야 한다 —
@@ -310,6 +310,14 @@ def hardening_gaps(found: Mapping[str, Any], expected: Mapping[str, Any]) -> lis
     if security_opt_map(found.get("SecurityOpt")) != security_opt_map(expected.get("security_opt")):
         wrong.append("SecurityOpt")
     wrong.extend(field for field in UNMASKED_PATH_FIELDS if found.get(field) == [])
+    # 기대 runtime 은 기동 때 기록한 daemon 기본값이다 — 기록 못 했으면 키가 없어 대조하지 않는다.
+    # `None` 은 보고하지 않는 옛 daemon 이라 위 필드들처럼 불일치로 보지 않는다
+    if (
+        expected.get("runtime")
+        and found.get("Runtime") is not None
+        and found["Runtime"] != expected["runtime"]
+    ):
+        wrong.append("Runtime")
     # 0 · None · 음수는 무제한이다 — 기대값과 같아야 fork bomb 방어가 남아 있다
     if "pids_limit" in expected and found.get("PidsLimit") != expected["pids_limit"]:
         wrong.append("PidsLimit")
@@ -393,6 +401,10 @@ class DockerClient(Protocol):
 
     def hardening_of(self, container_id: str) -> dict[str, Any]:
         """`docker inspect` 의 경화 필드 — `hardening_gaps` 가 읽는 이름 그대로."""
+        ...
+
+    def default_runtime(self) -> str | None:
+        """daemon 기본 OCI runtime (`docker info` 의 `DefaultRuntime`) — 읽지 못하면 None."""
         ...
 
     def volume_of(self, name: str) -> dict[str, Any]:
@@ -540,6 +552,7 @@ class DockerEngine:
             ) from err
 
         kwargs = spec.to_docker_kwargs()
+        kwargs.update(await self._runtime_kwargs())
         kwargs["network"] = self.network
         if self.internal:
             # 내부 네트워크에는 게시가 먹지 않는다 — 남겨 두면 닿지 않는 주소를 믿게 된다
@@ -588,7 +601,11 @@ class DockerEngine:
                 verify_started_hardening,
                 self.client,
                 container_id,
-                spec.hardening_kwargs(),
+                # 생성에 쓴 값을 그대로 쓴다 — 다시 조회하면 회복된 값으로 정상 컨테이너를 지운다
+                {
+                    **spec.hardening_kwargs(),
+                    **({"runtime": kwargs["runtime"]} if "runtime" in kwargs else {}),
+                },
                 agent=agent,
                 image=spec.image,
             )
@@ -715,7 +732,9 @@ class DockerEngine:
             AaestroError: RUNTIME/``RT_001`` (재시도 불가) — 네트워크가 내부가 아니거나, 컨테이너가
                 에이전트 네트워크 말고 다른 네트워크에도 붙어 있거나, 경화 설정이 어긋남.
         """
-        await self._verify_hardening(agent, image, container_id, expected)
+        await self._verify_hardening(
+            agent, image, container_id, {**expected, **(await self._runtime_kwargs())}
+        )
         if not self.internal:
             return
         try:
@@ -730,6 +749,11 @@ class DockerEngine:
                 NetworkIsolationError(self.network, expected=True, actual=False),
                 attached=sorted(attached),
             )
+
+    async def _runtime_kwargs(self) -> dict[str, str]:
+        """생성 인자 · 기대값에 실을 `runtime` — 기본 runtime 을 기록하지 못했으면 비어 있다."""
+        runtime = await asyncio.to_thread(self.client.default_runtime)
+        return {"runtime": runtime} if runtime else {}
 
     async def _verify_hardening(
         self, agent: str, image: str, container_id: str, expected: Mapping[str, Any]

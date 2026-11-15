@@ -257,6 +257,7 @@ spec:
    - `--init` 기본 — daemon 의 init (tini) 이 PID 1 이 되어 `SIGTERM` 을 전달하고 좀비 (stdio MCP 서버 등 자식) 를
      거둔다. 핸들러를 걸기 전의 PID 1 은 `SIGTERM` 을 무시해 기동 직후 정지가 유예를 다 쓴다 (#570). 사이드카와
      같은 경화 집합이고, 재부착 대조 (`Init`) 에 든다. 이미지에 init 을 설치하지 않는다
+   - OCI runtime 은 기동 때 기록한 daemon 기본값 (`docker info` 의 `DefaultRuntime`) 을 생성 인자 `runtime` 으로 명시하고, 재부착 · 사이드카 재사용 대조가 다른 `Runtime` 을 경화 불일치로 거절한다 (#527) — 기본값을 읽지 못하면 대조를 끄고 WARN 한다
 
 4. **Resources**
    - CPU/Memory limit 필수 (manifest `runtime.resources`)

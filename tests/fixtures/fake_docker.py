@@ -62,7 +62,9 @@ class FakeDockerClient:
         hardening_error: Exception | None = None,
         volumes: dict[str, dict[str, Any] | Exception] | None = None,
         image_volumes: dict[str, set[str] | Exception] | None = None,
+        default_runtime: str | None = "runc",
     ) -> None:
+        self._default_runtime = default_runtime
         self._image_error = image_error
         self._network_error = network_error
         self._create_error = create_error
@@ -117,6 +119,9 @@ class FakeDockerClient:
     def networks_of(self, container_id: str) -> tuple[str, ...]:
         return self._attached if self._attached is not None else tuple(self.networks[-1:])
 
+    def default_runtime(self) -> str | None:
+        return self._default_runtime
+
     def hardening_of(self, container_id: str) -> dict[str, Any]:
         """지정한 값이 있으면 그것, 없으면 만들 때 받은 스펙대로 걸린 것으로 본다."""
         if self._hardening_error is not None:
@@ -139,6 +144,7 @@ class FakeDockerClient:
                     "Devices": kwargs.get("devices"),
                     "DeviceRequests": kwargs.get("device_requests"),
                     "DeviceCgroupRules": kwargs.get("device_cgroup_rules"),
+                    "Runtime": kwargs.get("runtime"),
                     "Image": kwargs.get("image"),
                     **self._mounts_with_anonymous(container_id, kwargs),
                 }

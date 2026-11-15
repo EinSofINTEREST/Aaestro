@@ -375,3 +375,19 @@ async def test_stop_removes_the_anonymous_volumes_of_the_sidecars_too():
     await sidecars.stop("researcher")
 
     assert docker.anonymous_volumes[sidecar] == set()
+
+
+async def test_sidecar_gets_the_default_runtime_and_reattach_replaces_one_on_another():
+    docker = FakeDockerClient(default_runtime="runsc")
+    sidecars = McpSidecars(docker)
+    manifest = with_servers(SEARCH)
+    await sidecars.start(manifest, {})
+    first = docker.find("aaestro-researcher--mcp-search")
+    assert docker.created[0]["runtime"] == "runsc"
+
+    await sidecars.start(manifest, {}, reuse=True)
+    assert first not in docker.removed
+
+    docker.hardening_by_id[first] = {**docker.hardening_of(first), "Runtime": "runc"}
+    await sidecars.start(manifest, {}, reuse=True)
+    assert first in docker.removed

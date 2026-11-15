@@ -11,6 +11,8 @@ import threading
 from dataclasses import replace
 
 import pytest
+import structlog
+import structlog.testing
 
 from aaestro.core.errors import AaestroError, ErrorCategory
 from aaestro.runtime.docker.engine import (
@@ -1340,3 +1342,169 @@ async def test_start_malformed_inspect_is_a_retryable_failure_and_leaves_no_cont
     assert "/var/run" not in str(caught.value) + str(caught.value.details)
     assert client.started == []
     assert client.removed == [f"container-{1:04d}" + "0" * 20]
+
+
+# --- OCI runtime 대조 (#527) ---
+
+
+@pytest.mark.parametrize(
+    ("found", "gaps"),
+    [("runsc", ["Runtime"]), ("runc", []), (None, [])],  # None 은 보고하지 않는 옛 daemon
+)
+def test_hardening_gaps_compares_the_runtime_with_the_recorded_default(found, gaps):
+    from aaestro.runtime.docker.engine import hardening_gaps
+
+    expected = {**spec().hardening_kwargs(), "runtime": "runc"}
+
+    assert hardening_gaps({**inspect_shape(expected), "Runtime": found}, expected) == gaps
+
+
+def test_hardening_gaps_skips_the_runtime_when_no_default_was_recorded():
+    from aaestro.runtime.docker.engine import hardening_gaps
+
+    expected = spec().hardening_kwargs()
+
+    assert hardening_gaps({**inspect_shape(expected), "Runtime": "runsc"}, expected) == []
+
+
+async def test_start_names_the_default_runtime_and_reattach_refuses_another():
+    client = FakeDockerClient(default_runtime="runsc")
+    engine = DockerEngine(client=client, network="agents")
+
+    await engine.start(spec())
+
+    assert client.created[0]["runtime"] == "runsc"
+    await engine.verify_isolation(
+        "alpha", "img:1", "container-0001" + "0" * 20, spec().hardening_kwargs()
+    )
+    client.hardening_by_id["container-0001" + "0" * 20] = {**GOOD_HARDENING, "Runtime": "runc"}
+    with pytest.raises(AaestroError) as caught:
+        await engine.verify_isolation(
+            "alpha", "img:1", "container-0001" + "0" * 20, spec().hardening_kwargs()
+        )
+    assert caught.value.details["fields"] == ["Runtime"]
+
+
+async def test_start_leaves_the_runtime_unset_when_the_default_is_unknown():
+    client = FakeDockerClient(default_runtime=None)
+
+    await DockerEngine(client=client, network="agents").start(spec())
+
+    assert "runtime" not in client.created[0]
+
+
+def _sdk_with(monkeypatch, outcomes):
+    """info() 가 차례로 돌려주거나 던질 값 — 호출 횟수는 `calls` 로 센다."""
+    from aaestro.runtime.docker import client as client_module
+
+    class Handle:
+        calls = 0
+
+        def info(self):
+            Handle.calls += 1
+            outcome = outcomes[min(Handle.calls, len(outcomes)) - 1]
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+    monkeypatch.setattr(client_module, "_log", structlog.get_logger("test"))
+    return client_module.SdkDockerClient(Handle()), Handle
+
+
+def test_the_sdk_client_retries_after_a_failure_and_warns_once(monkeypatch):
+    sdk, handle = _sdk_with(
+        monkeypatch, [OSError("gone"), OSError("gone"), {"DefaultRuntime": "runsc"}]
+    )
+    with structlog.testing.capture_logs() as logs:
+        assert sdk.default_runtime() is None
+        assert sdk.default_runtime() is None
+        assert sdk.default_runtime() == "runsc"
+        assert sdk.default_runtime() == "runsc"
+
+    assert handle.calls == 3  # 성공한 값은 캐시된다
+    assert [entry["log_level"] for entry in logs] == ["warning"]
+    assert logs[0]["error"] == "OSError"
+
+
+def test_the_sdk_client_caches_an_empty_default_runtime(monkeypatch):
+    sdk, handle = _sdk_with(monkeypatch, [{"DefaultRuntime": ""}])
+    with structlog.testing.capture_logs() as logs:
+        assert sdk.default_runtime() is None
+        assert sdk.default_runtime() is None
+
+    assert handle.calls == 1
+    assert [entry["log_level"] for entry in logs] == ["warning"]
+
+
+def test_the_sdk_client_reads_default_runtime_from_docker_info():
+    from aaestro.runtime.docker.client import SdkDockerClient
+
+    class Handle:
+        def info(self):
+            return {"DefaultRuntime": "runsc"}
+
+    assert SdkDockerClient(Handle()).default_runtime() == "runsc"
+
+
+async def test_start_refuses_a_container_the_daemon_created_under_another_runtime():
+    """생성 직후 대조가 기대 runtime 을 쥐고 있다 — 빼면 daemon 이 바꾼 runtime 이 통과한다."""
+    client = FakeDockerClient(
+        default_runtime="runsc", hardening={**GOOD_HARDENING, "Runtime": "runc"}
+    )
+
+    with pytest.raises(AaestroError) as caught:
+        await engine(client).start(spec())
+
+    assert caught.value.code == "RT_001"
+    assert caught.value.retryable is False
+    assert caught.value.details["fields"] == ["Runtime"]
+    assert client.started == []
+
+
+async def test_start_checks_the_runtime_it_created_with_even_if_the_lookup_recovers():
+    """첫 조회가 실패해 runtime 없이 만든 컨테이너를, 회복된 두 번째 조회로 대조해 지우지 않는다."""
+
+    class Recovering(FakeDockerClient):
+        calls = 0
+
+        def default_runtime(self):
+            Recovering.calls += 1
+            return None if Recovering.calls == 1 else "runsc"
+
+    client = Recovering(hardening={**GOOD_HARDENING, "Runtime": "runc"})
+
+    await engine(client).start(spec())
+
+    assert "runtime" not in client.created[0]
+    assert client.started
+
+
+def test_concurrent_default_runtime_reads_agree_and_stay_put(monkeypatch):
+    import threading
+
+    from aaestro.runtime.docker import client as client_module
+
+    first_in, release = threading.Event(), threading.Event()
+    answers = iter(["runsc", "runc"])
+
+    class Handle:
+        def info(self):
+            answer = next(answers)
+            if answer == "runsc":
+                first_in.set()
+                release.wait(5)
+            return {"DefaultRuntime": answer}
+
+    sdk = client_module.SdkDockerClient(Handle())
+    results: list[str | None] = []
+    slow = threading.Thread(target=lambda: results.append(sdk.default_runtime()))
+    slow.start()
+    first_in.wait(5)
+    fast = threading.Thread(target=lambda: results.append(sdk.default_runtime()))
+    fast.start()
+    release.set()
+    slow.join(5)
+    fast.join(5)
+
+    assert results == ["runsc", "runsc"]
+    assert sdk.default_runtime() == "runsc"
