@@ -140,7 +140,12 @@ def test_decision_retry_policy():
         ErrorCategory.NETWORK,
         ErrorCategory.TIMEOUT,
         ErrorCategory.RATE_LIMIT,
+        ErrorCategory.DECISION,
     }
+    transient = AaestroError(ErrorCategory.DECISION, "DEC_001", "provider failed", retryable=True)
+    permanent = AaestroError(ErrorCategory.DECISION, "DEC_004", "bad response", retryable=False)
+    assert DECISION_RETRY.should_retry(transient)
+    assert not DECISION_RETRY.should_retry(permanent)
 
 
 async def test_fake_records_asks_and_reads_bands():

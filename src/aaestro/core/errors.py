@@ -299,6 +299,7 @@ DECISION_RETRY = RetryPolicy(
         ErrorCategory.NETWORK,
         ErrorCategory.TIMEOUT,
         ErrorCategory.RATE_LIMIT,
+        ErrorCategory.DECISION,
     ),
 )
 
