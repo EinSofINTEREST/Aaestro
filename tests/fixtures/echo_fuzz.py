@@ -256,7 +256,6 @@ RICH_CONFIG: dict[str, Any] = {
     "memory": {
         "backend": "sqlite",
         "index_lag_target_s": 5,
-        "run_scope_retention_days": 30,
         "path": "/var/lib/aaestro/memory.db",
         "dsn": "postgresql://memory@db/aaestro",
     },

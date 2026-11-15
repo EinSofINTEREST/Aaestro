@@ -42,7 +42,6 @@ registry:
 memory:
   backend: sqlite
   index_lag_target_s: 5
-  run_scope_retention_days: 30
 
 observability:
   log_level: INFO
