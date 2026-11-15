@@ -645,7 +645,7 @@ steer 할 수 없는 것: 턴 경계는 LLM tool 루프에만 있고, 에이전�
 
 ### 태스크 스트림의 도구 결과
 
-`tool_result` 이벤트는 모델이 읽는 것과 같은 방식으로 JSON 변환한 도구 결과를 싣는다 (문자열은 그대로이고, 그 밖의 값은 JSON 직렬화를 한 번 거치며 JSON 타입이 아닌 것은 `str()` 로 쓴다). MCP 결과는 `{"content", "is_error"}` 모양을 유지해 소비자가 도구가 보고한 오류를 볼 수 있다. JSON 이 담지 못하는 수 (`NaN`, `±inf`) 는 이벤트에서 `null` 이고 모델 본문에는 그대로 남는다. 그래도 직렬화할 수 없는 이벤트는 스트림을 끊지 않고 종류별로 대체한다. `tool_result` 는 `result` 없이 `error` (MCP 도구는 `MCP_003`, 그 밖은 `SKILL_001`, `tool result not serializable: <tool>`) 를 실어 보내고, `tool_call` 은 `arguments` 를 비워 보내고, `done` · `error` 는 스트림을 끝내는 `error` 이벤트 하나 (`INTERNAL_001`) 로 바꾸고, 그 밖의 이벤트 (`token` · `steer` 등) 는 `WARN` 만 남기고 건너뛴다. 실패를 알리는 것은 종료 이벤트의 대체뿐이라, 스트림이 태스크 실패를 알린 뒤 계속 이어지지 않는다.
+`tool_result` 이벤트는 모델이 읽는 것과 같은 방식으로 JSON 변환한 도구 결과를 싣는다 (문자열은 그대로이고, 그 밖의 값은 JSON 직렬화를 한 번 거치며 JSON 타입이 아닌 것은 `str()` 로 쓴다). MCP 결과는 `{"content", "is_error"}` 모양을 유지해 소비자가 도구가 보고한 오류를 볼 수 있다. JSON 이 담지 못하는 수 (`NaN`, `±inf`) 는 이벤트에서 `null` 이고 모델 본문에는 그대로 남는다. `MAX_TOOL_RESULT_CHARS` (20000자) 를 넘는 결과는 잘리며, 이때 이벤트 값은 원래 객체가 아니라 무력화된 잘린 문자열 (`(truncated: …)` 꼬리 포함) 이다. MCP 결과는 `{"content": <그 문자열>, "is_error"}` 를 유지한다. 상한 이하 결과는 원값 그대로다. 그래도 직렬화할 수 없는 이벤트는 스트림을 끊지 않고 종류별로 대체한다. `tool_result` 는 `result` 없이 `error` (MCP 도구는 `MCP_003`, 그 밖은 `SKILL_001`, `tool result not serializable: <tool>`) 를 실어 보내고, `tool_call` 은 `arguments` 를 비워 보내고, `done` · `error` 는 스트림을 끝내는 `error` 이벤트 하나 (`INTERNAL_001`) 로 바꾸고, 그 밖의 이벤트 (`token` · `steer` 등) 는 `WARN` 만 남기고 건너뛴다. 실패를 알리는 것은 종료 이벤트의 대체뿐이라, 스트림이 태스크 실패를 알린 뒤 계속 이어지지 않는다.
 
 ## 권한 레지스트리
 

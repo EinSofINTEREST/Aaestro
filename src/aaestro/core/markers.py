@@ -31,6 +31,13 @@ untrusted 표시는 붙이지 않는다: steer 는 운영자 입력이다 (02 St
 TOOL_ERROR_MARK = "[tool error]"
 """오류로 끝난 도구 결과 앞에 붙는 머리말 — 오류 플래그가 없는 wire 형식용 (openai-compat)."""
 
+TOOL_RESULT_TRUNCATED = "(truncated: original size {total} characters, limit {limit})"
+"""상한을 넘어 잘린 도구 결과 끝에 붙는 문구 (02 Loop Rules 10).
+
+프레임워크 표기가 아니다 — 데이터 자리의 평문이다. ``[aaestro]`` 머리말이 없어 프레임워크 지시가
+"데이터" 라고 부르는 자리에 진짜 안내가 생기지 않고, 데이터가 같은 문구를 흉내 내도 잘렸다고
+주장할 뿐이다."""
+
 MEMORY_PROVENANCE = "[memory:{space} {date}]"
 """회상 기억 한 줄의 출처 표시 (09 Context Assembly 5)."""
 

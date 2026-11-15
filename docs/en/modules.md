@@ -238,6 +238,13 @@ Answer it.
   `failed`, and the agent logs a WARN (`tool call failed, returned to model`). Cancellation, the
   task timeout (`TO_001`) and failures outside the tool still end the task; the turn limit
   (`LLM_005`) bounds a model that keeps failing.
+- **A successful result is capped too** (an MCP `is_error` wrapper result included; so are A2A
+  responses and `memory_search` results, which pass through `tool_outcome`). The serialized body is
+  cut at 20000 characters (`MAX_TOOL_RESULT_CHARS`) before it is defanged, and a plain
+  `(truncated: original size N characters, limit M)` is appended — not framework notation, no
+  `[aaestro]` header. The limit is measured before defanging, so neutralizing can push the text
+  past it. The stream's `tool_result` event carries the same string (an MCP result keeps `{"content": <that string>, "is_error"}`), and the agent logs a WARN
+  (`tool result truncated`, sizes only, never the value).
 - **The description an MCP server gives its tool is untrusted too.** It goes to the model as the
   tool's description after control, format and bidi characters (Unicode category `C*`, except tab
   and newline) and line or paragraph separators become spaces, the text is trimmed and cut at

@@ -53,7 +53,7 @@ from aaestro.core.events import (
     ToolResultEvent,
 )
 from aaestro.core.identifiers import IdentifierProblem, identifier_problem
-from aaestro.core.markers import STEER_HEADER, defang
+from aaestro.core.markers import STEER_HEADER, TOOL_RESULT_TRUNCATED, defang
 from aaestro.core.skill import SkillContext
 from aaestro.core.tools import is_mcp_tool
 from aaestro.modules.boundary import TASK_CONTEXT
@@ -772,7 +772,7 @@ class Executor:
             raise _tool_error(call.name, task, self._agent, err) from err
 
         try:
-            outcome, event_value = _serialize_result(call, result)
+            outcome, event_value, original_chars = _serialize_result(call, result)
         except Exception as err:
             # default=str 이 부르는 __str__ 은 무엇이든 던질 수 있다 (CancelledError 는 안 잡힌다).
             # 도구는 이미 실행됐다 — "호출 실패" 로 읽히면 모델이 부수효과 도구를 다시 부른다
@@ -785,6 +785,16 @@ class Executor:
                 message=f"tool result not serializable: {call.name}",
             ) from err
 
+        if original_chars is not None:
+            # 값은 싣지 않는다 — 크기만
+            log.warning(
+                "tool result truncated",
+                agent=self._agent,
+                task_id=task.task_id,
+                tool=call.name,
+                original_chars=original_chars,
+                limit=MAX_TOOL_RESULT_CHARS,
+            )
         self._record_tool(call.name, status=STATUS_COMPLETED)
         return event_value, outcome
 
@@ -1206,7 +1216,7 @@ def _answered_by(response: ModelResponse, link: ModelLink) -> ModelResponse:
     return replace(response, usage=usage.model_copy(update={"model": model, "provider": provider}))
 
 
-def _serialize_result(call: ToolCall, result: Any) -> tuple[ToolOutcome, Any]:
+def _serialize_result(call: ToolCall, result: Any) -> tuple[ToolOutcome, Any, int | None]:
     """도구 결과를 **한 번** 직렬화해 (모델이 읽을 결과, 이벤트에 실을 값) 을 만든다.
 
     이벤트 값은 모델 본문과 같은 JSON 문자열을 ``json.loads`` 한 것이다 — ``__str__`` 이 호출마다
@@ -1216,6 +1226,10 @@ def _serialize_result(call: ToolCall, result: Any) -> tuple[ToolOutcome, Any]:
     ``{"content", "is_error"}`` 모양을 유지한다. JSON 이 아닌 수 (NaN · ±inf) 는 모델 본문에는
     ``NaN`` · ``Infinity`` 로 가지만 이벤트의 pydantic 직렬화에서는 ``null`` 이 된다
     — 받아들인 차이다.
+
+    직렬화한 본문이 ``MAX_TOOL_RESULT_CHARS`` 를 넘으면 자르고 (자른 꼬리가 표기가 되지 못하게
+    ``defang`` 앞에서), 끝에 평문 문구를 붙인다. 상한은 무력화 전 길이 기준이다.
+    셋째 값은 잘렸을 때의 원래 길이다 — 호출자가 WARN 을 남긴다.
     """
     is_wrapper = hasattr(result, "is_error")
     is_error = bool(getattr(result, "is_error", False))
@@ -1226,10 +1240,20 @@ def _serialize_result(call: ToolCall, result: Any) -> tuple[ToolOutcome, Any]:
     else:
         content = json.dumps(payload, ensure_ascii=False, default=str)
         value = json.loads(content)
+    original_chars: int | None = None
+    if len(content) > MAX_TOOL_RESULT_CHARS:
+        original_chars = len(content)
+        notice = TOOL_RESULT_TRUNCATED.format(total=original_chars, limit=MAX_TOOL_RESULT_CHARS)
+        # 잘린 본문은 JSON 이 아니므로 이벤트 값도 같은 글(문자열)로 맞춘다
+        content = value = f"{defang(content[:MAX_TOOL_RESULT_CHARS])}…{notice}"
+        outcome_content = content
+    else:
+        outcome_content = defang(content)
     if is_wrapper:
         value = {"content": value, "is_error": is_error}
     # 직렬화한 뒤에 바꾼다 — 키와 중첩된 값까지 한 번에 덮고, 바꾼 글자는 JSON 을 깨지 않는다
-    return ToolOutcome(call_id=call.id, content=defang(content), is_error=is_error), value
+    outcome = ToolOutcome(call_id=call.id, content=outcome_content, is_error=is_error)
+    return outcome, value, original_chars
 
 
 def tool_outcome(call: ToolCall, result: Any) -> ToolOutcome:
@@ -1242,9 +1266,14 @@ def tool_outcome(call: ToolCall, result: Any) -> ToolOutcome:
     결과는 신뢰하지 않는 데이터다 (skillset · MCP · ``ask_peer`` 의 A2A 응답 · ``memory_search``
     모두 여기를 지난다). 그 안의 경계 표시 · ``[aaestro]`` 안내 모양 글은 대화에 들어가기 전에
     무력화한다 — 진짜 경계 · 안내와 같은 모양으로 모델에 가지 않게 (03 MCP Rules 5).
+    상한을 넘으면 잘리지만 WARN 은 남기지 않는다 (WARN 은 ``_run_tool`` 의 몫).
     """
     return _serialize_result(call, result)[0]
 
+
+MAX_TOOL_RESULT_CHARS: Final = 20_000
+"""성공한 도구 결과를 모델 대화에 싣는 상한 (직렬화한 글자 수). 대략 5천 토큰 — 한 결과가 컨텍스트와
+비용을 통째로 차지하지 않게 하되 일반 검색 · 파일 읽기 결과는 자르지 않는 값."""
 
 MAX_TOOL_FAILURE_TEXT_CHARS: Final = 1000
 """도구 실패 사유에서 도구 쪽이 쓴 글(예외 문자열 · 도구가 던진 에러의 메시지)의 상한."""
@@ -1306,6 +1335,7 @@ __all__ = [
     "MAX_STEER_BY_CHARS",
     "MAX_STEER_CHARS",
     "MAX_TOOL_FAILURE_TEXT_CHARS",
+    "MAX_TOOL_RESULT_CHARS",
     "MODEL_RETRY_POLICIES",
     "AssistantTurn",
     "Executor",
