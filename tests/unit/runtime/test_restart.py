@@ -881,3 +881,26 @@ async def test_the_health_series_does_not_vanish_while_the_replica_is_replaced()
         if task is not None:
             await task
         await agents.stop_all()
+
+
+async def test_a_failed_stop_pins_the_health_series_to_zero(monkeypatch: pytest.MonkeyPatch):
+    """정지 · 제거가 실패하면 추적 못 하는 컨테이너가 남는다 — 감시는 멈췄으니 마지막 값 1 이
+    남으면 미아가 healthy 로 보인다. 0 으로 고정해 AgentDown 이 정리를 부른다."""
+    from aaestro.runtime.control import ControlClient
+
+    async def well(self: ControlClient) -> HealthStatus:
+        return HealthStatus(status=HealthState.HEALTHY)
+
+    monkeypatch.setattr(ControlClient, "health", well)
+    metrics = Metrics(registry=CollectorRegistry())
+    agents = launcher(FakeDockerClient(), HangingSleep(), metrics=metrics)
+    await start_sick(agents)
+    await until(lambda: health_value(metrics, "0") == 1.0)
+
+    async def failed_stop(handle, **kwargs) -> bool:
+        return False
+
+    agents.engine.stop = failed_stop  # type: ignore[method-assign]
+    await agents.stop("echo")
+
+    assert health_value(metrics, "0") == 0.0, "정지가 실패했는데 값이 0 이 아니다"
