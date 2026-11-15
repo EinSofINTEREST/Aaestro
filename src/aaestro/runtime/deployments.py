@@ -21,7 +21,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 from urllib.parse import quote, urlsplit
 
@@ -43,6 +43,7 @@ from aaestro.runtime.spec import (
     A2A_PEERS_ENV,
     A2A_SECRET_ENV,
     DEFAULT_CONTROL_PORT,
+    WRITABLE_TMPFS,
     build_container_spec,
     container_name,
 )
@@ -341,6 +342,20 @@ MODULES_MOUNT_PATH = "/app/modules"
 
 MODULE_TYPES = ("skillsets", "promptsets", "memorysets")
 
+IMAGE_CODE_PATH = "/app"
+"""base 이미지의 WORKDIR — agentd 매니페스트 · 커스텀 에이전트 코드가 이미지에 실리는 자리."""
+
+RUNTIME_OWNED_PATHS: Final[tuple[tuple[str, str], ...]] = (
+    # 구체적인 것부터 — /app 아래의 선언 마운트는 image 보다 먼저 맞아야 종류가 정확하다
+    (DECLARATION_MOUNT_PATH, "declaration"),
+    *((f"{MODULES_MOUNT_PATH}/{t}", "modules") for t in MODULE_TYPES),
+    (IMAGE_CODE_PATH, "image"),
+    *((path, "tmpfs") for path in WRITABLE_TMPFS),
+)
+"""런타임이 컨테이너 안에서 소유하는 경로와 그 종류.
+
+매니페스트 볼륨이 이것과 겹치면 배포를 거절한다 (#524)."""
+
 
 @dataclass(frozen=True)
 class Provision:
@@ -532,6 +547,7 @@ class DeploymentManager:
         manifests = self._agents_of(topology)
         # 기록을 남기기 전에 — 거절된 배포는 실패한 배포가 아니라 시작되지 않은 배포다
         self._check_images(manifests)
+        _check_volume_paths(manifests)
         self._check_sidecars(manifests)
         # 사이드카 · 포트 · 신원 · 기록 어느 것보다 먼저 — 겹치는 배포의 되감기는 떠 있는 배포의
         # 사이드카와 포트 기록을 치운다 (#473). 첫 await 전에 잡아야 동시에 온 배포도 막힌다
@@ -1370,6 +1386,51 @@ class EgressEndpoints:
             "OPENAI_COMPAT_BASE_URL": f"{self.providers_url.rstrip('/')}/openai-compat",
             "OPENAI_COMPAT_API_KEY": credential,
         }
+
+
+def _owned_overlap(mount_path: str) -> str | None:
+    """정규화된 ``mount_path`` 가 런타임 소유 경로와 같거나 · 상위 · 하위면 그 종류.
+
+    tmpfs 의 **하위** 는 허용한다 — tmpfs 위에 걸린 볼륨은 런타임이 쓰는 내용을 가리지 않고
+    (Docker 는 얕은 마운트부터 건다), 참조 claude-code 의 ``/tmp/.claude`` 가 이 모양이다.
+    """
+    path = PurePosixPath(mount_path)
+    for owned, kind in RUNTIME_OWNED_PATHS:
+        owned_path = PurePosixPath(owned)
+        # is_relative_to 는 구성 요소 단위다 — /apple 은 /app 의 하위가 아니다
+        if owned_path.is_relative_to(path):
+            return kind
+        if path.is_relative_to(owned_path) and kind != "tmpfs":
+            return kind
+    return None
+
+
+def _check_volume_paths(manifests: Sequence[AgentManifest]) -> None:
+    """런타임 소유 경로와 겹치는 매니페스트 볼륨은 기동하지 않는다 (#524).
+
+    같은 경로는 Docker 가 기동 때 "duplicate mount point" 로 거절하고, ``/app`` 같은 상위
+    경로의 쓰기 가능한 새 볼륨은 이미지 내용을 복사받아 읽기 전용 rootfs 를 넘어 코드를
+    재시작 너머로 바꾸는 자리가 된다. 스키마가 아니라 여기서 보는 이유: 목록이 runtime
+    상수이고 core 는 runtime 을 import 하지 않는다 (07 Module Design 3).
+
+    Raises:
+        AaestroError: VALIDATION/``VAL_002`` — details 에 필드 위치와 겹친 경로 종류만 싣는다.
+    """
+    for manifest in manifests:
+        for index, volume in enumerate(manifest.spec.runtime.volumes):
+            kind = _owned_overlap(volume.mount_path)
+            if kind is None:
+                continue
+            raise AaestroError(
+                category=ErrorCategory.VALIDATION,
+                code=ErrorCode.VAL_002,
+                message="volume mount path overlaps a runtime-owned path",
+                agent=manifest.name,
+                details={
+                    "field": f"spec.runtime.volumes[{index}].mount_path",
+                    "runtime_path": kind,
+                },
+            )
 
 
 def _code(err: BaseException) -> str:
