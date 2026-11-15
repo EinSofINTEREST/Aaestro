@@ -288,7 +288,7 @@ spec:
   locale: en                     # 질문 문구의 언어 — provider 의 검증된 locales 에 있어야 배포된다 (01 검증 9).
                                  # ko 는 한국어 라벨 세트로 calibration 을 통과한 뒤에야 쓸 수 있다 (06)
   defaults:
-    bands: {act_at: 0.8, reject_at: 0.2}   # 질문별 override 가능
+    bands: {act_at: 0.8, reject_at: 0.2}   # 질문별 override 가능 — 필드 단위 병합
 
   questions:
     memory_is_relevant:          # 쓰임 1 — 회상 필터
@@ -352,7 +352,7 @@ spec:
         as: triage
 ```
 
-> **구현 상태**: 위 `spec.decision` 은 v0.1 스키마가 아직 받지 않는다 — 모르는 키로 `VAL_002` 거절된다. decisionset 모듈은 레지스트리 루트와 로더가 아직 없어 `decisionsets/...` ref 는 해석되지 않는다 (`MOD_001`, invalid module ref) — 모르는 키 거절과는 다른 경로다.
+> **구현 상태**: 위 `spec.decision` 은 v0.1 스키마가 아직 받지 않는다 — 모르는 키로 `VAL_002` 거절된다.
 
 질문 참조는 `alias.question` — manifest 의 쓰임(`recall_filter` / `input_screen` / `tool_gates`)과
 그래프 decision 노드(그 노드의 에이전트 alias 로 해석)가 쓴다. memoryset 은 에이전트 밖의

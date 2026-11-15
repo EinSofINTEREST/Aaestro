@@ -160,7 +160,7 @@ text. `404` (`NF_001`) when the name is unknown.
 
 ### `GET /v1/modules/{module_type}`
 
-`module_type` is `skillsets`, `promptsets`, `memorysets`, or `skillpacks`. Lists every
+`module_type` is `skillsets`, `promptsets`, `memorysets`, `skillpacks`, or `decisionsets`. Lists every
 published version:
 
 ```json

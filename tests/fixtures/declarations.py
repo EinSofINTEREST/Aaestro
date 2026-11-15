@@ -16,6 +16,7 @@ from pydantic import BaseModel
 
 from aaestro.core.manifest import AgentManifest, GroupManifest
 from aaestro.core.topology import GraphTopology
+from aaestro.modules.decisionset import DecisionsetManifest
 from aaestro.modules.memoryset import MemorysetManifest
 from aaestro.modules.promptset import PromptsetManifest
 from aaestro.modules.skillpack import SkillpackManifest
@@ -68,6 +69,7 @@ KIND_MODELS: dict[str, type[BaseModel]] = {
     "Promptset": PromptsetManifest,
     "Memoryset": MemorysetManifest,
     "Skillpack": SkillpackManifest,
+    "Decisionset": DecisionsetManifest,
 }
 
 

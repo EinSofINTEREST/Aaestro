@@ -44,6 +44,7 @@ v0.1 스키마가 아직 받지 않는 선언(`spec.decision`, 그래프 노드 
 | **Skillset** | Python tool (능력) | `modules/skillsets/{name}/{version}/` |
 | **Promptset** | Jinja2 템플릿 + 변수 스키마 | `modules/promptsets/{name}/{version}/` |
 | **Memoryset** | 메모리 정책 — scope, 인덱스, 보존, recall | `modules/memorysets/{name}/{version}/` |
+| **Decisionset** | 타입이 정해진 판정 질문 — 문구, 보기, 확률 구간 | `modules/decisionsets/{name}/{version}/` |
 | **Skillpack** | Agent Skills 디렉토리 (`SKILL.md` + 파일), 수정 없이 | `modules/skillpacks/{name}/{version}/` |
 | **Agent** | 계약 — 모델, 모듈, 프로토콜, 리소스 | `agents/{name}/manifest.yaml` |
 | **Graph** | Goal — nodes, edges, connections, mode | `graphs/{name}.yaml` |
@@ -791,6 +792,27 @@ finding 이 `details.findings` 로 실립니다. 하나라도 걸리면 아무�
 
 `aaestro validate` 와 `aaestro deploy` 출력의 `models` 항목이 노드별로 해석된 모델 계층을
 보여 줍니다.
+
+## 디시전셋
+
+디시전셋은 결정 모델에 던지는 질문을 선언한다 — 문구 (`ask`), 값 집합 (`rating` 은 `levels`,
+`choice` 는 `options`), 확률 구간. control plane 이 provider 를 부르지 않고 읽어 검증한다.
+
+```
+modules/decisionsets/research-triage/0.1.0/
+├── decisionset.yaml
+└── calibration/<question>.jsonl      # 선택 — 한 줄이 {"state": {...}, "label": ...} 인 라벨 세트
+```
+
+- 질문 형태는 `Question` 계약을 따른다: `kind` 는 `predicate` · `rating` · `choice`, 보기는 최대
+  10개, `act_level` 은 등급 중 하나, `reject_at` 은 `act_at` 보다 작아야 한다. 위반은 `MOD_003`.
+- calibration 세트는 선언된 질문의 것이어야 하고, `state` 키가 질문의 `state` 이름과 같아야 하며,
+  `label` 은 불리언 (`predicate`) 또는 선언된 등급 · 보기여야 한다. 어긋나면 `MOD_003` 이고 그
+  버전은 게시되지 않는다. 거절 메시지는 값을 싣지 않는다. 50건 최소는 로드가 아니라
+  `aaestro decision calibrate` 가 본다.
+- 질문의 `bands` 는 `defaults.bands` 위에 필드 단위로 병합된다 (`bands: {act_at: 0.7}` 이면
+  `reject_at` 은 defaults 의 값). 병합 결과가 `act_at <= reject_at` 이면 `MOD_003`.
+- 아직 연결되지 않은 것: 에이전트 manifest 의 `spec.decision`, 그래프 decision 노드.
 
 ## 그룹
 

@@ -151,7 +151,7 @@ problem 하나는 `{path, code, message, errors, reason}` 이다. `path` 는 파
 
 ### `GET /v1/modules/{module_type}`
 
-`module_type` 은 `skillsets`, `promptsets`, `memorysets`, `skillpacks` 중 하나. 게시된 모든
+`module_type` 은 `skillsets`, `promptsets`, `memorysets`, `skillpacks`, `decisionsets` 중 하나. 게시된 모든
 버전을 나열한다:
 
 ```json
