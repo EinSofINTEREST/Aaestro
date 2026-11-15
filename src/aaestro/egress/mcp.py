@@ -41,6 +41,7 @@ from aaestro.access.model import ResourceKind
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 from aaestro.core.manifest import McpTransport, sidecar_url
 from aaestro.egress.connect import UNKNOWN_IDENTITY, EgressMode, is_public, resolve
+from aaestro.egress.redact import error_body, redact
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -66,6 +67,8 @@ _FORWARDED = frozenset(
 _RETURNED_EXCLUDED = frozenset(
     {"connection", "keep-alive", "transfer-encoding", "content-length", "server", "date"}
 )
+_BODY_HEADERS = frozenset({"content-type", "content-encoding"})
+"""프록시가 다시 쓴 에러 본문에는 맞지 않는 헤더 — JSON 으로 새로 직렬화하고 디코딩한 뒤다."""
 
 
 @dataclass(frozen=True)
@@ -282,10 +285,32 @@ class McpTermination:
                         exc_info=err)  # fmt: skip
             return _http_error(502, "remote mcp server unreachable")
         headers = {k: v for k, v in answer.headers.items() if k.lower() not in _RETURNED_EXCLUDED}
+        if upstream.token is not None:
+            # 프록시가 붙인 자격이 되비치지 않게 — 모델 API 종단과 같은 가림 (#390)
+            headers = {k: redact(v, upstream.token) for k, v in headers.items()}
         issued = answer.headers.get(SESSION_HEADER)
+        token = upstream.token
+        if token is not None and issued is not None and redact(issued, token) != issued:
+            # 세션 id 는 서명해 그대로 돌려줘야 쓸 수 있다 — 가리면 세션이 깨지고, 그대로면
+            # 자격이 에이전트에 닿는다. 응답 전체를 거절한다 (#390)
+            await answer.aclose()
+            log.warning("mcp session id carried the proxy credential", agent=agent,
+                        mcp_server=server, resource=ResourceKind.MCP_TOOL.value,
+                        target=server)  # fmt: skip
+            return _http_error(502, "remote mcp server echoed the proxy credential")
         if issued is not None:
             headers = {k: v for k, v in headers.items() if k.lower() != SESSION_HEADER}
             headers[SESSION_HEADER] = self.sessions.seal(agent, server, issued)
+        if upstream.token is not None and not answer.is_success:
+            try:
+                returned = await error_body(answer, upstream.token)
+            finally:
+                await answer.aclose()
+            return JSONResponse(
+                status_code=answer.status_code,
+                content=returned,
+                headers={k: v for k, v in headers.items() if k.lower() not in _BODY_HEADERS},
+            )
         return StreamingResponse(
             answer.aiter_raw(),
             status_code=answer.status_code,

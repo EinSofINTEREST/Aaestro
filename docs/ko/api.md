@@ -1002,6 +1002,17 @@ provider 마다 모델 호출에 필요한 경로만 연다 — `anthropic` 은 
 프록시는 호출 사이에 쿠키를 기억하지 않는다: 한 에이전트의 upstream 세션이 다른 에이전트의 요청에
 실리지 않는다.
 
+키는 돌아오지도 않는다. 응답 헤더도 허용 목록이다 (`content-type`, `content-encoding`,
+`request-id` / `x-request-id`, `retry-after` / `retry-after-ms`, `x-should-retry`,
+`anthropic-ratelimit-*`, `x-ratelimit-*`) — 그 값에 든 키 전체나 식별 가능한 조각은 가린다. 대소문자를
+바꾼 것, `%XX` 로 인코딩한 것, 표준 · URL-safe base64 안에 든 것도 같다. 성공 (2xx) 응답은 그대로
+흘려보낸다. 그 밖의 응답은 (64 KiB 까지 — `gzip` / `deflate` 는 프록시가 직접 그 상한까지만 푼다) 읽어
+JSON 본문의 모든 문자열을 가리고, `401` / `403` 은 메시지를 고정 문구로 바꾸되 에러 `type` · `code` 는
+남긴다. JSON 객체가 아니거나, 그보다 크거나, 읽기 · 해제가 실패하거나, 다른 인코딩이거나, JSON 이 싣지
+못하는 수 (`1e999`, `NaN`) 가 든 본문은 고정 에러 본문으로 바꾼다 (상태 코드와 허용 헤더 — `retry-after` —
+는 그대로). 프록시가 토큰을 붙이는 원격 MCP 서버의 비-2xx 본문과 헤더 값도 같이 가리고,
+`mcp-session-id` 에 토큰이 든 응답은 `502` 로 거절한다.
+
 `openai-compat` 의 판정 대상은 upstream 주소가 아니라 `openai-compat.invalid` 다: 운영자가 회수하는
 것은 이 배치가 어디를 가리키든 "모델 API" 다. 합성 이름이다 — `.invalid` 는 예약 TLD 이고, CONNECT
 창구는 `.invalid` 목적지를 레지스트리에 묻기 전에 `403 ACC_001` 로 거절하므로 provider 선언이 터널을

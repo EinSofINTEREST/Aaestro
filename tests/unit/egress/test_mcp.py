@@ -404,3 +404,55 @@ async def test_a_stdio_server_is_not_reachable_through_the_proxy(tmp_path):
 
     assert response.status_code == 404
     assert server.seen == []
+
+
+class EchoingServer(Server):
+    """주입된 자격을 에러 본문 · 헤더에 되비추는 원격 MCP 서버 대역 (#390)."""
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        self.seen.append(request)
+        body = {"jsonrpc": "2.0", "id": 7, "error": {"code": -32000, "message": f"bad {TOKEN}"}}
+        return httpx.Response(
+            400,
+            headers={"content-type": "application/json", "x-echo": f"Bearer {TOKEN}"},
+            stream=httpx.ByteStream(json.dumps(body).encode()),
+        )
+
+
+async def test_the_proxy_credential_does_not_come_back_from_a_remote_server(tmp_path):
+    server = EchoingServer()
+    async with client_for(termination(tmp_path, Identities(), server)) as client:
+        response = await post(client)
+
+    assert response.status_code == 400
+    assert TOKEN not in response.text and TOKEN not in str(response.headers)
+    assert response.json()["error"]["code"] == -32000, "JSON-RPC 에러 모양은 남는다"
+
+
+class SessionEchoingServer(Server):
+    """세션 id 에 주입된 자격을 싣는 원격 MCP 서버 대역 (#390 리뷰)."""
+
+    def __init__(self, status: int) -> None:
+        super().__init__()
+        self.status = status
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        self.seen.append(request)
+        return httpx.Response(
+            self.status,
+            headers={"content-type": "application/json", "mcp-session-id": f"s-{TOKEN}"},
+            stream=httpx.ByteStream(b'{"jsonrpc": "2.0", "id": 7, "result": {}}'),
+        )
+
+
+@pytest.mark.parametrize("status", [200, 401])
+async def test_a_session_id_carrying_the_proxy_credential_is_refused(tmp_path, status):
+    """세션 id 는 서명해 그대로 돌려줘야 한다 — 자격이 들었으면 가릴 수 없어 응답을 거절한다."""
+    server = SessionEchoingServer(status)
+    async with client_for(termination(tmp_path, Identities(), server)) as client:
+        response = await post(client)
+
+    assert len(server.seen) == 1
+    assert response.status_code == 502
+    assert TOKEN not in response.text and TOKEN not in str(response.headers)
+    assert "mcp-session-id" not in response.headers

@@ -1061,6 +1061,19 @@ agent sets is dropped — a header chosen inside the container must not ride alo
 operator's key. Cookies cross in neither direction, and the proxy keeps none between calls: one
 agent's upstream session is never attached to another agent's request.
 
+The key does not come back either. Response headers are an allowlist too (`content-type`,
+`content-encoding`, `request-id` / `x-request-id`, `retry-after` / `retry-after-ms`,
+`x-should-retry`, `anthropic-ratelimit-*`, `x-ratelimit-*`), and any copy or identifiable fragment
+of the key in their values is masked — also in another letter case, percent-encoded, or inside
+standard or URL-safe base64. A successful (2xx) answer streams through unchanged; any other answer is
+read (up to 64 KiB, decompressed by the proxy itself for `gzip` / `deflate` and only up to that cap),
+every string in its JSON body is masked, and for `401` / `403` the message is replaced with a fixed
+one while the error `type` and `code` stay. A body that is not a JSON object, is larger than that,
+fails to read or decompress, uses another encoding, or holds a number JSON cannot carry (`1e999`,
+`NaN`) is replaced with a fixed error body; the status code and the allowed headers (`retry-after`)
+are kept. A remote MCP server that the proxy adds a token to gets the same masking of non-2xx bodies
+and header values, and an answer whose `mcp-session-id` carries the token is refused with `502`.
+
 `openai-compat` is decided under `openai-compat.invalid`, not under the upstream's address: what an
 operator revokes is "the model API", wherever this deployment points it. The name is synthetic —
 `.invalid` is reserved, and the CONNECT listener refuses any `.invalid` destination with
