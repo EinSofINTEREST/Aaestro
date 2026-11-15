@@ -8,6 +8,7 @@ Injection). upstream 이 인증 실패 본문 · 디버그 헤더에 그 값이�
 from __future__ import annotations
 
 import base64
+import functools
 import json
 import math
 import re
@@ -76,16 +77,23 @@ def _redact_percent(run: str, secret: str) -> str:
 
 def _redact_plain(text: str, secret: str) -> str:
     masked = re.sub(re.escape(secret), REDACTED, text, flags=re.IGNORECASE)
-    needles = _base64_needles(secret)
+    needles, windows = _base64_patterns(secret)
     for needle in needles:
         masked = masked.replace(needle, REDACTED)
-    # 토막이 needle 의 8자 창 하나라도 품으면 가린다 — 앞뒤가 붙은 부분 base64 도 잡는다
-    windows = {n[i : i + _MIN_INNER_CHARS] for n in needles for i in range(len(n) - 7)}
     masked = _B64_RUN.sub(
         lambda m: REDACTED if _holds_window(m.group(), windows) else m.group(), masked
     )
     lowered = secret.lower()
     return _TOKEN.sub(lambda m: REDACTED if _is_fragment(m.group(), lowered) else m.group(), masked)
+
+
+@functools.lru_cache(maxsize=8)
+def _base64_patterns(secret: str) -> tuple[tuple[str, ...], frozenset[str]]:
+    # URL 토막마다 불리므로 한 번만 만든다. 창: 토막이 needle 의 8자 창 하나라도 품으면 가린다 —
+    # 앞뒤가 붙은 부분 base64 도 잡는다
+    needles = _base64_needles(secret)
+    windows = {n[i : i + _MIN_INNER_CHARS] for n in needles for i in range(len(n) - 7)}
+    return tuple(needles), frozenset(windows)
 
 
 def _base64_needles(secret: str) -> list[str]:
@@ -99,7 +107,7 @@ def _base64_needles(secret: str) -> list[str]:
     return [n for n in needles if len(n) >= _MIN_INNER_CHARS]
 
 
-def _holds_window(token: str, windows: set[str]) -> bool:
+def _holds_window(token: str, windows: frozenset[str]) -> bool:
     return any(token[i : i + _MIN_INNER_CHARS] in windows for i in range(len(token) - 7))
 
 
