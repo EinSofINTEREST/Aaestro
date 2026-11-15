@@ -292,6 +292,7 @@ spec:
      떠 있는 컨테이너가 옛 선언을 읽는다
    - 호스트 민감 경로 (`/var/run/docker.sock` 등) 마운트 절대 금지
    - `mount_path` 는 절대 경로여야 하고, 정규화(`//`·`.`·`..` 정리)한 값으로 금지 목록을 대조해 그 값을 저장한다. 루트 위로 올라가는 `..` 은 거절
+   - 정규화한 `mount_path` 가 런타임 소유 경로 (`/app` 과 그 아래 선언 · 모듈 마운트, tmpfs `/tmp` · `/workspace`) 와 같거나 · 상위이거나 · 하위이면 배포가 `VAL_002` 로 거절한다 — tmpfs 의 하위만 허용 (`/tmp/.claude`). 목록은 `runtime/deployments.py` `RUNTIME_OWNED_PATHS` 한 곳 (#524)
 
 ### Secrets Injection — Scoped
 

@@ -1996,3 +1996,67 @@ async def test_reattach_marks_lost_when_a_sidecar_cannot_be_restored(workspace, 
 
     assert [r.status for r in touched] == [DeploymentStatus.LOST]
     assert "mcp sidecars not restored: alpha" in (touched[0].error or "")
+
+
+# --- 런타임 소유 경로와 겹치는 볼륨 (#524) ---------------------------------------------
+
+
+def with_volume(workspace: Path, mount_path: str) -> None:
+    doc = agent_doc("alpha")
+    doc["spec"]["runtime"]["volumes"] = [
+        {"name": "data", "mount_path": "/data"},
+        {"name": "work", "mount_path": mount_path},
+    ]
+    write(workspace / "agents" / "alpha" / "manifest.yaml", doc)
+
+
+@pytest.mark.parametrize(
+    ("mount_path", "kind"),
+    [
+        ("/tmp", "tmpfs"),  # noqa: S108 - 컨테이너 내부 경로
+        ("/workspace", "tmpfs"),
+        ("/app/declaration", "declaration"),
+        ("/app/modules/promptsets", "modules"),
+        ("/app", "declaration"),  # 상위 — 가장 먼저 맞는 소유 경로의 종류
+        ("/", "declaration"),
+        ("/app/modules", "modules"),
+        ("/app/declaration/x", "declaration"),  # 하위 — 읽기 전용 마운트 안의 쓰기 가능한 마운트
+        ("/app/src", "image"),
+        ("/app/modules/promptsets/x", "modules"),
+    ],
+)
+async def test_a_volume_over_a_runtime_owned_path_launches_nothing(
+    manager, docker, workspace, mount_path, kind
+):
+    with_volume(workspace, mount_path)
+
+    with pytest.raises(AaestroError) as excinfo:
+        await manager.deploy("two")
+
+    assert excinfo.value.code == ErrorCode.VAL_002
+    assert excinfo.value.details == {
+        "field": "spec.runtime.volumes[1].mount_path",
+        "runtime_path": kind,
+    }
+    assert docker.created == []
+    assert manager.deployments() == []
+
+
+@pytest.mark.parametrize(
+    "mount_path",
+    [
+        "/srv/cache",
+        "/apple",  # 구성 요소 경계 — /app 의 하위가 아니다
+        "/tmpdata",  # noqa: S108 - /tmp 의 하위가 아니다 (구성 요소 경계)
+        "/workspaces",
+        "/tmp/.claude",  # noqa: S108 - tmpfs 의 하위는 허용 (참조 claude-code)
+        "/workspace/cache",
+    ],
+)
+async def test_a_volume_beside_the_runtime_owned_paths_deploys(manager, workspace, mount_path):
+    with_volume(workspace, mount_path)
+
+    record = await manager.deploy("two")
+
+    assert record.status == DeploymentStatus.READY
+    await manager.launcher.stop_all()

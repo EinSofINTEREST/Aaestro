@@ -53,7 +53,7 @@ A2A_PEERS_ENV: Final = "AAESTRO_A2A_PEERS"
 # 다른 컨테이너라 여기 남긴 파일을 보지 못한다. 산출물은 graph state 또는
 # artifact 저장소로 간다 (02 Statelessness / Output Discipline). 정당한 용도는
 # 태스크 한 번 안의 scratch 뿐 — 02 가 허용하는 "재시작 시 소실 전제" 범위다
-_WRITABLE_TMPFS: Final = ("/tmp", "/workspace")  # noqa: S108 - 컨테이너 내부 경로
+WRITABLE_TMPFS: Final = ("/tmp", "/workspace")  # noqa: S108 - 컨테이너 내부 경로
 
 TMPFS_OPTIONS: Final = "mode=1777"
 """tmpfs 마운트 옵션.
@@ -255,7 +255,7 @@ def build_container_spec(
         read_only_rootfs=True,
         cap_drop=HARDENED_CAP_DROP,
         security_opt=HARDENED_SECURITY_OPT,
-        tmpfs=_WRITABLE_TMPFS,
+        tmpfs=WRITABLE_TMPFS,
         volumes=volumes,
         labels={
             "aaestro.agent": manifest.name,

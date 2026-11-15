@@ -542,6 +542,10 @@ runtime mounts `aaestro-<agent>.<name>`, so two agents that both declare `work` 
 declaration whose combined name exceeds Docker's 255 characters fails validation (`VAL_002`,
 the message names the position, not the name).
 
+A `mount_path` equal to, above, or inside a path the runtime owns (`/app` with its declaration and
+module mounts, the `/tmp` and `/workspace` tmpfs) fails deployment with `VAL_002` (`details` names
+the field and the kind of runtime path). Paths inside the tmpfs are allowed (`/tmp/.claude`).
+
 - **Fill a pre-populated volume under the mounted name.** Docker creates a missing named volume
   empty at start, and a `read_only` mount of an empty volume fails quietly inside the agent. For
   the reference `claude-code` agent's subscription credentials:
