@@ -82,3 +82,54 @@ def test_uuid_and_direct_ids_pass(task_id):
 
     assert response.status_code == 200
     assert executor.seen == [task_id]
+
+
+class _SteerExecutor(_Executor):
+    async def steer(self, task_id, text, *, by):
+        return True
+
+
+def post_path(path, *, steer=True):
+    executor = _SteerExecutor() if steer else _Executor()
+    api = TestClient(
+        create_app(AgentRuntime(agent="a", executor=executor), token="t"),
+        raise_server_exceptions=False,
+    )
+    return api.post(path, json={"text": "go", "by": "op"}, headers=AUTH)
+
+
+# 경로로 실린 값은 퍼센트 인코딩이다 — 디코드된 값이 식별자 규칙을 지나야 한다
+PATH_BAD = [
+    pytest.param("a%0Ab", "a\nb", id="control"),
+    pytest.param("x" * 129, "x" * 129, id="too-long"),
+    pytest.param("%20x", " x", id="leading-space"),
+]
+
+
+@pytest.mark.parametrize("route", ["cancel", "steer"])
+@pytest.mark.parametrize(("raw", "decoded"), PATH_BAD)
+def test_path_task_id_malformed_is_400_without_echo(route, raw, decoded):
+    response = post_path(f"/v1/{route}/{raw}")
+
+    assert response.status_code == 400
+    assert response.json()["code"] == "VAL_002"
+    assert response.json()["details"] == {
+        "field": "task_id",
+        "reason": identifier_problem(decoded).value,
+    }
+    for shown in (decoded, json.dumps(decoded)[1:-1], raw):
+        assert shown not in response.text
+
+
+def test_path_task_id_well_formed_unknown_stays_404():
+    response = post_path("/v1/cancel/direct-abc")
+
+    assert response.status_code == 404
+    assert response.json()["code"] == "NF_001"
+
+
+def test_path_task_id_is_checked_before_unsupported_steer():
+    response = post_path("/v1/steer/a%0Ab", steer=False)
+
+    assert response.status_code == 400
+    assert response.json()["code"] == "VAL_002"
