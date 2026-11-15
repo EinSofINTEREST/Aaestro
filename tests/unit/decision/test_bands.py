@@ -107,7 +107,9 @@ def test_decision_from_bad_distribution_is_dec_004(answer):
     )
 
 
-@pytest.mark.parametrize("answer", [-0.1, 1.1, float("nan"), float("inf"), True, "0.5", None])
+@pytest.mark.parametrize(
+    "answer", [-0.1, 1.1, float("nan"), float("inf"), 10**1000, True, "0.5", None]
+)
 def test_decision_from_bad_predicate_is_dec_004(answer):
     with pytest.raises(AaestroError) as exc:
         decision_from(PRED, answer)

@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import math
 from collections.abc import Sequence
 
 from aaestro.core.decision import Band, Bands, Decision, Question, QuestionKind
@@ -43,7 +42,8 @@ def _invalid(reason: str) -> AaestroError:
 def _probability(x: object) -> float:
     if isinstance(x, bool) or not isinstance(x, float | int):
         raise _invalid("probability is not a number")
-    if not math.isfinite(x) or not 0.0 <= x <= 1.0:
+    # 범위 비교만으로 NaN · inf 도 걸린다 — isfinite 는 거대한 int 에서 OverflowError 를 낸다
+    if not 0.0 <= x <= 1.0:
         raise _invalid("probability out of range")
     return float(x)
 
