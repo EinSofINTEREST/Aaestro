@@ -55,7 +55,7 @@ fail the task — each one goes back to the model as an error result — so this
 
 ### AgentDown
 
-`aaestro_agent_health == 0` for 3 minutes.
+`aaestro_agent_health == 0` for 3 minutes. The gauge is per replica (`agent`, `replica` labels), so one unhealthy replica fires even when its siblings are healthy.
 
 1. `aaestro agent inspect <agent>` — compare the manifest against what actually loaded.
 2. A failed `initialize()` keeps the container from reaching Ready. The usual causes are

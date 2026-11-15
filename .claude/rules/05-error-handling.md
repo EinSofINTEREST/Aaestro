@@ -400,6 +400,7 @@ log.info(f"task {task_id} done in {elapsed}ms")
 | `duration_ms`   | int    | 경과 시간 (밀리초) |
 | `delay_ms`      | int    | 재시도 backoff 대기 (밀리초) |
 | `attempt`       | int    | 현재 시도 횟수 (1-based) |
+| `replica`       | int    | 레플리카 번호 (`aaestro_agent_health` 의 라벨) |
 | `max_attempts`  | int    | 최대 시도 횟수 |
 | `input_tokens`  | int    | 입력 토큰 수 |
 | `output_tokens` | int    | 출력 토큰 수 |
@@ -507,7 +508,7 @@ aaestro_a2a_calls_total{caller, callee, status}
 # Runtime metrics
 aaestro_containers_running{agent}                        # Gauge
 aaestro_container_restarts_total{agent, reason}         # reason: unhealthy|failed|gave_up|permanent — permanent 는 재시도 불가 기동 실패 (바로 Failed)
-aaestro_agent_health{agent}                              # Gauge: 1 healthy / 0 unhealthy
+aaestro_agent_health{agent, replica}                    # Gauge: 1 healthy / 0 unhealthy — 레플리카별 시계열, 정지하면 지운다
 
 # Orchestrator metrics
 aaestro_runs_active{graph, mode}                         # Gauge — mode: mission|service
@@ -588,7 +589,7 @@ groups:
         for: 3m
         labels: {severity: critical}
         annotations:
-          summary: "Agent {{ $labels.agent }} unhealthy for 3m"
+          summary: "Agent {{ $labels.agent }} replica {{ $labels.replica }} unhealthy for 3m"
 
       - alert: ContainerRestartLoop
         expr: increase(aaestro_container_restarts_total[10m]) > 5

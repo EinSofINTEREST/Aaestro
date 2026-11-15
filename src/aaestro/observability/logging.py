@@ -75,6 +75,7 @@ class LogField:
     DELAY_MS: Final = "delay_ms"
     ATTEMPT: Final = "attempt"
     MAX_ATTEMPTS: Final = "max_attempts"
+    REPLICA: Final = "replica"
     INPUT_TOKENS: Final = "input_tokens"
     OUTPUT_TOKENS: Final = "output_tokens"
     TURN: Final = "turn"

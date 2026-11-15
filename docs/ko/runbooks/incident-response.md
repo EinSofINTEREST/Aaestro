@@ -53,7 +53,7 @@ Aaestro 알림이 울렸을 때의 대응 절차. 규범 규칙:
 
 ### AgentDown
 
-`aaestro_agent_health == 0` 이 3분간 지속.
+`aaestro_agent_health == 0` 이 3분간 지속. 게이지는 레플리카별 (`agent`, `replica` 라벨) 이라 다른 레플리카가 healthy 여도 unhealthy 한 레플리카 하나로 발화한다.
 
 1. `aaestro agent inspect <agent>` — manifest 와 실제 로드된 상태를 대조한다.
 2. `initialize()` 실패는 컨테이너를 Ready 로 보내지 않는다. 흔한 원인은

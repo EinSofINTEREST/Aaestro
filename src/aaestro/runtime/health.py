@@ -63,6 +63,8 @@ class HealthMonitor:
     agent: str
     probe: HealthProbe
     lifecycle: AgentLifecycle
+    replica: int = 0
+    """게이지 라벨 — 레플리카마다 시계열이 갈려 healthy 가 unhealthy 를 덮지 않는다."""
     interval_s: float = DEFAULT_INTERVAL_S
     timeout_s: float = DEFAULT_TIMEOUT_S
     unhealthy_threshold: int = DEFAULT_UNHEALTHY_THRESHOLD
@@ -151,9 +153,9 @@ class HealthMonitor:
             healthy=healthy, threshold=self.unhealthy_threshold, starting_up=starting_up
         )
         if self.metrics is not None:
-            self.metrics.gauge("aaestro_agent_health").labels(agent=self.agent).set(
-                1 if healthy else 0
-            )
+            self.metrics.gauge("aaestro_agent_health").labels(
+                agent=self.agent, replica=str(self.replica)
+            ).set(1 if healthy else 0)
         return state
 
     def starting_up(self) -> bool:

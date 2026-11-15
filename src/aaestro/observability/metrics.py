@@ -120,7 +120,12 @@ METRIC_SPECS: Final[tuple[MetricSpec, ...]] = (
         ("agent", "reason"),
         "Container restarts by reason",
     ),
-    MetricSpec("aaestro_agent_health", "gauge", ("agent",), "Agent health: 1 healthy, 0 unhealthy"),
+    MetricSpec(
+        "aaestro_agent_health",
+        "gauge",
+        ("agent", "replica"),
+        "Agent health: 1 healthy, 0 unhealthy",
+    ),
     # Orchestrator
     MetricSpec("aaestro_runs_active", "gauge", ("graph", "mode"), "Active graph runs"),
     MetricSpec(

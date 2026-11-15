@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -284,6 +285,7 @@ class AgentLauncher:
             agent=launched.agent,
             probe=launched.client,
             lifecycle=launched.lifecycle,
+            replica=launched.replica,
             interval_s=self.health_interval_s,
             # 기동이 확인 주기보다 길어도 뜨는 중인 컨테이너를 재시작하지 않는다 (#297)
             startup_grace_s=self.startup_grace_s,
@@ -717,6 +719,11 @@ class AgentLauncher:
                 launched.lifecycle.transition(AgentState.STOPPED)
             # 재시작이 먼저 지웠을 수 있다 — 없으면 지울 것도 없다
             self.launched.pop((agent, launched.replica), None)
+            if self.metrics is not None:
+                # 레플리카가 실제로 없어질 때만 지운다 — Failed · 교체 중에는 0 이 남아야
+                # AgentDown 이 이어진다 (_unwatch 는 그 경로에서도 불린다)
+                with contextlib.suppress(KeyError):
+                    self.metrics.gauge("aaestro_agent_health").remove(agent, str(launched.replica))
             if self.ports is not None:
                 self.ports.release(agent, replica=launched.replica)
 

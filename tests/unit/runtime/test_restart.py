@@ -828,3 +828,56 @@ async def test_stop_restart_scheduled_while_stopping_another_replica_leaves_no_o
     assert not orphans, f"정지 중 재시작이 세운 컨테이너가 미아로 남았다: {orphans}"
     assert not agents.launched, "정지 뒤에 레플리카가 남았다"
     assert not agents._restarts, "재시작 태스크가 소유자 없이 남았다"
+
+
+# --- aaestro_agent_health 시계열 수명 (#528) -----------------------------------
+
+
+def health_value(metrics: Metrics, replica: str) -> float | None:
+    # labels() 는 없는 시계열을 만들어 버리므로 registry 를 직접 읽는다
+    return metrics.registry.get_sample_value(
+        "aaestro_agent_health", {"agent": "echo", "replica": replica}
+    )
+
+
+async def test_a_failed_replica_keeps_its_health_series_at_zero():
+    """Failed 는 컨테이너가 남은 아픈 레플리카다 — 시계열이 사라지면 AgentDown 이 침묵한다."""
+    metrics = Metrics(registry=CollectorRegistry())
+    agents = launcher(FakeDockerClient(), Recorder(), metrics=metrics)
+    launched, _ = await start_sick(agents)
+    launched.lifecycle.restart_policy = RestartPolicy(max_in_window=0)
+
+    await until(lambda: launched.lifecycle.state is AgentState.FAILED)
+
+    assert health_value(metrics, "0") == 0.0
+    await agents.stop_all()
+
+
+async def test_the_health_series_does_not_vanish_while_the_replica_is_replaced():
+    """교체는 같은 레플리카 번호를 이어 쓴다 — 공백이 생기면 AgentDown 의 `for` 가 리셋된다."""
+    metrics = Metrics(registry=CollectorRegistry())
+    # 자동 재시작은 backoff 에서 영원히 붙잡아 둔다 — 수동 교체와 같은 레플리카를 동시에
+    # 교체하면 순서에 따라 넘어지거나 태스크가 남는다. 교체는 `_replace` 를 직접 돌린다
+    agents = launcher(FakeDockerClient(), HangingSleep(), metrics=metrics)
+    launched, _ = await start_sick(agents)
+    gate, entered = asyncio.Event(), asyncio.Event()
+    real_start = agents.start
+
+    async def gated_start(*args, **kwargs):
+        entered.set()
+        await gate.wait()
+        return await real_start(*args, **kwargs)
+
+    agents.start = gated_start  # type: ignore[method-assign]
+    task: asyncio.Task | None = None
+    try:
+        await until(lambda: health_value(metrics, "0") == 0.0)
+        task = asyncio.create_task(agents._replace(launched))
+        await entered.wait()
+
+        assert health_value(metrics, "0") == 0.0, "교체 중에 시계열이 비었다"
+    finally:
+        gate.set()
+        if task is not None:
+            await task
+        await agents.stop_all()

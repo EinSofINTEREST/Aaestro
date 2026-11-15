@@ -124,7 +124,7 @@ def test_metric_contract_snapshot():
             "kind": "counter",
             "labels": ["agent", "reason"],
         },
-        "aaestro_agent_health": {"kind": "gauge", "labels": ["agent"]},
+        "aaestro_agent_health": {"kind": "gauge", "labels": ["agent", "replica"]},
         "aaestro_runs_active": {"kind": "gauge", "labels": ["graph", "mode"]},
         "aaestro_runs_total": {"kind": "counter", "labels": ["graph", "mode", "status"]},
         "aaestro_node_duration_seconds": {
@@ -218,10 +218,11 @@ def test_counter_increments_are_exposed():
 def test_gauge_set_is_exposed():
     metrics = Metrics(CollectorRegistry())
 
-    metrics["aaestro_agent_health"].labels(agent="researcher").set(1)
+    metrics["aaestro_agent_health"].labels(agent="researcher", replica="0").set(1)
 
     assert (
-        'aaestro_agent_health{agent="researcher"} 1.0' in generate_latest(metrics.registry).decode()
+        'aaestro_agent_health{agent="researcher",replica="0"} 1.0'
+        in generate_latest(metrics.registry).decode()
     )
 
 
