@@ -17,7 +17,14 @@ from aaestro.agentd import server as server_module
 from aaestro.agentd.echo import EchoExecutor
 from aaestro.agentd.executor import MAX_STEER_CHARS, Executor, UserTurn
 from aaestro.agentd.server import AgentRuntime, _sse_frame, create_app
-from aaestro.core.agent import ComponentHealth, HealthState, HealthStatus, TaskResult, TaskStatus
+from aaestro.core.agent import (
+    ComponentHealth,
+    HealthState,
+    HealthStatus,
+    ModelUsage,
+    TaskResult,
+    TaskStatus,
+)
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 from aaestro.core.events import DoneEvent, TokenEvent, ToolCallEvent, ToolResultEvent
 from aaestro.core.markers import STEER_HEADER
@@ -338,6 +345,16 @@ def test_sse_frame_replacements_survive_surrogates_in_task_id_and_tool():
         body = _frame_body(_sse_frame(event, "researcher"))
         assert body["type"] == kind
     assert _frame_body(_sse_frame(result, "researcher"))["error"]["code"] == "SKILL_001"
+
+
+def test_sse_frame_replacement_keeps_the_usage_of_the_event_it_replaces():
+    bad = "\ud800x"
+    done = DoneEvent(task_id=bad, usage=ModelUsage(input_tokens=7, output_tokens=2))
+
+    body = _frame_body(_sse_frame(done, "researcher"))
+
+    assert body["type"] == "error"
+    assert (body["usage"]["input_tokens"], body["usage"]["output_tokens"]) == (7, 2)
 
 
 def test_sse_frame_falls_back_to_a_fixed_frame_when_the_replacement_fails(monkeypatch):

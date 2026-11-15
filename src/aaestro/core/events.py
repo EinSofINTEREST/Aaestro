@@ -90,10 +90,15 @@ class DoneEvent(_BaseEvent):
 
 
 class ErrorEvent(_BaseEvent):
-    """태스크 실패 — 구조화 에러 payload 를 실어 보낸다."""
+    """태스크 실패 — 구조화 에러 payload 를 실어 보낸다.
+
+    ``usage`` 는 실패까지 쓴 토큰이다 (``DoneEvent.usage`` 와 같은 뜻). 모델을 부르지 않는
+    생산자 (예: 권한 에이전트) 는 ``None`` 으로 둔다.
+    """
 
     type: Literal[EventType.ERROR] = EventType.ERROR
     error: AaestroErrorPayload
+    usage: ModelUsage | None = None
 
 
 TaskEvent = Annotated[

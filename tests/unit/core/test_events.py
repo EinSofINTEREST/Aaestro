@@ -87,3 +87,17 @@ def test_error_event_requires_payload():
 
     assert isinstance(event, ErrorEvent)
     assert event.error.code == "LLM_005"
+
+
+def test_error_event_usage_defaults_to_none_and_round_trips():
+    payload = AaestroError(
+        category=ErrorCategory.MODEL, code=ErrorCode.LLM_005, message="max turns exceeded"
+    ).payload()
+    bare = ErrorEvent(task_id="t1", error=payload)
+    spent = ErrorEvent(task_id="t1", error=payload, usage=ModelUsage(input_tokens=4))
+
+    assert bare.usage is None
+    restored = _adapter.validate_json(spent.model_dump_json())
+    assert isinstance(restored, ErrorEvent)
+    assert restored.usage is not None
+    assert restored.usage.input_tokens == 4
