@@ -152,7 +152,7 @@ TO_004:  Decision timeout (decision.timeout_s 초과)
 LLM_001: Provider rate limited
 LLM_002: Context length exceeded
 LLM_003: Provider server error
-LLM_004: Invalid/unparseable model response
+LLM_004: Invalid/unparseable model response / 출력 토큰 상한에서 잘린 응답 (retryable=False)
 LLM_005: Max turns exceeded
 
 A2A_001: Task 제출 실패

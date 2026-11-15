@@ -134,6 +134,8 @@ class ModelResponse:
     content: str = ""
     tool_calls: tuple[ToolCall, ...] = ()
     usage: ModelUsage = field(default_factory=ModelUsage)
+    truncated: bool = False
+    """출력 토큰 상한에서 끊긴 응답 — 내용도 tool 인자도 믿을 수 없다 (LLM_004 로 실패한다)."""
     raw: Any = None
     """provider 가 돌려준 assistant 내용 그대로 — 다음 턴에 **바꾸지 않고** 되돌려 보낸다.
 
@@ -616,6 +618,25 @@ class Executor:
 
         return {key: parsed[key] for key in keys}
 
+    def _truncated_error(self, task: TaskRequest, response: ModelResponse) -> AaestroError:
+        """토큰 상한에서 잘린 응답 — 잘린 산출물 병합 · 잘린 tool 인자 실행을 막는다."""
+        log.warning(
+            "model output truncated at the token limit",
+            agent=self._agent,
+            task_id=task.task_id,
+            model=response.usage.model,
+            output_tokens=response.usage.output_tokens,
+        )
+        return AaestroError(
+            category=ErrorCategory.MODEL,
+            code=ErrorCode.LLM_004,
+            message="model output truncated at the token limit",
+            agent=self._agent,
+            task_id=task.task_id,
+            retryable=False,
+            details={"tool_calls_dropped": len(response.tool_calls)},
+        )
+
     def _output_error(self, message: str, content: str, keys: Sequence[str]) -> AaestroError:
         """출력 계약 위반 — 응답 꼬리를 남겨 promptset 드리프트를 추적한다."""
         return AaestroError(
@@ -984,6 +1005,8 @@ class Executor:
             for turn in range(max_turns):
                 response = await self._model_turn(messages, binding, chain)
                 usage = usage.merge(response.usage)
+                if response.truncated:
+                    raise self._truncated_error(task, response)
 
                 if response.content:
                     yield TokenEvent(task_id=task.task_id, text=response.content)

@@ -707,6 +707,9 @@ fallback 은 어느 방향으로든 provider 를 넘을 수 있습니다. 다른
   게이트웨이는 지원하지 않습니다. `/v1` **앞의** 접두(`https://gateway.example.com/api`)는 됩니다.
 - **응답 `content` 는 텍스트이거나 null 이어야 합니다.** `content` 가 파트 배열인 응답은 `LLM_004`
   입니다.
+- **출력 토큰 상한에서 잘린 응답은 `LLM_004` 로 실패합니다** (`finish_reason: length`, `anthropic` 은
+  `stop_reason: max_tokens`). 텍스트는 병합되지 않고 tool 호출도 실행되지 않으며,
+  `model output truncated at the token limit` WARN 이 남습니다.
 - **모델 호출에 필요한 헤더만 provider 에 닿습니다** — `content-type`, `accept`, `accept-encoding`,
   `user-agent` (`anthropic` 은 `anthropic-version` / `anthropic-beta` 추가). 에이전트 안에서 넣은
   조직 · 프로젝트 · 다른 키 헤더는 프록시가 떼어 내고, 쿠키는 어느 방향으로도 프록시를 건너지 않습니다.

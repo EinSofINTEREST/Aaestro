@@ -561,22 +561,64 @@ async def test_run_non_json_success_body_raises_llm_004():
     assert exc_info.value.code == ErrorCode.LLM_004
 
 
-async def test_run_truncated_text_is_returned_with_a_warning():
-    """형제 어댑터처럼 응답은 돌려주되, 출력 상한에서 끊겼다는 사실을 남긴다."""
+async def test_run_length_finish_marks_the_response_truncated():
     adapter, _ = model(completion("half an ans", finish_reason="length"))
 
-    with capture_logs() as logs:
-        response = await adapter.run("", OPENING, [])
+    response = await adapter.run("", OPENING, [])
 
     assert response.content == "half an ans"
-    [entry] = logs
-    assert entry["log_level"] == "warning"
-    assert (entry["agent"], entry["provider"], entry["model"]) == (
-        "researcher",
-        "openai-compat",
-        MODEL,
+    assert response.truncated
+
+
+async def test_run_length_finish_with_cut_tool_arguments_is_truncated_not_an_error():
+    """잘려서 깨진 인자는 잘림의 결과다 — 파싱 오류가 아니라 잘림 표시로 올라간다."""
+    adapter, _ = model(
+        completion(
+            None,
+            tool_calls=[function_call("c1", "search", '{"query": "half')],
+            finish_reason="length",
+        )
     )
-    assert entry["output_tokens"] == 45
+
+    response = await adapter.run("", OPENING, [])
+
+    assert response.truncated
+    assert response.tool_calls == ()
+
+
+BROKEN_CALLS = [
+    pytest.param({"id": "c1", "type": "function"}, id="function-missing"),
+    pytest.param({"id": "c1", "type": "function", "function": None}, id="function-null"),
+    pytest.param(
+        {"id": "c1", "type": "function", "function": {"name": "search"}}, id="arguments-missing"
+    ),
+]
+
+
+@pytest.mark.parametrize("call", BROKEN_CALLS)
+async def test_run_length_finish_with_malformed_tool_call_is_truncated_not_an_error(call):
+    adapter, _ = model(completion(None, tool_calls=[call], finish_reason="length"))
+
+    response = await adapter.run("", OPENING, [])
+
+    assert response.truncated
+    assert response.tool_calls == ()
+
+
+@pytest.mark.parametrize("call", BROKEN_CALLS)
+async def test_run_malformed_tool_call_without_truncation_is_llm_004(call):
+    adapter, _ = model(completion(None, tool_calls=[call]))
+
+    with pytest.raises(AaestroError) as exc_info:
+        await adapter.run("", OPENING, [])
+
+    assert exc_info.value.code == ErrorCode.LLM_004
+
+
+async def test_run_normal_finish_is_not_truncated():
+    adapter, _ = model(completion())
+
+    assert not (await adapter.run("", OPENING, [])).truncated
 
 
 async def test_run_complete_response_logs_nothing():

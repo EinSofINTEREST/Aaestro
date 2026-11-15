@@ -32,6 +32,7 @@ if TYPE_CHECKING:
 
 # SDK 가 max_tokens 를 필수로 요구한다 — manifest 가 비워두면 이 값을 쓴다
 DEFAULT_MAX_TOKENS = 4096
+STOP_MAX_TOKENS = "max_tokens"
 
 
 def _model_error(
@@ -203,6 +204,7 @@ class AnthropicModel:
                 for block in blocks
                 if block.type == "tool_use"
             )
+            truncated = message.stop_reason == STOP_MAX_TOKENS
             raw = message.usage
             usage = ModelUsage(
                 # 응답의 input_tokens 는 캐시에 쓰고 읽은 토큰을 뺀 값이다 — 합쳐야
@@ -224,7 +226,9 @@ class AnthropicModel:
             ) from err
 
         # 원본 블록을 들고 간다 — thinking 블록은 다음 턴에 바뀌지 않은 채 돌아가야 한다
-        return ModelResponse(content=text, tool_calls=tool_calls, usage=usage, raw=blocks)
+        return ModelResponse(
+            content=text, tool_calls=tool_calls, usage=usage, truncated=truncated, raw=blocks
+        )
 
 
 def to_message_params(messages: Sequence[Message]) -> list[dict[str, Any]]:

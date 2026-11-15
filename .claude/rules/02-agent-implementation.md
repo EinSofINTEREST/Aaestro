@@ -456,7 +456,7 @@ async def execute(self, task: TaskRequest) -> TaskResult:
    `status="failed"` (알림 `ToolHighFailureRate`) 는 그대로 남고, 실패마다 WARN
    (`tool call failed, returned to model` — `tool`, `turn`, `error_code`) 을 남긴다.
    태스크를 끝내는 것은 그대로다: 취소, 태스크 timeout (`TO_001`), tool 바깥의 실패 (모델 호출 ·
-   출력 형식). 실패 반복의 상한은 turn 상한 (`LLM_005`) 이다
+   출력 형식 · 잘린 응답 (Rule 11)). 실패 반복의 상한은 turn 상한 (`LLM_005`) 이다
 9. **Task Context Block**: 첫 user 턴의 **첫 part** 는 한 줄 실행 맥락 블록이다 —
    `[aaestro] Task context: agent {name}; date {YYYY-MM-DD} (UTC); turn limit {N}.`
    (`modules/boundary.py` `TASK_CONTEXT`, #550). 태스크마다 바뀌는 값이라 바이트 고정이어야 하는
@@ -475,6 +475,7 @@ async def execute(self, task: TaskRequest) -> TaskResult:
    넘을 수 있다. 잘린 결과의 스트림 `ToolResultEvent` 값은 같은 문자열이다 — MCP 결과는 `{"content": <그 문자열>, "is_error"}` 모양을 유지한다. WARN (`tool result truncated` — `agent`, `task_id`,
    `tool`, `original_chars`, `limit`, 값은 싣지 않는다) 을 남긴다. 한 결과가 컨텍스트와 비용을 통째로
    차지하지 않게 하는 상한이다 — 큰 산출물은 artifact 참조로 (Output Discipline)
+11. **Truncated Response**: 모델 응답이 출력 토큰 상한에서 끊기면 (`max_tokens` / `length`) 최종 답이든 tool 호출이든 실행하지 않고 `LLM_004` 로 실패시킨다 — 잘린 산출물이 state 로 병합되지 않는다
 
 ### Steering — 턴 경계의 운영자 지시
 

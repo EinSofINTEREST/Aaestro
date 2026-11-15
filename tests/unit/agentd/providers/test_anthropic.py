@@ -49,8 +49,11 @@ class Usage:
 
 
 class Message:
-    def __init__(self, content: list[Block], usage: Usage | None = None) -> None:
+    def __init__(
+        self, content: list[Block], usage: Usage | None = None, stop_reason: str = "end_turn"
+    ) -> None:
         self.content = content
+        self.stop_reason = stop_reason
         self.usage = usage or Usage()
 
 
@@ -185,6 +188,20 @@ async def test_text_response_is_final():
 
     assert response.content == "answer"
     assert response.is_final
+
+
+async def test_max_tokens_stop_marks_the_response_truncated():
+    provider = model(Message([Block(type="text", text="half")], stop_reason="max_tokens"))
+
+    response = await provider.run("", OPENING, [])
+
+    assert response.truncated
+
+
+async def test_normal_stop_is_not_truncated():
+    provider = model(Message([Block(type="text", text="done")]))
+
+    assert not (await provider.run("", OPENING, [])).truncated
 
 
 async def test_tool_use_becomes_a_tool_call():

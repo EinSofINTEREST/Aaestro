@@ -316,8 +316,11 @@ class OpenAICompatModel:
             content = message.get("content")
             if content is not None and not isinstance(content, str):
                 raise TypeError("content is not text")
-            tool_calls = tuple(_tool_call(call) for call in message.get("tool_calls") or ())
+            truncated = choice.get("finish_reason") == FINISH_LENGTH
+            tool_calls = _tool_calls(message.get("tool_calls") or (), lenient=truncated)
             usage = self._usage(body)
+            # 잘린 응답은 다음 턴 없이 실패한다 — 되돌려 보낼 일이 없으니 모양을 고치지 않는다
+            raw = _ProviderMessage(message if truncated else _returnable(message))
         except (KeyError, IndexError, TypeError, ValueError) as err:
             # 응답 모양이 계약과 다르면 그대로 흘려보내지 않는다 — 조용히 빈
             # 응답으로 처리하면 태스크가 성공한 것처럼 끝난다. 잘린 tool 인자도 여기로 온다
@@ -329,21 +332,13 @@ class OpenAICompatModel:
                 cause=type(err).__name__,
             ) from err
 
-        if choice.get("finish_reason") == FINISH_LENGTH:
-            # 출력 상한에서 끊긴 텍스트다 — 형제 어댑터처럼 응답은 돌려주되, 잘렸다는 사실은 남긴다
-            log.warning(
-                "model output truncated at the token limit",
-                agent=self.agent,
-                provider=PROVIDER,
-                model=self.config.name,
-                output_tokens=usage.output_tokens,
-            )
         # 원본 메시지를 들고 간다 — provider 고유 필드가 다음 턴에 바뀌지 않은 채 돌아가야 한다
         return ModelResponse(
             content=content or "",
             tool_calls=tool_calls,
             usage=usage,
-            raw=_ProviderMessage(_returnable(message)),
+            truncated=truncated,
+            raw=raw,
         )
 
 
@@ -352,6 +347,23 @@ def _token_count(value: Any) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         return None
     return value
+
+
+def _tool_calls(calls: Any, *, lenient: bool) -> tuple[ToolCall, ...]:
+    """응답의 tool 호출들. 잘린 응답이면 읽히지 않는 호출을 버린다 — 깨진 인자는 잘림의 결과다.
+
+    잘린 응답은 어차피 실행기가 tool 을 실행하지 않고 잘림으로 실패시킨다. 여기서 파싱 오류로
+    끝내면 잘림 신호 (WARN) 가 실행기에 닿지 못한다.
+    """
+    if not lenient:
+        return tuple(_tool_call(call) for call in calls)
+    parsed = []
+    for call in calls:
+        try:
+            parsed.append(_tool_call(call))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return tuple(parsed)
 
 
 def _tool_call(call: Any) -> ToolCall:
