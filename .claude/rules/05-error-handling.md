@@ -271,7 +271,10 @@ RATE_LIMIT_RETRY = RetryPolicy(
 # rate limit 도 여기서 한 번만 다시 두드리고, 소진하면 unavailable 로 원래 경로 (01 Decision Models 2)
 DECISION_RETRY = RetryPolicy(
     max_attempts=2, initial_delay_s=0.5, max_delay_s=1,
-    retryable_categories=(ErrorCategory.NETWORK, ErrorCategory.TIMEOUT, ErrorCategory.RATE_LIMIT),
+    retryable_categories=(
+        ErrorCategory.NETWORK, ErrorCategory.TIMEOUT, ErrorCategory.RATE_LIMIT,
+        ErrorCategory.DECISION,   # DEC_001 (retryable) — 영구 오류 DEC_003/004 는 retryable=False 로 걸러진다
+    ),
 )
 ```
 
@@ -290,7 +293,7 @@ DECISION_RETRY = RetryPolicy(
 | 호출 | 재시도 주체 |
 |---|---|
 | 모델 API 호출 | agentd (provider SDK 재시도는 비활성화) — 재시도 소진 뒤 선언된 fallback 모델로의 전환도 agentd (02 Model Resilience Declaration) |
-| 결정 모델 호출 | agentd — `DECISION_RETRY` (network·timeout·rate limit 모두 1회 재시도, 총 대기 < `decision.timeout_s`). 소진하면 `unavailable` 로 원래 경로 — RATE_LIMIT_RETRY 의 수십 초 백오프는 판정에 맞지 않는다 |
+| 결정 모델 호출 | agentd — `DECISION_RETRY` (network·timeout·rate limit·provider 실패 `DEC_001` 모두 1회 재시도, 총 대기 < `decision.timeout_s`). 소진하면 `unavailable` 로 원래 경로 — RATE_LIMIT_RETRY 의 수십 초 백오프는 판정에 맞지 않는다 |
 | MCP tool 호출 | agentd — 단 `MCP_004` (transport) 는 재연결 후 1회만 |
 | A2A 호출 | caller 에이전트 |
 | Node 실행 전체 | orchestrator — node 별 `retry` 설정 시에만, 에이전트 내부 재시도와 중복 주의 |
