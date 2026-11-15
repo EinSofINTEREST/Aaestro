@@ -153,9 +153,13 @@ async def error_body(answer: httpx.Response, secret: str) -> dict[str, Any]:
         return _withheld()
     if not isinstance(body, dict):
         return _withheld()
-    if answer.status_code in _AUTH_STATUSES:
-        return _auth_refusal(body)
-    return body
+    kept: dict[str, Any] = _auth_refusal(body) if answer.status_code in _AUTH_STATUSES else body
+    try:
+        # 짝 없는 서로게이트 (\ud800) 는 json 이 받지만 UTF-8 응답으로 쓸 수 없다 — 프록시 500 대신
+        json.dumps(kept, ensure_ascii=False).encode()
+    except UnicodeEncodeError:
+        return _withheld()
+    return kept
 
 
 async def _read_capped(answer: httpx.Response) -> bytes:

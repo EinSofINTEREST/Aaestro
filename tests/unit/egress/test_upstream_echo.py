@@ -337,6 +337,9 @@ class Failing(Echo):
         Failing(429, b"", {"retry-after": "5"}),
         Echo(429, b'{"quota": 1e999}', {"retry-after": "5"}),
         Echo(429, b'{"quota": NaN}', {"retry-after": "5"}),
+        # 짝 없는 서로게이트 — json 은 받지만 UTF-8 응답으로 쓸 수 없다 (값 · 키 둘 다)
+        Echo(429, b'{"error": {"message": "bad \\ud800"}}', {"retry-after": "5"}),
+        Echo(429, b'{"\\udfff": 1}', {"retry-after": "5"}),
         # 끝이 잘린 압축 — 앞부분만으로도 JSON 이 풀리지만 표준 해제기는 거절한다
         Echo(
             429,
@@ -355,6 +358,8 @@ class Failing(Echo):
         "read-error",
         "infinite-number",
         "nan",
+        "lone-surrogate-value",
+        "lone-surrogate-key",
         "truncated-gzip",
         "truncated-deflate",
     ],
