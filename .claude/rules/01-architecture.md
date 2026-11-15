@@ -314,7 +314,7 @@ A2A 에서 피호출자는 통제받는 쪽이 아니라 **보호받는 쪽**이
 
 | 자원 종류 | 대상 | 모드 | 강제 지점 |
 |---|---|---|---|
-| `memory` | space (별칭이 해석된 space id) | `ro` / `rw` | Memory Service |
+| `memory` | space (별칭이 해석된 space id. run scope 는 `run:<run_id>:<alias>` — run 기록으로 판정, 09 Access Enforcement) | `ro` / `rw` | Memory Service |
 | `egress` | 목적지 `host[:port]` | — | Egress Proxy |
 | `mcp_tool` | `server/tool` (원격 MCP 만) | — | Egress Proxy (base URL 종단) |
 | `a2a` | 피호출자 에이전트 | — | 피호출자 A2A 서버 |

@@ -429,7 +429,14 @@ async def test_the_registry_reaches_deployments_and_the_served_app(tmp_path, mon
     from aaestro.access.model import ResourceKind
 
     # 선언 판정이 빠지면 선언된 메모리·연결이 전부 기본 거부된다
-    assert isinstance(deployments.access.baselines[ResourceKind.MEMORY], MemoryBaseline)
+    memory = deployments.access.baselines[ResourceKind.MEMORY]
+    assert isinstance(memory, MemoryBaseline)
+    # run space 판정과 그 캐시 무효화는 run 이 기록되는 그 저장소를 읽는다 (#608)
+    from aaestro.orchestrator.runstore import SqliteRunStore
+
+    assert isinstance(memory.runs, SqliteRunStore)
+    assert str(memory.runs.path) == str(tmp_path / "runs.db")
+    assert deployments.access.runs is memory.runs
     a2a = deployments.access.baselines[ResourceKind.A2A]
     assert isinstance(a2a, A2ABaseline)
     assert a2a.store is deployments.access.store, "배포 기록과 다른 저장소를 보면 그래프를 모른다"

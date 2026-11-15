@@ -12,15 +12,20 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.core.manifest import agent_name
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
     from pathlib import Path
+
+    from aaestro.core.topology import GraphTopology
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
@@ -32,12 +37,19 @@ CREATE TABLE IF NOT EXISTS runs (
     failure_streak INTEGER NOT NULL DEFAULT 0,
     drain          INTEGER NOT NULL DEFAULT 0,
     updated_at     TEXT NOT NULL,
-    model_overrides TEXT NOT NULL DEFAULT '{}'
+    model_overrides TEXT NOT NULL DEFAULT '{}',
+    memory_spaces  TEXT NOT NULL DEFAULT '{}',
+    agents         TEXT NOT NULL DEFAULT '[]',
+    transitions    INTEGER NOT NULL DEFAULT 0
 );
 """
 
 _ADDED_COLUMNS = {
     "model_overrides": "TEXT NOT NULL DEFAULT '{}'",
+    # 이 컬럼이 없던 시절의 run 은 빈 스냅샷 — run space 가 없다 (#608)
+    "memory_spaces": "TEXT NOT NULL DEFAULT '{}'",
+    "agents": "TEXT NOT NULL DEFAULT '[]'",
+    "transitions": "INTEGER NOT NULL DEFAULT 0",
 }
 """첫 스키마 이후 더해진 컬럼 — `_migrate` 가 옛 DB 에 채운다. 새로 더할 때 여기에도 적는다."""
 
@@ -74,6 +86,44 @@ class RunRecord:
 
     한 번 정해지면 바뀌지 않는다: 빈 값으로 갱신하면 기존 값을 보존한다. run 기록은
     핸들만 아는 여러 곳(슬롯 · iteration 진행)이 다시 쓰므로, 그 갱신이 지우면 안 된다."""
+    memory_spaces: Mapping[str, str] = field(default_factory=dict)
+    """run 이 시작할 때 그래프가 선언한 run scope space — 별칭 → memoryset ref (#608).
+
+    처음 기록할 때만 쓰이고 그 뒤의 갱신은 바꾸지 않는다: run space 는 run 이 시작할 때의 그래프
+    버전으로 정해지고 (#468 결정 a), 재개가 현재 카탈로그의 그래프로 덮으면 안 된다."""
+    agents: tuple[str, ...] = ()
+    """같은 시점의 노드 에이전트 이름 — run space 에 닿는 참여자. ``memory_spaces`` 와 같이
+    고정이다."""
+    transitions: int = 0
+    """상태가 바뀐 횟수 — 저장소가 센다 (쓰는 쪽이 준 값은 무시한다). 단조 증가라 한 폴링 주기
+    안에 끝 → 재개 → 끝이 몰려도 ``liveness`` 가 달라진다 (#608)."""
+
+    def __post_init__(self) -> None:
+        # 스냅샷은 권한 판정의 근거다 — 넘겨준 dict 나 읽어 간 값을 바꿔 run space 가 늘면 안 된다
+        object.__setattr__(self, "memory_spaces", MappingProxyType(dict(self.memory_spaces)))
+        object.__setattr__(self, "agents", tuple(self.agents))
+
+    @property
+    def live(self) -> bool:
+        """진행 중인가 — run space 를 쓸 수 있는 동안 (끝난 run 은 읽기만, 09 Scope Rule 1)."""
+        return self.status in LIVE_STATUSES
+
+
+LIVE_STATUSES = frozenset({"running", "draining"})
+"""진행 중인 run 의 상태 — ``RunStatus`` 의 RUNNING · DRAINING (run.py 가 이 모듈을 import 해
+여기서는 enum 을 쓰지 못한다. 두 집합이 같다는 것은 테스트가 지킨다)."""
+
+
+def participation(topology: GraphTopology) -> dict[str, Any]:
+    """The run-start snapshot a record keeps — run scope spaces and node agents (#608).
+
+    run 시작 시점의 참여 스냅샷 — ``RunRecord`` 의 ``memory_spaces`` · ``agents`` 인자.
+    서브그래프 노드는 에이전트가 아니라 들어가지 않는다.
+    """
+    return {
+        "memory_spaces": {s.alias: s.ref for s in topology.spec.memory.spaces},
+        "agents": tuple(sorted({agent_name(n.agent) for n in topology.spec.nodes if n.agent})),
+    }
 
 
 @runtime_checkable
@@ -96,6 +146,16 @@ class RunStore(Protocol):
         """drain 요청을 남긴다 — 미지의 run 이면 False."""
         ...
 
+    def liveness(self) -> tuple[int, int]:
+        """기록 수와 상태 전이 수의 합 — run 의 시작 · 상태 전이마다 오른다.
+
+        iteration 진행 (상태 불변) 으로는 오르지 않는다.
+
+        권한 레지스트리가 이 값의 변화로 판정 캐시를 버린다 (#608). 저장소를 쓰는 프로세스가
+        여럿이라 (CLI 구동 run) 쓰는 자리가 아니라 읽는 자리에서 알아챈다.
+        """
+        ...
+
 
 @dataclass
 class InMemoryRunStore:
@@ -113,11 +173,18 @@ class InMemoryRunStore:
         # 그 요청은 영원히 전달되지 않는다
         drain = record.drain or (existing.drain if existing else False)
         overrides = record.model_overrides or (existing.model_overrides if existing else {})
+        snapshot = existing if existing is not None else record
+        transitions = (
+            0 if existing is None else existing.transitions + (existing.status != record.status)
+        )
         self._records[record.run_id] = RunRecord(
             **{
                 **record.__dict__,
                 "drain": drain,
                 "model_overrides": overrides,
+                "memory_spaces": snapshot.memory_spaces,
+                "agents": snapshot.agents,
+                "transitions": transitions,
                 "updated_at": _now(),
             }
         )
@@ -140,6 +207,10 @@ class InMemoryRunStore:
             **{**existing.__dict__, "drain": True, "updated_at": _now()}
         )
         return True
+
+    def liveness(self) -> tuple[int, int]:
+        """기록 수와 상태 전이 수의 합."""
+        return len(self._records), sum(r.transitions for r in self._records.values())
 
 
 @dataclass
@@ -175,9 +246,12 @@ class SqliteRunStore:
                 self._conn.execute(
                     """
                 INSERT INTO runs (run_id, graph, mode, status, iteration,
-                                  failure_streak, drain, updated_at, model_overrides)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                  failure_streak, drain, updated_at, model_overrides,
+                                  memory_spaces, agents, transitions)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
                 ON CONFLICT(run_id) DO UPDATE SET
+                    -- 오른쪽은 갱신 전 행을 읽는다 — status 가 바뀐 갱신만 센다
+                    transitions = runs.transitions + (runs.status <> excluded.status),
                     status = excluded.status,
                     iteration = excluded.iteration,
                     failure_streak = excluded.failure_streak,
@@ -188,6 +262,7 @@ class SqliteRunStore:
                     -- resume 이 다른 모델로 이어진다
                     model_overrides = CASE WHEN excluded.model_overrides = '{}'
                         THEN runs.model_overrides ELSE excluded.model_overrides END,
+                    -- memory_spaces · agents 는 갱신하지 않는다 — run 시작 때의 스냅샷이다
                     updated_at = excluded.updated_at
                 """,
                     (
@@ -200,6 +275,8 @@ class SqliteRunStore:
                         int(record.drain),
                         _now(),
                         json.dumps(record.model_overrides),
+                        json.dumps(dict(record.memory_spaces)),
+                        json.dumps(list(record.agents)),
                     ),
                 )
         except sqlite3.Error as err:
@@ -249,6 +326,17 @@ class SqliteRunStore:
             raise _storage_error("drain request could not be recorded", run_id=run_id) from err
         return cursor.rowcount > 0
 
+    def liveness(self) -> tuple[int, int]:
+        """기록 수와 상태 전이 수의 합 — 다른 프로세스가 쓴 전이도 보인다."""
+        try:
+            with self._lock:
+                count, transitions = self._conn.execute(
+                    "SELECT COUNT(*), COALESCE(SUM(transitions), 0) FROM runs"
+                ).fetchone()
+        except sqlite3.Error as err:
+            raise _storage_error("run liveness could not be read") from err
+        return int(count), int(transitions)
+
     def close(self) -> None:
         """연결을 닫는다."""
         try:
@@ -269,15 +357,27 @@ def _record(row: sqlite3.Row) -> RunRecord:
         drain=bool(row["drain"]),
         updated_at=row["updated_at"],
         model_overrides=json.loads(row["model_overrides"]),
+        memory_spaces=json.loads(row["memory_spaces"]),
+        agents=tuple(json.loads(row["agents"])),
+        transitions=row["transitions"],
     )
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
     """있는 DB 에 빠진 컬럼을 더한다 — `CREATE TABLE IF NOT EXISTS` 는 그러지 않는다 (#254)."""
-    existing = {row["name"] for row in conn.execute("PRAGMA table_info(runs)")}
     for name, declaration in _ADDED_COLUMNS.items():
-        if name not in existing:
+        if name in _columns(conn):
+            continue
+        try:
             conn.execute(f"ALTER TABLE runs ADD COLUMN {name} {declaration}")  # noqa: S608 — 상수
+        except sqlite3.OperationalError:
+            # 같은 옛 DB 를 연 다른 프로세스가 먼저 더했으면 성공이다 — 아니면 진짜 실패
+            if name not in _columns(conn):
+                raise
+
+
+def _columns(conn: sqlite3.Connection) -> set[str]:
+    return {row["name"] for row in conn.execute("PRAGMA table_info(runs)")}
 
 
 def _now() -> str:
@@ -286,8 +386,10 @@ def _now() -> str:
 
 
 __all__ = [
+    "LIVE_STATUSES",
     "InMemoryRunStore",
     "RunRecord",
     "RunStore",
     "SqliteRunStore",
+    "participation",
 ]

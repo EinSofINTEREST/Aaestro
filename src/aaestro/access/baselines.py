@@ -10,8 +10,9 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 from urllib.parse import urlsplit
 
 from aaestro.access.model import Mode
@@ -26,23 +27,66 @@ if TYPE_CHECKING:
 SPACE_ID = re.compile(r"^(?P<scope>local|group|global):(?P<owner>[^:\s*]+):(?P<alias>[^:\s*]+)$")
 """Memory Service 의 영구 space id — ``MemorySpace.space_id`` 와 같은 모양이다.
 
-run scope 는 여기 없다: run space 는 run 이 경계이고 에이전트 신원만으로는 판정할 수 없다.
+run scope 는 여기 없다: run space 는 run 이 경계이고 선언이 아니라 run 기록으로 판정한다
+(``RUN_SPACE_ID``).
 """
+
+RUN_SPACE_ID = re.compile(r"^run:(?P<run>.+):(?P<alias>[^:\s*]+)$")
+"""run space id — ``run:<run_id>:<alias>``. 별칭은 마지막 조각이다: 재개한 service run 의 id 는
+``:`` 를 품는다 (``x:resumed``)."""
+
+DIRECT_RUN_PREFIX = "direct-"
+"""direct 태스크의 ad-hoc run id 접두사 — direct 태스크에는 run space 가 없다 (09 Scope Rule 5)."""
+
+
+class RunParticipation(Protocol):
+    """What a run record says about who may reach its run spaces (#608)."""
+
+    @property
+    def graph(self) -> str: ...
+
+    @property
+    def live(self) -> bool: ...
+
+    @property
+    def agents(self) -> tuple[str, ...]: ...
+
+    @property
+    def memory_spaces(self) -> Mapping[str, str]: ...
+
+
+class RunRecords(Protocol):
+    """Where run records are read — ``orchestrator.runstore`` 의 저장소가 이 모양이다.
+
+    access 는 orchestrator 에 의존하지 않는다 — 모양만 받는다.
+    """
+
+    def get(self, run_id: str) -> RunParticipation | None: ...
 
 
 @dataclass(frozen=True)
 class MemoryBaseline:
     """Declared memory permissions — manifest (local), group.yaml (group), global.yaml (global).
 
+    run scope space (``run:<run_id>:<alias>``) 는 선언 파일이 아니라 run 기록으로 판정한다 (#608):
+    그 run 의 시작 시점 그래프에서 이 에이전트가 노드이고 그 별칭을 선언했으면, 진행 중에는 rw,
+    끝난 뒤에는 ro (09 Scope Rule 1). 모르는 run · ``direct-`` run · 다른 그래프에 배포된 신원은
+    거부한다.
+
     Attributes:
         catalog: 선언을 읽는 곳 — 매 판정마다 읽는다.
+        runs: run 기록 — 없으면 run space 는 아무에게도 열리지 않는다.
     """
 
     catalog: Catalog
+    runs: RunRecords | None = None
 
     def allows(
         self, agent: str, target: str, mode: Mode | None, identity: Identity | None = None
     ) -> bool:
+        run_space = RUN_SPACE_ID.match(target)
+        if run_space is not None:
+            return self._run_allows(agent, run_space["run"], run_space["alias"], mode, identity)
         matched = SPACE_ID.match(target)
         if matched is None:
             return False
@@ -79,8 +123,25 @@ class MemoryBaseline:
             for s in declared.spec.memory.spaces
         )
 
+    def _run_allows(
+        self, agent: str, run_id: str, alias: str, mode: Mode | None, identity: Identity | None
+    ) -> bool:
+        if self.runs is None or run_id.startswith(DIRECT_RUN_PREFIX):
+            return False
+        record = self.runs.get(run_id)
+        if record is None or agent not in record.agents or alias not in record.memory_spaces:
+            return False
+        if identity is not None and identity.graph != record.graph:
+            # 같은 에이전트가 다른 그래프로도 배포돼 있으면 그 배포의 신원은 이 run 의 참여자가
+            # 아니다
+            return False
+        return mode is not Mode.RW or record.live
+
     def declared_for(self, agent: str) -> list[tuple[str, Mode | None]]:
-        """이 에이전트에게 선언이 주는 space 와 mode — 운영자 화면이 보여 주는 기본 권한."""
+        """이 에이전트에게 선언이 주는 space 와 mode — 운영자 화면이 보여 주는 기본 권한.
+
+        run space 는 싣지 않는다 — 선언이 아니라 run 마다 생기고 사라지는 참여다.
+        """
         manifest = _manifest(self.catalog, agent)
         if manifest is None:
             return []
@@ -328,12 +389,16 @@ def _terminated(server: McpServerSpec) -> bool:
 
 
 __all__ = [
+    "DIRECT_RUN_PREFIX",
     "PROVIDER_HOSTS",
+    "RUN_SPACE_ID",
     "SPACE_ID",
     "A2ABaseline",
     "EgressBaseline",
     "McpToolBaseline",
     "MemoryBaseline",
+    "RunParticipation",
+    "RunRecords",
     "egress_target",
     "url_target",
 ]

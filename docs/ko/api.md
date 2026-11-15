@@ -845,6 +845,11 @@ Memory Service 요청에 `{"space": "global:global:org"}` — Memory Service 는
 레지스트리 버전을 올리지 않으므로, 강제 지점은 `valid_until` 이 지난 캐시 판정을 쓰면 안 된다 —
 레지스트리에 닿지 않는 동안에도 자기 시계로 알 수 있다. 메모리 판정에는 `mode` 가 필요하다.
 
+run scope 대상 (`run:<run_id>:<alias>`, #608) 은 선언 파일이 아니라 run 기록으로 판정한다: run 이
+시작할 때의 그래프에서 에이전트가 노드였고 그 그래프가 `alias` 를 선언했으면 허용한다 — run 이 진행
+중이거나 drain 중이면 `rw`, 끝났으면 `ro`. 모르는 run · `direct-` run · 노드가 아닌 에이전트 · 다른
+그래프로 배포된 신원은 거부한다. run 의 시작 · 종료가 레지스트리 버전을 올려 캐시된 판정이 버려진다.
+
 모르거나 폐기된 신원은 에러가 아니다: `200` 에
 `{"agent": null, "decision": "deny", "decided_by": "unknown-identity"}` 로 답해, 강제 지점이 다른
 답과 똑같이 거부를 캐시할 수 있게 한다.

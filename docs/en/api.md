@@ -893,6 +893,13 @@ Expiry does not move the registry version, so an enforcement point must not use 
 decision past `valid_until` — its own clock tells it when, even while the registry is
 unreachable. Memory decisions require `mode`.
 
+A run-scope target (`run:<run_id>:<alias>`, #608) is decided from the run record, not from a
+declaration file: it is allowed when the agent was a node of the run's graph at run start and that
+graph declared `alias` — `rw` while the run is running or draining, `ro` once it has ended. An
+unknown run, a `direct-` run, an agent that is not a node, and an identity deployed for another
+graph are denied. A run starting or ending moves the registry version, so a cached decision is
+dropped.
+
 An unknown or revoked identity is not an error: it is answered `200` with
 `{"agent": null, "decision": "deny", "decided_by": "unknown-identity"}`, so the enforcement
 point can cache the refusal like any other answer.
