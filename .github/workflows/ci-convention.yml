@@ -37,6 +37,14 @@ jobs:
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
         run: |
+          set -euo pipefail
+          # 프로세스 치환은 gh 실패를 삼킨다 — 변수로 받아 실패 · 빈 목록을 드러낸다 (#542)
+          msgs=$(gh api "repos/$REPO/pulls/$PR/commits" --paginate \
+                   --jq '.[].commit.message | split("\n")[0]')
+          if [ -z "$msgs" ]; then
+            echo "::error::PR 커밋 목록을 가져오지 못했거나 비어 있습니다"
+            exit 1
+          fi
           fail=0
           while IFS= read -r msg; do
             # merge 커밋은 검사 제외
@@ -45,8 +53,7 @@ jobs:
               echo "::error::커밋 메시지 컨벤션 위반: '$msg' — '[카테고리]: 한국어 요약' 형식이어야 합니다 (07-code-style.md)"
               fail=1
             fi
-          done < <(gh api "repos/$REPO/pulls/$PR/commits" --paginate \
-                     --jq '.[].commit.message | split("\n")[0]')
+          done <<< "$msgs"
           exit "$fail"
 
   linked-issue:
