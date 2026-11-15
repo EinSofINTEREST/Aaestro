@@ -192,7 +192,7 @@ def open_directory(name: str | Path, *, dir_fd: int | None = None) -> int:
     return os.open(name, _DIR_FLAGS, dir_fd=dir_fd)
 
 
-def follow_link(base: Path, link: Path) -> Path:
+def follow_link(base: Path, link: Path, *, scope: str = "skill") -> Path:
     """Resolve a link one component at a time, never leaving ``base``.
 
     링크를 **구성 요소 하나씩** 해석합니다. 최종 경로만 보면 밖으로 나갔다가 돌아오는
@@ -205,6 +205,7 @@ def follow_link(base: Path, link: Path) -> Path:
     Args:
         base: The real path of the skill root.
         link: The real location of the link itself (inside ``base``).
+        scope: What ``base`` is, for the message (``link leaves the {scope} root``).
 
     Returns:
         The real path the link names — a regular file or directory inside ``base``.
@@ -225,7 +226,7 @@ def follow_link(base: Path, link: Path) -> Path:
         if part == "..":
             current = current.parent
             if not current.is_relative_to(base):
-                raise SkillViolation("files", f"link leaves the skill root: {label}")
+                raise SkillViolation("files", f"link leaves the {scope} root: {label}")
             continue
         candidate = current / part
         if candidate.is_symlink():
@@ -245,6 +246,35 @@ def follow_link(base: Path, link: Path) -> Path:
     if not (stat.S_ISREG(mode) or stat.S_ISDIR(mode)):
         raise SkillViolation("files", f"link names a special file: {label}")
     return current
+
+
+def check_links(root: Path, *, scope: str) -> None:
+    """Reject links under ``root`` that leave it — the skill rule, for a whole module tree.
+
+    모듈 트리 전체의 링크를 :func:`follow_link` 와 같은 규칙으로 본다 (#408). skill 트리와 달리
+    크기 · 개수 · 하드링크 · 이름 규칙은 적용하지 않는다 — 링크로 루트 밖에 닿는 것만 막는다.
+    링크를 따라가지 않고, 파일을 열지 않는다.
+
+    Raises:
+        SkillViolation: a link is absolute, escapes, dangles, loops, or names a special file.
+        OSError: a directory under ``root`` cannot be read.
+    """
+    base = Path(os.path.realpath(root))
+    directory_links: list[tuple[Path, Path]] = []
+
+    def fail(err: OSError) -> None:
+        raise err
+
+    # os.walk 는 링크를 따라가지 않는다 (followlinks=False) — 링크 디렉토리는 dirnames 에 남는다.
+    # onerror 를 주지 않으면 읽지 못한 디렉토리를 조용히 건너뛴다
+    for directory, dirnames, filenames in os.walk(base, onerror=fail):
+        for name in (*dirnames, *filenames):
+            path = Path(directory) / name
+            if path.is_symlink():
+                target = follow_link(base, path, scope=scope)
+                if target.is_dir():
+                    directory_links.append((path, target))
+    _reject_link_cycles(base, directory_links)
 
 
 def _reject_link_cycles(base: Path, links: list[tuple[Path, Path]]) -> None:
@@ -319,6 +349,7 @@ __all__ = [
     "SkillTree",
     "SkillViolation",
     "bounded_scandir",
+    "check_links",
     "follow_link",
     "open_directory",
     "read_skill_file",

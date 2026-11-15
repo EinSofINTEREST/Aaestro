@@ -313,3 +313,64 @@ def test_groups_have_their_own_root(tmp_path):
     moved = RegistryRoots(**{**roots.__dict__, "agents": tmp_path / "elsewhere"})
 
     assert Catalog(roots=moved).roots.groups == tmp_path / "groups"
+
+
+# --- 이름의 정제 (#408) --------------------------------------------------------
+
+_CONTROL = ("\x1b", "\n", "\r")
+
+
+def _clean(text: str) -> bool:
+    return not any(ch in text for ch in _CONTROL)
+
+
+def test_a_module_version_dir_with_control_characters_is_reported_clean(workspace):
+    (workspace / "modules" / "promptsets" / "solo" / "0.1.0\x1b[31m\nINJECTED").mkdir()
+
+    listed = Catalog.under(workspace).modules("promptsets")
+
+    assert listed.items == {"solo": ("0.1.0",)}
+    assert len(listed.problems) == 1
+    problem = listed.problems[0]
+    assert _clean(problem.path)
+    assert _clean(problem.message)
+
+
+def test_a_version_dir_with_a_trailing_newline_is_not_published(workspace):
+    """``$`` 는 끝의 개행 앞에서도 맞는다 — ``0.1.0\\n`` 이 ``0.1.0`` 으로 게시되면 안 된다."""
+    (workspace / "modules" / "promptsets" / "solo" / "0.1.0\n").mkdir()
+
+    listed = Catalog.under(workspace).modules("promptsets")
+
+    assert listed.items == {"solo": ("0.1.0",)}
+    assert all(_clean(p.path) for p in listed.problems)
+
+
+def test_an_agent_dir_with_control_characters_is_reported_clean(workspace):
+    write(workspace / "agents" / "bad\x1b[31m" / "manifest.yaml", agent("bad"))
+
+    listed = Catalog.under(workspace).agents()
+
+    assert listed.problems
+    assert all(_clean(p.path) and _clean(p.message) for p in listed.problems)
+
+
+def test_an_unknown_module_lookup_sanitizes_the_name(workspace):
+    with pytest.raises(AaestroError) as exc_info:
+        Catalog.under(workspace).module("promptsets", "solo\x1b[31m\nX", "0.1.0")
+
+    error = exc_info.value
+    assert _clean(error.message)
+    assert all(_clean(str(value)) for value in error.details.values())
+
+
+def test_a_module_with_an_outside_link_is_not_published(workspace, tmp_path):
+    outside = tmp_path / "outside.j2"
+    outside.write_text("outside\n", encoding="utf-8")
+    module = workspace / "modules" / "promptsets" / "solo" / "0.1.0"
+    (module / "t.j2").symlink_to(outside)
+
+    listed = Catalog.under(workspace).modules("promptsets")
+
+    assert listed.items == {}
+    assert [p.code for p in listed.problems] == [ErrorCode.MOD_003]

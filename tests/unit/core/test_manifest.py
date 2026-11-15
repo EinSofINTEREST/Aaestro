@@ -599,6 +599,7 @@ def test_parse_module_ref_valid(ref, expected):
         "skillsets/x@main",
         "unknown/x@1.0.0",
         "skillsets/X@1.0.0",
+        "skillsets/x@1.0.0\n",  # ``$`` 는 끝의 개행 앞에서도 맞는다 (#408)
     ],
 )
 def test_parse_module_ref_invalid(ref):

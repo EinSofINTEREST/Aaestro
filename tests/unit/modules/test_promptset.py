@@ -6,7 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from aaestro.core.errors import AaestroError
-from aaestro.modules.promptset import PromptsetLoader, VariableSpec
+from aaestro.modules.promptset import PromptsetLoader, TemplateSpec, VariableSpec
 from aaestro.modules.registry import ModuleRegistry
 from tests.fixtures.registry import fixture_registry
 
@@ -267,3 +267,124 @@ def test_required_with_null_default_loads_and_null_is_not_used_when_missing(tmp_
     loaded = loader.load("promptsets/custom@0.1.0")
     with pytest.raises(AaestroError, match="missing required template variable"):
         loaded.render("t")
+
+
+# --- 템플릿 경로는 모듈 루트 안에서 닫힌다 (#408) ----------------------------------
+
+
+def _write_escaping_promptset(tmp_path, file: str):
+    module = tmp_path / "repo" / "modules" / "promptsets" / "escape" / "0.1.0"
+    module.mkdir(parents=True)
+    (module / "promptset.yaml").write_text(
+        "apiVersion: aaestro/v1\nkind: Promptset\n"
+        "metadata: {name: escape, version: 0.1.0}\n"
+        f"spec:\n  templates:\n    default: {{file: '{file}'}}\n",
+        encoding="utf-8",
+    )
+    return PromptsetLoader(ModuleRegistry.under(tmp_path / "repo"))
+
+
+@pytest.mark.parametrize("kind", ["absolute", "dotdot"])
+def test_template_file_outside_module_root_raises_mod_003(tmp_path, kind):
+    outside = tmp_path / "outside.j2"
+    outside.write_text("LEAKED from outside the module root\n", encoding="utf-8")
+    file = str(outside) if kind == "absolute" else "../../../../../outside.j2"
+    loader = _write_escaping_promptset(tmp_path, file)
+
+    with pytest.raises(AaestroError) as exc_info:
+        loader.load("promptsets/escape@0.1.0")
+
+    error = exc_info.value
+    assert error.code == "MOD_003"
+    assert "outside" not in str(error) + str(error.details), "선언의 값이 에러에 실렸다"
+
+
+def test_template_file_with_inner_dotdot_stays_allowed(tmp_path):
+    loader = _write_escaping_promptset(tmp_path, "templates/../t.j2")
+    module = tmp_path / "repo" / "modules" / "promptsets" / "escape" / "0.1.0"
+    (module / "templates").mkdir()
+    (module / "t.j2").write_text("hello\n", encoding="utf-8")
+
+    assert loader.load("promptsets/escape@0.1.0").template_names == {"default"}
+
+
+# --- 문자열이 아니라 실제 경로가 루트 안이어야 한다 (#408 리뷰) ----------------------
+# normpath 는 ``link/..`` 를 글자로 접지만 OS 는 링크를 먼저 따라간 뒤 ``..`` 를 적용한다
+
+_ESCAPE_ROOT = ("repo", "modules", "promptsets", "escape", "0.1.0")
+
+
+def _escape_module(tmp_path):
+    return tmp_path.joinpath(*_ESCAPE_ROOT)
+
+
+def test_template_file_through_inner_link_and_dotdot_raises_mod_003(tmp_path):
+    loader = _write_escaping_promptset(tmp_path, "sub/link/../../secret.j2")
+    module = _escape_module(tmp_path)
+    (module / "other").mkdir()
+    (module / "sub").mkdir()
+    (module / "sub" / "link").symlink_to("../other")  # 루트 안 상대 링크 — 그 자체는 허용된다
+    (module.parent / "secret.j2").write_text("SECRET outside the version root\n", "utf-8")
+
+    with pytest.raises(AaestroError) as exc_info:
+        loader.load("promptsets/escape@0.1.0")
+
+    assert exc_info.value.code == "MOD_003"
+
+
+def test_template_file_through_deep_link_chain_raises_mod_003(tmp_path):
+    module = _escape_module(tmp_path)
+    depth = len(module.parts) + 2  # ``..`` 가 파일시스템 루트까지 닿게
+    outside = tmp_path / "outside.j2"
+    outside.write_text("SECRET outside the version root\n", encoding="utf-8")
+    file = (
+        "/".join(["d"] * depth)
+        + "/link/"
+        + "/".join([".."] * (depth + 1))
+        + "/"
+        + str(outside).lstrip("/")
+    )
+    loader = _write_escaping_promptset(tmp_path, file)
+    deep = module.joinpath(*["d"] * depth)
+    deep.mkdir(parents=True)
+    (module / "top").mkdir()
+    (deep / "link").symlink_to("/".join([".."] * depth) + "/top")
+
+    with pytest.raises(AaestroError) as exc_info:
+        loader.load("promptsets/escape@0.1.0")
+
+    assert exc_info.value.code == "MOD_003"
+
+
+def test_render_locale_leaving_module_root_raises_mod_004(tmp_path):
+    """호출자 locale 은 경로 조각이 된다 — 렌더 직전에도 실제 경로를 본다."""
+    loader = _write_escaping_promptset(tmp_path, "t.j2")
+    module = _escape_module(tmp_path)
+    (module / "t.j2").write_text("inside\n", encoding="utf-8")
+    (module / "locales").mkdir()
+    # locales/../../.. → promptsets/ (버전 디렉토리 밖)
+    (module.parent.parent / "t.j2").write_text("SECRET outside the version root\n", "utf-8")
+    promptset = loader.load("promptsets/escape@0.1.0")
+
+    with pytest.raises(AaestroError) as exc_info:
+        promptset.render("default", locale="../../..")
+
+    assert exc_info.value.code == "MOD_004"
+
+
+def test_template_paths_resolving_inside_root_stay_allowed(tmp_path):
+    loader = _write_escaping_promptset(tmp_path, "templates/../templates/alias.j2")
+    module = _escape_module(tmp_path)
+    (module / "templates").mkdir()
+    (module / "templates" / "x.j2").write_text("hello\n", encoding="utf-8")
+    (module / "templates" / "alias.j2").symlink_to("x.j2")  # 루트 안 상대 링크
+
+    promptset = loader.load("promptsets/escape@0.1.0")
+
+    assert promptset.render("default") == "hello\n"
+
+
+@pytest.mark.parametrize("file", [".", "", "templates/..", "templates/../", "./"])
+def test_template_file_that_names_no_file_is_rejected_by_schema(file):
+    with pytest.raises(ValidationError):
+        TemplateSpec(file=file)
