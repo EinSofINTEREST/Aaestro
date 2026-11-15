@@ -471,7 +471,7 @@ async def execute(self, task: TaskRequest) -> TaskResult:
    `MAX_TOOL_RESULT_CHARS` (20000자) 를 넘으면 `defang` 앞에서 자르고 끝에 평문
    `(truncated: original size N characters, limit M)` 을 붙인다. 프레임워크 표기가 아니다 (`[aaestro]`
    머리말 없음 — 데이터 자리의 글). 상한은 `defang` 전 직렬화 길이 기준이라 무력화로 늘어난 만큼
-   넘을 수 있다. 잘린 결과의 스트림 `ToolResultEvent` 값은 객체가 아니라 같은 문자열이다. WARN (`tool result truncated` — `agent`, `task_id`,
+   넘을 수 있다. 잘린 결과의 스트림 `ToolResultEvent` 값은 같은 문자열이다 — MCP 결과는 `{"content": <그 문자열>, "is_error"}` 모양을 유지한다. WARN (`tool result truncated` — `agent`, `task_id`,
    `tool`, `original_chars`, `limit`, 값은 싣지 않는다) 을 남긴다. 한 결과가 컨텍스트와 비용을 통째로
    차지하지 않게 하는 상한이다 — 큰 산출물은 artifact 참조로 (Output Discipline)
 

@@ -222,7 +222,7 @@ Answer it.
   A2A 응답 · `memory_search` 결과도 같습니다). 직렬화한 본문이 20000자 (`MAX_TOOL_RESULT_CHARS`) 를
   넘으면 표기 무력화 **앞에서** 자르고 평문 `(truncated: original size N characters, limit M)` 을
   붙입니다 — 프레임워크 표기가 아니라 `[aaestro]` 머리말이 없습니다. 상한은 무력화 전 길이 기준이라
-  무력화로 늘어난 만큼 넘을 수 있습니다. 스트림의 `tool_result` 이벤트도 같은 문자열을 싣고,
+  무력화로 늘어난 만큼 넘을 수 있습니다. 스트림의 `tool_result` 이벤트도 같은 문자열을 싣고 (MCP 결과는 `{"content": <그 문자열>, "is_error"}` 모양을 유지),
   에이전트는 WARN (`tool result truncated` — 크기만, 값은 싣지 않음) 을 남깁니다.
 - **MCP 서버가 도구에 붙인 설명도 신뢰하지 않는 입력입니다.** 유니코드 범주 `C*` 문자 (폭 없는 문자 ·
   bidi 제어 포함, 탭 · 개행 제외) 와 줄 · 문단 구분자를 공백으로 바꾸고,
