@@ -766,6 +766,9 @@ Known limits:
   (`https://gateway.example.com/api`) is.
 - **Response `content` must be text or null.** A response whose `content` is an array of parts is
   `LLM_004`.
+- **A response cut off at the output token limit fails with `LLM_004`** (`finish_reason: length`;
+  for `anthropic`, `stop_reason: max_tokens`). Its text is not merged and its tool calls are not
+  run; a `model output truncated at the token limit` warning is logged.
 - **Only the headers a model call needs reach the provider** — `content-type`, `accept`,
   `accept-encoding`, `user-agent` (plus `anthropic-version` / `anthropic-beta` for `anthropic`).
   Organization, project or alternative key headers set inside the agent are dropped by the proxy,

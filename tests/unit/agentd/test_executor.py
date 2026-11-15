@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import replace
 
 import pytest
 
@@ -97,6 +98,95 @@ async def test_tool_results_feed_the_next_prompt():
     assert isinstance(assistant, AssistantTurn)
     assert [c.id for c in assistant.tool_calls] == ["c0"]
     assert results == ToolTurn(outcomes=(ToolOutcome(call_id="c0", content="found"),))
+
+
+async def test_truncated_final_answer_fails_with_llm_004():
+    executor, _, _ = make_executor([replace(text("half an ans"), truncated=True)])
+
+    result = await executor.execute(make_task())
+
+    assert result.status is TaskStatus.FAILED
+    assert result.error is not None
+    assert result.error.code == "LLM_004"
+    assert result.error.retryable is False
+
+
+async def test_truncated_tool_call_is_not_executed():
+    tools = FakeTools().script("search", result="found")
+    executor, _, _ = make_executor([replace(calls("search"), truncated=True)], tools)
+
+    result = await executor.execute(make_task())
+
+    assert result.status is TaskStatus.FAILED
+    assert result.error is not None
+    assert result.error.code == "LLM_004"
+    assert tools.calls == []
+
+
+async def test_truncated_response_logs_one_warning():
+    from structlog.testing import capture_logs
+
+    executor, _, _ = make_executor([replace(text("half"), truncated=True)])
+
+    with capture_logs() as logs:
+        await executor.execute(make_task())
+
+    warnings = [e for e in logs if e["event"] == "model output truncated at the token limit"]
+    assert len(warnings) == 1
+    assert {"agent", "task_id", "model", "output_tokens"} <= warnings[0].keys()
+
+
+async def test_truncated_response_fails_the_stream_too():
+    tools = FakeTools().script("search", result="found")
+    executor, _, _ = make_executor([replace(calls("search"), truncated=True)], tools)
+
+    events = [event async for event in executor.stream(make_task())]
+
+    assert isinstance(events[-1], ErrorEvent)
+    assert events[-1].error.code == "LLM_004"
+    assert tools.calls == []
+
+
+async def test_adapter_truncation_with_malformed_tool_call_reaches_the_executor():
+    """어댑터 → 실행기: 깨진 호출이 섞인 잘린 응답도 WARN 1건 + LLM_004 로 끝난다."""
+    import httpx
+    from structlog.testing import capture_logs
+
+    from aaestro.agentd.providers.openai_compat import OpenAICompatModel
+    from aaestro.core.manifest import ModelConfig
+
+    body = {
+        "choices": [
+            {
+                "message": {"role": "assistant", "content": None, "tool_calls": [{"id": "c1"}]},
+                "finish_reason": "length",
+            }
+        ],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 2},
+    }
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json=body))
+    adapter = OpenAICompatModel(
+        config=ModelConfig(provider="openai-compat", name="m"),
+        agent="researcher",
+        base_url="http://egress:8081/openai-compat",
+        credential="cred-researcher",
+        client=httpx.AsyncClient(transport=transport),
+    )
+    tools = FakeTools().script("search", result="found")
+    executor = Executor(
+        agent="researcher",
+        model=adapter,
+        tools=tools,
+        render=lambda task: "prompt",
+    )
+
+    with capture_logs() as logs:
+        result = await executor.execute(make_task())
+
+    assert result.error is not None
+    assert result.error.code == "LLM_004"
+    assert tools.calls == []
+    assert [e["event"] for e in logs].count("model output truncated at the token limit") == 1
 
 
 # --- 상한과 타임아웃 --------------------------------------------------------
