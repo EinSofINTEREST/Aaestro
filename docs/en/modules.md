@@ -49,6 +49,7 @@ field.
 | **Skillset** | Python tools (capabilities) | `modules/skillsets/{name}/{version}/` |
 | **Promptset** | Jinja2 templates + variable schemas | `modules/promptsets/{name}/{version}/` |
 | **Memoryset** | Memory policy — scope, index, retention, recall | `modules/memorysets/{name}/{version}/` |
+| **Decisionset** | Typed decision questions — wording, options, probability bands | `modules/decisionsets/{name}/{version}/` |
 | **Skillpack** | Agent Skills directories (`SKILL.md` + files), unmodified | `modules/skillpacks/{name}/{version}/` |
 | **Agent** | Contract — model, modules, protocols, resources | `agents/{name}/manifest.yaml` |
 | **Graph** | Goal — nodes, edges, connections, mode | `graphs/{name}.yaml` |
@@ -858,6 +859,30 @@ The check is named `model_providers`; its findings carry code `VAL_002`, and the
 
 `aaestro validate` and `aaestro deploy` print a `models` entry showing, per node, the resolved
 model layering.
+
+## Decisionsets
+
+A decisionset declares the questions put to a decision model: wording (`ask`), the value set
+(`levels` for `rating`, `options` for `choice`) and the probability bands. It is loaded and
+validated by the control plane without calling any provider.
+
+```
+modules/decisionsets/research-triage/0.1.0/
+├── decisionset.yaml
+└── calibration/<question>.jsonl      # optional labeled sets, one {"state": {...}, "label": ...} per line
+```
+
+- Question shape is the `Question` contract: `kind` is `predicate`, `rating` or `choice`; at most
+  10 options; `act_level` must be one of the levels; `reject_at` must be below `act_at`.
+  Violations are `MOD_003`.
+- A calibration set must belong to a declared question, its `state` keys must equal the
+  question's `state` names, and `label` must be a boolean (`predicate`) or a declared level /
+  option. Any violation is `MOD_003` and the version is not published. Rejection messages never
+  carry the offending values. The 50-row minimum is checked by `aaestro decision calibrate`,
+  not at load.
+- The question-level `bands` merge field by field over `defaults.bands` (`bands: {act_at: 0.7}` keeps the
+  default `reject_at`); a merged result with `act_at <= reject_at` is `MOD_003`.
+- Not yet wired: `spec.decision` in agent manifests and graph decision nodes.
 
 ## Groups
 

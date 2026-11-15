@@ -81,6 +81,7 @@ NOT_FORBIDDEN = {
     "RunView": "control plane 이 보고하는 응답 모델",
     # 로더가 만든 내부 값 — 선언 문서가 아니다
     "LoadedMemoryset": "로더 산출물",
+    "LoadedDecisionset": "로더 산출물",
     "LoadedPromptset": "로더 산출물",
     "LoadedSkill": "로더 산출물 (임의 타입 포함)",
     "LoadedSkillset": "로더 산출물",

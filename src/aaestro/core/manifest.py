@@ -84,7 +84,7 @@ NAME_PATTERN = _NAME_PATTERN
 들어갈 수 없다는 것이 이 규칙의 보안상 의미다 (#273)."""
 _SEMVER_PATTERN = re.compile(r"^\d+\.\d+\.\d+$")
 _MODULE_REF_PATTERN = re.compile(
-    r"^(?P<type>skillsets|promptsets|memorysets|skillpacks|agents|graphs)/"
+    r"^(?P<type>skillsets|promptsets|memorysets|decisionsets|skillpacks|agents|graphs)/"
     r"(?P<name>[a-z0-9]+(?:-[a-z0-9]+)*)@(?P<version>\d+\.\d+\.\d+)$"
 )
 _RESOURCE_CPU_PATTERN = re.compile(r"^\d+(?:\.\d+)?$")

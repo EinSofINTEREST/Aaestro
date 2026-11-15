@@ -43,6 +43,7 @@ from aaestro.core.errors import (
 )
 from aaestro.core.manifest import AgentManifest, GroupManifest
 from aaestro.core.topology import GraphTopology
+from aaestro.modules.decisionset import DecisionsetLoader, DecisionsetManifest
 from aaestro.modules.memoryset import MemorysetLoader, MemorysetManifest
 from aaestro.modules.promptset import PromptsetLoader, PromptsetManifest
 from aaestro.modules.registry import ModuleRegistry
@@ -504,6 +505,7 @@ MODULE_KINDS: dict[type[BaseModel], tuple[str, Any]] = {
     PromptsetManifest: ("promptsets", PromptsetLoader),
     MemorysetManifest: ("memorysets", MemorysetLoader),
     SkillpackManifest: ("skillpacks", SkillpackLoader),
+    DecisionsetManifest: ("decisionsets", DecisionsetLoader),
 }
 
 Entry = Callable[[], Any]

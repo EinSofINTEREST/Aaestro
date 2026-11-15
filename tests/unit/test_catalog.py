@@ -177,7 +177,7 @@ def test_only_module_types_are_browsable_as_modules(workspace, module_type):
 
 def test_module_types_are_the_read_only_ones():
     """04 Registry 2 — 전부 읽기 전용. skillpack 은 #373 에서 더해졌다."""
-    assert MODULE_TYPES == ("skillsets", "promptsets", "memorysets", "skillpacks")
+    assert MODULE_TYPES == ("skillsets", "promptsets", "memorysets", "skillpacks", "decisionsets")
 
 
 # --- 설정 루트 -----------------------------------------------------------------

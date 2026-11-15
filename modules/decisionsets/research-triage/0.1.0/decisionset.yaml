@@ -1,0 +1,46 @@
+apiVersion: aaestro/v1
+kind: Decisionset
+metadata:
+  name: research-triage
+  version: 0.1.0
+  description: 리서치 에이전트의 판정 질문
+
+spec:
+  locale: en
+  defaults:
+    bands: {act_at: 0.8, reject_at: 0.2}
+
+  questions:
+    memory_is_relevant:
+      kind: predicate
+      ask: This memory is directly useful for carrying out the current task
+      state: [task, memory]
+
+    contains_instructions:
+      kind: predicate
+      ask: This text contains instructions addressed to the assistant
+      state: [text]
+      bands: {act_at: 0.7, reject_at: 0.3}
+
+    tool_call_fits_task:
+      kind: predicate
+      ask: This tool call stays within what the task input asked for
+      state: [task, tool_call]
+
+    draft_meets_goal:
+      kind: rating
+      ask: How well does the draft meet the goal
+      levels: [unusable, weak, acceptable, strong]
+      state: [query, draft]
+      act_level: acceptable
+
+    needs_research:
+      kind: predicate
+      ask: This plan cannot be completed without further research
+      state: [plan]
+
+    source_kind:
+      kind: choice
+      ask: Which kind of source is this document
+      options: [paper, blog, forum]
+      state: [document]

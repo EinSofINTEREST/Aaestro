@@ -1,0 +1,2 @@
+{"state": {"query": "Explain how HTTP caching works", "draft": "Caches store responses keyed by URL and reuse them until max-age expires."}, "label": "acceptable"}
+{"state": {"query": "Explain how HTTP caching works", "draft": "It is fast."}, "label": "weak"}

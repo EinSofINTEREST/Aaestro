@@ -1,4 +1,4 @@
-"""Module system — skillsets, promptsets, memorysets, skillpacks, and the registry.
+"""Module system — skillsets, promptsets, memorysets, decisionsets, skillpacks, and the registry.
 
 모듈 시스템. 솔루션은 프레임워크 코드 수정이 아니라 이 모듈들의 조립으로 구성된다.
 """
@@ -7,6 +7,11 @@ from aaestro.modules.compatibility import (
     check_promptset_templates,
     check_skillset_env,
     check_tool_namespaces,
+)
+from aaestro.modules.decisionset import (
+    DecisionsetLoader,
+    DecisionsetManifest,
+    LoadedDecisionset,
 )
 from aaestro.modules.memoryset import (
     LoadedMemoryset,
@@ -42,6 +47,9 @@ from aaestro.modules.skillset import (
 
 __all__ = [
     "DEFAULT_TEMPLATE",
+    "DecisionsetLoader",
+    "DecisionsetManifest",
+    "LoadedDecisionset",
     "LoadedMemoryset",
     "LoadedPromptset",
     "LoadedSkill",

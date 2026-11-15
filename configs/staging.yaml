@@ -35,6 +35,7 @@ registry:
     promptsets: ./modules/promptsets
     memorysets: ./modules/memorysets
     skillpacks: ./modules/skillpacks
+    decisionsets: ./modules/decisionsets
     agents: ./agents
     graphs: ./graphs
     groups: ./groups
