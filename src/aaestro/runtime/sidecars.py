@@ -240,6 +240,9 @@ class McpSidecars:
         reuse: bool,
     ) -> None:
         kwargs = sidecar_kwargs(agent, server, env, network)
+        # 에이전트와 같은 규칙 — 기록한 daemon 기본 runtime 을 명시하고 재사용 대조에 쓴다 (#527)
+        if runtime := await asyncio.to_thread(self.client.default_runtime):
+            kwargs["runtime"] = runtime
         image = kwargs["image"]
         existing = await asyncio.to_thread(self.client.find, kwargs["name"])
         if existing is not None:

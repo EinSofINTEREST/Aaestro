@@ -12,9 +12,11 @@ RT_004(이미지) / RT_001(기동) 로 옮기므로, 여기서 또 감싸면 이
 
 from __future__ import annotations
 
+import threading
 from typing import TYPE_CHECKING, Any
 
 import docker
+import structlog
 from docker.errors import BuildError, ImageNotFound, NotFound
 from docker.utils import parse_repository_tag
 
@@ -24,6 +26,8 @@ if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
 
     from docker import DockerClient as SdkHandle
+
+_log = structlog.get_logger(__name__)
 
 BRIDGE = "bridge"
 
@@ -46,6 +50,7 @@ HARDENING_FIELDS = (
     "Devices",
     "DeviceRequests",
     "DeviceCgroupRules",
+    "Runtime",
 )
 """`HostConfig` 에서 읽는 경화 필드 — `engine.hardening_gaps` 가 같은 이름으로 대조한다."""
 
@@ -101,6 +106,41 @@ class SdkDockerClient:
     def __init__(self, handle: SdkHandle | None = None) -> None:
         # 환경변수(DOCKER_HOST 등)로 데몬을 찾는다 — 소켓 경로를 하드코딩하지 않는다
         self._sdk = handle or docker.from_env()
+        self._default_runtime: str | None = None
+        self._runtime_recorded = False
+        self._runtime_failing = False
+        self._runtime_lock = threading.Lock()
+
+    def default_runtime(self) -> str | None:
+        """daemon 기본 OCI runtime — 읽은 값은 캐시해 계속 쓴다 (#527).
+
+        예외는 캐시하지 않는다: 일시 장애 하나가 격리 대조를 영구히 끄지 않게 다음 호출에서 다시
+        읽는다. WARN 은 실패가 시작될 때 한 번만 남긴다. 성공했는데 값이 비면 (보고하지 않는
+        daemon) 그것도 캐시한다.
+        """
+        # 확인 · 조회 · 저장을 묶는다 — 동시 호출이 먼저 기록된 값을 덮어쓰면 기대값이 흔들린다
+        with self._runtime_lock:
+            return self._read_default_runtime()
+
+    def _read_default_runtime(self) -> str | None:
+        if self._runtime_recorded:
+            return self._default_runtime
+        try:
+            recorded = (self._sdk.info() or {}).get("DefaultRuntime")
+        except Exception as err:  # noqa: BLE001 — 대조가 꺼진 채 이 호출만 지나간다; 로그로 드러낸다
+            if not self._runtime_failing:
+                _log.warning(
+                    "daemon default runtime unavailable, runtime check disabled",
+                    error=type(err).__name__,
+                )
+                self._runtime_failing = True
+            return None
+        self._runtime_failing = False
+        self._default_runtime = str(recorded) if recorded else None
+        if self._default_runtime is None:
+            _log.warning("daemon reports no default runtime, runtime check disabled")
+        self._runtime_recorded = True
+        return self._default_runtime
 
     def ensure_image(self, image: str) -> None:
         """이미지를 확보한다 — 없으면 pull.

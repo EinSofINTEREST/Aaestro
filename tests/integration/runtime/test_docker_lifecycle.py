@@ -28,6 +28,7 @@ from aaestro.runtime.docker.errors import ImageMissingError, NetworkIsolationErr
 from aaestro.runtime.health import HealthMonitor
 from aaestro.runtime.lifecycle import AgentLifecycle, AgentState
 from aaestro.runtime.spec import build_container_spec
+from tests.fixtures.builders import make_manifest
 
 pytestmark = pytest.mark.integration
 
@@ -100,6 +101,9 @@ class CliDockerClient:
         raw = docker("inspect", "-f", "{{json .NetworkSettings.Networks}}", container_id)
         return tuple(json.loads(raw))
 
+    def default_runtime(self) -> str | None:
+        return docker("info", "-f", "{{.DefaultRuntime}}").strip() or None
+
     def hardening_of(self, container_id: str) -> dict[str, Any]:
         raw = docker(
             "inspect",
@@ -153,6 +157,8 @@ class CliDockerClient:
         ]
         if kwargs.get("init"):
             args.append("--init")
+        if kwargs.get("runtime"):
+            args.extend(["--runtime", kwargs["runtime"]])
         for capability in kwargs.get("cap_drop", ()):
             args.append(f"--cap-drop={capability}")
         for path, options in kwargs.get("tmpfs", {}).items():
@@ -422,3 +428,16 @@ async def test_a_stop_right_after_start_ends_on_sigterm_not_the_grace(engine):
     assert (state["Running"], state["Status"]) == (False, "exited"), state
     assert state["ExitCode"] in GRACEFUL_EXIT_CODES, state
     assert state["OOMKilled"] is False, state
+
+
+# Docker 없이 도는 참조 클라이언트 배선 확인 — 단위 테스트에 두면 이 모듈 import 가
+# daemon 을 조회한다 (#527)
+def test_the_cli_reference_client_passes_the_runtime_to_docker_create(monkeypatch):
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(f"{__name__}.docker", lambda *args, **_: calls.append(args) or "cid")
+    kwargs = {**build_container_spec(make_manifest()).to_docker_kwargs(), "runtime": "runsc"}
+
+    CliDockerClient().create(**kwargs)
+
+    args = calls[0]
+    assert args[args.index("--runtime") + 1] == "runsc"

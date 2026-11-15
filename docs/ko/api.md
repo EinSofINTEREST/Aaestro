@@ -1045,7 +1045,7 @@ manifest 가 `env_allowlist` 에 올려도 실 키는 프록시에만 있다. �
   `security_opt` — 항목을 더하거나 뒤에서 덮으면 거절, PID 1 의 init 프로세스(`Init`))이 그대로이며 그것을 무력화하는 설정
   (privileged, 추가 capability, 호스트 PID · IPC · user · 네트워크 · UTS · cgroup 네임스페이스,
   비어 있는 `MaskedPaths` 또는 `ReadonlyPaths`, 기동 스펙이 걸지 않은 `Devices` · `DeviceRequests` ·
-  `DeviceCgroupRules`)이 없고, 마운트가 기동 스펙이 건 것(읽기 전용 선언 마운트, 선언한 볼륨,
+  `DeviceCgroupRules`)이 없고, OCI runtime(`Runtime`)이 기동 때 기록한 daemon 기본값(`docker info` 의 `DefaultRuntime`, 생성 인자에도 명시)과 같으며(다르면 거절, 기본값을 읽지 못하면 대조를 끄고 WARN 을 남긴다), 마운트가 기동 스펙이 건 것(읽기 전용 선언 마운트, 선언한 볼륨,
   `tmpfs` 경로)과 정확히 같을 때만 재부착한다. 스펙이 선언하지 않은 바인드(호스트 경로,
   `/var/run/docker.sock`), 쓰기 가능으로 바뀌거나 다른 곳을 가리키는 선언 마운트, 더하거나 빠진 `tmpfs`
   는 거절된다 (`Mounts` / `Tmpfs` — 사유에는 필드 이름만 싣고 경로는 싣지 않는다). 경로는 정규화해

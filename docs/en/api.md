@@ -1108,7 +1108,7 @@ outside address fails. The proxy is the only way out.
   effective value per key equals the spec's — adding an entry or overriding one later is refused,
   and an init process as PID 1 (`Init`) and nothing that voids it (privileged, added capabilities, host PID / IPC / user / network /
   UTS / cgroup namespaces, an empty `MaskedPaths` or `ReadonlyPaths`, and `Devices`,
-  `DeviceRequests` or `DeviceCgroupRules` the start spec did not set). Its mounts must be exactly
+  `DeviceRequests` or `DeviceCgroupRules` the start spec did not set). The OCI runtime (`Runtime`) must be the daemon default recorded at start (`docker info` `DefaultRuntime`, named in the create arguments too); a different one is refused, and if the default cannot be read the check is off and a warning is logged. Its mounts must be exactly
   the ones the start spec sets: the read-only declaration mounts, the declared volumes and the
   `tmpfs` paths. A bind the spec did not declare (a host path, `/var/run/docker.sock`), a declared
   mount made writable or pointed elsewhere, and an extra or missing `tmpfs` are refused (`Mounts` /
