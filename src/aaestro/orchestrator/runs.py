@@ -21,7 +21,7 @@ from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 from aaestro.core.topology import GraphMode
 from aaestro.orchestrator.models import with_recorded_overrides
 from aaestro.orchestrator.run import RunStatus
-from aaestro.orchestrator.runstore import RunRecord
+from aaestro.orchestrator.runstore import RunRecord, participation
 from aaestro.resilience import cancel_all_and_wait
 from aaestro.runtime.deployments import DeploymentStatus
 
@@ -262,6 +262,8 @@ class RunService:
                 status=str(RunStatus.RUNNING),
                 updated_at=_now(),
                 model_overrides={k: dict(v) for k, v in (model_overrides or {}).items()},
+                # 저장소는 처음 기록에서만 받는다 — resume 의 재공지가 현재 그래프로 덮지 않는다
+                **participation(topology),
             )
         )
 

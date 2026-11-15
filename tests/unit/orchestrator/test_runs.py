@@ -573,3 +573,25 @@ async def test_close_keeps_logging_when_the_store_lookup_fails(parts, monkeypatc
     assert sorted(e["run_id"] for e in failed) == ["bad-1", "bad-2"]
     assert all(e["graph"] is None for e in failed)
     assert submitter.stopped
+
+
+async def test_a_submitted_mission_records_the_participation_snapshot_first(parts):
+    """제출의 첫 기록이 스냅샷을 남긴다 — 빠지면 빈 스냅샷이 고정되고 뒤의 기록은 채우지 못한다."""
+    store, _, submitter, _, _ = parts
+    spaces = {"ref": "memorysets/run-scratch@0.1.0", "as": "scratch"}
+    mission = make_mission(memory={"spaces": [spaces]})
+    runs = RunService(
+        catalog=FakeCatalog({mission.metadata.name: mission}),
+        deployments=FakeDeployments({"dep-1": deployed(mission.metadata.name)}),
+        submitter=submitter,
+        store=store,
+    )
+
+    record = await runs.submit("dep-1", {}, run_id="snap")
+    submitter.gate.set()
+    await asyncio.gather(*runs.drivers.values())
+
+    found = store.get(record.run_id)
+    assert found.status == "completed", "드라이버의 뒤 기록까지 지난 뒤에도"
+    assert dict(found.memory_spaces) == {"scratch": "memorysets/run-scratch@0.1.0"}
+    assert found.agents == ("planner", "researcher")

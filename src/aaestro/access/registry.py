@@ -20,7 +20,7 @@ import secrets
 import time
 import uuid
 from collections import deque
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Hashable, Mapping
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -72,6 +72,15 @@ class Baseline(Protocol):
         self, agent: str, target: str, mode: Mode | None, identity: Identity | None = None
     ) -> bool:
         """``identity`` 는 요청을 보낸 **그 신원** — 배포마다 다른 선언(A2A 의 그래프)을 고른다."""
+        ...
+
+
+@runtime_checkable
+class RunLiveness(Protocol):
+    """Where run starts and ends show up — ``orchestrator.runstore`` 의 저장소가 이 모양이다."""
+
+    def liveness(self) -> Hashable:
+        """run 의 시작 · 종료마다 바뀌는 값 — 바뀌면 run space 판정 캐시를 버린다 (#608)."""
         ...
 
 
@@ -173,6 +182,11 @@ class AccessRegistry:
     metrics: Metrics | None = None
     declarations_poll_s: float = DECLARATIONS_POLL_S
     """선언 파일 변경을 몇 초마다 보는가 — 변경 알림 긴 폴링도 이 간격으로 깨어 확인한다."""
+    runs: RunLiveness | None = None
+    """run 의 시작 · 종료 — 선언 파일과 같은 간격으로 보고, 바뀌면 버전을 올린다 (#608).
+    run space 판정 (``MemoryBaseline.runs``) 은 run 상태에 달렸는데 run 은 선언 파일을 바꾸지
+    않는다."""
+    _runs_seen: Hashable = field(default=None, init=False, repr=False)
     _changed: asyncio.Event | None = field(default=None, init=False, repr=False)
     _declarations: tuple[tuple[str, int, int, int], ...] | None = field(
         default=None, init=False, repr=False
@@ -613,14 +627,35 @@ class AccessRegistry:
             return
         self._declarations_seen_at = now
         current = declaration_fingerprint(self.catalog)
-        if current == self._declarations:
+        runs = self._run_liveness()
+        if current == self._declarations and runs == self._runs_seen:
             return
         first = self._declarations is None
+        files_changed = current != self._declarations
         self._declarations = current
+        self._runs_seen = runs
         self.store.touch()
         self._wake_waiters()
-        if not first:
+        if files_changed and not first:
             log.info("access declarations changed", files=len(current))
+
+    def _run_liveness(self) -> Hashable:
+        """run 저장소가 읽히지 않으면 지난 값을 쓴다 — 놓친 전이는 다시 읽힐 때 드러난다.
+
+        run 저장소 장애가 다른 종류 (egress · a2a) 의 판정까지 멈추게 두지 않는다.
+        """
+        if self.runs is None:
+            return None
+        try:
+            return self.runs.liveness()
+        except AaestroError as err:
+            log.warning(
+                "run liveness unreadable, keeping the last seen",
+                resource=ResourceKind.MEMORY.value,
+                target="run",
+                error_code=str(err.code),
+            )
+            return self._runs_seen
 
     def _record(self, rule: Rule, *, op: str) -> Rule:
         self.store.put_rule(rule)
@@ -685,5 +720,6 @@ __all__ = [
     "TICKET_TTL_S",
     "AccessRegistry",
     "Baseline",
+    "RunLiveness",
     "credential_hash",
 ]

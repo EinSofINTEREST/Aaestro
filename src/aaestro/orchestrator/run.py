@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 from aaestro.core.topology import GraphMode, GraphTopology
-from aaestro.orchestrator.runstore import RunRecord
+from aaestro.orchestrator.runstore import RunRecord, participation
 from aaestro.orchestrator.telemetry import (
     STATUS_COMPLETED,
     STATUS_FAILED,
@@ -115,11 +115,12 @@ class RunManager:
         """이 manager 가 기록을 남기는 저장소 — 미주입 시 None."""
         return self._store
 
-    def publish(self, handle: RunHandle) -> None:
+    def publish(self, handle: RunHandle, *, topology: GraphTopology | None = None) -> None:
         """Make this run visible to other processes.
 
         run 을 프로세스 밖에서 볼 수 있게 기록합니다 — 저장소가 없으면
-        무동작이라 기존 배선이 그대로 동작합니다.
+        무동작이라 기존 배선이 그대로 동작합니다. ``topology`` 를 주면 run 참여 스냅샷
+        (run space · 노드 에이전트) 을 함께 남깁니다 — 저장소는 처음 기록에서만 받습니다.
         """
         if self._store is None:
             return
@@ -132,6 +133,7 @@ class RunManager:
                 iteration=handle.iteration,
                 failure_streak=handle.failure_streak,
                 drain=handle.drain_requested,
+                **(participation(topology) if topology is not None else {}),
             )
         )
 
@@ -218,7 +220,7 @@ class RunManager:
 
         handle = RunHandle(run_id=resolved_id, graph=topology.name, mode=mode)
         self._runs[handle.run_id] = handle
-        self.publish(handle)
+        self.publish(handle, topology=topology)
         telemetry = self._telemetry(handle)
         if telemetry is not None:
             telemetry.run_started()

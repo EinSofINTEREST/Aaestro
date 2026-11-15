@@ -129,7 +129,7 @@ def _start(metrics: Metrics) -> None:
     root = Path(os.environ.get(REPO_ROOT_ENV, ".")).resolve()
     catalog = Catalog.from_config(config.registry.roots, base=root)
     deployments = _deployment_manager(config, catalog, store_root=root, orchestrator=orchestrator)
-    access = _access_registry(orchestrator, catalog, metrics=metrics)
+    access = _access_registry(orchestrator, catalog, metrics=metrics, runs=store)
     if deployments is not None:
         # 배포가 에이전트마다 신원을 발급해 주입한다 (#277)
         deployments.access = access
@@ -340,8 +340,13 @@ def _material_store(orchestrator: Any) -> MaterialStore | None:
     return SqliteMaterialStore(path=orchestrator.material_store)
 
 
-def _access_registry(orchestrator: Any, catalog: Catalog, *, metrics: Any = None) -> Any:
-    """권한 레지스트리 (#277) — `access_store` 가 없으면 권한 표면을 열지 않는다."""
+def _access_registry(
+    orchestrator: Any, catalog: Catalog, *, metrics: Any = None, runs: SqliteRunStore | None = None
+) -> Any:
+    """권한 레지스트리 (#277) — `access_store` 가 없으면 권한 표면을 열지 않는다.
+
+    ``runs`` 는 run space 판정의 출처 (#608) — run 기록과 그 시작 · 종료를 레지스트리가 읽는다.
+    """
     if orchestrator.access_store is None:
         log.warning("access control disabled — orchestrator.access_store is not set")
         return None
@@ -363,7 +368,7 @@ def _access_registry(orchestrator: Any, catalog: Catalog, *, metrics: Any = None
         # 선언 판정은 그것을 쓰는 강제 지점과 함께 연결한다 — memory 는 Memory Service (#278),
         # a2a 는 피호출자의 A2A 서버 (#281), egress 와 원격 MCP 도구는 이그레스 프록시 (#293, #282)
         baselines={
-            ResourceKind.MEMORY: MemoryBaseline(catalog),
+            ResourceKind.MEMORY: MemoryBaseline(catalog, runs=runs),
             ResourceKind.A2A: A2ABaseline(
                 catalog, store, stewards=frozenset(orchestrator.access_stewards)
             ),
@@ -371,6 +376,7 @@ def _access_registry(orchestrator: Any, catalog: Catalog, *, metrics: Any = None
             ResourceKind.MCP_TOOL: McpToolBaseline(catalog),
         },
         metrics=metrics,
+        runs=runs,
     )
 
 

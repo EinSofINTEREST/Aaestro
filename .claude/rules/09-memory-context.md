@@ -34,8 +34,8 @@
 
 1. **run scope**: run 종료 후 read-only 전환 — 시간이 지났다는 이유로 지우지 않는다 (기억에
    TIMEOUT 은 없다 — 지울 기억은 메모리 정리 판정과 운영자 조작이 정한다). Service run 은 iteration 이 이어지는 동안 계속 누적 + compaction 적용.
-   > **구현 상태**: 운영 경로의 토큰 · 레지스트리 판정은 아직 run space 를 싣지 않는다 — run 참여 판정과
-   > read-only 전환은 #468 이 구현한다.
+   > **구현 상태**: 레지스트리는 run space 를 판정한다 (#608, Access Enforcement 9). Memory Service 와
+   > agentd 가 run id 를 싣는 경로는 아직이다 (#609 · #610).
    Cross-group 배선 그래프에서도 run 참여 노드 전원이 접근 (run 이 곧 경계)
 2. **local scope**: 컨테이너 재시작/재배포/그룹 이동과 무관하게 유지 — 에이전트 이름 기준.
    에이전트 버전 교체 시에도 승계 (기억은 이름에, 계약은 버전에)
@@ -315,6 +315,14 @@ Agent 컨테이너 (agentd) ──HTTP──▶ Memory Service (강제 지점) �
    없다. 에러 `details` 에는 그래프 이름 · space 별칭과 읽지 못한 선언의 저장소 기준 상대 위치만
    싣는다. **검사는 기동 때 한 번뿐이다**: 뜬 뒤에 `PUT /v1/graphs` 로 저장된 run space 그래프는
    떠 있는 서비스가 모른다 — 토큰 모드 배포를 막는 배포 검증 (PR #471 이후) 에서 다룰 몫이다
+9. **run space 는 run 기록이 판정한다** (#608): 대상은 `run:<run_id>:<alias>` 다. run 이 시작할 때의
+   그래프 (`RunRecord` 의 스냅샷 — 별칭 → memoryset ref, 노드 에이전트) 에서 이 에이전트가 노드이고
+   그 별칭이 선언됐으면, 진행 중 (running · draining) 에는 rw, 끝난 뒤에는 ro. 모르는 run · `direct-`
+   run · 노드가 아닌 에이전트 · 다른 그래프로 배포된 신원은 거부. 스냅샷은 처음 기록에서만 정해지고
+   재개가 현재 그래프로 덮지 않는다 — 스냅샷이 없던 옛 run 기록은 run space 가 없다. run 의 시작 ·
+   종료는 레지스트리가 run 저장소를 선언 파일과 같은 간격으로 읽어 알아채고 버전을 올린다 (다른
+   프로세스가 구동한 run 도) — 판정 캐시가 버려진다. 읽는 값은 기록 수와 상태 전이 횟수의 합이라
+   한 주기 안에 끝 → 재개 → 끝이 몰려도 오른다 (iteration 진행으로는 오르지 않는다)
 
 ### Context Assembly — 프롬프트 주입 규칙
 

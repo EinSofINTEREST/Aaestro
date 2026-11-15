@@ -14,9 +14,11 @@ import pytest
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 from aaestro.orchestrator.run import RunManager, RunStatus, ServiceRunner
 from aaestro.orchestrator.runstore import (
+    LIVE_STATUSES,
     InMemoryRunStore,
     RunRecord,
     SqliteRunStore,
+    participation,
 )
 from tests.fixtures.topologies import make_mission, make_service
 
@@ -157,6 +159,166 @@ def test_the_sqlite_store_opens_a_database_from_before_model_overrides(tmp_path)
         assert store.get("run-old").model_overrides == {"planner": {"name": "m"}}
     finally:
         store.close()
+
+
+# --- run 참여 스냅샷 (#608) -------------------------------------------------------
+
+
+SNAPSHOT = {"memory_spaces": {"scratch": "memorysets/run-scratch@0.1.0"}, "agents": ("planner",)}
+
+
+def test_the_participation_snapshot_is_read_back(store):
+    store.upsert(record(**SNAPSHOT))
+
+    found = store.get("run-1")
+
+    assert found.memory_spaces == SNAPSHOT["memory_spaces"]
+    assert found.agents == SNAPSHOT["agents"]
+
+
+@pytest.mark.parametrize("later", [{}, {"memory_spaces": {"other": "memorysets/x@1.0.0"}}])
+def test_the_snapshot_is_fixed_at_the_first_record(store, later):
+    """run space 는 run 이 시작할 때의 그래프가 정한다 — 뒤의 갱신이 지우거나 바꾸지 않는다."""
+    store.upsert(record(**SNAPSHOT))
+    store.upsert(record(status="completed", **later))
+
+    found = store.get("run-1")
+
+    assert found.status == "completed"
+    assert found.memory_spaces == SNAPSHOT["memory_spaces"]
+    assert found.agents == SNAPSHOT["agents"]
+
+
+def test_the_sqlite_store_opens_a_database_from_before_the_snapshot(tmp_path):
+    """#608 이전 run 은 빈 스냅샷 — run space 가 없다. 뒤의 갱신이 채우지도 않는다."""
+    path = tmp_path / "runs.db"
+    with sqlite3.connect(path) as old:
+        old.execute(
+            "CREATE TABLE runs (run_id TEXT PRIMARY KEY, graph TEXT NOT NULL, "
+            "mode TEXT NOT NULL, status TEXT NOT NULL, iteration INTEGER NOT NULL DEFAULT 0, "
+            "failure_streak INTEGER NOT NULL DEFAULT 0, drain INTEGER NOT NULL DEFAULT 0, "
+            "updated_at TEXT NOT NULL, model_overrides TEXT NOT NULL DEFAULT '{}')"
+        )
+        old.execute(
+            "INSERT INTO runs VALUES (?,?,?,?,?,?,?,?,?)",
+            ("run-old", GRAPH, "mission", "running", 0, 0, 0, "t", "{}"),
+        )
+
+    store = SqliteRunStore(path=path)
+    try:
+        assert store.get("run-old").memory_spaces == {}
+        assert store.get("run-old").agents == ()
+        store.upsert(record("run-old", **SNAPSHOT))
+        assert store.get("run-old").memory_spaces == {}
+    finally:
+        store.close()
+
+
+def test_liveness_moves_on_start_and_end_but_not_on_progress(store):
+    store.upsert(record("run-1"))
+    started = store.liveness()
+    store.upsert(record("run-1", iteration=4))
+    progressed = store.liveness()
+    store.upsert(record("run-1", status="completed"))
+    ended = store.liveness()
+
+    assert started == (1, 0)
+    assert progressed == started
+    assert ended == (1, 1)
+
+
+def test_liveness_moves_across_an_end_resume_end_round_trip(store):
+    """끝 → 재개 → 끝 뒤의 상태는 처음 끝과 같다 — 그래도 값이 달라야 rw 캐시가 버려진다."""
+    store.upsert(record("run-1"))
+    store.upsert(record("run-1", status="completed"))
+    ended = store.liveness()
+    store.upsert(record("run-1", status="running"))
+    store.upsert(record("run-1", status="completed"))
+
+    assert store.liveness() != ended
+    assert store.get("run-1").transitions == 3
+
+
+def test_the_snapshot_cannot_be_widened_from_outside(store):
+    """넘긴 dict 를 바꾸거나 읽어 간 값을 바꿔 run space 를 늘리지 못한다."""
+    spaces = {"scratch": "memorysets/run-scratch@0.1.0"}
+    store.upsert(record(memory_spaces=spaces, agents=("planner",)))
+    spaces["smuggled"] = "memorysets/x@1.0.0"
+
+    found = store.get("run-1")
+    with pytest.raises(TypeError):
+        found.memory_spaces["smuggled"] = "memorysets/x@1.0.0"  # type: ignore[index]
+
+    assert dict(store.get("run-1").memory_spaces) == {"scratch": "memorysets/run-scratch@0.1.0"}
+
+
+def test_two_processes_migrating_the_same_old_database_both_open(tmp_path):
+    """늦게 ALTER 한 쪽이 duplicate column 으로 기동에 실패하면 안 된다 — 경합을 결정적으로 재현."""
+    from aaestro.orchestrator import runstore
+
+    path = tmp_path / "runs.db"
+    with sqlite3.connect(path) as old:
+        old.execute(
+            "CREATE TABLE runs (run_id TEXT PRIMARY KEY, graph TEXT NOT NULL, "
+            "mode TEXT NOT NULL, status TEXT NOT NULL, iteration INTEGER NOT NULL DEFAULT 0, "
+            "failure_streak INTEGER NOT NULL DEFAULT 0, drain INTEGER NOT NULL DEFAULT 0, "
+            "updated_at TEXT NOT NULL)"
+        )
+
+    class RacedConnection:
+        """ALTER 직전마다 다른 연결이 같은 컬럼을 먼저 더한다."""
+
+        def __init__(self, conn: sqlite3.Connection) -> None:
+            self._conn = conn
+
+        def execute(self, sql: str, *args):
+            if sql.startswith("ALTER TABLE"):
+                with sqlite3.connect(path) as other:
+                    other.execute(sql)
+            return self._conn.execute(sql, *args)
+
+    conn = sqlite3.connect(path, isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    try:
+        runstore._migrate(RacedConnection(conn))  # type: ignore[arg-type]  # noqa: SLF001
+        assert set(runstore._ADDED_COLUMNS) <= runstore._columns(conn)  # noqa: SLF001
+    finally:
+        conn.close()
+
+    store = SqliteRunStore(path=path)
+    try:
+        store.upsert(record())
+        assert store.get("run-1") is not None
+    finally:
+        store.close()
+
+
+def test_another_process_sees_a_run_end_in_liveness(tmp_path):
+    """CLI 가 구동한 run 의 종료도 레지스트리가 알아야 한다 — 쓰는 연결과 읽는 연결이 다르다."""
+    path = tmp_path / "runs.db"
+    writer, reader = SqliteRunStore(path=path), SqliteRunStore(path=path)
+    try:
+        writer.upsert(record())
+        before = reader.liveness()
+        writer.upsert(record(status="halted"))
+        assert reader.liveness() != before
+    finally:
+        writer.close()
+        reader.close()
+
+
+def test_live_statuses_are_the_slot_holding_run_statuses():
+    """runstore 는 enum 을 import 하지 못해 문자열로 둔다 — 두 집합이 갈라지면 판정이 틀린다."""
+    assert {str(RunStatus.RUNNING), str(RunStatus.DRAINING)} == LIVE_STATUSES
+
+
+def test_participation_takes_run_spaces_and_node_agents():
+    topology = make_mission(memory={"spaces": [{"ref": "memorysets/run-scratch@0.1.0", "as": "s"}]})
+
+    assert participation(topology) == {
+        "memory_spaces": {"s": "memorysets/run-scratch@0.1.0"},
+        "agents": ("planner", "researcher"),
+    }
 
 
 def test_another_process_sees_the_run(tmp_path):
@@ -347,9 +509,10 @@ def _close_with_broken_connection(store: SqliteRunStore) -> None:
         lambda s: s.list(),
         lambda s: s.list(mode="mission"),
         lambda s: s.request_drain("run-1"),
+        lambda s: s.liveness(),
         _close_with_broken_connection,
     ],
-    ids=["upsert", "get", "list", "list-by-mode", "request_drain", "close"],
+    ids=["upsert", "get", "list", "list-by-mode", "request_drain", "liveness", "close"],
 )
 def test_sqlite_methods_convert_database_errors_to_stor_003(tmp_path, call):
     """모든 공개 메서드가 같은 boundary 변환을 한다 — 호출자는 sqlite 예외 타입을 몰라도 된다."""
