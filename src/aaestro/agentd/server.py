@@ -223,7 +223,7 @@ def _replacement(event: TaskEvent, agent: str) -> TaskEvent | None:
             agent=agent,
             task_id=task_id,
         ).payload()
-        return ErrorEvent(task_id=task_id, error=failure)
+        return ErrorEvent(task_id=task_id, error=failure, usage=event.usage)
     return None
 
 

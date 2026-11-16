@@ -546,6 +546,146 @@ async def test_usage_accumulates_across_turns():
     assert result.usage.output_tokens == 8
 
 
+async def test_truncated_response_failure_keeps_the_usage_spent_so_far():
+    tools = FakeTools().script("search")
+    executor, _, _ = make_executor(
+        [
+            calls("search", input_tokens=10, output_tokens=5),
+            replace(text("half", input_tokens=7, output_tokens=3), truncated=True),
+        ],
+        tools,
+    )
+
+    result = await executor.execute(make_task())
+
+    assert result.error is not None
+    assert result.error.code == "LLM_004"
+    assert (result.usage.input_tokens, result.usage.output_tokens) == (17, 8)
+
+
+async def test_max_turns_failure_keeps_the_usage_spent_so_far():
+    tools = FakeTools().script("search")
+    executor, _, _ = make_executor(
+        [calls("search", input_tokens=10, output_tokens=5)], tools, max_turns=3
+    )
+
+    result = await executor.execute(make_task())
+
+    assert result.error is not None
+    assert result.error.code == "LLM_005"
+    assert (result.usage.input_tokens, result.usage.output_tokens) == (30, 15)
+
+
+async def test_task_timeout_failure_keeps_the_usage_spent_so_far():
+    tools = FakeTools().script("slow", delay=5)
+    executor, _, _ = make_executor(
+        [calls("slow", input_tokens=10, output_tokens=5), text("done")], tools
+    )
+
+    result = await executor.execute(make_task(config=TaskConfig(timeout_s=0.05)))
+
+    assert result.error is not None
+    assert result.error.code == "TO_001"
+    assert (result.usage.input_tokens, result.usage.output_tokens) == (10, 5)
+
+
+async def test_unexpected_error_after_a_model_call_keeps_the_usage_spent_so_far():
+    tools = FakeTools().script("search")
+    executor, _, _ = make_executor(
+        [calls("search", input_tokens=10, output_tokens=5), RuntimeError("provider exploded")],
+        tools,
+    )
+
+    result = await executor.execute(make_task())
+
+    assert result.error is not None
+    assert result.error.code == "INTERNAL_001"
+    assert (result.usage.input_tokens, result.usage.output_tokens) == (10, 5)
+
+
+async def test_failure_before_the_first_model_call_has_zero_usage():
+    executor, _, _ = make_executor([RuntimeError("provider exploded")])
+
+    result = await executor.execute(make_task())
+
+    assert result.error is not None
+    assert (result.usage.input_tokens, result.usage.output_tokens) == (0, 0)
+
+
+async def test_stream_failure_event_carries_the_usage_spent_so_far():
+    from structlog.testing import capture_logs
+
+    tools = FakeTools().script("search")
+    executor, _, _ = make_executor(
+        [
+            calls("search", input_tokens=10, output_tokens=5),
+            replace(text("half", input_tokens=7, output_tokens=3), truncated=True),
+        ],
+        tools,
+    )
+
+    with capture_logs() as logs:
+        events = [event async for event in executor.stream(make_task())]
+
+    assert isinstance(events[-1], ErrorEvent)
+    assert events[-1].usage is not None
+    assert (events[-1].usage.input_tokens, events[-1].usage.output_tokens) == (17, 8)
+    (failed,) = [e for e in logs if e["event"] == "agent task failed"]
+    assert (failed["input_tokens"], failed["output_tokens"]) == (17, 8)
+
+
+async def test_stream_timeout_event_carries_the_usage_spent_so_far():
+    tools = FakeTools().script("slow", delay=5)
+    executor, _, _ = make_executor(
+        [calls("slow", input_tokens=10, output_tokens=5), text("done")], tools
+    )
+
+    events = [e async for e in executor.stream(make_task(config=TaskConfig(timeout_s=0.05)))]
+
+    assert isinstance(events[-1], ErrorEvent)
+    assert events[-1].error.code == "TO_001"
+    assert events[-1].usage is not None
+    assert (events[-1].usage.input_tokens, events[-1].usage.output_tokens) == (10, 5)
+
+
+async def test_stream_failure_before_the_first_model_call_has_zero_usage():
+    executor, _, _ = make_executor([RuntimeError("provider exploded")])
+
+    events = [e async for e in executor.stream(make_task())]
+
+    assert isinstance(events[-1], ErrorEvent)
+    assert events[-1].usage is not None
+    assert (events[-1].usage.input_tokens, events[-1].usage.output_tokens) == (0, 0)
+
+
+async def test_stream_unexpected_error_after_a_model_call_keeps_the_usage_spent_so_far():
+    tools = FakeTools().script("search")
+    executor, _, _ = make_executor(
+        [calls("search", input_tokens=10, output_tokens=5), RuntimeError("provider exploded")],
+        tools,
+    )
+
+    events = [e async for e in executor.stream(make_task())]
+
+    assert isinstance(events[-1], ErrorEvent)
+    assert events[-1].usage is not None
+    assert (events[-1].usage.input_tokens, events[-1].usage.output_tokens) == (10, 5)
+
+
+async def test_concurrent_tasks_keep_their_own_usage():
+    executor, _, _ = make_executor(
+        [text("a", input_tokens=10, output_tokens=5), text("b", input_tokens=7, output_tokens=3)]
+    )
+
+    first, second = await asyncio.gather(
+        executor.execute(make_task(task_id="a")), executor.execute(make_task(task_id="b"))
+    )
+
+    # 응답이 어느 태스크로 가든 각자 한 번의 호출 몫만 받는다 — 누적기가 섞이면 (17, 8) 이 나온다
+    usages = sorted((r.usage.input_tokens, r.usage.output_tokens) for r in (first, second))
+    assert usages == [(7, 3), (10, 5)]
+
+
 # --- cancellation -----------------------------------------------------------
 
 

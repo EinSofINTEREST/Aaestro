@@ -317,6 +317,16 @@ class _ModelWatch:
     cut: bool = False
 
 
+@dataclass
+class _UsageTally:
+    """태스크 하나가 지금까지 쓴 토큰 — 취소 · 예외로 루프가 끊겨도 바깥이 읽는다.
+
+    루프의 지역 변수는 TO_001 (wait_for 취소) 처럼 반환 없이 끝나는 경로에서 사라진다.
+    """
+
+    usage: ModelUsage = field(default_factory=ModelUsage)
+
+
 _MODEL_WATCH: ContextVar[_ModelWatch | None] = ContextVar("aaestro_model_watch", default=None)
 """wait_for 가 만든 자식 태스크도 같은 객체를 본다 — 컨텍스트는 복사돼도 값은 공유된다."""
 
@@ -480,9 +490,10 @@ class Executor:
 
         started = time.perf_counter()
         watch = _ModelWatch()
+        tally = _UsageTally()
         watching = _MODEL_WATCH.set(watch)
         try:
-            result = await asyncio.wait_for(self._run(task), timeout=task.config.timeout_s)
+            result = await asyncio.wait_for(self._run(task, tally), timeout=task.config.timeout_s)
         except TimeoutError:
             if watch.cut:
                 # 모델이 태스크 마감까지 답하지 않았다 — health 가 그것을 봐야 한다
@@ -497,13 +508,14 @@ class Executor:
                     task_id=task.task_id,
                     retryable=True,
                 ),
+                usage=tally.usage,
             )
         except asyncio.CancelledError:
             # 취소는 협조적 종료다 — 결과로 삼키지 않고 전파한다
             self._cleanup()
             raise
         except AaestroError as err:
-            result = TaskResult.failed(task, err)
+            result = TaskResult.failed(task, err, usage=tally.usage)
         except Exception as err:
             # 모델 provider 예외가 새어나가면 데몬이 죽는다 — tool 쪽은 이미
             # _tool_error 가 변환하는데 모델 쪽만 빠져 있었다
@@ -517,6 +529,7 @@ class Executor:
                     task_id=task.task_id,
                     details={"cause": type(err).__name__},
                 ),
+                usage=tally.usage,
             )
         finally:
             _MODEL_WATCH.reset(watching)
@@ -565,6 +578,8 @@ class Executor:
                 error_code=error.code,
                 retryable=error.retryable,
                 error_message=error.message,
+                input_tokens=usage.input_tokens if usage else 0,
+                output_tokens=usage.output_tokens if usage else 0,
                 **fields,
             )
             return
@@ -671,14 +686,14 @@ class Executor:
         # 시스템 지시가 가리키는 경계 안내 자리를 차지한다
         return UserTurn(parts=(head, prompt, context))
 
-    async def _run(self, task: TaskRequest) -> TaskResult:
+    async def _run(self, task: TaskRequest, tally: _UsageTally) -> TaskResult:
         """공용 루프를 끝까지 돌려 결과만 취한다.
 
         중간 이벤트는 버린다 — `execute` 의 소비자는 진행 과정이 아니라 결과를
         원한다. 실패는 루프가 예외로 올리고 `execute` 가 `TaskResult` 로 접는다
         (02 Rule 4).
         """
-        async for event in self._events(task):
+        async for event in self._events(task, tally):
             if isinstance(event, DoneEvent):
                 return TaskResult.completed(task, output=event.output, usage=event.usage)
         raise AssertionError("event loop ended without a terminal event")  # pragma: no cover
@@ -846,12 +861,16 @@ class Executor:
         """
         deadline = asyncio.get_running_loop().time() + task.config.timeout_s
         started = time.perf_counter()
-        events = self._stream(task)
+        tally = _UsageTally()
+        events = self._stream(task, tally)
 
         def finished(event: TaskEvent) -> TaskEvent:
             if isinstance(event, ErrorEvent):
                 self._log_outcome(
-                    task, error=event.error, usage=None, duration_s=time.perf_counter() - started
+                    task,
+                    error=event.error,
+                    usage=tally.usage,
+                    duration_s=time.perf_counter() - started,
                 )
             elif isinstance(event, DoneEvent):
                 self._log_outcome(
@@ -865,14 +884,14 @@ class Executor:
                 if remaining <= 0:
                     # 종료 이벤트보다 먼저 닫는다 — 끝났다고 알린 태스크가 steer 를 받지 않게
                     await events.aclose()
-                    yield finished(self._timeout_event(task))
+                    yield finished(self._timeout_event(task, tally))
                     return
                 try:
                     event = await asyncio.wait_for(anext(events), timeout=remaining)
                 except StopAsyncIteration:
                     return
                 except TimeoutError:
-                    yield finished(self._timeout_event(task))
+                    yield finished(self._timeout_event(task, tally))
                     return
                 yield finished(event)
         finally:
@@ -891,7 +910,7 @@ class Executor:
             details={"cause": type(err).__name__},
         )
 
-    def _timeout_event(self, task: TaskRequest) -> ErrorEvent:
+    def _timeout_event(self, task: TaskRequest, tally: _UsageTally) -> ErrorEvent:
         """태스크 상한 초과를 종료 이벤트로 만든다."""
         return ErrorEvent(
             task_id=task.task_id,
@@ -903,9 +922,10 @@ class Executor:
                 task_id=task.task_id,
                 retryable=True,
             ).payload(),
+            usage=tally.usage,
         )
 
-    async def _stream(self, task: TaskRequest) -> AsyncGenerator[TaskEvent]:
+    async def _stream(self, task: TaskRequest, tally: _UsageTally) -> AsyncGenerator[TaskEvent]:
         """공용 루프의 이벤트를 그대로 흘리고, 실패만 이벤트로 접는다.
 
         루프는 실패를 **예외로** 올린다 — 그것이 `execute` 와 공유하는 계약이다.
@@ -915,17 +935,21 @@ class Executor:
         """
         try:
             # 소비자가 도중에 떠나도(연결 끊김) 루프와 steer 대기열이 바로 정리되게 닫는다
-            async with aclosing(self._events(task)) as events:
+            async with aclosing(self._events(task, tally)) as events:
                 async for event in events:
                     yield event
         except asyncio.CancelledError:
             raise
         except AaestroError as err:
-            yield ErrorEvent(task_id=task.task_id, error=err.payload())
+            yield ErrorEvent(task_id=task.task_id, error=err.payload(), usage=tally.usage)
         except Exception as err:
-            yield ErrorEvent(task_id=task.task_id, error=self._recall_failure(err).payload())
+            yield ErrorEvent(
+                task_id=task.task_id,
+                error=self._recall_failure(err).payload(),
+                usage=tally.usage,
+            )
 
-    async def _events(self, task: TaskRequest) -> AsyncGenerator[TaskEvent]:
+    async def _events(self, task: TaskRequest, tally: _UsageTally) -> AsyncGenerator[TaskEvent]:
         """The tool loop with the task's steer queue open around it.
 
         steer 대기열의 수명을 루프에 묶는다: 루프가 도는 동안만 ``steer`` 가 접수되고,
@@ -936,7 +960,7 @@ class Executor:
         """
         queue = self._open_steers(task)
         try:
-            async with aclosing(self._turns(task, queue.pending)) as events:
+            async with aclosing(self._turns(task, queue.pending, tally)) as events:
                 async for event in events:
                     if isinstance(event, DoneEvent):
                         self._close_steers(task, queue)
@@ -977,7 +1001,9 @@ class Executor:
         )
         queue.pending.clear()
 
-    async def _turns(self, task: TaskRequest, pending: list[Steer]) -> AsyncGenerator[TaskEvent]:
+    async def _turns(
+        self, task: TaskRequest, pending: list[Steer], tally: _UsageTally
+    ) -> AsyncGenerator[TaskEvent]:
         """The one tool loop — model turns, tool calls, and the terminal event.
 
         **이 루프는 한 곳에만 존재한다** (#233). 이전에는 `_run` 과 `_stream` 이
@@ -997,14 +1023,13 @@ class Executor:
         binding = self._binding
         chain = self._chain_for(task)
         messages: list[Message] = [await self._opening(task, binding)]
-        usage = ModelUsage()
         max_turns = self._max_turns(task)
         ctx = self._skill_context(task)
 
         try:
             for turn in range(max_turns):
                 response = await self._model_turn(messages, binding, chain)
-                usage = usage.merge(response.usage)
+                tally.usage = tally.usage.merge(response.usage)
                 if response.truncated:
                     raise self._truncated_error(task, response)
 
@@ -1015,7 +1040,7 @@ class Executor:
                     yield DoneEvent(
                         task_id=task.task_id,
                         output=self._shape_output(response.content, task, binding),
-                        usage=usage,
+                        usage=tally.usage,
                     )
                     return
 
