@@ -493,44 +493,40 @@ class Executor:
         tally = _UsageTally()
         watching = _MODEL_WATCH.set(watch)
         try:
-            result = await asyncio.wait_for(self._run(task, tally), timeout=task.config.timeout_s)
-        except TimeoutError:
-            if watch.cut:
-                # 모델이 태스크 마감까지 답하지 않았다 — health 가 그것을 봐야 한다
-                self.model_health.failed(ErrorCode.TO_001)
-            result = TaskResult.failed(
-                task,
-                AaestroError(
-                    category=ErrorCategory.TIMEOUT,
-                    code=ErrorCode.TO_001,
-                    message="task timeout exceeded",
-                    agent=self._agent,
-                    task_id=task.task_id,
-                    retryable=True,
-                ),
-                usage=tally.usage,
-            )
+            # expired() 로 태스크 마감과 안에서 올라온 TimeoutError 를 가른다 (stream 과 같은 의미)
+            deadline = asyncio.timeout(task.config.timeout_s)
+            async with deadline:
+                result = await self._run(task, tally)
+        except TimeoutError as err:
+            if not deadline.expired():
+                result = TaskResult.failed(
+                    task, self._unexpected_failure(task, err), usage=tally.usage
+                )
+            else:
+                if watch.cut:
+                    # 모델이 태스크 마감까지 답하지 않았다 — health 가 그것을 봐야 한다
+                    self.model_health.failed(ErrorCode.TO_001)
+                result = TaskResult.failed(
+                    task,
+                    AaestroError(
+                        category=ErrorCategory.TIMEOUT,
+                        code=ErrorCode.TO_001,
+                        message="task timeout exceeded",
+                        agent=self._agent,
+                        task_id=task.task_id,
+                        retryable=True,
+                    ),
+                    usage=tally.usage,
+                )
         except asyncio.CancelledError:
-            # 취소는 협조적 종료다 — 결과로 삼키지 않고 전파한다
-            self._cleanup()
+            # 취소는 협조적 종료다 — 결과로 삼키지 않고 전파한다 (정리는 루프가 한 번 한다)
             raise
         except AaestroError as err:
             result = TaskResult.failed(task, err, usage=tally.usage)
         except Exception as err:
             # 모델 provider 예외가 새어나가면 데몬이 죽는다 — tool 쪽은 이미
             # _tool_error 가 변환하는데 모델 쪽만 빠져 있었다
-            result = TaskResult.failed(
-                task,
-                AaestroError(
-                    category=ErrorCategory.INTERNAL,
-                    code=ErrorCode.INTERNAL_001,
-                    message="unexpected error during task execution",
-                    agent=self._agent,
-                    task_id=task.task_id,
-                    details={"cause": type(err).__name__},
-                ),
-                usage=tally.usage,
-            )
+            result = TaskResult.failed(task, self._unexpected_failure(task, err), usage=tally.usage)
         finally:
             _MODEL_WATCH.reset(watching)
 
@@ -678,7 +674,14 @@ class Executor:
         if self._services.recall is None:
             return UserTurn(parts=(head, prompt))
 
-        context = await self._services.recall(task)
+        try:
+            context = await self._services.recall(task)
+        except asyncio.CancelledError:
+            raise
+        except AaestroError:
+            raise
+        except Exception as err:
+            raise self._recall_failure(err) from err
         if not context:
             return UserTurn(parts=(head, prompt))
         # 순서는 맥락 블록 → 렌더 → 회상이다: 프레임워크가 쓴 글이 데이터보다 앞서고, 렌더 맨 앞의
@@ -898,10 +901,19 @@ class Executor:
             # 마감으로 끊거나 소비자가 떠나도 루프를 바로 닫는다 — steer 대기열이 남지 않게
             await events.aclose()
 
-    def _recall_failure(self, err: BaseException) -> AaestroError:
-        """회상 실패를 구조화 에러로 만든다 — 기억이 없다고 태스크가 죽지는 않는다."""
-        if isinstance(err, AaestroError):
-            return err
+    def _unexpected_failure(self, task: TaskRequest, err: Exception) -> AaestroError:
+        """비구조화 예외를 ``INTERNAL_001`` 로 — execute 와 stream 이 같은 코드를 낸다."""
+        return AaestroError(
+            category=ErrorCategory.INTERNAL,
+            code=ErrorCode.INTERNAL_001,
+            message="unexpected error during task execution",
+            agent=self._agent,
+            task_id=task.task_id,
+            details={"cause": type(err).__name__},
+        )
+
+    def _recall_failure(self, err: Exception) -> AaestroError:
+        """회상 호출의 비구조화 실패를 ``MEM_004`` 로 만든다 — 회상 자리에서만 부른다."""
         return AaestroError(
             category=ErrorCategory.MEMORY,
             code=ErrorCode.MEM_004,
@@ -945,7 +957,7 @@ class Executor:
         except Exception as err:
             yield ErrorEvent(
                 task_id=task.task_id,
-                error=self._recall_failure(err).payload(),
+                error=self._unexpected_failure(task, err).payload(),
                 usage=tally.usage,
             )
 
@@ -1022,11 +1034,12 @@ class Executor:
         # 이 태스크가 끝까지 쓸 모듈 묶음과 모델 체인 — 리로드가 도중에 갈아 끼워도 섞이지 않는다
         binding = self._binding
         chain = self._chain_for(task)
-        messages: list[Message] = [await self._opening(task, binding)]
         max_turns = self._max_turns(task)
         ctx = self._skill_context(task)
 
         try:
+            # 회상 대기 중의 취소도 같은 분기에서 정리한다 — 취소 정리는 이 try 한 곳이다
+            messages: list[Message] = [await self._opening(task, binding)]
             for turn in range(max_turns):
                 response = await self._model_turn(messages, binding, chain)
                 tally.usage = tally.usage.merge(response.usage)
@@ -1153,8 +1166,7 @@ class Executor:
         paired: list[tuple[ToolResultEvent, ToolOutcome]] = []
         for call, outcome in zip(calls, outcomes, strict=True):
             if isinstance(outcome, asyncio.CancelledError):
-                self._cleanup()
-                raise outcome
+                raise outcome  # 정리는 루프의 취소 분기가 한 번 한다
             if isinstance(outcome, BaseException):
                 error = (
                     outcome
