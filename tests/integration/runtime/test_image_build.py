@@ -27,7 +27,6 @@ from aaestro.runtime.images import BuildStatus, ImageBuilder, InMemoryBuildStore
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DOCKER_BIN = shutil.which("docker")
-BASE_IMAGE = "aaestro/agent-base:0.1.0"
 READY_TIMEOUT_S = 90.0
 
 pytestmark = pytest.mark.integration
@@ -40,20 +39,6 @@ def docker(*args: str, check: bool = True) -> str:
     if check and result.returncode != 0:
         raise AssertionError(f"docker {' '.join(args)} failed: {result.stderr}")
     return result.stdout.strip()
-
-
-def base_image_present() -> bool:
-    if DOCKER_BIN is None:
-        return False
-    try:
-        return bool(docker("images", "-q", BASE_IMAGE, check=False))
-    except (OSError, subprocess.SubprocessError):
-        return False
-
-
-requires_base = pytest.mark.skipif(
-    not base_image_present(), reason=f"{BASE_IMAGE} is not built (make build-base)"
-)
 
 
 @contextmanager
@@ -123,7 +108,7 @@ def workspace(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def builder(workspace: Path) -> ImageBuilder:
+def builder(workspace: Path, base_image: str) -> ImageBuilder:
     materials = InMemoryMaterialStore()
     materials.put(
         Materials(
@@ -141,7 +126,6 @@ def builder(workspace: Path) -> ImageBuilder:
     )
 
 
-@requires_base
 async def test_a_stored_agent_bakes_into_a_running_image(builder, workspace):
     """스토어의 재료만으로 이미지가 구워지고, 그 이미지가 실제로 뜬다."""
     record = await builder.build("custom")
@@ -182,7 +166,6 @@ async def test_a_stored_agent_bakes_into_a_running_image(builder, workspace):
         docker("rmi", "-f", record.image, check=False)
 
 
-@requires_base
 async def test_the_baked_image_starts_agentd_and_answers_health(builder):
     """이슈 #265 완료 조건 — 구운 이미지가 **기동해** `/v1/health` 를 응답한다.
 
@@ -201,7 +184,6 @@ async def test_the_baked_image_starts_agentd_and_answers_health(builder):
         docker("rmi", "-f", record.image, check=False)
 
 
-@requires_base
 async def test_a_broken_dockerfile_fails_with_its_log(builder, workspace):
     """실패 원인은 로그에만 있다 — 없으면 운영자가 손으로 다시 굽는다."""
     builder.materials.put(
