@@ -1372,3 +1372,116 @@ async def test_truncated_dict_result_becomes_a_string_on_the_event():
 
     (event,) = [e for e in events if isinstance(e, ToolResultEvent)]
     assert isinstance(event.result, str) and "(truncated:" in event.result
+
+
+# --- 형제 경로 (execute ↔ stream) 의 같은 실패 = 같은 코드 --------------------
+
+
+async def test_unexpected_model_error_is_internal_001_in_stream_too():
+    executor, _, _ = make_executor([RuntimeError("provider exploded")])
+
+    invoked = await executor.execute(make_task())
+    events = [e async for e in executor.stream(make_task(task_id="other"))]
+
+    assert isinstance(events[-1], ErrorEvent)
+    assert events[-1].error.code == invoked.error.code == "INTERNAL_001"
+    assert events[-1].error.message == invoked.error.message
+    assert events[-1].error.details == invoked.error.details
+
+
+async def test_only_the_recall_step_fails_as_mem_004_in_both_paths():
+    async def failing_recall(task) -> str:
+        raise RuntimeError("index corrupt")
+
+    executor = Executor(
+        agent="researcher",
+        model=FakeModel([text("done")]),
+        tools=FakeTools(),
+        render=lambda task: "prompt",
+        services=ExecutorServices(recall=failing_recall),
+    )
+
+    invoked = await executor.execute(make_task())
+    events = [e async for e in executor.stream(make_task(task_id="other"))]
+
+    assert invoked.error.code == "MEM_004"
+    assert isinstance(events[-1], ErrorEvent)
+    assert events[-1].error.code == "MEM_004"
+    assert events[-1].error.details == invoked.error.details == {"cause": "RuntimeError"}
+
+
+async def test_cancellation_cleanup_call_count_is_pinned():
+    """취소 경로의 정리 횟수를 고정한다 — 호출자는 정리가 한 번이라고 기대한다."""
+    count = 0
+
+    def cleanup() -> None:
+        nonlocal count
+        count += 1
+
+    tools = FakeTools().script("slow", delay=5)
+    executor, _, _ = make_executor([calls("slow"), text("done")], tools, on_cleanup=cleanup)
+
+    task = asyncio.create_task(executor.execute(make_task()))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert count == 1
+
+
+async def _recall_cancel_cleanups(*, streaming: bool) -> int:
+    """회상을 기다리는 중에 취소하고 정리 횟수를 센다."""
+    count = 0
+    waiting = asyncio.Event()
+
+    def cleanup() -> None:
+        nonlocal count
+        count += 1
+
+    async def hanging_recall(task) -> str:
+        waiting.set()
+        await asyncio.Event().wait()
+        return ""
+
+    executor = Executor(
+        agent="researcher",
+        model=FakeModel([text("done")]),
+        tools=FakeTools(),
+        render=lambda task: "prompt",
+        services=ExecutorServices(recall=hanging_recall, on_cleanup=cleanup),
+    )
+
+    async def run() -> None:
+        if streaming:
+            async for _ in executor.stream(make_task()):
+                pass
+        else:
+            await executor.execute(make_task())
+
+    task = asyncio.create_task(run())
+    await waiting.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    return count
+
+
+async def test_cancel_during_recall_cleans_up_once_in_execute():
+    assert await _recall_cancel_cleanups(streaming=False) == 1
+
+
+async def test_cancel_during_recall_cleans_up_once_in_stream():
+    assert await _recall_cancel_cleanups(streaming=True) == 1
+
+
+async def test_inner_timeout_error_is_internal_001_in_both_paths():
+    """태스크 마감이 아닌 TimeoutError 는 TO_001 이 아니다 — 두 경로가 같은 코드를 낸다."""
+    executor, _, _ = make_executor([TimeoutError("provider socket")])
+
+    invoked = await executor.execute(make_task())
+    events = [e async for e in executor.stream(make_task(task_id="other"))]
+
+    assert invoked.error.code == "INTERNAL_001"
+    assert isinstance(events[-1], ErrorEvent)
+    assert events[-1].error.code == "INTERNAL_001"

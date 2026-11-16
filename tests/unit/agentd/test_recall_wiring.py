@@ -204,6 +204,7 @@ async def test_recall_failure_in_execute_is_a_failed_result():
     result = await executor.execute(make_task())
 
     assert result.status.value == "failed"
+    assert result.error.code == ErrorCode.MEM_004
 
 
 @pytest.mark.parametrize("arguments", [{}, {"query": ""}, {"query": "   "}])
