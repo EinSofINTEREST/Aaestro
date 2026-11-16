@@ -123,7 +123,9 @@ Running a graph needs the address of each agent's Control API — the orchestrat
 guesses where an agent lives. Against the E2E stack:
 
 ```bash
-export AAESTRO_AGENT_TOKEN=e2e-token
+export AAESTRO_AGENT_TOKEN_PLANNER=e2e-token-planner
+export AAESTRO_AGENT_TOKEN_RESEARCHER=e2e-token-researcher
+export AAESTRO_AGENT_TOKEN_WRITER=e2e-token-writer
 
 # mission run — terminates at END and prints the final state
 uv run aaestro run graphs/research-pipeline.yaml \

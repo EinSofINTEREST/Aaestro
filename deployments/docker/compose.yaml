@@ -19,7 +19,7 @@ services:
     environment:
       # 개발 스택도 인증을 켠다 — 무인증으로 돌리면 인증 회귀를 못 잡는다.
       # 운영에서는 runtime 이 에이전트마다 난수 토큰을 발급해 주입한다
-      AAESTRO_AGENT_TOKEN: ${AAESTRO_AGENT_TOKEN:-dev-local-token}
+      AAESTRO_AGENT_TOKEN: ${AAESTRO_AGENT_TOKEN_ECHO:-dev-local-token}
     read_only: true
     user: "1000:1000"
     cap_drop: [ALL]

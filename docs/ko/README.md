@@ -112,7 +112,9 @@ uv run aaestro <command>          # venv 를 활성화했다면 그냥 `aaestro`
 어디 있는지 추측하지 않습니다. E2E 스택 기준:
 
 ```bash
-export AAESTRO_AGENT_TOKEN=e2e-token
+export AAESTRO_AGENT_TOKEN_PLANNER=e2e-token-planner
+export AAESTRO_AGENT_TOKEN_RESEARCHER=e2e-token-researcher
+export AAESTRO_AGENT_TOKEN_WRITER=e2e-token-writer
 
 # mission run — END 에 도달하면 종료하고 최종 state 를 출력
 uv run aaestro run graphs/research-pipeline.yaml \

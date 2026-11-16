@@ -126,9 +126,11 @@ aaestro check observed-state.yaml
 추측하지 않습니다:
 
 ```bash
+AAESTRO_AGENT_TOKEN_PLANNER=e2e-token-planner \
+AAESTRO_AGENT_TOKEN_RESEARCHER=e2e-token-researcher \
+AAESTRO_AGENT_TOKEN_WRITER=e2e-token-writer \
 aaestro run graphs/research-pipeline.yaml \
   --input '{"query": "..."}' \
-  --agent-token "${AAESTRO_AGENT_TOKEN:-e2e-token}" \
   --agent planner=http://127.0.0.1:18082 \
   --agent researcher=http://127.0.0.1:18083 \
   --agent writer=http://127.0.0.1:18084
@@ -139,9 +141,13 @@ aaestro run graphs/research-pipeline.yaml \
 Service 그래프는 완주 개념이 없으므로 `--service` 로 구동합니다:
 
 ```bash
+AAESTRO_AGENT_TOKEN_RESEARCHER=e2e-token-researcher \
+AAESTRO_AGENT_TOKEN_PLANNER=e2e-token-planner \
+AAESTRO_AGENT_TOKEN_WRITER=e2e-token-writer \
 aaestro run graphs/feed-monitor.yaml --service \
-  --agent-token "${AAESTRO_AGENT_TOKEN:-e2e-token}" \
-  --agent watcher=http://127.0.0.1:18082
+  --agent researcher=http://127.0.0.1:18083 \
+  --agent planner=http://127.0.0.1:18082 \
+  --agent writer=http://127.0.0.1:18084
 ```
 
 한 iteration 은 `START → … → END` 한 바퀴이고, 중단할 때까지 반복합니다.
@@ -153,7 +159,7 @@ Direct 요청은 그래프 run 없이 어느 에이전트의 Control API 에나 
 
 ```bash
 curl -X POST http://127.0.0.1:18081/v1/invoke \
-  -H "authorization: Bearer ${AAESTRO_AGENT_TOKEN:-e2e-token}" \
+  -H "authorization: Bearer ${AAESTRO_AGENT_TOKEN_ECHO:-e2e-token-echo}" \
   -H 'content-type: application/json' \
   -d '{"task_id":"t1","run_id":"direct-1","node_id":null,
        "input":{"msg":"hello"},"trace":{"trace_id":"tr-1"}}'
@@ -171,10 +177,17 @@ agentd 는 `AAESTRO_AGENT_TOKEN` 이 없으면 (미설정 · 빈 값 · 공백�
 `0.0.0.0` 은 거절됩니다). 기동 시 WARN 로그를 남기며, 토큰 값은 어떤 메시지·로그에도 나오지
 않습니다.
 
-placeholder 는 스택마다 다릅니다: `make e2e-up` (`compose.e2e.yaml`) 은
-`e2e-token`, 일반 개발 스택 (`compose.yaml`) 은 `dev-local-token` 이 기본값입니다.
-띄운 스택에 맞는 값을 넘기거나, 기동 전에 `AAESTRO_AGENT_TOKEN` 을 export 해서
-양쪽이 같은 값을 보게 하십시오. 토큰이 어긋나면 모든 노드 호출이 `401` 이 됩니다.
+에이전트 서비스마다 토큰이 달라, 한 에이전트의 토큰으로 다른 에이전트의 Control API 를
+부르면 `401` 입니다. `make e2e-up` (`compose.e2e.yaml`) 은 `AAESTRO_AGENT_TOKEN_<AGENT>`
+(`ECHO` · `PLANNER` · `RESEARCHER` · `WRITER`) 를 읽고 기본값은 `e2e-token-<agent>` 입니다.
+일반 개발 스택 (`compose.yaml`) 은 `AAESTRO_AGENT_TOKEN_ECHO` 를 읽고 기본값은
+`dev-local-token` 입니다.
+
+`aaestro run` 도 같은 에이전트별 변수를 읽습니다 (대문자, `-` 는 `_` — `feed-watcher` 는
+`AAESTRO_AGENT_TOKEN_FEED_WATCHER` — 노드 id 가 아니라 에이전트 이름). 토큰이 명령줄에 나타나지 않습니다. 없으면
+`--agent-token` 또는 `AAESTRO_AGENT_TOKEN` (모든 에이전트 공통 토큰) 으로 돌아갑니다.
+스택을 띄우기 전에 같은 변수를 export 해 양쪽이 같은 값을 보게 하십시오. 토큰이 어긋나면
+모든 노드 호출이 `401` 이 됩니다.
 
 아직 로드맵에 있는 것 *(미구현)*: `aaestro run trace`, `agent invoke`,
 `agent logs`, `replay`, `memory reindex`.

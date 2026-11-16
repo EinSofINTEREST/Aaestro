@@ -21,9 +21,10 @@ from pathlib import Path
 import pytest
 import yaml
 
+from aaestro.cli.main import agent_token_env
 from tests.e2e.test_stack import (
-    AGENT_TOKEN,
     COMPOSE_FILE,
+    agent_token,
     compose_up,
     docker,
     requires_docker,
@@ -127,7 +128,11 @@ def deployment(service_stack: dict[str, int], tmp_path) -> Iterator[dict]:
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
-        env={**os.environ, "AAESTRO_AGENT_TOKEN": AGENT_TOKEN},
+        env={
+            **os.environ,
+            # 에이전트마다 다른 토큰 — CLI 가 이름별 env 를 읽는지도 이 경로가 본다
+            **{agent_token_env(n): agent_token(n) for n in service_stack},
+        },
     )
     plane = subprocess.Popen(  # noqa: S603
         [sys.executable, "-m", "aaestro.orchestrator"],

@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -519,15 +520,22 @@ def test_package_entry_point_runs_without_warnings():
 # --- CLI 가 Control API 토큰을 싣는가 -------------------------------------------
 
 
-def clients_for(argv: list[str], monkeypatch, env: str | None = None):
+def clients_for(
+    argv: list[str], monkeypatch, env: str | None = None, per_agent: dict[str, str] | None = None
+):
     """`aaestro run` 인자로 만들어지는 Control API 클라이언트."""
     from aaestro.cli.main import _control_clients
     from aaestro.core.agent import AGENT_TOKEN_ENV
 
+    # 에이전트별 변수 (AAESTRO_AGENT_TOKEN_<NAME>) 까지 비운다 — export 한 셸에서도 결정적
+    for key in [k for k in os.environ if k.startswith(AGENT_TOKEN_ENV)]:
+        monkeypatch.delenv(key)
     if env is None:
         monkeypatch.delenv(AGENT_TOKEN_ENV, raising=False)
     else:
         monkeypatch.setenv(AGENT_TOKEN_ENV, env)
+    for key, value in (per_agent or {}).items():
+        monkeypatch.setenv(key, value)
     return _control_clients(build_parser().parse_args(argv))
 
 
@@ -830,3 +838,43 @@ def test_validate_reports_every_broken_graph_and_still_checks_the_rest(workspace
     assert "broken-a.yaml" in out
     assert "broken-b.yaml" in out
     assert "module_refs" in out
+
+
+def test_per_agent_env_token_wins_and_hyphens_become_underscores(monkeypatch):
+    """#413 — 에이전트마다 다른 토큰을 명령줄 없이 env 로 준다."""
+    clients = clients_for(
+        [
+            "run", "g.yaml",
+            "--agent", "feed-watcher=http://a:8080",
+            "--agent", "planner=http://b:8080",
+            "--agent-token", "SHARED",
+        ],
+        monkeypatch,
+        per_agent={"AAESTRO_AGENT_TOKEN_FEED_WATCHER": "PER-AGENT"},
+    )  # fmt: skip
+
+    assert clients["feed-watcher"]._token == "PER-AGENT"
+    assert clients["planner"]._token == "SHARED"
+
+
+def test_per_agent_env_token_wins_over_the_shared_env(monkeypatch):
+    clients = clients_for(
+        ["run", "g.yaml", "--agent", "planner=http://a:8080"],
+        monkeypatch,
+        env="SHARED-ENV",
+        per_agent={"AAESTRO_AGENT_TOKEN_PLANNER": "PER-AGENT"},
+    )
+
+    assert clients["planner"]._token == "PER-AGENT"
+
+
+def test_empty_per_agent_env_falls_back_to_the_shared_token(monkeypatch):
+    """compose 의 ${VAR:-default} 와 같게 빈 값은 미설정이다."""
+    clients = clients_for(
+        ["run", "g.yaml", "--agent", "planner=http://a:8080"],
+        monkeypatch,
+        env="SHARED-ENV",
+        per_agent={"AAESTRO_AGENT_TOKEN_PLANNER": ""},
+    )
+
+    assert clients["planner"]._token == "SHARED-ENV"

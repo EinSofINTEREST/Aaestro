@@ -575,6 +575,13 @@ def _run_on_deployment(args: argparse.Namespace, payload: dict[str, Any]) -> int
     return EXIT_OK if current.get("status") == "completed" else EXIT_FAILED
 
 
+def agent_token_env(name: str) -> str:
+    """에이전트별 토큰 env 키 — 에이전트 이름 (manifest metadata.name) 을 대문자 · ``_`` 로."""
+    from aaestro.core.agent import AGENT_TOKEN_ENV
+
+    return f"{AGENT_TOKEN_ENV}_{name.upper().replace('-', '_')}"
+
+
 def _control_clients(args: argparse.Namespace) -> dict[str, Any]:
     """Build Control API clients from ``--agent name=url`` pairs.
 
@@ -582,15 +589,18 @@ def _control_clients(args: argparse.Namespace) -> dict[str, Any]:
     CLI 가 컨테이너 포트를 추측하지 않고 호출자가 명시합니다.
 
     Control API 는 per-agent 토큰을 요구하므로 **토큰도 함께 실어야** 합니다 —
-    빠뜨리면 모든 노드 호출이 401 이 됩니다. ``--agent-token`` 이 우선하고,
-    없으면 ``AAESTRO_AGENT_TOKEN`` 을 봅니다 (compose 와 같은 키).
+    빠뜨리면 모든 노드 호출이 401 이 됩니다. 에이전트별로
+    ``AAESTRO_AGENT_TOKEN_<NAME>`` (``<NAME>`` 은 노드 id 가 아니라 에이전트 이름 —
+    manifest ``metadata.name``, 대문자, ``-`` 는 ``_``) 이 가장 먼저 읽히고,
+    없으면 ``--agent-token``, 그다음 ``AAESTRO_AGENT_TOKEN`` (모든 에이전트 공통) 입니다.
+    값을 명령줄에 싣지 않고 에이전트마다 다른 토큰을 쓰려면 앞의 env 를 씁니다.
     """
     from aaestro.core.agent import AGENT_TOKEN_ENV
     from aaestro.core.errors import NETWORK_RETRY
     from aaestro.runtime.control import ControlClient
 
     # 빈 문자열은 미설정과 같게 다룬다 — compose 의 ${VAR:-default} 와 같은 규칙
-    token = getattr(args, "agent_token", None) or os.environ.get(AGENT_TOKEN_ENV) or None
+    shared = getattr(args, "agent_token", None) or os.environ.get(AGENT_TOKEN_ENV) or None
 
     clients: dict[str, Any] = {}
     for entry in args.agent or ():
@@ -601,7 +611,10 @@ def _control_clients(args: argparse.Namespace) -> dict[str, Any]:
         # 여기서 켜지 않으면 정책은 정의만 되고 아무 일도 하지 않는다.
         # 읽기(health/card)만 재시도한다 — invoke 는 부수효과를 낳고
         # node 재시도(NodeSpec.retry)와 곱해진다
-        clients[name] = ControlClient(url, agent=name, token=token, retry=NETWORK_RETRY)
+        per_agent = os.environ.get(agent_token_env(name))
+        clients[name] = ControlClient(
+            url, agent=name, token=per_agent or shared, retry=NETWORK_RETRY
+        )
     return clients
 
 
@@ -935,7 +948,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--agent-token",
         default=None,
         dest="agent_token",
-        help="control api token (defaults to $AAESTRO_AGENT_TOKEN)",
+        help="control api token for every agent (defaults to $AAESTRO_AGENT_TOKEN; "
+        "$AAESTRO_AGENT_TOKEN_<NAME> overrides it per agent, NAME = agent name "
+        "upper-cased with - as _)",
     )
     run.add_argument(
         "--service",
