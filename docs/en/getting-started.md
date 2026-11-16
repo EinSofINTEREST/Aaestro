@@ -126,9 +126,11 @@ before anything is submitted, and agent addresses are given explicitly — the C
 not guess container ports:
 
 ```bash
+AAESTRO_AGENT_TOKEN_PLANNER=e2e-token-planner \
+AAESTRO_AGENT_TOKEN_RESEARCHER=e2e-token-researcher \
+AAESTRO_AGENT_TOKEN_WRITER=e2e-token-writer \
 aaestro run graphs/research-pipeline.yaml \
   --input '{"query": "..."}' \
-  --agent-token "${AAESTRO_AGENT_TOKEN:-e2e-token}" \
   --agent planner=http://127.0.0.1:18082 \
   --agent researcher=http://127.0.0.1:18083 \
   --agent writer=http://127.0.0.1:18084
@@ -139,9 +141,13 @@ Bring the agents up first with `make e2e-up` (fake model provider, no real LLM c
 Service graphs have no completion, so they are driven with `--service` instead:
 
 ```bash
+AAESTRO_AGENT_TOKEN_RESEARCHER=e2e-token-researcher \
+AAESTRO_AGENT_TOKEN_PLANNER=e2e-token-planner \
+AAESTRO_AGENT_TOKEN_WRITER=e2e-token-writer \
 aaestro run graphs/feed-monitor.yaml --service \
-  --agent-token "${AAESTRO_AGENT_TOKEN:-e2e-token}" \
-  --agent watcher=http://127.0.0.1:18082
+  --agent researcher=http://127.0.0.1:18083 \
+  --agent planner=http://127.0.0.1:18082 \
+  --agent writer=http://127.0.0.1:18084
 ```
 
 One iteration is a single `START → … → END` pass; the loop repeats until you
@@ -153,7 +159,7 @@ Direct requests reach any agent's Control API without a graph run:
 
 ```bash
 curl -X POST http://127.0.0.1:18081/v1/invoke \
-  -H "authorization: Bearer ${AAESTRO_AGENT_TOKEN:-e2e-token}" \
+  -H "authorization: Bearer ${AAESTRO_AGENT_TOKEN_ECHO:-e2e-token-echo}" \
   -H 'content-type: application/json' \
   -d '{"task_id":"t1","run_id":"direct-1","node_id":null,
        "input":{"msg":"hello"},"trace":{"trace_id":"tr-1"}}'
@@ -171,11 +177,16 @@ and is valid only when the bind address is loopback (`AAESTRO_AGENT_BIND_HOST=12
 the container default `0.0.0.0` is rejected). It logs a warning on start. The token value
 never appears in a message or log.
 
-The placeholder differs per stack: `make e2e-up` (`compose.e2e.yaml`) defaults to
-`e2e-token`, while the plain dev stack (`compose.yaml`) defaults to `dev-local-token`.
-Pass the one matching the stack you started, or export `AAESTRO_AGENT_TOKEN` before
-bringing it up so both sides read the same value. A mismatched token surfaces as `401`
-on every node call.
+Every agent service has its own token, so one agent's token cannot call another agent's
+Control API (`401`). `make e2e-up` (`compose.e2e.yaml`) reads `AAESTRO_AGENT_TOKEN_<AGENT>`
+(`ECHO`, `PLANNER`, `RESEARCHER`, `WRITER`) and defaults to `e2e-token-<agent>`; the plain dev
+stack (`compose.yaml`) reads `AAESTRO_AGENT_TOKEN_ECHO` and defaults to `dev-local-token`.
+
+`aaestro run` takes the same per-agent variables, upper-cased with `-` as `_`
+(`AAESTRO_AGENT_TOKEN_FEED_WATCHER` for `feed-watcher`; the agent name, not the graph node id), so no token goes on the command
+line. If one is unset it falls back to `--agent-token` or `AAESTRO_AGENT_TOKEN`, a single
+token for every agent. Export the same variables before bringing the stack up so both sides
+read the same value. A mismatched token surfaces as `401` on every node call.
 
 Still on the roadmap *(not implemented yet)*: `aaestro run trace`, `agent invoke`,
 `agent logs`, `replay`, `memory reindex`.

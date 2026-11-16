@@ -21,16 +21,25 @@ from typing import Any
 
 import pytest
 
+from aaestro.cli.main import agent_token_env
+
 pytestmark = pytest.mark.e2e
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 COMPOSE_FILE = REPO_ROOT / "deployments" / "docker" / "compose.e2e.yaml"
 ECHO_URL = "http://127.0.0.1:18081"
 READY_TIMEOUT_S = 120.0
+
+
 # compose 가 주입하는 값과 같아야 한다 — 어긋나면 전부 401 이다
 # compose 의 ${VAR:-default} 는 **빈 값도** default 로 떨어진다 —
 # 여기서 빈 문자열을 그대로 쓰면 테스트와 스택이 다른 토큰을 봐 전부 401 이다
-AGENT_TOKEN = os.environ.get("AAESTRO_AGENT_TOKEN") or "e2e-token"
+def agent_token(name: str) -> str:
+    """에이전트별 토큰 — compose.e2e.yaml 의 ``AAESTRO_AGENT_TOKEN_<NAME>`` 과 같은 규칙 (#413)."""
+    return os.environ.get(agent_token_env(name)) or f"e2e-token-{name}"
+
+
+AGENT_TOKEN = agent_token("echo")
 DOCKER_BIN = shutil.which("docker")
 
 
@@ -257,6 +266,19 @@ def test_wrong_token_is_rejected(stack):
 
     with pytest.raises(urllib.error.HTTPError) as exc_info:
         fetch(f"{ECHO_URL}/v1/invoke", direct_task({"msg": "x"}), token="not-the-token")
+
+    assert exc_info.value.code == 401
+
+
+@requires_docker
+def test_another_agents_token_is_rejected(stack):
+    """#413 — 에이전트마다 토큰이 달라, 한 에이전트의 토큰으로 다른 에이전트를 못 부른다."""
+    planner_url = "http://127.0.0.1:18082"
+    assert wait_healthy(ECHO_URL)
+    assert wait_healthy(planner_url)
+
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        fetch(f"{planner_url}/v1/invoke", direct_task({"msg": "x"}), token=agent_token("echo"))
 
     assert exc_info.value.code == 401
 

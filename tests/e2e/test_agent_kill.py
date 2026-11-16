@@ -26,8 +26,8 @@ from aaestro.orchestrator.submit import RunSubmitter
 from aaestro.runtime.control import ControlClient
 from aaestro.runtime.nodes import ControlNodeRuntime
 from tests.e2e.test_stack import (
-    AGENT_TOKEN,
     COMPOSE_FILE,
+    agent_token,
     compose_up,
     docker,
     requires_docker,
@@ -74,7 +74,7 @@ def stack() -> Iterator[dict[str, int]]:
 async def runs(stack: dict[str, int], tmp_path):
     """오케스트레이터 하나 — 에이전트를 죽여도 이쪽은 살아 있다."""
     clients = {
-        name: ControlClient(f"http://127.0.0.1:{port}", agent=name, token=AGENT_TOKEN)
+        name: ControlClient(f"http://127.0.0.1:{port}", agent=name, token=agent_token(name))
         for name, port in stack.items()
     }
     checkpointer = build_checkpointer("postgres", url=CHECKPOINT_URL)

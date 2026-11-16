@@ -110,7 +110,8 @@ services:
       # E2E 는 모델 비결정성을 배제한다 — echo 대역으로 프로토콜 경로만 검증
       AAESTRO_EXECUTOR: echo
       # 인증을 켠 채 검증한다 — 무인증 E2E 는 인증 회귀를 통과시킨다
-      AAESTRO_AGENT_TOKEN: ${AAESTRO_AGENT_TOKEN:-e2e-token}
+      # 에이전트마다 다른 토큰 — 한 에이전트의 토큰으로 다른 에이전트를 부르지 못한다 (#413)
+      AAESTRO_AGENT_TOKEN: ${AAESTRO_AGENT_TOKEN_ECHO:-e2e-token-echo}
 
   # 레퍼런스 그래프의 세 노드. **표준 실행기**로 돈다 — promptset 을 렌더하고
   # 모델을 호출하며 출력을 정형한다. echo 로 두면 그 경로가 전혀 검증되지
@@ -147,7 +148,7 @@ services:
       AAESTRO_A2A_PORT: "19102"
       # peer 는 **컨테이너 네트워크에서** 이 이름으로 닿는다
       AAESTRO_A2A_ADVERTISED_HOST: agent-planner
-      AAESTRO_AGENT_TOKEN: ${AAESTRO_AGENT_TOKEN:-e2e-token}
+      AAESTRO_AGENT_TOKEN: ${AAESTRO_AGENT_TOKEN_PLANNER:-e2e-token-planner}
       # SDK 가 이 값을 읽는다 — 코드 변경 없이 대역으로 향한다
       ANTHROPIC_BASE_URL: http://fake-provider:8000
       ANTHROPIC_API_KEY: e2e-fake-key
@@ -183,6 +184,7 @@ services:
       AAESTRO_A2A_PORT: "19103"
       # peer 는 **컨테이너 네트워크에서** 이 이름으로 닿는다
       AAESTRO_A2A_ADVERTISED_HOST: agent-researcher
+      AAESTRO_AGENT_TOKEN: ${AAESTRO_AGENT_TOKEN_RESEARCHER:-e2e-token-researcher}
 
   agent-writer:
     <<: *agent-defaults
@@ -211,6 +213,7 @@ services:
       AAESTRO_A2A_PORT: "19104"
       # peer 는 **컨테이너 네트워크에서** 이 이름으로 닿는다
       AAESTRO_A2A_ADVERTISED_HOST: agent-writer
+      AAESTRO_AGENT_TOKEN: ${AAESTRO_AGENT_TOKEN_WRITER:-e2e-token-writer}
 
 volumes:
   # Memory Service 가 발급한 토큰을 에이전트가 읽어 간다 — 값은 불투명 토큰이라

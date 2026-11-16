@@ -21,8 +21,8 @@ from typing import Any
 import pytest
 
 from tests.e2e.test_stack import (
-    AGENT_TOKEN,
     COMPOSE_FILE,
+    agent_token,
     compose_up,
     docker,
     requires_docker,
@@ -163,7 +163,7 @@ def test_a_remembered_fact_reaches_the_next_prompt(stack):
             "config": {},
             "trace": {"trace_id": "tr-recall"},
         },
-        token=AGENT_TOKEN,
+        token=agent_token("researcher"),
         port=RESEARCHER_PORT,
     )
 
@@ -190,7 +190,7 @@ def test_the_injection_is_marked_as_reference(stack):
             "config": {},
             "trace": {"trace_id": "tr-boundary"},
         },
-        token=AGENT_TOKEN,
+        token=agent_token("researcher"),
         port=RESEARCHER_PORT,
     )
 

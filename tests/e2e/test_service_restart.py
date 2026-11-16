@@ -27,8 +27,8 @@ from aaestro.orchestrator.submit import RunSubmitter
 from aaestro.runtime.control import ControlClient
 from aaestro.runtime.nodes import ControlNodeRuntime
 from tests.e2e.test_stack import (
-    AGENT_TOKEN,
     COMPOSE_FILE,
+    agent_token,
     compose_up,
     docker,
     requires_docker,
@@ -77,7 +77,7 @@ async def process(service_stack: dict[str, int], tmp_path):
 
     async def spawn() -> RunSubmitter:
         clients = {
-            name: ControlClient(f"http://127.0.0.1:{port}", agent=name, token=AGENT_TOKEN)
+            name: ControlClient(f"http://127.0.0.1:{port}", agent=name, token=agent_token(name))
             for name, port in service_stack.items()
         }
         checkpointer = build_checkpointer("postgres", url=CHECKPOINT_URL)

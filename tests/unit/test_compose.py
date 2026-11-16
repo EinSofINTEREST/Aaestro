@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -67,3 +68,48 @@ def test_no_service_reaches_the_host(path: Path):
         mounts = service.get("volumes") or []
         sock = [m for m in mounts if isinstance(m, str) and "docker.sock" in m]
         assert not sock, f"{path.name}:{name} 이 docker.sock 을 마운트한다"
+
+
+TOKEN_REF = re.compile(r"^\$\{(?P<var>[A-Z0-9_]+):-(?P<default>[^}]*)\}$")
+
+
+def control_token_refs(path: Path) -> dict[str, tuple[str, str]]:
+    """서비스 → (변수 이름, default). 상수 값은 (값, 값) 으로 본다."""
+    refs: dict[str, tuple[str, str]] = {}
+    for name, service in services(path).items():
+        raw = (service.get("environment") or {}).get("AAESTRO_AGENT_TOKEN")
+        if raw is None:
+            continue
+        match = TOKEN_REF.match(str(raw))
+        refs[name] = (match["var"], match["default"]) if match else (str(raw), str(raw))
+    return refs
+
+
+def assert_tokens_are_per_agent(path: Path) -> None:
+    refs = control_token_refs(path)
+    assert refs, f"{path.name}: 토큰을 선언한 에이전트 서비스를 찾지 못했다"
+    # 변수가 같으면 export 하는 순간 모든 에이전트가 같은 토큰이 된다 — default 와 별개로 본다
+    variables = [var for var, _ in refs.values()]
+    defaults = [default for _, default in refs.values()]
+    assert len(set(variables)) == len(variables), f"{path.name}: 토큰 변수가 겹친다 {refs}"
+    assert len(set(defaults)) == len(defaults), f"{path.name}: 토큰 default 가 겹친다 {refs}"
+
+
+@pytest.mark.parametrize("path", COMPOSE_FILES, ids=lambda p: p.name)
+def test_agent_services_do_not_share_a_control_token(path: Path):
+    """#413 — 토큰이 하나면 한 에이전트의 토큰으로 다른 에이전트의 Control API 가 열린다."""
+    assert_tokens_are_per_agent(path)
+
+
+def test_shared_token_variable_with_distinct_defaults_is_caught(tmp_path: Path):
+    """검출력 — 변수는 같고 default 만 다른 compose 는 실패해야 한다."""
+    broken = tmp_path / "compose.yaml"
+    broken.write_text(
+        "services:\n"
+        "  a:\n    environment:\n      AAESTRO_AGENT_TOKEN: ${AAESTRO_AGENT_TOKEN:-x}\n"
+        "  b:\n    environment:\n      AAESTRO_AGENT_TOKEN: ${AAESTRO_AGENT_TOKEN:-y}\n",
+        "utf-8",
+    )
+
+    with pytest.raises(AssertionError, match="변수가 겹친다"):
+        assert_tokens_are_per_agent(broken)
