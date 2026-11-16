@@ -11,8 +11,9 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 import httpx
 import structlog
@@ -451,6 +452,10 @@ def _assistant_message(turn: AssistantTurn) -> dict[str, Any]:
             for call in turn.tool_calls
         ]
     return rebuilt
+
+
+TOOL_NAME_PATTERN: Final = re.compile(r"[a-zA-Z0-9_-]{1,64}")
+"""OpenAI 함수 이름 제약 — bootstrap 이 광고 전에 이 모양으로 대조한다."""
 
 
 def _to_tool_schema(tool: Any) -> dict[str, Any]:

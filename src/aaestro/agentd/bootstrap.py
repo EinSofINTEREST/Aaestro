@@ -6,7 +6,9 @@ agentd 기동 시퀀스 (03 MCP Startup Sequence). 순서를 지키는 것 자�
 
 from __future__ import annotations
 
+import importlib
 import json
+import re
 import unicodedata
 from dataclasses import dataclass, field
 from types import MappingProxyType
@@ -15,7 +17,7 @@ from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 import structlog
 
 from aaestro.core.agent import ComponentHealth, HealthState, HealthStatus
-from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode, printable_label
 from aaestro.core.markers import defang
 from aaestro.core.skill import SkillSpec
 from aaestro.core.tools import namespaced
@@ -106,6 +108,15 @@ log = structlog.get_logger(__name__)
 # 정리 뒤 직렬화 크기 상한 — 수십 개 속성의 큰 스키마도 수 KiB 라 정상 서버는 걸리지 않고,
 # 한 도구가 매 턴 프롬프트를 부풀리는 것만 막는다
 MCP_SCHEMA_MAX_BYTES: Final = 32 * 1024
+
+_NAME_LIMIT_MODULES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "anthropic": "aaestro.agentd.providers.anthropic",
+        "openai-compat": "aaestro.agentd.providers.openai_compat",
+    }
+)
+"""provider 이름 → 도구 이름 제약 (``TOOL_NAME_PATTERN``) 을 든 어댑터 모듈. 지연 import 다 —
+선언한 provider 의 SDK 만 올린다 (``MODEL_ADAPTERS`` 와 같은 이유)."""
 
 MCP_DESCRIPTION_MAX_CHARS: Final = 1024
 """서버 설명의 상한 — 서버가 프롬프트를 마음대로 부풀리지 못하게 한다."""
@@ -223,6 +234,17 @@ def mcp_tool_description(server: str, raw: str) -> str:
     return f"{text} (from MCP server {server})"
 
 
+def _tool_name_limits(chain: ModelConfig | None) -> list[tuple[str, re.Pattern[str]]]:
+    """Name rule of every provider the chain may call — 모르는 provider 는 팩토리가 거절한다."""
+    if chain is None:
+        return []
+    return [
+        (provider, importlib.import_module(_NAME_LIMIT_MODULES[provider]).TOOL_NAME_PATTERN)
+        for provider in sorted(chain.providers())
+        if provider in _NAME_LIMIT_MODULES
+    ]
+
+
 def build_tool_registry(
     skillsets: Sequence[LoadedSkillset],
     mcp_servers: dict[str, tuple[str, ...]],
@@ -232,6 +254,7 @@ def build_tool_registry(
     with_peers: bool = False,
     mcp_schemas: Mapping[str, Mapping[str, Any]] | None = None,
     mcp_descriptions: Mapping[str, str] | None = None,
+    model_chain: ModelConfig | None = None,
 ) -> dict[str, SkillSpec]:
     """Merge skillset and MCP tools into one registry.
 
@@ -250,6 +273,8 @@ def build_tool_registry(
             모델이 인자를 채울 수 없다.
         mcp_descriptions: Namespaced tool name to the server's own description —
             신뢰하지 않는 입력이라 ``mcp_tool_description`` 을 거쳐 실린다.
+        model_chain: The model declaration (primary + fallbacks) — MCP tool 이름이 그 체인의
+            어느 provider 의 이름 제약이라도 넘으면 광고하지 않는다. 이름은 자르지 않는다.
 
     Returns:
         Tool name to its spec — MCP tool 도 스키마를 담은 spec 이다.
@@ -260,6 +285,7 @@ def build_tool_registry(
     registry: dict[str, SkillSpec] = {}
     schemas = mcp_schemas or {}
     descriptions = mcp_descriptions or {}
+    name_limits = _tool_name_limits(model_chain)
 
     for skillset in skillsets:
         for spec in skillset.tools():
@@ -284,6 +310,17 @@ def build_tool_registry(
                     tool=name,
                     mcp_server=server,
                 )
+            rejecting = [p for p, rule in name_limits if not rule.fullmatch(name)]
+            if rejecting:
+                # 거절이 아니라 광고 생략 — 첫 모델 호출이 400 으로 죽는 것보다 한 도구를 뺀다
+                log.warning(
+                    "mcp tool name rejected by model provider, tool not advertised",
+                    agent=agent,
+                    mcp_server=server,
+                    tool=printable_label(name),
+                    provider=", ".join(sorted(rejecting)),
+                )
+                continue
             parameters = clean_schema(dict(schemas.get(name, {})))
             size = len(json.dumps(parameters, ensure_ascii=False).encode())
             if size > MCP_SCHEMA_MAX_BYTES:
@@ -459,6 +496,7 @@ class Bootstrap:
             # 스키마를 흘리지 않으면 모델이 MCP tool 의 인자를 채울 수 없다
             mcp_schemas=self._mcp.schemas() if self._mcp is not None else None,
             mcp_descriptions=self._mcp.descriptions() if self._mcp is not None else None,
+            model_chain=self._manifest.spec.model,
         )
 
         return BootstrapResult(

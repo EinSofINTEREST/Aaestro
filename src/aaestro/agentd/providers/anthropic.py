@@ -9,8 +9,9 @@ provider 도 재시도하면 backoff 가 곱해져 rate limit 을 더 오래 문
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 import anthropic
 
@@ -302,6 +303,11 @@ def _assistant_content(turn: AssistantTurn) -> list[Any]:
         for call in turn.tool_calls
     ]
     return content
+
+
+TOOL_NAME_PATTERN: Final = re.compile(r"[a-zA-Z0-9_-]{1,128}")
+"""Anthropic 도구 이름 제약 — 공식 문서 define-tools 의 `name`: "Must match the regex
+`^[a-zA-Z0-9_-]{1,128}$`". bootstrap 이 광고 전에 대조한다."""
 
 
 def _to_tool_schema(tool: Any) -> dict[str, Any]:
