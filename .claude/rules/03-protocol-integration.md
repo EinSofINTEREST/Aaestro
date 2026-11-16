@@ -171,6 +171,9 @@ spec:
 3. **Tool Namespacing**
    - MCP tool 은 `mcp__{server}__{tool}` 로 네임스페이스 — skillset tool 과 충돌 방지
    - 동일 서버 이름 중복 선언 금지 (manifest 검증에서 차단)
+   - 전체 이름이 선언된 모델 체인 (primary + fallback) 의 어느 provider 의 함수 이름 제약
+     (OpenAI `{1,64}` · Anthropic `{1,128}`, 어댑터의 `TOOL_NAME_PATTERN`) 이라도 넘으면 광고하지 않고 WARN —
+     기동은 막지 않고 이름은 자르거나 바꾸지 않는다
    - tool description 은 서버가 준 설명을 쓰되 **untrusted input** 이다 — 유니코드 범주 `C*`
      (폭 없는 문자 · bidi 제어 포함, 탭 · 개행 제외) 와 줄 · 문단 구분자는 공백으로,
      `core.markers.defang`, 1024자 상한 (`MCP_DESCRIPTION_MAX_CHARS`), 뒤에 출처

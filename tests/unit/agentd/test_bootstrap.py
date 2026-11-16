@@ -638,3 +638,114 @@ def test_schema_position_vs_data_position():
     assert out["dependentRequired"] == {"trigger": [" with spaces "]}
     assert "[tool error]" not in out["properties"]["enum"]["description"]
     assert "[aaestro]" not in out["items"]["anyOf"][0]["title"]
+
+
+# --- tool name limits (#392) --------------------------------------------------
+
+LONG_TOOL = "t" * 80  # mcp__fs__ 를 붙이면 64자를 넘는다
+
+
+@pytest.mark.parametrize(
+    ("model", "expected"),
+    [
+        ({"provider": "openai-compat", "name": "m"}, {"mcp__fs__ok"}),
+        (
+            {
+                "provider": "anthropic",
+                "name": "m",
+                "fallbacks": [{"provider": "openai-compat", "name": "f", "on": ["rate_limit"]}],
+            },
+            {"mcp__fs__ok"},
+        ),
+        # 이름 제약이 없는 선언 (모델 체인 없음) 은 대조하지 않는다
+        (None, {"mcp__fs__ok", f"mcp__fs__{LONG_TOOL}"}),
+    ],
+    ids=["primary", "fallback", "no-chain"],
+)
+def test_registry_skips_tool_names_the_model_chain_rejects(model, expected):
+    from structlog.testing import capture_logs
+
+    from aaestro.core.manifest import ModelConfig
+
+    chain = ModelConfig.model_validate(model) if model else None
+    with capture_logs() as logs:
+        registry = build_tool_registry([], {"fs": ("ok", LONG_TOOL)}, agent="a", model_chain=chain)
+
+    assert set(registry) == expected
+    warned = [e for e in logs if e["log_level"] == "warning"]
+    assert len(warned) == (0 if model is None else 1)
+    if warned:
+        assert warned[0]["mcp_server"] == "fs"
+        # 체인의 provider 가 각자 제약으로 대조된다 — 같은 규칙이면 한 줄에 함께 실린다
+        assert "openai-compat" in warned[0]["provider"]
+
+
+async def test_startup_wires_the_declared_model_chain_into_tool_name_check():
+    """기동 경로가 선언된 모델 체인을 registry 에 넘긴다 — fallback 의 제약도 대조된다."""
+    mcp = FakeMcp().script("fs", ["ok", LONG_TOOL])
+    manifest = manifest_with(
+        mcp={"servers": [stdio("fs")]},
+        model={
+            "provider": "anthropic",
+            "name": "claude-sonnet-5",
+            "fallbacks": [{"provider": "openai-compat", "name": "f", "on": ["rate_limit"]}],
+        },
+    )
+
+    result = await bootstrap(manifest, mcp=mcp).run()
+
+    assert "mcp__fs__ok" in result.tools
+    assert f"mcp__fs__{LONG_TOOL}" not in result.tools
+
+
+# anthropic 은 128자, openai-compat 은 64자 — mcp__fs__ (8자) 를 붙인 전체 이름 기준
+MID_TOOL = "m" * 100  # 전체 108자: anthropic 만이면 통과, openai-compat 이면 탈락
+OVER_TOOL = "o" * 125  # 전체 133자: 어느 쪽도 탈락
+
+
+@pytest.mark.parametrize(
+    ("model", "advertised", "warned_provider"),
+    [
+        ({"provider": "anthropic", "name": "m"}, {"mcp__fs__ok", f"mcp__fs__{MID_TOOL}"}, None),
+        ({"provider": "openai-compat", "name": "m"}, {"mcp__fs__ok"}, "openai-compat"),
+        (
+            {
+                "provider": "anthropic",
+                "name": "m",
+                "fallbacks": [{"provider": "openai-compat", "name": "f", "on": ["rate_limit"]}],
+            },
+            {"mcp__fs__ok"},
+            "openai-compat",
+        ),
+    ],
+    ids=["anthropic-only", "openai-primary", "openai-fallback"],
+)
+def test_registry_applies_each_providers_own_name_limit(model, advertised, warned_provider):
+    from structlog.testing import capture_logs
+
+    from aaestro.core.manifest import ModelConfig
+
+    with capture_logs() as logs:
+        registry = build_tool_registry(
+            [],
+            {"fs": ("ok", MID_TOOL)},
+            agent="a",
+            model_chain=ModelConfig.model_validate(model),
+        )
+
+    assert set(registry) == advertised
+    warned = [e["provider"] for e in logs if e["log_level"] == "warning"]
+    assert warned == ([warned_provider] if warned_provider else [])
+
+
+def test_registry_skips_names_over_the_anthropic_limit_too():
+    from aaestro.core.manifest import ModelConfig
+
+    registry = build_tool_registry(
+        [],
+        {"fs": ("ok", OVER_TOOL)},
+        agent="a",
+        model_chain=ModelConfig.model_validate({"provider": "anthropic", "name": "m"}),
+    )
+
+    assert set(registry) == {"mcp__fs__ok"}
