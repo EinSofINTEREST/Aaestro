@@ -904,3 +904,247 @@ async def test_a_failed_stop_pins_the_health_series_to_zero(monkeypatch: pytest.
     await agents.stop("echo")
 
     assert health_value(metrics, "0") == 0.0, "정지가 실패했는데 값이 0 이 아니다"
+
+
+@pytest.mark.parametrize("health_interval_s", [10.0, None], ids=["watched", "unwatched"])
+async def test_a_failed_stop_keeps_the_replica_for_a_retry(health_interval_s: float | None):
+    """제거에 실패한 레플리카는 목록 · 포트 · 토큰을 쥔 채 남고, 다음 stop 이 같은 handle 로
+    정리를 끝낸다 (#623). 먼저 놓으면 미아 컨테이너를 다시 지울 수단이 없고, 포트가 다른
+    레플리카에 재할당된다."""
+    from aaestro.runtime.ports import A2APortAllocator
+
+    ports = A2APortAllocator(port_range=(9100, 9105))
+    agents = launcher(
+        FakeDockerClient(), HangingSleep(), ports=ports, health_interval_s=health_interval_s
+    )
+    document = yaml.safe_load((REPO_ROOT / "agents" / "echo" / "manifest.yaml").read_text("utf-8"))
+    document["spec"]["a2a"] = {"enabled": True}
+    launched = await agents.start(AgentManifest.model_validate(document))
+    port = launched.a2a_port
+    results = iter([False, True])
+    tried: list[str] = []
+
+    async def flaky_stop(handle, **kwargs) -> bool:
+        tried.append(handle.container_id)
+        return next(results)
+
+    agents.engine.stop = flaky_stop  # type: ignore[method-assign]
+    await agents.stop("echo")
+
+    assert agents.replicas_of("echo") == [launched], "제거 실패한 레플리카를 목록에서 뺐다"
+    assert ports.allocate("other") != port, "쥔 포트가 다른 에이전트에 재할당됐다"
+    assert agents.issuer.known("echo") is not None, "레플리카가 남았는데 토큰을 버렸다"
+    with pytest.raises(AaestroError):
+        agents.route("echo")  # 제거되지 않은 컨테이너로 태스크를 보내지 않는다
+
+    await agents.stop("echo")
+
+    assert tried == [launched.handle.container_id] * 2, "같은 handle 로 재시도하지 않았다"
+    assert not agents.replicas_of("echo")
+    assert "echo/0" not in ports.assigned
+    assert agents.issuer.known("echo") is None
+
+
+async def test_a_late_retry_does_not_clear_the_replica_that_took_its_place():
+    """제거 실패로 남은 레플리카를 두 정지가 동시에 재시도한다 (#623 리뷰).
+
+    늦게 끝난 쪽이 키로 정리하면, 그 사이 같은 자리에 선 **새** 레플리카의 추적 · 포트 · 토큰을
+    지운다. 정리는 지금 그 자리에 있는 객체가 자기일 때만 한다.
+    """
+    from aaestro.runtime.ports import A2APortAllocator
+
+    ports = A2APortAllocator(port_range=(9100, 9105))
+    agents = launcher(FakeDockerClient(), HangingSleep(), ports=ports)
+    document = yaml.safe_load((REPO_ROOT / "agents" / "echo" / "manifest.yaml").read_text("utf-8"))
+    document["spec"]["a2a"] = {"enabled": True}
+    declared = AgentManifest.model_validate(document)
+    await agents.start(declared)
+    entered, gate = asyncio.Event(), asyncio.Event()
+    calls = 0
+
+    async def scripted_stop(handle, **kwargs) -> bool:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return False  # 첫 정지는 제거에 실패해 레플리카를 남긴다
+        if calls == 2:
+            entered.set()
+            await gate.wait()  # 늦게 끝날 재시도
+        return True
+
+    agents.engine.stop = scripted_stop  # type: ignore[method-assign]
+    await agents.stop("echo")
+    late = asyncio.create_task(agents.stop("echo"))
+    await entered.wait()
+    await agents.stop("echo")  # 먼저 끝나는 재시도
+    fresh = await agents.start(declared)
+
+    gate.set()
+    await late
+
+    assert agents.launched.get(("echo", 0)) is fresh, "새 레플리카의 추적을 지웠다"
+    assert ports.allocate("other") != fresh.a2a_port, "새 레플리카의 포트를 놓았다"
+    assert agents.issuer.known("echo") is not None, "새 레플리카의 토큰을 버렸다"
+    agents.engine.stop = DockerEngine.stop.__get__(agents.engine)  # type: ignore[method-assign]
+    await agents.stop_all()
+
+
+async def test_a_late_retry_keeps_the_token_of_a_replica_still_starting():
+    """늦은 정지가 끝나는 순간 새 레플리카가 **기동 중** 이면 (#623 재검).
+
+    기동 중인 레플리카는 아직 목록에 없어 "남은 레플리카 없음" 으로 보인다 — 이때 토큰을 버리면
+    컨테이너에 주입한 토큰과 클라이언트가 내미는 토큰이 갈라져 호출이 전부 막힌다.
+    """
+    from aaestro.runtime.tokens import AGENT_TOKEN_ENV
+
+    docker = FakeDockerClient()
+    agents = launcher(docker, HangingSleep())
+    declared = AgentManifest.model_validate(
+        yaml.safe_load((REPO_ROOT / "agents" / "echo" / "manifest.yaml").read_text("utf-8"))
+    )
+    await agents.start(declared)
+    stop_entered, stop_gate = asyncio.Event(), asyncio.Event()
+    calls = 0
+
+    async def scripted_stop(handle, **kwargs) -> bool:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return False  # 첫 정지는 제거에 실패해 레플리카를 남긴다
+        if calls == 2:
+            stop_entered.set()
+            await stop_gate.wait()  # 늦게 끝날 재시도
+        return True
+
+    agents.engine.stop = scripted_stop  # type: ignore[method-assign]
+    await agents.stop("echo")
+    late = asyncio.create_task(agents.stop("echo"))
+    await stop_entered.wait()
+    await agents.stop("echo")  # 먼저 끝나는 재시도
+
+    start_entered, start_gate = asyncio.Event(), asyncio.Event()
+    real_start = agents.engine.start
+
+    async def held_start(spec):
+        start_entered.set()
+        await start_gate.wait()  # 토큰은 이미 주입됐고 아직 목록에 없다
+        return await real_start(spec)
+
+    agents.engine.start = held_start  # type: ignore[method-assign]
+    starting = asyncio.create_task(agents.start(declared))
+    await start_entered.wait()
+    stop_gate.set()
+    await late
+    start_gate.set()
+    fresh = await starting
+
+    injected = docker.created[-1]["environment"][AGENT_TOKEN_ENV]
+    assert fresh.client._token == injected, "기동 중 레플리카의 토큰을 버려 주입값과 갈라졌다"
+    assert agents.issuer.known("echo") == injected
+    agents.engine.stop = DockerEngine.stop.__get__(agents.engine)  # type: ignore[method-assign]
+    await agents.stop_all()
+
+
+@pytest.mark.parametrize("ending", ["error", "cancel"])
+async def test_a_deferred_token_release_finishes_when_the_held_start_fails(ending: str):
+    """정지가 기동 중 레플리카 때문에 토큰 해제를 미뤘는데 그 기동이 실패 · 취소되면 (#623 재검).
+
+    미룬 해제를 끝낼 주체가 없으면 레플리카 0 개인 에이전트의 토큰이 남는다.
+    """
+    agents = launcher(FakeDockerClient(), HangingSleep())
+    declared = AgentManifest.model_validate(
+        yaml.safe_load((REPO_ROOT / "agents" / "echo" / "manifest.yaml").read_text("utf-8"))
+    )
+    await agents.start(declared)
+    start_entered, start_gate = asyncio.Event(), asyncio.Event()
+
+    async def held_start(spec):
+        start_entered.set()
+        await start_gate.wait()
+        raise RuntimeError("engine start failed")
+
+    agents.engine.start = held_start  # type: ignore[method-assign]
+    starting = asyncio.create_task(agents.start(declared, replica=1))
+    await start_entered.wait()
+    await agents.stop("echo")  # 기동 중이라 토큰 해제를 미룬다
+    assert agents.issuer.known("echo") is not None
+
+    if ending == "error":
+        start_gate.set()
+        with pytest.raises(RuntimeError):
+            await starting
+    else:
+        starting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await starting
+
+    assert not agents.replicas_of("echo")
+    assert agents.issuer.known("echo") is None, "미룬 토큰 해제가 끝나지 않았다"
+
+
+async def test_a_failed_restart_keeps_the_token():
+    """재시작 교체의 start 실패는 정지가 미룬 해제가 아니다 — 원래 레플리카가 되돌아오므로
+    토큰을 지킨다 (버리면 다음 재시작이 새 토큰을 굽고 저장된 재부착 기록과 갈라진다)."""
+    agents = launcher(FakeDockerClient(), HangingSleep())
+    declared = AgentManifest.model_validate(
+        yaml.safe_load((REPO_ROOT / "agents" / "echo" / "manifest.yaml").read_text("utf-8"))
+    )
+    launched = await agents.start(declared)
+    token = agents.issuer.known("echo")
+
+    async def failing_start(spec):
+        raise RuntimeError("engine start failed")
+
+    agents.engine.start = failing_start  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError):
+        await agents._replace(launched)
+
+    assert agents.replicas_of("echo") == [launched]
+    assert agents.issuer.known("echo") == token
+
+
+async def test_a_start_that_registers_cancels_the_deferred_token_release():
+    """정지가 해제를 미룬 뒤 기동 하나가 성공하면 그 레플리카가 토큰을 쓴다 — 미룬 해제는 무효다
+    (#623 재검). 남겨 두면 뒤의 재시작 교체가 실패하는 순간 (원래 레플리카가 되돌아오기 전)
+    토큰을 버린다."""
+    agents = launcher(FakeDockerClient(), HangingSleep())
+    declared = AgentManifest.model_validate(
+        yaml.safe_load((REPO_ROOT / "agents" / "echo" / "manifest.yaml").read_text("utf-8"))
+    )
+    real_start = agents.engine.start
+    gates = {0: asyncio.Event(), 1: asyncio.Event()}
+    entered = {0: asyncio.Event(), 1: asyncio.Event()}
+    outcome = {0: "ok", 1: "fail"}
+
+    async def held_start(spec):
+        replica = int(spec.name.rsplit("-", 1)[-1])  # aaestro-{agent}-{replica}
+        entered[replica].set()
+        await gates[replica].wait()
+        if outcome[replica] == "fail":
+            raise RuntimeError("engine start failed")
+        return await real_start(spec)
+
+    agents.engine.start = held_start  # type: ignore[method-assign]
+    first = asyncio.create_task(agents.start(declared, replica=0))
+    second = asyncio.create_task(agents.start(declared, replica=1))
+    await entered[0].wait()
+    await entered[1].wait()
+    await agents.stop("echo")  # 둘 다 기동 중 — 해제를 미룬다
+    gates[0].set()
+    survivor = await first  # 성공한 레플리카가 토큰을 쓴다
+    token = agents.issuer.known("echo")
+
+    gates[0] = asyncio.Event()
+    outcome[0] = "fail"
+    entered[0].clear()
+    replacing = asyncio.create_task(agents._replace(survivor))
+    await entered[0].wait()  # 교체 기동이 보류된 채 원래 레플리카는 목록 밖
+    gates[1].set()
+    with pytest.raises(RuntimeError):
+        await second
+    gates[0].set()
+    with pytest.raises(RuntimeError):
+        await replacing
+
+    assert agents.replicas_of("echo") == [survivor]
+    assert agents.issuer.known("echo") == token, "되돌아온 레플리카의 토큰을 버렸다"

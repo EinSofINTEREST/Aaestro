@@ -2060,3 +2060,95 @@ async def test_a_volume_beside_the_runtime_owned_paths_deploys(manager, workspac
 
     assert record.status == DeploymentStatus.READY
     await manager.launcher.stop_all()
+
+
+async def test_a_teardown_that_leaves_a_replica_is_not_recorded_stopped(manager, docker):
+    """제거에 실패한 레플리카가 launcher 에 남으면 해체는 끝나지 않았다 (#623).
+
+    STOPPED 로 적으면 teardown 이 바로 반환해 같은 handle 로 다시 지울 길이 없고, 남은 레플리카가
+    재배포를 막는다. LOST + 사유로 남기고, 다시 해체하면 정리를 끝내고 STOPPED 가 된다.
+    """
+    record = await manager.deploy("two")
+    alpha = manager.launcher.launched[("alpha", 0)]
+    docker._remove_failures = 1  # noqa: SLF001 — 첫 제거 (alpha 의 launcher 정지) 만 실패한다
+
+    lost = await manager.teardown(record.deployment_id)
+
+    assert lost.status == DeploymentStatus.LOST
+    assert "alpha" in (lost.error or "")
+    assert manager.launcher.replicas_of("alpha") == [alpha]
+    with pytest.raises(AaestroError) as exc_info:
+        await manager.deploy("two")
+    assert exc_info.value.code == ErrorCode.RT_010
+    assert exc_info.value.details["deployments"] == [record.deployment_id]
+
+    stopped = await manager.teardown(record.deployment_id)
+
+    assert stopped.status == DeploymentStatus.STOPPED
+    assert not manager.launcher.replicas_of("alpha")
+    assert docker.removed.count(alpha.handle.container_id) >= 2, "같은 handle 로 재시도하지 않았다"
+
+
+async def test_a_failing_stop_still_stops_the_other_agents(manager, docker, monkeypatch):
+    """한 에이전트의 정지가 넘어져도 나머지는 launcher 로 끝까지 정지한다 (#623).
+
+    건너뛰면 감시가 살아 있는 레플리카의 컨테이너를 `_remove_orphans` 가 지우고, 재시작이 그
+    자리에 컨테이너를 다시 세운다. 넘어진 쪽은 아직 launcher 가 쥐고 있으니 라벨로 지우지 않는다.
+    """
+    record = await manager.deploy("two")
+    alpha = manager.launcher.launched[("alpha", 0)]
+    stop = manager.launcher.stop
+
+    async def alpha_breaks(agent: str, *, replica: int | None = None) -> None:
+        if agent == "alpha":
+            raise RuntimeError("docker went away")
+        await stop(agent, replica=replica)
+
+    monkeypatch.setattr(manager.launcher, "stop", alpha_breaks)
+    with pytest.raises(RuntimeError):
+        await manager.teardown(record.deployment_id)
+
+    assert not manager.launcher.replicas_of("beta"), "beta 를 launcher 로 정지하지 않았다"
+    assert alpha.handle.container_id not in docker.removed, "감시 중인 컨테이너를 라벨로 지웠다"
+    # alpha 가 남았다 — 예외가 나도 다시 해체할 수 있게 LOST + 사유로 남는다
+    left = manager.get(record.deployment_id)
+    assert left.status == DeploymentStatus.LOST
+    assert "alpha" in (left.error or "")
+    monkeypatch.setattr(manager.launcher, "stop", stop)
+    await manager.launcher.stop_all()
+
+
+async def test_a_rollback_that_leaves_a_replica_keeps_its_port_and_can_be_torn_down(
+    workspace, docker, healthy, monkeypatch
+):
+    """배포가 넘어져 되감는데 먼저 선 에이전트의 제거가 실패하면 (#623 리뷰).
+
+    그 레플리카의 포트를 돌려주면 다른 에이전트가 같은 번호를 받고, FAILED 로 적으면 teardown 이
+    바로 반환해 제거를 다시 시도할 길이 없다. 포트를 쥐고 LOST + 사유로 남긴다.
+    """
+    wired_workspace(workspace)
+    manager = wired_manager(workspace, docker)
+    original = DockerEngine.start
+
+    async def beta_fails(self, spec):
+        if spec.name == "aaestro-beta-0":
+            raise AaestroError(category=ErrorCategory.RUNTIME, code=ErrorCode.RT_001, message="x")
+        return await original(self, spec)
+
+    monkeypatch.setattr(DockerEngine, "start", beta_fails)
+    docker._remove_failures = 1  # noqa: SLF001 — 되감기의 alpha 제거만 실패한다
+    with pytest.raises(AaestroError):
+        await manager.deploy("wired")
+
+    [record] = manager.store.list()
+    [alpha] = manager.launcher.replicas_of("alpha")
+    assert record.status == DeploymentStatus.LOST
+    assert "alpha" in (record.error or "")
+    assert manager.launcher.ports.allocate("other") != alpha.a2a_port, (
+        "남은 레플리카의 포트를 놓았다"
+    )
+
+    stopped = await manager.teardown(record.deployment_id)
+
+    assert stopped.status == DeploymentStatus.STOPPED
+    assert not manager.launcher.replicas_of("alpha")

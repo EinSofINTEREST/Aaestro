@@ -605,15 +605,22 @@ class DeploymentManager:
             self._release_ports(provisions)
             # 되감긴 배포의 신원이 살아 있으면 존재하지 않는 컨테이너 이름으로 강제 지점을 통과한다
             self._revoke_identities(deployment_id)
-            failed = DeploymentRecord(
-                **{
-                    **record.__dict__,
-                    "status": DeploymentStatus.FAILED,
-                    "error": str(err),
-                    "updated_at": _now(),
-                }
-            )
-            self.store.upsert(failed)
+            left = self._left_behind(attempted)
+            if left:
+                # 되감기가 지우지 못한 레플리카가 남았다 — FAILED 면 teardown 이 바로 반환해 다시
+                # 지울 길이 없다. 다시 해체할 수 있게 LOST 로 남긴다 (#623)
+                reason = f"agent containers not removed: {', '.join(left)} (deploy failed: {err})"
+                self._mark_lost(record, reason, [])
+            else:
+                failed = DeploymentRecord(
+                    **{
+                        **record.__dict__,
+                        "status": DeploymentStatus.FAILED,
+                        "error": str(err),
+                        "updated_at": _now(),
+                    }
+                )
+                self.store.upsert(failed)
             bound.error(
                 "deployment failed and was rolled back", agents=len(launched), error_code=_code(err)
             )
@@ -683,20 +690,41 @@ class DeploymentManager:
             self._release(held, record.deployment_id)
 
     async def _stop(self, record: DeploymentRecord, names: Sequence[str]) -> DeploymentRecord:
+        # 하나가 넘어져도 나머지를 끝까지 정지한다 — 건너뛴 쪽은 감시가 살아 있는데 아래
+        # `_remove_orphans` 가 컨테이너를 지워, 재시작이 그 자리에 다시 세운다 (#623)
+        failures: list[Exception] = []
+        broken: set[str] = set()
         try:
             for name in names:
-                await self.launcher.stop(name)
+                try:
+                    await self.launcher.stop(name)
+                except Exception as err:
+                    failures.append(err)
+                    broken.add(name)
+                    log.error("agent stop failed", agent=name, exc_info=err)
         finally:
             # 에이전트 정지가 실패해도 사이드카는 치운다 — 03 Placement 1, lifecycle 을 함께한다
             for name in names:
                 await self.sidecars.stop(name)
             # launcher 가 모르는 컨테이너 (control plane 재시작 전에 뜬 것) 도 치운다. 사이드카도
-            # 같은 라벨을 달아 sidecars.stop 이 놓친 것이 있으면 여기서 한 번 더 지워진다 (멱등)
+            # 같은 라벨을 달아 sidecars.stop 이 놓친 것이 있으면 여기서 한 번 더 지워진다 (멱등).
+            # 정지가 넘어진 이름은 launcher 가 아직 감시하므로 라벨로 지우지 않는다
             for name in names:
-                await self._remove_orphans(name)
+                if name not in broken:
+                    await self._remove_orphans(name)
             # 해체를 요청한 이상 신원은 죽인다 — 정지 하나가 실패했다고 모든 신원이 살아 남으면
             # 운영자가 끝냈다고 믿는 배포가 강제 지점을 계속 통과한다
             self._revoke_identities(record.deployment_id)
+        # 제거에 실패하거나 정지가 넘어진 레플리카는 launcher 에 남는다 — STOPPED 로 적으면
+        # teardown 이 바로 반환해 다시 지울 길이 없다. 예외를 올리기 **전에** LOST 로 남긴다
+        left = self._left_behind(names)
+        touched: list[DeploymentRecord] = []
+        if left:
+            self._mark_lost(record, f"agent containers not removed: {', '.join(left)}", touched)
+        if failures:
+            raise failures[0]
+        if touched:
+            return touched[0]
         stopped = DeploymentRecord(
             **{**record.__dict__, "status": DeploymentStatus.STOPPED, "updated_at": _now()}
         )
@@ -1281,8 +1309,13 @@ class DeploymentManager:
         if self.launcher.ports is None:
             return
         for agent, provision in provisions.items():
-            if provision.a2a_port is not None:
+            # 제거에 실패해 남은 레플리카는 포트를 쥔다 — 놓으면 다른 에이전트가 같은 번호를 받는다
+            if provision.a2a_port is not None and not self.launcher.replicas_of(agent):
                 self.launcher.ports.release(agent)
+
+    def _left_behind(self, names: Sequence[str]) -> list[str]:
+        """정지 뒤에도 launcher 가 쥔 레플리카가 있는 이름 — 제거 실패 · 넘어진 정지 (#623)."""
+        return [name for name in names if self.launcher.replicas_of(name)]
 
     async def _wait_ready(self, launched: Sequence[LaunchedAgent]) -> None:
         deadline = self.clock() + self.ready_timeout_s
