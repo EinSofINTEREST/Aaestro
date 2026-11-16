@@ -327,7 +327,7 @@ async def test_draining_during_teardown_is_not_shown_as_degraded(api, manager, g
 
 
 async def test_a_half_finished_teardown_shows_the_stopped_replica_absent(api, manager, monkeypatch):
-    """두 번째 정지가 실패하면 기록은 ready 로 남고 해체 표는 비워진다 — 아무도 교체하지 않는다."""
+    """두 번째 정지가 실패하면 기록은 lost 로 남고 (#623) 해체 표는 비워진다."""
     record = await manager.deploy("two")
     stop = manager.launcher.stop
     broken = {"beta": True}
@@ -345,7 +345,8 @@ async def test_a_half_finished_teardown_shows_the_stopped_replica_absent(api, ma
 
         body = await view(api, record.deployment_id)
 
-        assert body["status"] == DEGRADED
+        assert body["status"] == "lost"
+        assert "beta" in body["error"]
         assert states(body)["alpha"] == ReplicaState.ABSENT
     finally:
         broken["beta"] = False

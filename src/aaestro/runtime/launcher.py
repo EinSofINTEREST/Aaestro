@@ -139,6 +139,8 @@ class AgentLauncher:
     """정지 전 진행 중 태스크를 기다리는 상한 (02 Lifecycle 4, 기본 30s)."""
     launched: dict[tuple[str, int], LaunchedAgent] = field(default_factory=dict)
     _cursors: dict[str, int] = field(default_factory=dict, init=False)
+    _starting: dict[str, int] = field(default_factory=dict, init=False)
+    _forget_deferred: set[str] = field(default_factory=set, init=False)
     _monitors: dict[tuple[str, int], asyncio.Task[None]] = field(default_factory=dict, init=False)
     _restarts: dict[tuple[str, int], asyncio.Task[None]] = field(default_factory=dict, init=False)
     restart_sleep: Callable[[float], Awaitable[None]] | None = None
@@ -203,68 +205,86 @@ class AgentLauncher:
                 details={"replica": replica},
             )
 
-        self._prime_restart_counter(agent)
+        # 기동 중인 레플리카는 아직 목록에 없다 — 이 사이의 늦은 정지가 이미 주입한 토큰을
+        # 버리지 못하게 센다 (#623)
+        self._starting[agent] = self._starting.get(agent, 0) + 1
+        try:
+            self._prime_restart_counter(agent)
 
-        # 03 Rule 2 — 포트는 runtime 이 준다. 호출자가 명시하면 그것을 존중하고,
-        # 아니면 범위에서 할당한다. A2A 가 꺼진 에이전트는 범위를 소비하지 않는다
-        if a2a_port is None and self.ports is not None and manifest.spec.a2a.enabled:
-            a2a_port = self.ports.allocate(agent, replica=replica)
+            # 03 Rule 2 — 포트는 runtime 이 준다. 호출자가 명시하면 그것을 존중하고,
+            # 아니면 범위에서 할당한다. A2A 가 꺼진 에이전트는 범위를 소비하지 않는다
+            if a2a_port is None and self.ports is not None and manifest.spec.a2a.enabled:
+                a2a_port = self.ports.allocate(agent, replica=replica)
 
-        spec = build_container_spec(
-            manifest,
-            env=_with_memory(authenticated_env(self.issuer, agent, secrets), memory),
-            replica=replica,
-            a2a_port=a2a_port,
-            network=self.engine.network,
-            mounts=mounts,
-            image=image,
-            extra_networks=networks,
-        )
+            spec = build_container_spec(
+                manifest,
+                env=_with_memory(authenticated_env(self.issuer, agent, secrets), memory),
+                replica=replica,
+                a2a_port=a2a_port,
+                network=self.engine.network,
+                mounts=mounts,
+                image=image,
+                extra_networks=networks,
+            )
 
-        # 02 Lifecycle — 이미지는 배포 파이프라인이 굽는다 (Rule 1). runtime 이
-        # 보는 것은 Built 이후다
-        if lifecycle is None:
-            lifecycle = AgentLifecycle(agent=agent)
-            lifecycle.transition(AgentState.BUILT)
-        # 재시작은 Unhealthy/Failed 에서 다시 올라온다 — 두 전이 모두 허용된다
-        lifecycle.transition(AgentState.STARTING)
+            # 02 Lifecycle — 이미지는 배포 파이프라인이 굽는다 (Rule 1). runtime 이
+            # 보는 것은 Built 이후다
+            if lifecycle is None:
+                lifecycle = AgentLifecycle(agent=agent)
+                lifecycle.transition(AgentState.BUILT)
+            # 재시작은 Unhealthy/Failed 에서 다시 올라온다 — 두 전이 모두 허용된다
+            lifecycle.transition(AgentState.STARTING)
 
-        handle = await self.engine.start(spec)
-        client = ControlClient(
-            handle.control_url,
-            agent=agent,
-            # 05 Retry Layering — runtime 이 재시도 주체다 (읽기만)
-            retry=NETWORK_RETRY,
-            # 컨테이너에 주입한 것과 같은 토큰 — 발급자가 하나이므로 일치한다
-            token=self.issuer.issue(agent),
-        )
+            handle = await self.engine.start(spec)
+            client = ControlClient(
+                handle.control_url,
+                agent=agent,
+                # 05 Retry Layering — runtime 이 재시도 주체다 (읽기만)
+                retry=NETWORK_RETRY,
+                # 컨테이너에 주입한 것과 같은 토큰 — 발급자가 하나이므로 일치한다
+                token=self.issuer.issue(agent),
+            )
 
-        launched = LaunchedAgent(
-            agent=agent,
-            handle=handle,
-            client=client,
-            replica=replica,
-            lifecycle=lifecycle,
-            restart_args={
-                "manifest": manifest,
-                "secrets": secrets,
-                "memory": memory,
-                "mounts": mounts,
-                "image": image,
-                "networks": networks,
-            },
-            a2a_port=a2a_port,
-        )
-        self.launched[agent, replica] = launched
-        self._watch(launched)
-        log.info(
-            "agent launched",
-            agent=agent,
-            container_id=handle.short_id,
-            image=handle.image,
-            port=handle.control_port,
-        )
-        return launched
+            launched = LaunchedAgent(
+                agent=agent,
+                handle=handle,
+                client=client,
+                replica=replica,
+                lifecycle=lifecycle,
+                restart_args={
+                    "manifest": manifest,
+                    "secrets": secrets,
+                    "memory": memory,
+                    "mounts": mounts,
+                    "image": image,
+                    "networks": networks,
+                },
+                a2a_port=a2a_port,
+            )
+            self.launched[agent, replica] = launched
+            # 등록된 레플리카가 토큰을 쓴다 — 정지가 미뤄 둔 해제는 이제 무효다
+            self._forget_deferred.discard(agent)
+            self._watch(launched)
+            log.info(
+                "agent launched",
+                agent=agent,
+                container_id=handle.short_id,
+                image=handle.image,
+                port=handle.control_port,
+            )
+            return launched
+        finally:
+            self._starting[agent] -= 1
+            if not self._starting[agent]:
+                del self._starting[agent]
+                # 정지가 미뤄 둔 토큰 해제 — 기동이 실패 · 취소돼 남은 레플리카가 없으면
+                # 여기서 끝낸다. 재시작 교체의 실패는 정지가 미룬 것이 아니므로 토큰을
+                # 지키고 원래 레플리카가 되돌아온다
+                if agent in self._forget_deferred:
+                    self._forget_deferred.discard(agent)
+                    if not self.replicas_of(agent):
+                        self.issuer.forget(agent)
+                        self._cursors.pop(agent, None)
 
     def _watch(self, launched: LaunchedAgent, *, ready_once: bool = False) -> None:
         """Start this replica's health loop, when supervision is on.
@@ -666,7 +686,10 @@ class AgentLauncher:
         Raises:
             AaestroError: RUNTIME/``RT_009`` if the agent has no launched replica.
         """
-        replicas = self.replicas_of(agent)
+        # 제거에 실패해 남은 레플리카 (STOPPED) 는 감시 여부와 무관하게 후보가 아니다 (#623)
+        replicas = [
+            r for r in self.replicas_of(agent) if r.lifecycle.state is not AgentState.STOPPED
+        ]
         if self.health_interval_s is not None:
             ready = [item for item in replicas if item.lifecycle.accepts_tasks]
             replicas = ready or []
@@ -717,8 +740,22 @@ class AgentLauncher:
             await self._stop_container(launched)
             if launched.lifecycle.state is not AgentState.STOPPED:
                 launched.lifecycle.transition(AgentState.STOPPED)
-            # 재시작이 먼저 지웠을 수 있다 — 없으면 지울 것도 없다
-            self.launched.pop((agent, launched.replica), None)
+            if self.launched.get(key) is not launched:
+                # 같은 handle 의 다른 정지가 먼저 정리했다 — 그 뒤 이 자리에 선 새 레플리카의
+                # 추적 · 포트 · 지표를 키로 지우면 안 된다 (#623)
+                continue
+            if launched.stopped:
+                del self.launched[key]
+            else:
+                # 제거 실패 — 목록 · 포트 · 토큰을 쥔 채 남겨 다음 stop 이 같은 handle 로 다시
+                # 지운다 (#623). 놓으면 미아가 되고 포트가 다른 레플리카에 재할당된다
+                log.warning(
+                    "agent container not removed; replica kept for a retry",
+                    agent=agent,
+                    replica=launched.replica,
+                    container_id=launched.handle.short_id,
+                    image=launched.handle.image,
+                )
             if self.metrics is not None:
                 gauge = self.metrics.gauge("aaestro_agent_health")
                 if launched.stopped:
@@ -728,15 +765,18 @@ class AgentLauncher:
                         gauge.remove(agent, str(launched.replica))
                 else:
                     # 제거 실패 — 감시가 멈춰 값이 갱신되지 않으니 0 으로 고정한다.
-                    # 1 이 남으면 추적하지 않는 미아 컨테이너가 healthy 로 보인다
+                    # 1 이 남으면 지워지지 않은 컨테이너가 healthy 로 보인다
                     gauge.labels(agent=agent, replica=str(launched.replica)).set(0)
-            if self.ports is not None:
+            if self.ports is not None and launched.stopped:
                 self.ports.release(agent, replica=launched.replica)
 
-        # 토큰은 에이전트 단위다 — 레플리카가 남아 있으면 아직 버리지 않는다
+        # 토큰은 에이전트 단위다 — 레플리카가 남아 있거나 기동 중이면 아직 버리지 않는다
         if not self.replicas_of(agent):
-            self.issuer.forget(agent)
-            self._cursors.pop(agent, None)
+            if self._starting.get(agent):
+                self._forget_deferred.add(agent)  # 끝나는 기동이 마저 판단한다
+            else:
+                self.issuer.forget(agent)
+                self._cursors.pop(agent, None)
 
     async def _drain(self, launched: LaunchedAgent) -> None:
         """02 Lifecycle 4 — 진행 중 태스크가 끝나길 기다린 뒤에 정지한다.
