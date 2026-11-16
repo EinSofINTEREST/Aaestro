@@ -27,7 +27,6 @@ from aaestro.runtime.deployments import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-IMAGE = "aaestro/agent-base:0.1.0"
 FOREIGN_UID = "4242:4242"
 """control plane 과 다른 uid — 같은 uid 면 0600 으로 교체된 파일도 읽혀 회귀를 못 본다."""
 
@@ -45,16 +44,7 @@ def docker(*args: str, check: bool = True) -> str:
     return result.stdout.strip()
 
 
-def image_present() -> bool:
-    if shutil.which("docker") is None:
-        return False
-    return bool(docker("images", "-q", IMAGE, check=False))
-
-
-pytestmark = [
-    pytest.mark.integration,
-    pytest.mark.skipif(not image_present(), reason=f"{IMAGE} is not built (make build-base)"),
-]
+pytestmark = pytest.mark.integration
 
 
 @pytest.fixture
@@ -68,7 +58,7 @@ def workspace(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def container(workspace: Path) -> Iterator[str]:
+def container(workspace: Path, base_image: str) -> Iterator[str]:
     """배포가 계산하는 마운트 그대로 — 손으로 쓴 마운트는 배포와 어긋날 수 있다."""
     catalog = Catalog.under(workspace)
     manager = DeploymentManager(
@@ -93,7 +83,7 @@ def container(workspace: Path) -> Iterator[str]:
         *flags,
         "--entrypoint",
         "sleep",
-        IMAGE,
+        base_image,
         "infinity",
     )
     try:
