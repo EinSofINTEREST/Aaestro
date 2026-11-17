@@ -14,6 +14,7 @@ import json
 import re
 
 import pytest
+import yaml
 from pydantic import ValidationError
 
 from aaestro.core.topology import GraphTopology
@@ -428,3 +429,228 @@ def test_validate_and_save_send_the_same_document(ui):
     ui.save()
 
     assert ui.fake.validates[-1]["graphs"][0] == last_put(ui)[1]
+
+
+# --- 열기 → 무수정 저장 왕복 (#426) -----------------------------------------------------
+
+LITERAL_MAP = {
+    "lit_int": 2,
+    "lit_false": False,
+    "lit_list": ["x", "y"],
+    "lit_obj": {"k": 1, "j": 2},
+    "lit_str": "a, b=c",
+    "lit_empty": "",
+    "lit_null": None,
+    "from_state": "state.query",
+}
+
+
+def roundtrip_declaration() -> dict:
+    doc = copy.deepcopy(DECLARATION)
+    doc["metadata"]["name"] = "literals"
+    writer, sub = doc["spec"]["nodes"][0], doc["spec"]["nodes"][1]
+    writer["input_map"] = copy.deepcopy(LITERAL_MAP)
+    writer["output_map"] = {"draft": "output.draft", "k=v": "a, b"}
+    sub["input_map"] = copy.deepcopy(LITERAL_MAP)
+    doc["spec"]["state"]["fields"] = {
+        "query": {"type": "string", "required": True},
+        "note": {"type": "string", "default": ""},
+        "cfg": {"type": "object", "default": {"k": "", "n": None, "deep": {"e": ""}}},
+    }
+    return doc
+
+
+def saved_after_untouched_open(ui, declaration):
+    ui.fake.graphs[declaration["metadata"]["name"]] = copy.deepcopy(declaration)
+    ui.load(declaration["metadata"]["name"])
+    text = ui.save()
+    assert text.startswith("저장됨"), ui.findings()
+    return last_put(ui)[1]
+
+
+def assert_same_declaration(body, declaration):
+    expected = copy.deepcopy(declaration)
+    expected["metadata"]["version"] = body["metadata"]["version"]  # 불러올 때 patch 가 오른다
+    assert GraphTopology.model_validate(body) == GraphTopology.model_validate(expected)
+
+
+def test_untouched_open_and_save_keeps_literal_maps_and_empty_defaults(ui):
+    declaration = roundtrip_declaration()
+
+    body = saved_after_untouched_open(ui, declaration)
+
+    for node_id in ("writer", "sub"):
+        assert node_of(body, node_id)["input_map"] == LITERAL_MAP
+    assert node_of(body, "writer")["output_map"] == {"draft": "output.draft", "k=v": "a, b"}
+    fields = body["spec"]["state"]["fields"]
+    assert fields["note"]["default"] == ""
+    assert fields["cfg"]["default"] == {"k": "", "n": None, "deep": {"e": ""}}
+    assert_same_declaration(body, declaration)
+
+
+def test_an_edited_map_is_parsed_from_the_text_while_other_nodes_stay_literal(ui):
+    declaration = roundtrip_declaration()
+    declaration["spec"]["nodes"][0]["input_map"] = {"query": "state.query", "keep": "literal"}
+    declaration["spec"]["nodes"][0]["output_map"] = {"draft": "output.draft"}
+    ui.fake.graphs["literals"] = declaration
+    ui.load("literals")
+    row = ui.page.locator("#graph-nodes tbody tr").nth(ui.row_of("writer"))
+    assert row.locator("[name=node_input]").is_editable()
+    assert row.locator("[name=node_output]").is_editable()
+    assert row.locator(".map-readonly-note").count() == 0
+    row.locator("[name=node_input]").fill("query=state.other, keep=literal, extra=state.x")
+    row.locator("[name=node_output]").fill("draft=output.revised")
+
+    assert ui.save().startswith("저장됨"), ui.findings()
+
+    body = last_put(ui)[1]
+    assert node_of(body, "writer")["input_map"] == {
+        "query": "state.other",
+        "keep": "literal",
+        "extra": "state.x",
+    }
+    assert node_of(body, "writer")["output_map"] == {"draft": "output.revised"}
+    assert node_of(body, "sub")["input_map"] == LITERAL_MAP
+
+
+@pytest.mark.parametrize(
+    "literal_map",
+    [
+        LITERAL_MAP,
+        {"value": 2},
+        {"value": False},
+        {"value": ["x", "y"]},
+        {"value": {"k": 1, "j": 2}},
+        {"value": None},
+        {"k,other": "value"},
+        {"k=other": "value"},
+        {"value": "a,b"},
+        {"value": "a=b"},
+        {"value": ""},
+        {" key ": "value"},
+        {"value": " value "},
+        {"value": "line1\nline2"},
+    ],
+)
+def test_lossy_map_cells_are_readonly_with_visible_reasons_and_keep_the_original(ui, literal_map):
+    declaration = roundtrip_declaration()
+    writer = declaration["spec"]["nodes"][0]
+    writer["input_map"] = copy.deepcopy(literal_map)
+    writer["output_map"] = {"k=v": "a, b", "empty": ""}
+    ui.fake.graphs["literals"] = declaration
+    ui.load("literals")
+    row = ui.page.locator("#graph-nodes tbody tr").nth(ui.row_of("writer"))
+
+    for name in ("node_input", "node_output"):
+        cell = row.locator(f"[name={name}]")
+        assert not cell.is_editable()
+        assert cell.get_attribute("readonly") is not None
+        reason = ui.page.locator(f"#{cell.get_attribute('aria-describedby')}")
+        assert reason.is_visible()
+        assert "읽기 전용" in reason.inner_text() and "원본" in reason.inner_text()
+        original_text = cell.input_value()
+        cell.click()
+        cell.press("End")
+        cell.press_sequentially(", extra=state.x")
+        assert cell.input_value() == original_text
+        # DOM 의 글만 바뀌어도 저장 분기가 원래 타입 · 값을 보존해야 한다.
+        cell.evaluate("(input) => { input.value += ', extra=state.x'; }")
+
+    assert ui.save().startswith("저장됨"), ui.findings()
+    saved = node_of(last_put(ui)[1], "writer")
+    assert saved["input_map"] == literal_map
+    assert saved["output_map"] == writer["output_map"]
+
+
+@pytest.mark.parametrize("name", ["copy", "other"])
+def test_maps_follow_the_loaded_fields_under_another_name_without_copying_hidden_values(ui, name):
+    declaration = roundtrip_declaration()
+    ui.fake.graphs["literals"] = declaration
+    other = ui.fake.graphs["other"]["spec"]
+    other.pop("memory")
+    other["state"].pop("checkpointer")
+    other["service"]["idle"]["multiplier"] = 4
+    ui.load("literals")
+    ui.page.fill("#graph-form [name=name]", name)
+    ui.set_agent("sub", PLANNER)
+
+    assert ui.save().startswith("저장됨"), ui.findings()
+
+    saved_name, body = last_put(ui)
+    assert saved_name == name
+    assert node_of(body, "writer")["input_map"] == LITERAL_MAP
+    assert node_of(body, "writer")["output_map"] == {"draft": "output.draft", "k=v": "a, b"}
+    assert node_of(body, "sub")["input_map"] == LITERAL_MAP
+    assert node_of(body, "writer").get("retry") == (9 if name == "other" else None)
+    assert "timeout_s" not in node_of(body, "writer")
+    assert "model" not in node_of(body, "extra")
+    assert "graph" not in node_of(body, "sub")
+    assert "memory" not in body["spec"] or not body["spec"]["memory"].get("spaces")
+    assert body["spec"]["state"].get("checkpointer", "default") == "default"
+    assert body["spec"]["service"]["idle"].get("multiplier", 2) == (4 if name == "other" else 2)
+
+
+def test_readonly_maps_keep_their_source_after_a_node_rename_and_repeated_saves(ui):
+    declaration = roundtrip_declaration()
+    ui.fake.graphs["literals"] = declaration
+    ui.load("literals")
+    row = ui.page.locator("#graph-nodes tbody tr").nth(ui.row_of("writer"))
+    row.locator("[name=node_id]").fill("renamed")
+    # 이 대역은 배선 참조 유효성보다 저장 스키마를 검사한다. 참조도 새 id 로 맞춘다.
+    ui.page.locator("#graph-edges [name=edge_to]").first.fill("renamed")
+    ui.page.locator("#graph-edges [name=edge_from]").nth(1).fill("renamed")
+    ui.page.locator("#graph-connections [name=conn_caller]").fill("renamed")
+
+    for _ in range(2):
+        assert ui.save().startswith("저장됨"), ui.findings()
+        node = node_of(last_put(ui)[1], "renamed")
+        assert node["input_map"] == LITERAL_MAP
+        assert node["output_map"] == {"draft": "output.draft", "k=v": "a, b"}
+        assert "retry" not in node and "timeout_s" not in node
+
+
+def test_a_recreated_node_with_the_same_id_can_edit_its_new_map_cells(ui):
+    ui.fake.graphs["literals"] = roundtrip_declaration()
+    ui.load("literals")
+    ui.remove_node("writer")
+    ui.add_node("writer", WRITER)
+    row = ui.page.locator("#graph-nodes tbody tr").nth(ui.row_of("writer"))
+    cell = row.locator("[name=node_input]")
+    assert cell.is_editable()
+    cell.fill("query=state.new")
+
+    assert ui.save().startswith("저장됨"), ui.findings()
+    assert node_of(last_put(ui)[1], "writer")["input_map"] == {"query": "state.new"}
+
+
+@pytest.mark.parametrize(
+    "path", sorted((UI_ROOT.parents[2] / "graphs").glob("*.yaml")), ids=lambda path: path.stem
+)
+def test_the_repository_example_graphs_survive_an_untouched_open_and_save(ui, path):
+    declaration = yaml.safe_load(path.read_text(encoding="utf-8"))
+    declaration["metadata"]["name"] = path.stem
+
+    body = saved_after_untouched_open(ui, declaration)
+
+    assert_same_declaration(body, declaration)
+
+
+def test_multiline_description_and_goal_survive_an_untouched_save(ui):
+    declaration = roundtrip_declaration()
+    declaration["metadata"]["description"] = "line1\nline2\n"
+    declaration["spec"]["goal"] = "g1\n\ng2"
+
+    body = saved_after_untouched_open(ui, declaration)
+
+    assert body["metadata"]["description"] == "line1\nline2"  # 끝 개행은 trim 이 지운다
+    assert body["spec"]["goal"] == "g1\n\ng2"
+
+
+def test_fractional_idle_delays_pass_the_form(ui):
+    declaration = roundtrip_declaration()
+    declaration["spec"]["service"]["idle"] = {"min_delay_s": 0.5, "max_delay_s": 2.5}
+
+    body = saved_after_untouched_open(ui, declaration)
+
+    assert body["spec"]["service"]["idle"]["min_delay_s"] == 0.5
+    assert body["spec"]["service"]["idle"]["max_delay_s"] == 2.5

@@ -228,8 +228,8 @@ export function normalizeGraph(document) {
 // 그 밖(노드의 model·retry·timeout_s·graph, spec.memory, state.checkpointer, idle.multiplier …)은
 // 원본을 깊이 그대로 보존한다. 정리(빈 값 제거)는 폼이 조립한 값에만 한다.
 // 노드는 id 로 짝짓는다 — 폼에서 id 를 바꾼 노드는 새 노드라 옛 선언을 물려받지 않는다.
-// 원본은 이름이 같을 때만 쓴다: 다른 이름으로 저장하면 새 그래프이고 숨은 선언이 복제되면 안 된다.
-export function patchGraph(original, form) {
+// 숨은 선언은 이름이 같을 때만 쓴다. 맵 칸의 원본은 불러온 그래프에서 따로 받아 새 이름에도 보존한다.
+export function patchGraph(original, form, mapOriginal = original) {
   const normalized = original ? normalizeGraph(original) : null;
   const base = normalized && normalized.metadata?.name === form.name ? normalized : null;
   const doc = base || emptyGraph();
@@ -249,14 +249,20 @@ export function patchGraph(original, form) {
   spec.state = { ...(base?.spec?.state?.checkpointer ? { checkpointer: base.spec.state.checkpointer } : {}), ...form.state };
 
   const hidden = new Map((base?.spec?.nodes || []).map((node) => [node.id, node]));
+  const mapNodes = new Map((mapOriginal?.spec?.nodes || []).map((node) => [node.id, node]));
   spec.nodes = form.nodes.map((row) => {
     const node = structuredClone(hidden.get(row.id) || {});
     put(node, "id", row.id);
     put(node, "agent", row.agent);
     // 폼에서 에이전트를 골랐으면 서브그래프 선언은 대체된다 — 둘을 함께 두면 서버가 거절한다
     if (node.agent) delete node.graph;
-    if (Object.keys(row.inputMap).length) node.input_map = row.inputMap; else delete node.input_map;
-    if (Object.keys(row.outputMap).length) node.output_map = row.outputMap; else delete node.output_map;
+    // 읽기 전용 맵은 텍스트가 달라져도 원본을 쓴다. 편집 가능한 맵도 무수정이면 그대로 둔다 (#426).
+    for (const [key, text] of [["input_map", row.inputText], ["output_map", row.outputText]]) {
+      const source = row.mapSourceId === null ? undefined : mapNodes.get(row.mapSourceId ?? row.id)?.[key];
+      const map = source && (!pairsEditable(source) || text === asCell(formatPairs(source)))
+        ? structuredClone(source) : parsePairs(text);
+      if (Object.keys(map).length) node[key] = map; else delete node[key];
+    }
     return node;
   });
   spec.edges = form.edges.map((edge) => pruneEmpty({
@@ -316,10 +322,22 @@ export function parsePairs(text) {
   return pairs;
 }
 
+// <input type=text> 가 값으로 돌려주는 모양 — 개행이 지워지고 rows() 가 앞뒤를 자른다
+const asCell = (text) => text.replace(/[\r\n]/g, "").trim();
+
 export function formatPairs(pairs) {
   return Object.entries(pairs || {})
-    .map(([key, value]) => `${key}=${value}`)
+    .map(([key, value]) => `${key}=${typeof value === "string" ? value : JSON.stringify(value)}`)
     .join(", ");
+}
+
+// 구분자 · 타입뿐 아니라 trim/개행 제거/빈 값 생략까지 실제 칸의 왕복과 비교한다.
+export function pairsEditable(pairs) {
+  const entries = Object.entries(pairs || {});
+  const parsed = parsePairs(asCell(formatPairs(pairs)));
+  return Object.keys(parsed).length === entries.length && entries.every(([key, value]) =>
+    typeof value === "string" && !/[,=]/.test(key + value)
+    && Object.hasOwn(parsed, key) && parsed[key] === value);
 }
 
 // 노드 하나의 기본 input_map — 템플릿의 필수 변수를 같은 이름의 state 필드에서 끌어온다.

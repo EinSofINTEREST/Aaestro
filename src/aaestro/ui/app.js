@@ -1,6 +1,6 @@
 // 페이지 글루 — DOM 만 다룬다. REST 는 client.js 가, 선언 문서의 모양도 client.js 가 안다.
 import { agentsOfGraph, ApiError, bumpPatch, createClient, formatPairs,
-  materialPathProblem, moduleRef, normalizeGraph, parsePairs, patchAgent, patchGraph, revocationsFor, ruleState, suggestInputMap,
+  materialPathProblem, moduleRef, normalizeGraph, pairsEditable, patchAgent, patchGraph, revocationsFor, ruleState, suggestInputMap,
   unbuiltAgents, UNLISTED_SUFFIX, withSelected } from "./client.js";
 
 const $ = (selector) => document.querySelector(selector);
@@ -154,6 +154,7 @@ function addRow(kind, values = []) {
     }
   }
   $(`${tables[kind]} tbody`).append(row);
+  return row;
 }
 for (const button of document.querySelectorAll("[data-add]")) button.addEventListener("click", () => addRow(button.dataset.add));
 
@@ -186,7 +187,7 @@ async function suggestNodeInput(row) {
   const cell = row.querySelector("[name=node_input]");
   const idCell = row.querySelector("[name=node_id]");
   const agentCell = row.querySelector("[name=node_agent]");
-  if (cell.value.trim()) return; // 사람이 적은 것을 덮지 않는다
+  if (cell.readOnly || cell.value.trim()) return; // 원본 보존 칸이나 사람이 적은 것을 덮지 않는다
   const id = idCell.value.trim();
   const agentRef = agentCell.value;
   const required = await requiredVariables(agentRef, id);
@@ -200,7 +201,11 @@ async function suggestNodeInput(row) {
 }
 
 function rows(kind) {
-  return [...document.querySelectorAll(`${tables[kind]} tbody tr`)].map((tr) => [...tr.querySelectorAll("input, select")].map((i) => i.value.trim()));
+  return [...document.querySelectorAll(`${tables[kind]} tbody tr`)].map((tr) => {
+    const values = [...tr.querySelectorAll("input, select")].map((i) => i.value.trim());
+    if (kind === "node") values.push(tr.dataset.mapSourceId);
+    return values;
+  });
 }
 
 // 인라인 필드가 있으면 그것이 state 다 — schema import ref 는 한 버전만 남는 옛 방식이다.
@@ -218,6 +223,8 @@ function stateDeclaration(f) {
 
 // 불러온 그래프 — 폼이 모르는 선언을 저장 때 보존하는 기준이다 (#385). 새 그래프면 null
 let loadedGraph = null;
+// 맵 칸은 저장 대상 이름 · 노드 id 를 바꿔도 화면을 채운 원본을 계속 가리킨다.
+let graphMapSource = null;
 
 function graphDocument(base) {
   const f = graphForm;
@@ -229,13 +236,13 @@ function graphDocument(base) {
     mode: f.mode.value,
     goal: f.goal.value.trim(),
     state: stateDeclaration(f),
-    nodes: rows("node").map(([id, agent, input, output]) => ({
-      id, agent, inputMap: parsePairs(input), outputMap: parsePairs(output),
+    nodes: rows("node").map(([id, agent, input, output, mapSourceId]) => ({
+      id, agent, inputText: input, outputText: output, mapSourceId: mapSourceId ?? null,
     })),
     edges: rows("edge").map(([from, to, condition, max]) => ({ from, to, condition, maxIterations: optional(max) })),
     connections: rows("connection").map(([caller, callee]) => ({ caller, callee })),
     service: { minDelay: Number(f.idle_min.value), maxDelay: Number(f.idle_max.value), failureStreak: Number(f.failure_streak.value) },
-  });
+  }, graphMapSource || base);
 }
 
 // 저장 대상 이름의 서버 선언이 원본이다 (에이전트의 agentBase 와 같은 규칙) — 없는 이름(404)은 새 그래프
@@ -253,17 +260,31 @@ async function currentGraphDocument() {
   return graphDocument(await graphBase(graphForm.name.value.trim()));
 }
 
+let mapHintId = 0;
+
 function showGraph(doc) {
   const f = graphForm;
   loadedGraph = structuredClone(doc);
+  graphMapSource = structuredClone(doc);
   f.name.value = doc.metadata.name; f.version.value = doc.metadata.version; f.description.value = doc.metadata.description || "";
   f.mode.value = doc.spec.mode; f.goal.value = doc.spec.goal || ""; f.state_schema.value = doc.spec.state?.schema || "";
   f.state_fields.value = doc.spec.state?.fields ? JSON.stringify(doc.spec.state.fields, null, 2) : "";
   syncServiceFields(doc.spec.mode === "service");
   if (doc.spec.service) { f.idle_min.value = doc.spec.service.idle.min_delay_s; f.idle_max.value = doc.spec.service.idle.max_delay_s; f.failure_streak.value = doc.spec.service.max_failure_streak ?? 5; }
   for (const kind of Object.keys(tables)) $(`${tables[kind]} tbody`).replaceChildren();
-  (doc.spec.nodes || []).forEach((n) =>
-    addRow("node", [n.id, n.agent ?? "", formatPairs(n.input_map), formatPairs(n.output_map)]));
+  (doc.spec.nodes || []).forEach((n) => {
+    const row = addRow("node", [n.id, n.agent ?? "", formatPairs(n.input_map), formatPairs(n.output_map)]);
+    row.dataset.mapSourceId = n.id;
+    for (const [key, name] of [["input_map", "node_input"], ["output_map", "node_output"]]) {
+      const cell = row.querySelector(`[name=${name}]`);
+      cell.readOnly = !pairsEditable(n[key]);
+      if (!cell.readOnly) continue;
+      const note = el("small", { id: `map-readonly-${++mapHintId}`, className: "map-readonly-note",
+        textContent: "읽기 전용: key=value로 원본 값·타입을 보존할 수 없습니다." });
+      cell.setAttribute("aria-describedby", note.id);
+      cell.after(note);
+    }
+  });
   (doc.spec.edges || []).forEach((e) => addRow("edge", [e.from, e.to, e.condition || "", e.max_iterations || ""]));
   (doc.spec.connections || []).forEach((c) => addRow("connection", [c.caller, c.callee]));
 }

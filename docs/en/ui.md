@@ -59,6 +59,11 @@ deprecated schema reference; three tables below it hold the moving parts:
 Choosing `service` mode reveals the idle policy fields — a service graph without backoff
 would spin the model in a busy loop, so the fields are required for that mode.
 
+Description and goal use vertically resizable multiline fields. Saving preserves internal
+line breaks and trims leading and trailing whitespace. Idle delays accept fractional seconds;
+validation requires `min_delay_s > 0` and `max_delay_s >= min_delay_s`.
+`max_failure_streak` remains an integer of at least 1.
+
 **검증** sends the draft to `POST /v1/validate` and lists every finding with its check name
 and code. **저장** validates first and refuses to write if anything fails, so an invalid
 graph never reaches disk through the UI.
@@ -69,11 +74,22 @@ reproducible.
 
 Saving keeps what the form has no field for, as declared and without cleaning it up: a node's
 `model` override (explicit `null`s included), `retry`, `timeout_s`, or subgraph target (`graph:`),
-`spec.memory`, `state.checkpointer`, and the service `idle.multiplier`. Everything the form does
-show (nodes by id, edges, connections, mode, goal, state, idle delays) takes the form's value, so a
-row deleted in the form stays deleted. Nodes are matched by id: renaming a node's id in the form
+`spec.memory`, `state.checkpointer`, and the service `idle.multiplier`. Other displayed values
+(nodes by id, edges, connections, mode, goal, state, idle delays) come from the form, so a
+row deleted in the form stays deleted.
+
+Untouched `input_map` and `output_map` fields keep their original values and types. Non-string
+values are displayed as JSON after `key=`. A map that cannot round-trip exactly through the
+`key=value` text format is read-only, with a visible explanation beside the field; saving keeps
+the original map even if the field's text changes. This includes non-string values, keys or
+values containing `,` or `=`, empty string values, and whitespace that the text parser would
+remove. Maps that round-trip exactly remain editable; edited fields are parsed as `key=value`
+string pairs. Map fields retain the source loaded into them even when saving under another
+graph name; this does not copy hidden declarations to a new graph.
+
+Hidden node declarations are matched by id: renaming a node's id in the form
 makes it a new node, and its hidden declarations (`model`, `retry`, `timeout_s`) do not follow.
-The base for a save is the declaration the form was loaded from while the name is unchanged;
+The base for hidden declarations is the loaded declaration while the name is unchanged;
 under a different name it is the server's graph of that name, if one exists, otherwise nothing
 (the graph is built from the form alone, so hidden declarations are not copied and a subgraph node
 must be re-bound there). After a successful save the saved document becomes the base for the next one.
@@ -82,6 +98,9 @@ must be re-bound there). After a successful save the saved document becomes the 
 
 The same shape for agent manifests: metadata and group, the model, module references, and the
 runtime block (image, entrypoint, `env_allowlist`, whether A2A is exposed).
+
+The description also uses a vertically resizable multiline field; saving preserves internal
+line breaks and trims leading and trailing whitespace.
 
 Module references are dropdowns built from the catalog's published versions. There is no free
 text and no `latest` — every reference is pinned to a version that exists.
