@@ -1103,7 +1103,7 @@ class ParsedModuleRef(BaseModel):
         Raises:
             ValueError: If the reference is malformed or not version-pinned.
         """
-        match = _MODULE_REF_PATTERN.match(ref)
+        match = _MODULE_REF_PATTERN.fullmatch(ref)
         if match is None:
             raise ValueError("invalid module ref")
         return cls(

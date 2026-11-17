@@ -51,6 +51,10 @@ class SkillDeclaration(BaseModel):
         module, function = value.split(":")
         if not module or not function:
             raise ValueError("entrypoint must be in 'module:function' format")
+        # 모듈 부분은 스킬셋 루트 기준 파일 경로가 된다 — 식별자가 아닌 조각 ("/abs", "..")
+        # 이 섞이면 루트 밖 파일을 import 한다 (#408)
+        if not all(part.isidentifier() for part in (*module.split("."), function)):
+            raise ValueError("entrypoint must be dotted python identifiers, 'module:function'")
         return value
 
     @property

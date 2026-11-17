@@ -22,6 +22,7 @@ from aaestro.core.errors import (
     ErrorCategory,
     ErrorCode,
     field_problems,
+    printable_label,
     raise_detached,
 )
 from aaestro.core.manifest import NAME_PATTERN, AgentManifest, GroupManifest
@@ -42,6 +43,15 @@ MODULE_TYPES: tuple[str, ...] = (
     "decisionsets",
 )
 """API 로 읽을 수 있는 모듈 종류 — v0.1 은 전부 읽기 전용이다 (04 Registry 2)."""
+
+_PATH_LABEL_LIMIT = 4096
+"""경로 · 메시지를 정제할 때의 길이 상한 — Linux 의 PATH_MAX. 이름 하나의 상한 (64) 으로 자르면
+운영자가 어느 파일인지 알 수 없다."""
+
+
+def _label(text: object) -> str:
+    """에러 · 목록에 싣는 경로와 메시지 — 디렉토리 이름의 제어문자가 터미널로 가지 않게 (#408)."""
+    return printable_label(str(text), _PATH_LABEL_LIMIT)
 
 
 @dataclass(frozen=True)
@@ -65,9 +75,9 @@ def _problem(path: str, err: AaestroError) -> Problem:
     errors = err.details.get("errors")
     reason = err.details.get("reason")
     return Problem(
-        path=path,
+        path=_label(path),
         code=err.code,
-        message=err.message,
+        message=_label(err.message),
         errors=tuple(errors) if isinstance(errors, list) else (),
         reason=reason if isinstance(reason, str) else None,
     )
@@ -98,10 +108,12 @@ def load_yaml(path: Path) -> dict[str, Any]:
     try:
         document = load_yaml_file(path)
     except YamlReadError as err:
-        raise_detached(config_error("cannot read yaml document", path=str(path), reason=err.reason))
+        raise_detached(
+            config_error("cannot read yaml document", path=_label(path), reason=err.reason)
+        )
 
     if not isinstance(document, dict):
-        raise config_error("yaml document must be a mapping", path=str(path))
+        raise config_error("yaml document must be a mapping", path=_label(path))
     return document
 
 
@@ -110,8 +122,8 @@ def not_found(kind: str, name: str) -> AaestroError:
     return AaestroError(
         category=ErrorCategory.NOT_FOUND,
         code=ErrorCode.NF_001,
-        message=f"unknown {kind}: {name}",
-        details={"kind": kind, "name": name},
+        message=f"unknown {kind}: {printable_label(name)}",
+        details={"kind": kind, "name": printable_label(name)},
     )
 
 
@@ -121,7 +133,7 @@ def invalid_name(kind: str, name: str) -> AaestroError:
         category=ErrorCategory.VALIDATION,
         code=ErrorCode.VAL_002,
         message=f"invalid {kind} name — lowercase letters, digits and single hyphens only",
-        details={"kind": kind, "name": name},
+        details={"kind": kind, "name": printable_label(name)},
     )
 
 
@@ -156,7 +168,7 @@ def _invalid(path: Path, err: ValidationError) -> NoReturn:
             category=ErrorCategory.VALIDATION,
             code=ErrorCode.VAL_002,
             message="declaration failed schema validation",
-            details={"path": str(path), "errors": problems},
+            details={"path": _label(path), "errors": problems},
         )
     )
 
@@ -209,7 +221,7 @@ def _mismatch(path: Path, *, located: str) -> AaestroError:
         category=ErrorCategory.VALIDATION,
         code=ErrorCode.VAL_002,
         message="declared name does not match its location",
-        details={"path": str(path), "located": located},
+        details={"path": _label(path), "located": printable_label(located)},
     )
 
 
@@ -243,7 +255,7 @@ def _collect[T: BaseModel](
             # 조용히 건너뛰면 운영자가 왜 목록에 없는지 모른다 — 깨진 선언처럼 보고한다
             problems.append(
                 Problem(
-                    path=str(path),
+                    path=_label(path),
                     code=ErrorCode.VAL_002,
                     message="declaration resolves outside its root",
                 )

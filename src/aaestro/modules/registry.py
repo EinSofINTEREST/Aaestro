@@ -19,10 +19,12 @@ from aaestro.core.errors import (
     ErrorCategory,
     ErrorCode,
     field_problems,
+    printable_label,
     raise_detached,
 )
 from aaestro.core.manifest import ParsedModuleRef
 from aaestro.core.yamlio import YamlReadError, load_yaml_file
+from aaestro.modules.skilltree import SkillViolation, check_links
 
 MODULE_FILENAMES: dict[str, str] = {
     "skillsets": "skillset.yaml",
@@ -160,12 +162,7 @@ class ModuleRegistry:
         try:
             return ParsedModuleRef.parse(ref)
         except ValueError as err:
-            raise AaestroError(
-                category=ErrorCategory.MODULE,
-                code=ErrorCode.MOD_001,
-                message=f"invalid module ref: {ref}",
-                details={"module_ref": ref},
-            ) from err
+            raise _invalid_ref(ref) from err
 
     def resolve(self, ref: str) -> ModulePath:
         """Resolve a module reference to a filesystem path.
@@ -180,7 +177,8 @@ class ModuleRegistry:
             Resolved module path with a verified declaration file.
 
         Raises:
-            AaestroError: MODULE/``MOD_001`` if the reference cannot be resolved.
+            AaestroError: MODULE/``MOD_001`` if the reference cannot be resolved,
+                ``MOD_003`` if a link inside the module directory leaves it.
         """
         parsed = self.parse(ref)
         root = self._roots.for_type(parsed.type)
@@ -211,6 +209,9 @@ class ModuleRegistry:
                 details={"module_ref": ref},
             )
 
+        if parsed.type in _LINK_CHECKED_TYPES:
+            _check_module_links(module_root, ref)
+
         return ModulePath(ref=parsed, root=module_root, manifest_file=manifest_file)
 
     def load_document(self, ref: str) -> tuple[ModulePath, dict[str, Any]]:
@@ -233,6 +234,53 @@ class ModuleRegistry:
         document = _read_yaml(path.manifest_file, ref)
         _check_integrity(document, path, ref)
         return path, document
+
+
+_LINK_CHECKED_TYPES = frozenset(MODULE_FILENAMES) - {"skillpacks"}
+"""버전 디렉토리 전체의 링크를 보는 타입.
+
+skillpack 은 로더가 skill 마다 더 엄격하게 본다 (04 Skillpack Rules 4) — 여기서 먼저 보면
+그 에러 (어느 skill 의 무엇) 가 덜 구체적인 것으로 바뀐다. agents · graphs 는 루트가
+디렉토리 하나가 아니라 선언 파일 하나다."""
+
+
+def _invalid_ref(ref: str) -> AaestroError:
+    # ref 는 형식을 통과하지 못한 문자열이다 — 디렉토리 이름에서 왔으면 제어문자가 터미널로 간다
+    label = printable_label(ref)
+    return AaestroError(
+        category=ErrorCategory.MODULE,
+        code=ErrorCode.MOD_001,
+        message=f"invalid module ref: {label}",
+        details={"module_ref": label},
+    )
+
+
+def _check_module_links(module_root: Path, ref: str) -> None:
+    """버전 디렉토리 안의 링크가 그 디렉토리 밖에 닿으면 거절한다 — import · 읽기 **전에** (#408).
+
+    선언 파일의 최종 경로만 보면 ``skills/*.py`` · ``templates/*.j2`` 가 루트 밖 파일로 이어져도
+    통과한다. 로더는 그 파일을 import 하거나 프롬프트로 읽는다.
+    """
+    try:
+        check_links(module_root, scope="module")
+    except SkillViolation as violation:
+        raise AaestroError(
+            category=ErrorCategory.MODULE,
+            code=ErrorCode.MOD_003,
+            message=f"invalid module file in {ref}: {violation.problem}",
+            details={
+                "module_ref": ref,
+                "errors": [{"field": violation.field, "problem": violation.problem}],
+            },
+        ) from None
+    except OSError:
+        # OSError 문자열은 경로를 싣는다 — 모듈 안의 파일 이름은 신뢰하지 않는 입력이다
+        raise AaestroError(
+            category=ErrorCategory.MODULE,
+            code=ErrorCode.MOD_003,
+            message=f"module directory cannot be read: {ref}",
+            details={"module_ref": ref},
+        ) from None
 
 
 def inside(root: Path, path: Path) -> Path | None:

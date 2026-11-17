@@ -6,8 +6,9 @@
 
 from __future__ import annotations
 
+import posixpath
 from collections.abc import Iterator
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
 import structlog
@@ -49,7 +50,7 @@ from aaestro.modules.budget import (
     clip,
     weigh,
 )
-from aaestro.modules.registry import ModulePath, ModuleRegistry, reject_module
+from aaestro.modules.registry import ModulePath, ModuleRegistry, inside, reject_module
 
 DEFAULT_TEMPLATE = "default"
 SYSTEM_TEMPLATE = "system"
@@ -128,6 +129,23 @@ class TemplateSpec(BaseModel):
     에이전트 단위로 두면 같은 에이전트가 노드마다 다른 키를 낼 수 없고,
     에이전트가 자기 배선을 알아야 하게 된다 (02 Rule 6 위반).
     """
+
+    @field_validator("file")
+    @classmethod
+    def _inside_module_root(cls, value: str) -> str:
+        """모듈 루트 기준 상대 경로만 — 절대 · 루트 위로 가는 경로는 루트 밖 파일을 읽는다 (#408).
+
+        이른 거절일 뿐이다 — 문자열 정규화는 링크를 모른다 (``link/..`` 를 글자로 접는다). 실제
+        경로는 읽기 직전에 다시 본다 (:func:`_inside_root`). 메시지에 값은 싣지 않는다.
+        """
+        normalized = posixpath.normpath(value)
+        if posixpath.isabs(value) or normalized == ".." or normalized.startswith("../"):
+            raise ValueError("template file must be a relative path inside the module root")
+        # 파일을 가리키지 않는 값 — 루트 자신 (``.`` · 빈 값) 이나 ``..`` 로 끝나는 경로. locale
+        # 오버라이드가 쓰는 ``Path(file).name`` 이 ``..`` 가 되면 디렉토리가 후보가 된다
+        if PurePosixPath(value).name in ("", ".."):
+            raise ValueError("template file must name a file")
+        return value
 
     @field_validator("output_keys")
     @classmethod
@@ -461,16 +479,26 @@ class LoadedPromptset(BaseModel):
         candidates.append(self.root / spec.file)
 
         for candidate in candidates:
-            if _is_file(candidate):
-                try:
-                    return str(candidate.read_text(encoding="utf-8"))
-                except OSError as err:
-                    raise AaestroError(
-                        category=ErrorCategory.MODULE,
-                        code=ErrorCode.MOD_004,
-                        message="failed to read template file",
-                        details={"promptset": self.ref, "template": template},
-                    ) from err
+            if not _is_file(candidate):
+                continue
+            resolved = _inside_root(self.root, candidate)
+            if resolved is None:
+                # 호출자 locale 도 경로 조각이다 — 조용히 기본 템플릿으로 넘어가지 않는다
+                raise AaestroError(
+                    category=ErrorCategory.MODULE,
+                    code=ErrorCode.MOD_004,
+                    message="template file leaves the module root",
+                    details={"promptset": self.ref, "template": template},
+                )
+            try:
+                return str(resolved.read_text(encoding="utf-8"))
+            except OSError as err:
+                raise AaestroError(
+                    category=ErrorCategory.MODULE,
+                    code=ErrorCode.MOD_004,
+                    message="failed to read template file",
+                    details={"promptset": self.ref, "template": template},
+                ) from err
 
         raise AaestroError(
             category=ErrorCategory.MODULE,
@@ -529,8 +557,16 @@ def _check_template_files(manifest: PromptsetManifest, path: ModulePath, ref: st
             )
         overrides = sorted((path.root / "locales").glob(f"*/{Path(spec.file).name}"))
         for candidate in (default, *overrides):
+            resolved = _inside_root(path.root, candidate)
+            if resolved is None:
+                raise AaestroError(
+                    category=ErrorCategory.MODULE,
+                    code=ErrorCode.MOD_003,
+                    message="declared template file leaves the module root",
+                    details={"promptset": ref, "template": printable_label(name)},
+                )
             try:
-                source = candidate.read_text(encoding="utf-8")
+                source = resolved.read_text(encoding="utf-8")
             except OSError as err:
                 raise AaestroError(
                     category=ErrorCategory.MODULE,
@@ -539,6 +575,18 @@ def _check_template_files(manifest: PromptsetManifest, path: ModulePath, ref: st
                     details={"promptset": ref, "template": printable_label(name)},
                 ) from err
             _check_source(source, ref, name, ErrorCode.MOD_003)
+
+
+def _inside_root(root: Path, candidate: Path) -> Path | None:
+    """``candidate`` 의 실제 경로가 버전 디렉토리의 실제 경로 안이면 그 경로, 아니면 None (#408).
+
+    OS 는 링크를 따라간 뒤 ``..`` 를 적용하므로 루트 안 링크와 ``..`` 를 엮으면 문자열 검사를
+    통과한 채 밖을 읽는다. 해석한 경로를 돌려준다 — 검사한 경로로 읽어야 한다.
+    """
+    try:
+        return inside(root, candidate)
+    except ValueError:  # NUL 이 든 경로 — resolve 가 던진다
+        return None
 
 
 def _is_file(candidate: Path) -> bool:

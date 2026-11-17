@@ -767,6 +767,16 @@ graphs/{name}.yaml
 1. **Resolution**: `registry.resolve(ref)` 가 유일한 해석 경로 — 경로 하드코딩 금지
 2. **Immutability**: 게시된 버전 디렉토리는 수정 금지 — 변경은 새 버전으로
 3. **Integrity**: resolve 시 kind/name/version 이 ref 와 일치하는지 검증
+   - **Containment** (#408): skillset · promptset · memoryset · decisionset 은 resolve 가 버전 디렉토리
+     전체의 링크를 Skillpack Rules 4 와 같은 규칙 (`skilltree.follow_link` — 상대 경로만, 매 단계 루트
+     안, 대상 없음 · 순환 · 특수 파일 거절) 으로 본다. 위반은 `MOD_003` 이고, import · 템플릿 읽기
+     **전에** 거절한다. 루트 안의 상대 링크는 허용한다. 모듈 트리의 디렉토리 링크는 64개까지 (`MAX_MODULE_DIRECTORY_LINKS` — 순환 검사의 재귀 깊이와 표 크기를 묶는다), 넘으면 `MOD_003` 이다. 크기 · 개수 · 하드링크 · 이름 규칙은 skillpack
+     에만 있다. skillpack 은 로더가 skill 마다 본다. 경로 문자열도 같다 — promptset 템플릿 `file` 은
+     절대 경로 · 루트 위로 정규화되는 상대 경로를, skillset `entrypoint` 는 점으로 이은 Python 식별자가
+     아닌 모듈 부분 (`/abs`, `..`) 을 스키마 검증 (`MOD_003`) 에서 거절한다. 값은 싣지 않는다
+   - **이름 정제**: 형식을 통과하지 못한 ref 와 디렉토리 이름에서 온 경로는 에러 message · details ·
+     카탈로그 `Problem` 에 실릴 때 출력할 수 없는 문자를 `?` 로 바꾼다 (`printable_label`). ref 는
+     패턴에 **전체가** 맞아야 한다 — 끝의 개행 (`1.0.0\n`) 은 다른 버전으로 해석되지 않고 `MOD_001` 이다
 4. **Scope Neutrality**: 모듈 아티팩트는 전역 레지스트리 소속 — 리소스 스코프
    (global/group/local, [01-architecture.md](01-architecture.md)) 는 런타임 리소스
    (secrets/memory/artifact/quota) 에 적용되며, 모듈 가시성은 제한하지 않는다 (v0.1)
