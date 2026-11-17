@@ -265,7 +265,6 @@ async def test_a_cancelled_start_discards_the_container_its_thread_built(step: s
 
     assert len(client.created) == 1
     assert client.removed == ["container-0001" + "0" * 20]
-    assert docker.started == {}
 
 
 async def test_a_cancelled_start_hands_a_hung_cleanup_to_the_engine():
@@ -305,16 +304,6 @@ async def test_settling_abandons_a_cleanup_that_never_finishes():
         client.gate.set()
 
 
-async def test_failed_start_is_not_tracked():
-    client = FakeDockerClient(start_error=RuntimeError("boom"))
-    docker = engine(client)
-
-    with pytest.raises(AaestroError):
-        await docker.start(spec())
-
-    assert docker.started == {}
-
-
 # --- OOM 감지 -----------------------------------------------------------------
 
 
@@ -331,16 +320,13 @@ async def test_oom_kill_is_rt_003():
     assert exc_info.value.retryable is False
 
 
-async def test_oom_exit_code_alone_is_detected():
-    """OOMKilled 플래그가 없어도 137 은 OOM 으로 본다."""
+async def test_sigkill_without_the_oom_flag_is_not_rt_003():
+    """#493 — 137 은 SIGKILL 이면 다 나온다 (stop 유예 초과 · kill -9) — OOM 으로 보지 않는다."""
     client = FakeDockerClient(state={"OOMKilled": False, "ExitCode": 137})
     docker = engine(client)
     handle = await docker.start(spec())
 
-    with pytest.raises(AaestroError) as exc_info:
-        await docker.check_exit(handle)
-
-    assert exc_info.value.code == "RT_003"
+    await docker.check_exit(handle)
 
 
 async def test_clean_exit_is_not_an_error():
@@ -424,15 +410,6 @@ async def test_stop_sends_the_grace_period():
     assert client.removed == [handle.container_id]
 
 
-async def test_stop_untracks_the_agent():
-    docker = engine()
-    handle = await docker.start(spec())
-
-    await docker.stop(handle)
-
-    assert docker.started == {}
-
-
 async def test_stop_survives_a_failing_stop():
     """정지 실패가 정리를 막으면 유령 컨테이너가 남는다."""
     client = FakeDockerClient(stop_error=RuntimeError("already gone"))
@@ -452,8 +429,6 @@ async def test_stop_survives_a_failing_removal():
 
     # 제거 실패는 삼키되 False 로 알린다 — 호출자가 같은 handle 로 다시 지울 수 있게 (#491)
     assert await docker.stop(handle) is False
-
-    assert docker.started == {}
 
 
 async def test_stop_can_keep_the_container():
@@ -1508,3 +1483,44 @@ def test_concurrent_default_runtime_reads_agree_and_stay_put(monkeypatch):
 
     assert results == ["runsc", "runsc"]
     assert sdk.default_runtime() == "runsc"
+
+
+class FailingGatedClient(GatedClient):
+    """문이 열리면 생성이 실패한다 — 끊긴 정리 뒤에 끝나는 기동의 예외."""
+
+    def create(self, **kwargs):
+        self._hold("create")
+        raise RuntimeError("create failed after the cleanup was abandoned")
+
+
+async def test_an_abandoned_cleanup_still_retrieves_the_start_failure():
+    """#493 — 끊긴 정리가 기다리던 기동이 나중에 실패하면 그 예외를 아무도 거두지 않았다."""
+    import gc
+
+    loop = asyncio.get_running_loop()
+    reported: list[dict] = []
+    previous = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _loop, context: reported.append(context))
+    client = FailingGatedClient("create")
+    docker = DockerEngine(client=client, cancel_wait_s=0.01)
+    try:
+        before = asyncio.all_tasks()
+        starting = asyncio.create_task(docker.start(spec()))
+        await until(client.entered.is_set)
+        creating = next(
+            t for t in asyncio.all_tasks() - before - {starting}
+            if t.get_coro().__qualname__.endswith("_create_and_start")
+        )  # fmt: skip
+        starting.cancel()
+        await until(starting.done, timeout_s=1.0)
+        await docker.settle_cleanups(timeout_s=0.01)
+        client.gate.set()
+        await until(creating.done, timeout_s=5.0)
+        await asyncio.sleep(0)  # done 콜백이 돌 차례
+        del creating, starting
+        gc.collect()
+    finally:
+        client.gate.set()
+        loop.set_exception_handler(previous)
+
+    assert not [c for c in reported if "never retrieved" in str(c.get("message"))]

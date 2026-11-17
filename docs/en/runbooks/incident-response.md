@@ -68,16 +68,22 @@ fail the task — each one goes back to the model as an error result — so this
 More than five restarts in ten minutes.
 
 1. Check `reason` on `aaestro_container_restarts_total`: `unhealthy` (replaced after failing
-   health checks), `failed` (the replacement container did not start — retried after the next
-   backoff), `gave_up` (the ceiling was hit — see [AgentFailed](#agentfailed)). OOM kills are not
-   classified yet — the runtime does not log `RT_003` on a restart, and the replaced container is
-   removed — so memory pressure shows up as `unhealthy`. Look for `oom` in
-   `docker events --filter event=oom`; if it is there, raise `runtime.resources.memory` or lower
-   concurrency.
+   health checks), `failed` (the replacement did not happen — the new container did not start, or
+   the old one could not be removed — retried after the next backoff), `gave_up` (the ceiling was hit — see [AgentFailed](#agentfailed)). An OOM kill still
+   counts as `unhealthy`, but before replacing the container the runtime logs a WARN
+   `agent container was oom killed; restarting` with `error_code="RT_003"` when Docker reports
+   `State.OOMKilled` (exit code 137 alone is any SIGKILL and is not logged). If you see it — or
+   `oom` in `docker events --filter event=oom` — raise `runtime.resources.memory` or lower
+   concurrency; restarting does not fix it.
 2. Repeated `failed` means the replacement keeps failing with an error that a retry could clear —
    a retryable `RT_001` (the container did not start) or `RT_004` (the image could not be fetched
-   because the daemon or the registry did not answer). While it retries, the replica stays listed
-   as **Unhealthy** and receives no tasks. A missing image or a spec the runtime refuses is not
+   because the daemon or the registry did not answer). `RT_001` with the message
+   `previous container not removed; replacement not started` is different: the daemon refused to
+   remove the old container, so the runtime did not start a new one beside it — check the daemon
+   and the container (`docker ps -a --filter label=aaestro.agent=<agent>`), not the image. While it
+   retries, the replica stays listed as **Unhealthy** and receives no tasks. If the ceiling (five
+   restarts in ten minutes) is hit, the replica goes **Failed**; a container that was never removed
+   stays listed with its handle, and the next stop or redeploy removes it. A missing image or a spec the runtime refuses is not
    retried at all — it ends in [AgentFailed](#agentfailed) with `reason="permanent"`.
 3. A restart whose container fails to start with a retryable error still counts. After five
    restarts in ten minutes the runtime marks the agent **Failed** and stops retrying. Fix the

@@ -66,14 +66,22 @@ Aaestro 알림이 울렸을 때의 대응 절차. 규범 규칙:
 10분 내 재시작 5회 초과.
 
 1. `aaestro_container_restarts_total` 의 `reason` 을 확인한다: `unhealthy` (health 실패로
-   교체됨), `failed` (교체 컨테이너가 기동하지 못함 — 다음 backoff 뒤 다시 시도), `gave_up`
-   (상한 도달 — [AgentFailed](#agentfailed) 참고). OOM 은 아직 따로 분류하지 않는다 — runtime 은
-   재시작할 때 `RT_003` 을 남기지 않고 교체된 컨테이너는 지워진다 — 그래서 메모리 부족도
-   `unhealthy` 로 보인다. `docker events --filter event=oom` 에 `oom` 이 있으면
-   `runtime.resources.memory` 를 올리거나 동시성을 낮춘다.
+   교체됨), `failed` (교체가 이뤄지지 않음 — 새 컨테이너가 기동하지 못했거나 옛 컨테이너를 지우지
+   못함 — 다음 backoff 뒤 다시 시도), `gave_up`
+   (상한 도달 — [AgentFailed](#agentfailed) 참고). OOM 도 `unhealthy` 로 세지만, runtime 은
+   컨테이너를 교체하기 전에 `error_code="RT_003"` 을 실은 WARN `agent container was oom killed;
+   restarting` 을 남긴다 — Docker 가 `State.OOMKilled` 를 보고할 때만이다 (종료 코드 137 은 SIGKILL 이면
+   다 나오므로 그것만으로는 남기지 않는다). 이 로그나
+   `docker events --filter event=oom` 의 `oom` 이 보이면 `runtime.resources.memory` 를 올리거나
+   동시성을 낮춘다 — 재시작으로는 풀리지 않는다.
 2. `failed` 가 반복되면 교체가 다시 시도하면 풀릴 수 있는 오류로 계속 실패하는 것이다 — 재시도
    가능한 `RT_001` (컨테이너가 기동하지 못함) 이나 `RT_004` (daemon · 레지스트리가 답하지 않아
-   이미지를 가져오지 못함). 재시도 동안 그 레플리카는 **Unhealthy** 로 남고 태스크를 받지 않는다.
+   이미지를 가져오지 못함). 메시지가 `previous container not removed; replacement not started` 인
+   `RT_001` 은 다르다: daemon 이 옛 컨테이너 제거를 거절해 runtime 이 그 옆에 새 컨테이너를 세우지
+   않은 것이다 — 이미지가 아니라 daemon 과 그 컨테이너 (`docker ps -a --filter label=aaestro.agent=<agent>`)
+   를 본다. 재시도 동안 그 레플리카는 **Unhealthy** 로 남고 태스크를 받지 않는다. 상한 (10분 내
+   5회) 에 닿으면 레플리카는 **Failed** 가 되고, 지우지 못한 컨테이너는 handle 과 함께 목록에 남아
+   다음 정지 · 재배포가 지운다.
    이미지가 없거나 runtime 이 거절하는 스펙은 아예 다시 시도하지 않는다 —
    `reason="permanent"` 로 [AgentFailed](#agentfailed) 에 간다.
 3. 재시도 가능한 오류로 기동에 실패한 재시작도 센다. 10분 내 5회를 넘기면 runtime 이 에이전트를

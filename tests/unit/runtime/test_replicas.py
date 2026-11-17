@@ -143,6 +143,22 @@ async def test_stopping_one_replica_leaves_the_others():
     assert [item.replica for item in agents.replicas_of("echo")] == [0, 2]
 
 
+async def test_stopping_a_replica_that_is_not_listed_stops_nothing():
+    """#493 — 없는 레플리카를 지정하면 그 에이전트의 **모든** 레플리카로 떨어졌다.
+
+    되감기 (`deployments._rollback`) 가 이미 정리된 레플리카를 다시 멈추면 살아 있는 형제가 죽는다.
+    """
+    client = FakeDockerClient()
+    agents = launcher(client)
+    await launch_replicas(agents, 2)
+
+    await agents.stop("echo", replica=5)
+
+    assert [item.replica for item in agents.replicas_of("echo")] == [0, 1]
+    assert client.removed == []
+    assert agents.issuer.known("echo")
+
+
 async def test_stopping_one_replica_keeps_the_token():
     """토큰은 에이전트 단위다 — 하나 멈췄다고 버리면 나머지가 401 이 된다."""
     agents = launcher(FakeDockerClient())

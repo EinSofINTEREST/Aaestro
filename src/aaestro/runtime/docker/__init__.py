@@ -15,7 +15,6 @@ from aaestro.runtime.docker.engine import (
     control_port_of,
 )
 from aaestro.runtime.docker.errors import (
-    OOM_EXIT_CODE,
     drain_timeout,
     image_unavailable,
     oom_killed,
@@ -28,7 +27,6 @@ __all__ = [
     "DEFAULT_DRAIN_TIMEOUT_S",
     "DEFAULT_NETWORK",
     "DEFAULT_STOP_GRACE_S",
-    "OOM_EXIT_CODE",
     "ContainerHandle",
     "DockerClient",
     "DockerEngine",
