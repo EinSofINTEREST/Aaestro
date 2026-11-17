@@ -18,7 +18,6 @@ import structlog
 
 from aaestro.core.errors import AaestroError
 from aaestro.runtime.docker.errors import (
-    OOM_EXIT_CODE,
     ImageMissingError,
     NetworkIsolationError,
     drain_timeout,
@@ -499,7 +498,6 @@ class DockerEngine:
     """에이전트 네트워크를 외부 경로 없는 내부 네트워크로 (#280, 02 Network). 켜면 포트를 게시하지
     않고 control plane 은 네트워크 안 주소로 닿는다 — 외부로 나가는 길은 이그레스 프록시뿐이다."""
     stop_grace_s: float = DEFAULT_STOP_GRACE_S
-    started: dict[str, ContainerHandle] = field(default_factory=dict)
     cancel_wait_s: float = CANCELLED_START_WAIT_S
     """취소된 기동을 그 자리에서 기다리는 상한 — 넘기면 `_cleanups` 가 이어받는다."""
     _cleanups: set[asyncio.Task[None]] = field(default_factory=set, init=False, repr=False)
@@ -574,7 +572,6 @@ class DockerEngine:
             control_port=port,
             control_host=host,
         )
-        self.started[agent] = handle
         log.info(
             "agent container started",
             agent=agent,
@@ -673,6 +670,8 @@ class DockerEngine:
                 container_id=None,
                 image=image,
             )
+            # 끊긴 뒤 끝나는 기동의 예외를 거둔다 — 아니면 'Task exception was never retrieved'
+            creating.add_done_callback(lambda done: done.cancelled() or done.exception())
             raise
         await self._discard_started(creating, agent=agent, image=image)
 
@@ -779,7 +778,8 @@ class DockerEngine:
             AaestroError: RUNTIME/``RT_003`` when the container was OOM killed.
         """
         state = await self.inspect(handle)
-        if state.get("OOMKilled") or state.get("ExitCode") == OOM_EXIT_CODE:
+        # 137 은 SIGKILL 이면 다 나온다 (stop 유예 초과 · kill -9) — OOM 은 daemon 의 플래그로만
+        if state.get("OOMKilled") is True:
             raise oom_killed(
                 handle.agent,
                 handle.short_id,
@@ -876,7 +876,6 @@ class DockerEngine:
             handle.container_id, agent=handle.agent, image=handle.image
         )
 
-        self.started.pop(handle.agent, None)
         log.info(
             "agent container stopped",
             agent=handle.agent,

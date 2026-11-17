@@ -20,6 +20,7 @@ from aaestro.core.errors import NETWORK_RETRY, AaestroError, ErrorCategory, Erro
 from aaestro.memory.client import MEMORY_TOKEN_ENV, MEMORY_URL_ENV
 from aaestro.runtime.control import ControlClient
 from aaestro.runtime.docker.engine import DEFAULT_DRAIN_TIMEOUT_S, ContainerHandle
+from aaestro.runtime.docker.errors import previous_not_removed
 from aaestro.runtime.health import DEFAULT_STARTUP_GRACE_S
 from aaestro.runtime.lifecycle import AgentLifecycle, AgentState
 from aaestro.runtime.ports import A2APortAllocator
@@ -504,7 +505,16 @@ class AgentLauncher:
         await self._unwatch(launched)
         replaced = False
         try:
+            if not launched.stopped:
+                # 지우기 전에만 볼 수 있다 — 교체된 컨테이너는 사라지고 OOM 이 unhealthy 로 묻힌다
+                await self._log_exit(launched)
             await self._stop_container(launched)
+            if not launched.stopped:
+                # 옛 컨테이너를 지우지 못했으면 세우지 않는다 — 세우면 옛 handle 을 쥔 곳이 없어
+                # 미아가 된다. 재시도 가능 실패로 올려 다음 backoff 의 시도가 다시 지운다 (#493)
+                raise previous_not_removed(
+                    agent, launched.handle.image, container_id=launched.handle.short_id
+                )
             del self.launched[agent, replica]
             # A2A 포트는 **놓지 않는다**: peer 들의 env 에 이 포트가 굳어 있다 (#243 배선).
             # 할당기의 예약은 그대로 두고 같은 번호를 명시해 넘기면 start 가 재할당하지 않는다
@@ -527,6 +537,41 @@ class AgentLauncher:
                 # start 가 STARTING 으로 올린 뒤 넘어졌다 — 뜨는 중으로 보이면 안 된다
                 if launched.lifecycle.state is AgentState.STARTING:
                     launched.lifecycle.transition(AgentState.UNHEALTHY)
+
+    async def _log_exit(self, launched: LaunchedAgent) -> None:
+        """교체할 컨테이너가 OOM 으로 죽었으면 RT_003 을 남긴다 (01 Resource Management).
+
+        OOM 은 재시작으로 풀리지 않는다 — 메모리 상한을 올려야 한다. 분류는 최선의 시도라
+        조회 실패가 교체를 막지 않는다. 재시작 지표의 사유는 그대로 `unhealthy` 다.
+        """
+        try:
+            await self.engine.check_exit(launched.handle)
+        except AaestroError as err:
+            if err.code != ErrorCode.RT_003:
+                # 다른 분류를 OOM 으로 남기면 운영자가 메모리 상한을 잘못 올린다
+                log.debug(
+                    "agent container exit classified",
+                    agent=launched.agent,
+                    container_id=launched.handle.short_id,
+                    image=launched.handle.image,
+                    error_code=err.code,
+                )
+                return
+            log.warning(
+                "agent container was oom killed; restarting",
+                agent=launched.agent,
+                container_id=launched.handle.short_id,
+                image=launched.handle.image,
+                error_code=err.code,
+            )
+        except Exception as err:  # noqa: BLE001 — 분류 실패가 교체를 막지 않는다
+            log.debug(
+                "agent container exit state not inspected",
+                agent=launched.agent,
+                container_id=launched.handle.short_id,
+                image=launched.handle.image,
+                error=type(err).__name__,
+            )
 
     def _prime_restart_counter(self, agent: str) -> None:
         """이 에이전트의 재시작 사유를 0 으로 미리 만든다.
@@ -715,16 +760,18 @@ class AgentLauncher:
         Args:
             agent: The agent to stop.
             replica: One replica, or **every** replica when omitted — 02 의
-                drain 은 에이전트 단위이므로 전부가 기본이다.
+                drain 은 에이전트 단위이므로 전부가 기본이다. 목록에 없는 레플리카는
+                아무것도 멈추지 않는다 (멱등 — 이미 정리된 것을 다시 멈추는 되감기).
         """
         # 진행 중인 재시작을 먼저 끊는다 — 놔두면 방금 정지한 자리에 컨테이너를
         # 다시 세워 미아를 만든다. 끊긴 교체는 원래 레플리카를 목록에 되돌린다
         await self._cancel_restarts(agent, replica=replica)
-        targets = (
-            [self.launched[agent, replica]]
-            if replica is not None and (agent, replica) in self.launched
-            else self.replicas_of(agent)
-        )
+        if replica is None:
+            targets = self.replicas_of(agent)
+        else:
+            # 없는 레플리카는 멈출 것이 없다 — 전부로 떨어지면 되감기가 형제를 죽인다 (#493)
+            found = self.launched.get((agent, replica))
+            targets = [] if found is None else [found]
         for launched in targets:
             key = (agent, launched.replica)
             await self._unwatch(launched)

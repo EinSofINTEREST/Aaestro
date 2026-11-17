@@ -517,6 +517,28 @@ async def test_a_failed_removal_is_retried_by_the_next_restart():
     await agents.stop_all()
 
 
+async def test_a_replacement_does_not_start_before_the_old_container_is_removed():
+    """#493 — 제거가 실패해도 교체가 새 컨테이너를 세워, 옛 컨테이너를 쥔 곳이 없어졌다 (미아)."""
+    client = FakeDockerClient(remove_failures=1)
+    clock = FakeClock()
+    metrics = Metrics(registry=CollectorRegistry())
+    waits = ClockedSleep(clock, client, heal_after=0)
+    agents = launcher(client, waits, metrics=metrics, health_interval_s=None)
+    launched, _ = await start_sick(agents)
+    launched.lifecycle.restart_policy = RestartPolicy(clock=clock)
+    original_id = launched.handle.container_id
+
+    await restart_now(agents, launched)
+
+    # 첫 시도는 제거에 실패해 새 컨테이너를 세우지 않고, 다음 backoff 의 시도가 지우고 세운다
+    assert len(waits.waits) == 2
+    assert len(client.created) == 2
+    assert [cid for cid in client.removed if cid == original_id] == [original_id]
+    assert restart_count(metrics, "failed") == 1.0
+    await agents.stop_all()
+    assert client.labeled({}) == (), "지워지지 않은 컨테이너가 남았다"
+
+
 async def test_stop_retries_a_removal_that_failed_during_a_restart():
     """#491 — 교체가 제거에 실패하고 되돌린 레플리카를 정지가 다시 지운다."""
     client = FakeDockerClient(remove_failures=1)
@@ -603,6 +625,122 @@ async def test_a_permanent_restart_failure_logs_its_cause(monkeypatch: pytest.Mo
     assert level == "error"
     assert fields["error_code"] == "RT_004"
     assert fields["agent"] == "echo"
+    await agents.stop_all()
+
+
+@pytest.mark.parametrize(
+    ("state", "oom"),
+    [
+        ({"Running": False, "OOMKilled": True, "ExitCode": 137}, True),
+        ({"Running": True, "OOMKilled": False, "ExitCode": 0}, False),
+        # SIGKILL (stop 유예 초과 · kill -9) 도 137 이다 — 플래그 없이는 OOM 이 아니다
+        ({"Running": False, "OOMKilled": False, "ExitCode": 137}, False),
+    ],
+)
+async def test_a_restart_of_an_oom_killed_container_logs_rt_003(
+    monkeypatch: pytest.MonkeyPatch, state: dict, oom: bool
+):
+    """#493 — `check_exit` 를 부르는 곳이 없어 OOM 이 교체된 컨테이너와 함께 사라졌다."""
+    import aaestro.runtime.launcher as launcher_module
+
+    logged: list[tuple[str, str, dict]] = []
+
+    class Capture:
+        def __getattr__(self, level: str):
+            return lambda event, **fields: logged.append((level, event, fields))
+
+    monkeypatch.setattr(launcher_module, "log", Capture())
+    client = FakeDockerClient(state=state)
+    agents = launcher(client, Recorder(), health_interval_s=None)
+    launched, _ = await start_sick(agents)
+
+    await restart_now(agents, launched)
+
+    found = [
+        (lvl, f)
+        for lvl, event, f in logged
+        if event == "agent container was oom killed; restarting"
+    ]
+    assert len(found) == (1 if oom else 0)
+    if oom:
+        level, fields = found[0]
+        assert level == "warning"
+        assert fields["error_code"] == "RT_003"
+        assert fields["container_id"] == launched.handle.short_id
+    assert len(client.created) == 2, "분류가 교체를 막았다"
+    await agents.stop_all()
+
+
+async def test_an_exit_classified_as_something_else_is_not_logged_as_oom(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """#493 — OOM 로그는 RT_003 일 때만이다 — 다른 분류를 OOM 으로 남기지 않는다."""
+    import aaestro.runtime.launcher as launcher_module
+    from aaestro.runtime.docker.errors import start_failed
+
+    logged: list[tuple[str, str, dict]] = []
+
+    class Capture:
+        def __getattr__(self, level: str):
+            return lambda event, **fields: logged.append((level, event, fields))
+
+    async def other(_self, handle) -> None:
+        raise start_failed(handle.agent, handle.image)
+
+    monkeypatch.setattr(launcher_module, "log", Capture())
+    monkeypatch.setattr(DockerEngine, "check_exit", other)
+    client = FakeDockerClient()
+    agents = launcher(client, Recorder(), health_interval_s=None)
+    launched, _ = await start_sick(agents)
+
+    await restart_now(agents, launched)
+
+    assert not [e for _, e, _ in logged if e == "agent container was oom killed; restarting"]
+    assert len(client.created) == 2
+    await agents.stop_all()
+
+
+async def test_a_replacement_stopped_by_a_failed_removal_says_so(monkeypatch: pytest.MonkeyPatch):
+    """#493 — 제거 실패를 기동 실패 문구로 알리면 운영자가 새 이미지 · daemon 을 의심한다."""
+    import aaestro.runtime.launcher as launcher_module
+
+    logged: list[tuple[str, str, dict]] = []
+
+    class Capture:
+        def __getattr__(self, level: str):
+            return lambda event, **fields: logged.append((level, event, fields))
+
+    monkeypatch.setattr(launcher_module, "log", Capture())
+    client = FakeDockerClient(remove_failures=1)
+    clock = FakeClock()
+    agents = launcher(client, ClockedSleep(clock, client, heal_after=0), health_interval_s=None)
+    launched, _ = await start_sick(agents)
+    launched.lifecycle.restart_policy = RestartPolicy(clock=clock)
+
+    await restart_now(agents, launched)
+
+    retried = [f for _, e, f in logged if e == "agent restart failed; retrying"]
+    assert len(retried) == 1
+    err = retried[0]["exc_info"]
+    assert (err.code, err.retryable) == ("RT_001", True)
+    assert err.message == "previous container not removed; replacement not started"
+    await agents.stop_all()
+
+
+async def test_an_exit_state_that_cannot_be_read_does_not_block_the_restart():
+    """분류는 최선의 시도다 — 조회 실패로 아픈 레플리카를 교체하지 못하면 안 된다."""
+    client = FakeDockerClient()
+
+    def broken(_container_id: str) -> dict:
+        raise RuntimeError("daemon unreachable")
+
+    client.inspect = broken  # type: ignore[method-assign]
+    agents = launcher(client, Recorder(), health_interval_s=None)
+    launched, _ = await start_sick(agents)
+
+    await restart_now(agents, launched)
+
+    assert len(client.created) == 2
     await agents.stop_all()
 
 

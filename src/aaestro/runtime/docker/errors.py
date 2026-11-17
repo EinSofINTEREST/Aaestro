@@ -11,9 +11,6 @@ from typing import Any
 
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 
-OOM_EXIT_CODE = 137
-"""SIGKILL(128+9) — OOM killer 가 남기는 종료 코드."""
-
 
 def runtime_error(
     code: ErrorCode,
@@ -130,6 +127,22 @@ def start_failed(agent: str, image: str, **details: Any) -> AaestroError:
     )
 
 
+def previous_not_removed(agent: str, image: str, **details: Any) -> AaestroError:
+    """교체 전에 옛 컨테이너를 지우지 못해 교체를 시작하지 않았다 — 다음 시도가 다시 지운다.
+
+    기동 실패와 같은 RT_001 · 재시도 가능이지만 메시지로 원인을 가른다 — 운영자가 새 이미지 ·
+    daemon 을 의심하지 않게.
+    """
+    return runtime_error(
+        ErrorCode.RT_001,
+        "previous container not removed; replacement not started",
+        agent=agent,
+        retryable=True,
+        image=image,
+        **details,
+    )
+
+
 def invalid_spec(agent: str, image: str, **details: Any) -> AaestroError:
     """컨테이너 스펙 자체가 계약을 어김 — 결정적 오류이므로 재시도 금지.
 
@@ -167,11 +180,11 @@ def drain_timeout(agent: str, container_id: str, **details: Any) -> AaestroError
 
 
 __all__ = [
-    "OOM_EXIT_CODE",
     "drain_timeout",
     "image_unavailable",
     "invalid_spec",
     "oom_killed",
+    "previous_not_removed",
     "runtime_error",
     "start_failed",
 ]
