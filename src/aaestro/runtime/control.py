@@ -40,6 +40,8 @@ DEFAULT_TIMEOUT_S = 300.0
 DEFAULT_HEALTH_TIMEOUT_S = 3.0
 DEFAULT_STEER_TIMEOUT_S = 10.0
 """steer 접수는 대기열에 올리는 것뿐이다 — 태스크 timeout(300s)만큼 기다릴 일이 아니다."""
+DEFAULT_CANCEL_TIMEOUT_S = 10.0
+"""취소는 표를 찾아 신호를 보내는 것뿐이다 — 태스크 timeout 만큼 매달리면 취소가 늦는다 (#395)."""
 
 STEER_REFUSALS: dict[str, tuple[int, ErrorCategory, str]] = {
     ErrorCode.NF_001: (404, ErrorCategory.NOT_FOUND, "task is not running on the agent"),
@@ -235,7 +237,9 @@ class ControlClient:
 
         진행 중 태스크를 취소합니다.
         """
-        await self._request_json("POST", f"/v1/cancel/{task_id}", task_id=task_id)
+        await self._request_json(
+            "POST", f"/v1/cancel/{task_id}", task_id=task_id, timeout_s=DEFAULT_CANCEL_TIMEOUT_S
+        )
 
     async def steer(self, task_id: str, text: str, *, by: str) -> bool:
         """Queue an operator instruction for a running task.

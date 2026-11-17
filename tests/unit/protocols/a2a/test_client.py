@@ -347,3 +347,20 @@ def test_peers_without_an_address_are_not_advertised():
     client.reachable = ("planner",)
 
     assert client.peers() == ("planner",)
+
+
+async def test_call_caps_the_delegated_deadline_at_the_call_timeout():
+    """포기한 호출의 태스크가 피호출자에서 돌지 않게 — 위임 마감은 호출 timeout 이하다 (#395)."""
+    seen: list[float] = []
+
+    class Recording(FakePeer):
+        async def send(self, *, callee, task, token, headers):
+            seen.append(task.config.timeout_s)
+            return await super().send(callee=callee, task=task, token=token, headers=headers)
+
+    client = make_client(Recording())
+    client.timeout_s = 7.0
+
+    await client.call("planner", make_task())
+
+    assert seen == [7.0]

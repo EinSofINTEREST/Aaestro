@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from collections.abc import Iterator, Mapping
@@ -22,11 +23,12 @@ import yaml
 from structlog.testing import capture_logs
 
 from aaestro.agentd.executor import Executor
-from aaestro.core.agent import TaskKey, TaskRequest, TraceContext
+from aaestro.core.agent import TaskConfig, TaskKey, TaskRequest, TaskResult, TraceContext
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 from aaestro.core.skill import SkillContext
 from aaestro.orchestrator.run import RESUMED_SUFFIX
-from aaestro.protocols.a2a.allowlist import Edge, issue_token
+from aaestro.protocols.a2a.allowlist import Allowlist, Edge, issue_token
+from aaestro.protocols.a2a.client import A2AClient
 from aaestro.protocols.a2a.sdk import CALLER_HEADER, SdkPeerTransport, build_message
 from aaestro.protocols.a2a.server import (
     MAX_IDENTIFIER_CHARS,
@@ -36,7 +38,7 @@ from aaestro.protocols.a2a.server import (
 )
 from aaestro.protocols.a2a.tool import delegation_id
 from tests.fixtures.builders import make_task
-from tests.fixtures.fake_model import FakeModel, FakeTools, text
+from tests.fixtures.fake_model import FakeModel, FakeTools, calls, text
 from tests.unit.protocols.a2a.test_sdk import (
     BASE_URL,
     CALLEE,
@@ -206,6 +208,83 @@ def test_read_task_ignores_a_caller_claimed_in_the_body():
     task = read_task(body(caller="planner"))
 
     assert task.caller is None
+
+
+def test_read_task_takes_the_callers_deadline_from_the_real_wire_format():
+    """호출자가 기다리는 시간이 본문에 실려 피호출자의 마감이 된다 (#395)."""
+    sent = make_task(config=TaskConfig(timeout_s=12.5))
+
+    restored = read_task(build_message(sent).parts[0].text)
+
+    assert restored.config.timeout_s == 12.5
+
+
+def test_read_task_never_extends_the_callees_deadline():
+    """본문은 마감을 줄이기만 한다 — 피호출자의 기본 상한을 넘겨 늘리지 못한다."""
+    restored = read_task(body(config={"timeout_s": 10_000, "max_turns": 999}))
+
+    assert restored.config == TaskConfig()
+
+
+@pytest.mark.parametrize(
+    ("config", "field", "reason"),
+    [
+        ("fast", "config", "not_object"),
+        ({"timeout_s": "5"}, "config.timeout_s", "not_number"),
+        ({"timeout_s": True}, "config.timeout_s", "not_number"),
+        ({"timeout_s": 0}, "config.timeout_s", "not_positive"),
+        ({"timeout_s": -1}, "config.timeout_s", "not_positive"),
+        ({"timeout_s": 10**400}, "config.timeout_s", "not_number"),
+    ],
+)
+def test_read_task_rejects_a_malformed_deadline(config, field, reason):
+    with pytest.raises(AaestroError) as caught:
+        read_task(body(config=config))
+
+    assert caught.value.code == ErrorCode.VAL_002
+    assert caught.value.details == {"field": field, "reason": reason}
+
+
+async def test_a_delegated_task_stops_when_the_caller_gives_up():
+    """호출자의 timeout 에서 피호출자의 태스크도 멈춘다 — 모델을 더 부르지 않는다 (#395).
+
+    실제 서버처럼 호출자가 끊어도 피호출자 태스크를 취소하지 않는 전송으로 본다: 멈추는 것은
+    본문에 실린 마감뿐이다.
+    """
+    model = FakeModel([calls("slow"), text("done")])
+    executor = Executor(
+        agent="planner",
+        model=model,
+        tools=FakeTools().script("slow", delay=5),
+        render=lambda task: "prompt",
+    )
+
+    class DetachedPeer:
+        running: asyncio.Task[TaskResult] | None = None
+
+        async def send(self, *, callee: str, task, token, headers):
+            received = read_task(build_message(task).parts[0].text)
+            self.running = asyncio.create_task(
+                executor.execute(received.model_copy(update={"caller": "researcher"}))
+            )
+            return await asyncio.shield(self.running)
+
+    peer = DetachedPeer()
+    client = A2AClient(
+        agent="researcher",
+        allowlist=Allowlist(edges=frozenset({Edge("researcher", "planner")}), secret=b"k" * 32),
+        transport=peer,
+        timeout_s=0.05,
+    )
+
+    with pytest.raises(AaestroError) as caught:
+        await client.call("planner", make_task())
+    assert peer.running is not None
+    result = await asyncio.wait_for(asyncio.shield(peer.running), timeout=2)
+
+    assert caught.value.code == ErrorCode.A2A_002
+    assert result.error is not None and result.error.code == ErrorCode.TO_001
+    assert model.turns == 1
 
 
 # --- 식별자 형식: 거절하는 쪽 -------------------------------------------------------------

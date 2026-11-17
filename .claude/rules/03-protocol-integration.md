@@ -83,7 +83,10 @@ spec:
 3. **No Transitive Calls**: A 가 B 를 호출하고 B 가 C 를 호출하는 것은 각각의 선언이 있을 때만
    가능 — caller 의 권한이 전파되지 않는다
 4. **Timeout & Retry**: A2A 호출은 timeout 필수 (기본 120s), 재시도는 caller 의
-   RetryPolicy 를 따름 — [05-error-handling.md](05-error-handling.md)
+   RetryPolicy 를 따름 — [05-error-handling.md](05-error-handling.md).
+   위임 태스크의 마감 (`config.timeout_s`) 은 호출 timeout 이하로 실려 가고, 피호출자는 본문의
+   `config` 중 그 값 하나만 읽어 자기 상한을 **줄이기만** 한다 — 호출자가 포기한 태스크가 피호출자에서
+   끝까지 돌지 않게 (#395). 양수가 아니면 `VAL_002`
 5. **Depth Limit**: A2A 호출 체인 깊이 상한 (기본 3) — `TraceContext.depth` 로 전파/검증,
    초과 시 `A2A_005` (순환 위임 방지)
 6. **Peer Symmetry (우열 없음)**: A2A 연결에 상위/하위 개념이 없다 — 호출 방향은

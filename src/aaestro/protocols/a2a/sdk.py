@@ -83,6 +83,8 @@ def build_message(task: TaskRequest) -> pb.Message:
         "node_id": task.node_id,
         "input": task.input,
         "trace": task.trace.model_dump(mode="json"),
+        # 호출자가 기다리는 시간 — 피호출자는 이것으로 자기 마감을 줄이기만 한다 (#395)
+        "config": {"timeout_s": task.config.timeout_s},
     }
     # task_id 는 **비워 둔다**: 값을 채우면 SDK 가 기존 task 의 후속 메시지로
     # 읽어 아직 없는 task 를 찾다 실패한다. 새 위임은 새 task 다

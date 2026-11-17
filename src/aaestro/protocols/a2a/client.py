@@ -177,7 +177,15 @@ class A2AClient:
 
         token, headers = await self._credentials(callee)
         # 위임 체인이 이어지도록 trace 를 자식으로 넘긴다 — run 전체가 단일 trace
-        delegated = task.model_copy(update={"trace": task.trace.child(span_id=task.task_id)})
+        # 마감은 이 호출이 기다리는 시간을 넘지 않는다 — 넘으면 포기한 뒤에도 피호출자가 돈다 (#395)
+        delegated = task.model_copy(
+            update={
+                "trace": task.trace.child(span_id=task.task_id),
+                "config": task.config.model_copy(
+                    update={"timeout_s": min(task.config.timeout_s, self.timeout_s)}
+                ),
+            }
+        )
 
         started = time.monotonic()
         try:

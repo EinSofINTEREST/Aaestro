@@ -8,6 +8,7 @@ runtime 이 발급한 per-edge token 을 함께 검증한다 (03 Enforcement 이
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, NoReturn
 
@@ -72,8 +73,8 @@ def read_task(text: str) -> TaskRequest:
     맞지 않으면 거절하고, 거절 사유에는 **필드 이름과 사유 종류만** 싣습니다 — 받은 값은 싣지
     않습니다. 거절하는 이유가 그 값이 로그와 응답에 그대로 실리면 안 되기 때문입니다.
 
-    본문의 ``config`` 와 ``caller`` 는 읽지 않습니다: 상한은 피호출자가 정하고, 호출자는 수신
-    입구가 확인한 값만 씁니다.
+    본문의 ``caller`` 는 읽지 않습니다 — 호출자는 수신 입구가 확인한 값만 씁니다. ``config`` 는
+    ``timeout_s`` 하나만 읽고 그것도 피호출자의 기본 상한을 **줄이기만** 합니다 (``_config``).
 
     Raises:
         AaestroError: VALIDATION/``VAL_001`` if a required field is missing,
@@ -91,7 +92,7 @@ def read_task(text: str) -> TaskRequest:
         run_id=_required(payload, "run_id"),
         node_id=_optional(payload, "node_id"),
         input=_input(payload.get("input")),
-        config=TaskConfig(),
+        config=_config(payload.get("config")),
         trace=_trace(payload.get("trace")),
     )
 
@@ -122,6 +123,33 @@ def _input(found: object) -> dict[str, Any]:
     if not isinstance(found, dict):
         raise _malformed("input", "not_object")
     return dict(found)
+
+
+def _config(found: object) -> TaskConfig:
+    """호출자가 기다리는 시간으로 마감을 줄인다 — 늘리지는 못한다 (#395).
+
+    호출자가 포기한 뒤에도 태스크가 피호출자의 기본 상한까지 돌면 아무도 받지 않는 결과에 모델
+    비용을 쓴다. 그 밖의 상한(turn · tool)은 피호출자가 정한다.
+    """
+    default = TaskConfig()
+    if found is None:
+        return default
+    if not isinstance(found, dict):
+        raise _malformed("config", "not_object")
+    timeout = found.get("timeout_s")
+    if timeout is None:
+        return default
+    # bool 은 int 다 — True 를 1초로 읽지 않는다
+    if isinstance(timeout, bool) or not isinstance(timeout, int | float):
+        raise _malformed("config.timeout_s", "not_number")
+    try:
+        seconds = float(timeout)
+    except OverflowError:
+        # float 로 담을 수 없는 거대한 정수 — isfinite 가 OverflowError 로 새지 않게 먼저 바꾼다
+        raise _malformed("config.timeout_s", "not_number") from None
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise _malformed("config.timeout_s", "not_positive")
+    return TaskConfig(timeout_s=min(seconds, default.timeout_s))
 
 
 def _trace(found: object) -> TraceContext:
