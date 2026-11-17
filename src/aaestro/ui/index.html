@@ -42,11 +42,11 @@
           <legend>메타</legend>
           <label>이름 <input name="name" required pattern="[a-z0-9]+(-[a-z0-9]+)*" /></label>
           <label>버전 <input name="version" required /></label>
-          <label>설명 <input name="description" /></label>
+          <label>설명 <textarea name="description" rows="3"></textarea></label>
           <label>모드
             <select name="mode"><option value="mission">mission</option><option value="service">service</option></select>
           </label>
-          <label>목표 <input name="goal" required /></label>
+          <label>목표 <textarea name="goal" rows="3" required></textarea></label>
           <label>state 필드 (JSON)
             <textarea name="state_fields" rows="4" placeholder='{"query": {"type": "string", "required": true}, "plan": {"type": "string"}}'></textarea>
           </label>
@@ -54,8 +54,8 @@
         </fieldset>
         <fieldset id="graph-service" hidden disabled>
           <legend>service idle 정책</legend>
-          <label>min_delay_s <input name="idle_min" type="number" min="1" step="1" value="30" required /></label>
-          <label>max_delay_s <input name="idle_max" type="number" min="1" step="1" value="600" required /></label>
+          <label>min_delay_s <input name="idle_min" type="number" min="0" step="any" value="30" required /></label>
+          <label>max_delay_s <input name="idle_max" type="number" min="0" step="any" value="600" required /></label>
           <label>max_failure_streak <input name="failure_streak" type="number" min="1" step="1" value="5" required /></label>
         </fieldset>
         <fieldset>
@@ -86,7 +86,7 @@
           <legend>메타</legend>
           <label>이름 <input name="name" required pattern="[a-z0-9]+(-[a-z0-9]+)*" /></label>
           <label>버전 <input name="version" required /></label>
-          <label>설명 <input name="description" /></label>
+          <label>설명 <textarea name="description" rows="3"></textarea></label>
           <label>그룹 <select name="group"><option value="">(없음)</option></select></label>
         </fieldset>
         <fieldset>

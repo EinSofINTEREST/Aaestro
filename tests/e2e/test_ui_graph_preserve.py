@@ -89,11 +89,11 @@ UNTOUCHED_FORM = {
         {
             "id": "writer",
             "agent": "agents/writer@0.4.0",
-            "inputMap": {"query": "state.query"},
-            "outputMap": {"draft": "output.draft"},
+            "inputText": "query=state.query",
+            "outputText": "draft=output.draft",
         },
-        {"id": "sub", "agent": "", "inputMap": {}, "outputMap": {}},
-        {"id": "extra", "agent": "agents/planner@0.4.0", "inputMap": {}, "outputMap": {}},
+        {"id": "sub", "agent": "", "inputText": "", "outputText": ""},
+        {"id": "extra", "agent": "agents/planner@0.4.0", "inputText": "", "outputText": ""},
     ],
     "edges": [
         {"from": "START", "to": "writer", "condition": "", "maxIterations": ""},
@@ -163,7 +163,7 @@ def test_form_values_win_over_the_original(page):
     form = copy.deepcopy(UNTOUCHED_FORM)
     form["mode"] = "mission"
     form["goal"] = "done"
-    form["nodes"][0]["inputMap"] = {}
+    form["nodes"][0]["inputText"] = ""
     form["nodes"][0]["agent"] = "agents/writer@0.5.0"
     form["edges"][1]["condition"] = ""
     form["edges"][1]["maxIterations"] = ""
@@ -309,7 +309,7 @@ def test_the_response_defaults_are_not_sent_back_as_nulls(page):
 def test_values_cleared_in_the_form_stay_cleared(page):
     form = copy.deepcopy(UNTOUCHED_FORM)
     form["description"] = ""
-    form["nodes"][0]["outputMap"] = {}
+    form["nodes"][0]["outputText"] = ""
     form["nodes"][2]["agent"] = ""
 
     patched = patch(page, ORIGINAL, form)
