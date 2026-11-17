@@ -56,7 +56,7 @@ class Server:
         )
 
 
-def workspace(tmp_path: Path, **corp) -> Catalog:
+def workspace(tmp_path: Path, extra_agents: tuple[str, ...] = (), **corp) -> Catalog:
     servers = [
         {
             "name": "corp",
@@ -84,14 +84,17 @@ def workspace(tmp_path: Path, **corp) -> Catalog:
             "runtime": {"env_allowlist": ["CORP_TOKEN"]},
         },
     }
-    path = tmp_path / "agents" / "researcher" / "manifest.yaml"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(yaml.safe_dump(doc), encoding="utf-8")
+    for name in ("researcher", *extra_agents):
+        doc["metadata"]["name"] = name
+        path = tmp_path / "agents" / name / "manifest.yaml"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(yaml.safe_dump(doc), encoding="utf-8")
     return Catalog.under(tmp_path)
 
 
 def termination(tmp_path, registry, server, **options) -> McpTermination:
     corp = options.pop("corp", {})
+    extra_agents = options.pop("extra_agents", ())
     tokens = options.pop("tokens", frozenset({"CORP_TOKEN"}))
     addresses = options.pop(
         "addresses",
@@ -108,7 +111,7 @@ def termination(tmp_path, registry, server, **options) -> McpTermination:
     return McpTermination(
         access=registry,
         upstreams=McpUpstreams(
-            catalog=workspace(tmp_path, **corp),
+            catalog=workspace(tmp_path, extra_agents, **corp),
             environ={"CORP_TOKEN": TOKEN, "ANTHROPIC_API_KEY": "sk-model-key"},
             tokens=tokens,
         ),
@@ -456,3 +459,70 @@ async def test_a_session_id_carrying_the_proxy_credential_is_refused(tmp_path, s
     assert response.status_code == 502
     assert TOKEN not in response.text and TOKEN not in str(response.headers)
     assert "mcp-session-id" not in response.headers
+
+
+class CookieServer(Server):
+    """답마다 세션 쿠키를 심는 원격 MCP 서버 대역 — 에러 응답에도 심는다 (#403)."""
+
+    def __init__(self, status: int = 200) -> None:
+        super().__init__()
+        self.status = status
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        self.seen.append(request)
+        return httpx.Response(
+            self.status,
+            headers=[
+                ("content-type", "application/json"),
+                ("set-cookie", f"session=FROM-{len(self.seen)}; Path=/"),
+                ("set-cookie", "route=sticky; Path=/"),
+            ],
+            stream=httpx.ByteStream(b'{"jsonrpc": "2.0", "id": 7, "result": {}}'),
+        )
+
+
+async def test_an_upstream_cookie_neither_crosses_agents_nor_returns_to_the_agent(tmp_path):
+    """프록시 클라이언트 하나를 모든 에이전트가 쓴다 — 쿠키를 기억하면 A 의 세션이 B 에게 간다."""
+    registry = Identities()
+    server = CookieServer()
+    target = termination(tmp_path, registry, server)
+    async with client_for(target) as client:
+        responses = [await post(client, cookie="session=CHOSEN-BY-AGENT") for _ in range(3)]
+
+    assert len(server.seen) == 3
+    assert all("cookie" not in sent.headers for sent in server.seen)
+    assert all("set-cookie" not in r.headers for r in responses)
+    assert len(target.http.cookies.jar) == 0
+
+
+async def test_one_agents_upstream_cookie_does_not_reach_another_agents_call(tmp_path):
+    """A 의 호출이 심은 쿠키가 같은 서버로 가는 B 의 upstream 요청에 실리지 않는다 (#403)."""
+    registry = Identities()
+    registry.identities["cred-writer"] = "writer"
+    server = CookieServer()
+    target = termination(tmp_path, registry, server, extra_agents=("writer",))
+    async with client_for(target) as client:
+        first = await post(client, credential="cred-researcher")
+        second = await post(client, credential="cred-writer")
+
+    assert first.status_code == second.status_code == 200
+    assert len(server.seen) == 2
+    assert "cookie" not in server.seen[1].headers
+    assert "set-cookie" not in second.headers
+
+
+@pytest.mark.parametrize("status", [400, 401, 403])
+async def test_an_upstream_error_response_carries_no_cookie_either_way(tmp_path, status):
+    """에러 본문을 다시 쓰는 경로도 쿠키를 건너가게 하지 않는다 — 헤더 필터가 빠지면 잡는다."""
+    registry = Identities()
+    registry.identities["cred-writer"] = "writer"
+    server = CookieServer(status)
+    target = termination(tmp_path, registry, server, extra_agents=("writer",))
+    async with client_for(target) as client:
+        responses = [await post(client, credential=c) for c in ("cred-researcher", "cred-writer")]
+
+    assert [r.status_code for r in responses] == [status, status]
+    assert len(server.seen) == 2
+    assert all("set-cookie" not in r.headers for r in responses)
+    assert "cookie" not in server.seen[1].headers
+    assert len(target.http.cookies.jar) == 0
