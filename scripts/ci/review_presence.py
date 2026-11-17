@@ -11,8 +11,9 @@ import json
 import os
 import subprocess
 import sys
+import time
 from collections import Counter
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -33,6 +34,10 @@ DESCRIPTION_LIMIT = 140
 # 철회된 리뷰와 제출 전 리뷰는 리뷰가 아니다 — dismissed 이벤트가 판정을 되돌리는 근거
 IGNORED_STATES = frozenset({"DISMISSED", "PENDING"})
 VERDICT_STATES = frozenset({"APPROVED", "CHANGES_REQUESTED"})
+# 봇 코멘트가 깨운 판정 (--comment-by) 의 재시도 — Codex 의 👍 는 완료 코멘트 수정 몇 초 뒤에 달린다
+# (#633 실측 3초). pending 이면 이 간격으로 이 횟수까지 다시 읽고, 끝까지 pending 이면 그대로 쓴다
+SETTLE_ATTEMPTS = 4
+SETTLE_DELAY_S = 5.0
 
 
 @dataclass(frozen=True)
@@ -207,6 +212,8 @@ def post_status(repo: str, sha: str, verdict: Verdict) -> bool:
 class _Options:
     review_bots: Sequence[str]
     dry_run: bool
+    settle: bool = False
+    sleep: Callable[[float], None] = time.sleep
 
 
 def combine(verdicts: dict[int, Verdict]) -> Verdict:
@@ -240,21 +247,35 @@ def _evaluate_logged(
     return None
 
 
+def _verdicts(repo: str, numbers: set[int], opts: _Options) -> dict[int, Verdict] | None:
+    """Judge every PR in `numbers`; None if any judgment failed (already logged)."""
+    verdicts: dict[int, Verdict] = {}
+    for number in sorted(numbers):
+        result = _evaluate_logged(repo, number, opts.review_bots)
+        if result is None:
+            return None
+        verdicts[number] = result[1]
+    return verdicts
+
+
 def _judge_sha(repo: str, sha: str, numbers: set[int], opts: _Options) -> bool:
     """Judge every PR sharing `sha`, then post the combined verdict once.
 
     판정 직후 곧바로 현재 status 를 읽고 쓴다 — 다른 sha 처리를 사이에 끼우지 않아, 판정과 쓰기
     사이에 들어온 철회를 오래된 판정이 덮는 창을 이 묶음의 API 호출 몇 번으로 줄인다.
     묶음의 PR 하나라도 판정에 실패하면 그 sha 에는 쓰지 않는다 (False).
+    `opts.settle` 이면 pending 일 때 상한 있는 재시도로 다시 판정한다 (SETTLE_ATTEMPTS).
     판정 중에 head 가 옮겨 간 PR 이 묶음에 남아도 "모두 인정" 조건이 더 엄격해질 뿐 느슨해지지
     않는다.
     """
-    verdicts: dict[int, Verdict] = {}
-    for number in sorted(numbers):
-        result = _evaluate_logged(repo, number, opts.review_bots)
-        if result is None:
-            return False
-        verdicts[number] = result[1]
+    verdicts = _verdicts(repo, numbers, opts)
+    retries = SETTLE_ATTEMPTS if opts.settle else 0
+    while verdicts is not None and not combine(verdicts).passed and retries > 0:
+        retries -= 1
+        opts.sleep(SETTLE_DELAY_S)
+        verdicts = _verdicts(repo, numbers, opts)
+    if verdicts is None:
+        return False
     verdict = combine(verdicts)
     action = "dry-run"
     try:
@@ -303,20 +324,29 @@ def _group_by_sha(
     return groups, unreadable
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(argv: Sequence[str] | None = None, *, sleep: Callable[[float], None] = time.sleep) -> int:
     """CLI — judge the given PRs (or every open PR) and post statuses unless --dry-run."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", required=True, help="owner/name")
     parser.add_argument("--pr", type=int, action="append", help="PR number (repeatable)")
     parser.add_argument("--all-open", action="store_true", help="judge every open PR")
     parser.add_argument("--dry-run", action="store_true", help="print verdicts, write nothing")
+    parser.add_argument(
+        "--comment-by",
+        metavar="LOGIN",
+        help="run woken by a PR comment from LOGIN: skip unless LOGIN is a review bot, "
+        "and re-read briefly while the verdict is pending",
+    )
     args = parser.parse_args(argv)
     if not args.pr and not args.all_open:
         parser.error("give --pr or --all-open")
 
     bots_env = os.environ.get("REVIEW_BOTS", "")
     review_bots = [b.strip() for b in bots_env.split(",") if b.strip()] or DEFAULT_REVIEW_BOTS
-    opts = _Options(review_bots, args.dry_run)
+    if args.comment_by is not None and args.comment_by not in review_bots:
+        print(f"comment by {args.comment_by} is not from a review bot — not judging")
+        return 0
+    opts = _Options(review_bots, args.dry_run, settle=args.comment_by is not None, sleep=sleep)
     requested = list(args.pr or [])
     groups, unreadable = _group_by_sha(args.repo, requested, all_open=args.all_open)
 

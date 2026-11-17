@@ -7,8 +7,9 @@ fixture 는 실제 REST 응답 (PR #500 · #508 · #512, 2026-10-26) 에서 판�
 from __future__ import annotations
 
 import json
+import re
 import subprocess
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -309,8 +310,12 @@ def github(monkeypatch: pytest.MonkeyPatch) -> FakeGitHub:
     return fake
 
 
-def run(*args: str) -> int:
-    return review_presence.main(["--repo", REPO, *args])
+def no_sleep(seconds: float) -> None:
+    raise AssertionError(f"unexpected sleep({seconds})")
+
+
+def run(*args: str, sleep: Callable[[float], None] = no_sleep) -> int:
+    return review_presence.main(["--repo", REPO, *args], sleep=sleep)
 
 
 def test_evaluate_line_comment_review_passes(github: FakeGitHub) -> None:
@@ -499,17 +504,112 @@ def test_judge_workflow_has_no_review_event_trigger() -> None:
     assert not (workflows / "ci-review-signal.yml").exists()
     # PyYAML 은 키 `on` 을 불리언 True 로 읽는다
     judge_on = judge_wf[True]
-    assert set(judge_on) == {"pull_request_target", "schedule", "workflow_dispatch"}
+    assert set(judge_on) == {
+        "pull_request_target",
+        "issue_comment",
+        "schedule",
+        "workflow_dispatch",
+    }
+    assert set(judge_on["issue_comment"]["types"]) == {"created", "edited"}
     assert set(judge_on["pull_request_target"]["types"]) == {
         "opened",
         "synchronize",
         "reopened",
         "ready_for_review",
     }
+    # 그룹은 job 수준이다 — job if 가 거르는 실행 (판정하지 않는 코멘트) 이 대기 중인 판정을
+    # 취소하지 않게 (#633 리뷰). workflow 수준에 있으면 건너뛸 실행도 그룹에 들어간다
+    assert "concurrency" not in judge_wf
+    concurrency = judge_wf["jobs"]["judge"]["concurrency"]
+    # 대기 판정이 새 실행에 밀려 취소되지 않게 줄을 세운다 (queue 는 cancel-in-progress false 전제)
+    assert concurrency["queue"] == "max"
+    assert concurrency["cancel-in-progress"] is False
+    group = concurrency["group"]
     # 그룹 이름은 대소문자를 구분하지 않아 브랜치명 키는 다른 PR 끼리 대기 실행을 교체한다
-    group = judge_wf["concurrency"]["group"]
     assert "head_branch" not in group
     assert "head.ref" not in group
+    # issue_comment 에는 pull_request 가 없다 — PR 코멘트도 PR 번호별 그룹이어야 한다
+    assert "github.event.issue.number" in group
+
+
+def test_judge_workflow_runs_comments_only_for_bot_comments_on_prs() -> None:
+    # 사람 · 목록 밖 봇 · 일반 이슈 코멘트에서는 job 이 돌지 않는다 (concurrency 슬롯도 차지 안 함)
+    workflow = Path(__file__).resolve().parents[3] / ".github/workflows/ci-review.yml"
+    job = yaml.safe_load(workflow.read_text("utf-8"))["jobs"]["judge"]
+    condition = " ".join(job["if"].split())
+    bots = re.fullmatch(r".*contains\(fromJSON\('(\[.*?\])'\),.*", condition)
+    assert bots is not None
+
+    assert condition == (
+        "github.event_name != 'issue_comment' || (github.event.issue.pull_request "
+        f"&& contains(fromJSON('{bots[1]}'), github.event.comment.user.login))"
+    )
+    (step,) = [s for s in job["steps"] if "run" in s]
+    # job if 는 env 를 읽지 못해 목록이 두 곳에 있다 — 갈라지면 if 가 거른 봇은 판정되지 않는다
+    assert json.loads(bots[1]) == step["env"]["REVIEW_BOTS"].split(",")
+    assert step["env"]["NUMBER"] == (
+        "${{ github.event.pull_request.number || github.event.issue.number }}"
+    )
+    assert step["env"]["COMMENT_BY"] == "${{ github.event.comment.user.login }}"
+    # 코멘트 값은 env 로만 — 식 보간으로 셸 본문에 넣지 않는다
+    assert "${{" not in step["run"]
+    assert '--comment-by "$COMMENT_BY"' in step["run"]
+
+
+# --- --comment-by: 봇 코멘트가 깨운 판정의 재시도 (#633) ---------------------------------------
+
+
+def test_main_comment_by_review_bot_retries_until_the_thumbs_up_lands(github: FakeGitHub) -> None:
+    github.add_pr(7)
+    slept: list[float] = []
+
+    def sleep(seconds: float) -> None:
+        slept.append(seconds)
+        if len(slept) == 2:  # 👍 는 코멘트 수정 몇 초 뒤에 달린다
+            github.prs[7]["reactions"].append(CODEX_THUMBS_UP)
+
+    assert run("--pr", "7", "--comment-by", CODEX, sleep=sleep) == 0
+
+    assert slept == [review_presence.SETTLE_DELAY_S] * 2
+    assert [p["state"] for p in github.posts] == ["success"]
+
+
+def test_main_comment_by_review_bot_stops_at_the_cap_and_writes_pending(
+    github: FakeGitHub,
+) -> None:
+    github.add_pr(7)
+    slept: list[float] = []
+
+    assert run("--pr", "7", "--comment-by", CODEX, sleep=slept.append) == 0
+
+    assert len(slept) == review_presence.SETTLE_ATTEMPTS
+    assert [(p["state"], p["description"]) for p in github.posts] == [("pending", WAITING)]
+
+
+def test_main_comment_by_review_bot_already_reviewed_does_not_wait(github: FakeGitHub) -> None:
+    github.add_pr(7, **REVIEWED)
+
+    assert run("--pr", "7", "--comment-by", CODEX) == 0
+
+    assert [p["state"] for p in github.posts] == ["success"]
+
+
+@pytest.mark.parametrize("login", [ACTIONS, AUTHOR])
+def test_main_comment_by_non_review_bot_judges_nothing(github: FakeGitHub, login: str) -> None:
+    github.add_pr(7)
+
+    assert run("--pr", "7", "--comment-by", login) == 0
+
+    assert github.posts == []
+
+
+def test_main_without_comment_by_never_retries(github: FakeGitHub) -> None:
+    # PR 이벤트 · schedule 경로는 재시도 없이 한 번 판정한다 (no_sleep 이 잠들면 실패)
+    github.add_pr(7)
+
+    assert run("--pr", "7") == 0
+
+    assert [p["state"] for p in github.posts] == ["pending"]
 
 
 # --- 같은 head sha 를 공유하는 PR 들 (#517 리뷰) -------------------------------------------------
