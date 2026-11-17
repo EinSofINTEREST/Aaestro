@@ -39,6 +39,10 @@ MAX_SKILL_DEPTH = 8
 MAX_LINK_HOPS = 16
 """링크 하나를 해석하며 거치는 링크 수 상한 — 순환 링크를 끝낸다."""
 
+MAX_MODULE_DIRECTORY_LINKS = 64
+"""모듈 트리 하나의 디렉토리 링크 수 상한 — 순환 검사의 재귀 깊이와 표 크기 (링크 수의 제곱) 를
+함께 묶는다. 정당한 모듈은 디렉토리 링크를 이만큼 쓰지 않는다."""
+
 _LABEL_LIMIT = 120
 _READ_CHUNK = 64 * 1024
 # O_NOFOLLOW: 마지막 구성 요소가 링크면 열지 않는다. O_NONBLOCK: 검사와 열기 사이에 FIFO 로
@@ -274,6 +278,11 @@ def check_links(root: Path, *, scope: str) -> None:
                 target = follow_link(base, path, scope=scope)
                 if target.is_dir():
                     directory_links.append((path, target))
+                    if len(directory_links) > MAX_MODULE_DIRECTORY_LINKS:
+                        raise SkillViolation(
+                            "files",
+                            f"more than {MAX_MODULE_DIRECTORY_LINKS} directory links",
+                        )
     _reject_link_cycles(base, directory_links)
 
 
@@ -341,6 +350,7 @@ def _regular_size(info: os.stat_result, relative: str) -> int:
 
 __all__ = [
     "MAX_LINK_HOPS",
+    "MAX_MODULE_DIRECTORY_LINKS",
     "MAX_SKILL_DEPTH",
     "MAX_SKILL_FILES",
     "MAX_SKILL_FILE_BYTES",

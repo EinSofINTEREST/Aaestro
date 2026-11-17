@@ -770,7 +770,7 @@ graphs/{name}.yaml
    - **Containment** (#408): skillset · promptset · memoryset · decisionset 은 resolve 가 버전 디렉토리
      전체의 링크를 Skillpack Rules 4 와 같은 규칙 (`skilltree.follow_link` — 상대 경로만, 매 단계 루트
      안, 대상 없음 · 순환 · 특수 파일 거절) 으로 본다. 위반은 `MOD_003` 이고, import · 템플릿 읽기
-     **전에** 거절한다. 루트 안의 상대 링크는 허용한다. 크기 · 개수 · 하드링크 · 이름 규칙은 skillpack
+     **전에** 거절한다. 루트 안의 상대 링크는 허용한다. 모듈 트리의 디렉토리 링크는 64개까지 (`MAX_MODULE_DIRECTORY_LINKS` — 순환 검사의 재귀 깊이와 표 크기를 묶는다), 넘으면 `MOD_003` 이다. 크기 · 개수 · 하드링크 · 이름 규칙은 skillpack
      에만 있다. skillpack 은 로더가 skill 마다 본다. 경로 문자열도 같다 — promptset 템플릿 `file` 은
      절대 경로 · 루트 위로 정규화되는 상대 경로를, skillset `entrypoint` 는 점으로 이은 Python 식별자가
      아닌 모듈 부분 (`/abs`, `..`) 을 스키마 검증 (`MOD_003`) 에서 거절한다. 값은 싣지 않는다

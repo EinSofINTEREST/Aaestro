@@ -10,6 +10,7 @@ from aaestro.core.errors import AaestroError, ErrorCategory
 from aaestro.modules.promptset import PromptsetLoader
 from aaestro.modules.registry import ModuleRegistry, RegistryRoots
 from aaestro.modules.skillset import SkillsetLoader
+from aaestro.modules.skilltree import MAX_MODULE_DIRECTORY_LINKS
 from tests.fixtures.registry import FIXTURE_ROOT, fixture_registry
 
 
@@ -264,6 +265,56 @@ def test_resolve_absolute_link_raises_mod_003_even_inside_root(repo):
 
     assert exc_info.value.code == "MOD_003"
     assert "absolute" in exc_info.value.message
+
+
+def _directory_link_chain(module, count):
+    # d0/next -> ../d1, d1/next -> ../d2 ... 순환 없이 이어지는 디렉토리 링크 사슬
+    base = module / "templates"
+    for i in range(count + 1):
+        (base / f"d{i}").mkdir()
+    for i in range(count):
+        (base / f"d{i}" / "next").symlink_to(f"../d{i + 1}")
+
+
+def test_resolve_directory_links_at_cap_is_allowed(repo):
+    module = _module(repo, "promptsets/researcher/0.1.0")
+    _directory_link_chain(module, MAX_MODULE_DIRECTORY_LINKS)
+
+    assert ModuleRegistry.under(repo).resolve("promptsets/researcher@0.1.0").root == module
+
+
+def test_resolve_directory_links_over_cap_raises_mod_003(repo):
+    module = _module(repo, "promptsets/researcher/0.1.0")
+    _directory_link_chain(module, MAX_MODULE_DIRECTORY_LINKS + 1)
+
+    with pytest.raises(AaestroError) as exc_info:
+        ModuleRegistry.under(repo).resolve("promptsets/researcher@0.1.0")
+
+    assert exc_info.value.code == "MOD_003"
+    assert "directory links" in exc_info.value.message
+
+
+def test_resolve_deep_directory_link_chain_does_not_recurse_unbounded(repo):
+    """상한 없이 사슬을 따라가면 RecursionError 가 MOD_003 이 아닌 날 예외로 샌다."""
+    module = _module(repo, "promptsets/researcher/0.1.0")
+    _directory_link_chain(module, 1200)
+
+    with pytest.raises(AaestroError) as exc_info:
+        ModuleRegistry.under(repo).resolve("promptsets/researcher@0.1.0")
+
+    assert exc_info.value.code == "MOD_003"
+
+
+def test_resolve_many_links_to_root_raises_mod_003_before_quadratic_table(repo):
+    module = _module(repo, "promptsets/researcher/0.1.0")
+    for i in range(MAX_MODULE_DIRECTORY_LINKS + 1):
+        (module / "templates" / f"x{i}").symlink_to("..")
+
+    with pytest.raises(AaestroError) as exc_info:
+        ModuleRegistry.under(repo).resolve("promptsets/researcher@0.1.0")
+
+    assert exc_info.value.code == "MOD_003"
+    assert "directory links" in exc_info.value.message
 
 
 def test_resolve_relative_link_inside_module_root_is_allowed(repo):

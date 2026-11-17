@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from aaestro.core.errors import AaestroError
 from aaestro.core.skill import SkillContext
 from aaestro.modules.registry import ModuleRegistry, RegistryRoots
-from aaestro.modules.skillset import SkillsetLoader
+from aaestro.modules.skillset import SkillDeclaration, SkillsetLoader
 from tests.fixtures.registry import fixture_registry
 
 REF = "skillsets/web-search@0.2.0"
@@ -387,16 +388,22 @@ async def test_a_new_generation_executes_changed_skill_code(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "module_part", ["/OUTSIDE/evil", "../evil", "skills.my-mod", "skills..mod"]
+    "entrypoint", ["/OUTSIDE/evil:a", "../evil:a", "skills.my-mod:a", "skills..mod:a"]
 )
-def test_entrypoint_module_must_be_dotted_identifiers(tmp_path, module_part):
-    """entrypoint 의 모듈 부분은 경로가 된다 — 절대 경로가 섞이면 루트 밖 파일을 import 한다."""
+def test_skill_declaration_entrypoint_must_be_dotted_identifiers(entrypoint):
+    """스키마가 직접 거절한다 — 로더의 import 단계 실패에 기대면 이 검증을 지워도 초록이다."""
+    with pytest.raises(ValidationError):
+        SkillDeclaration(name="a", entrypoint=entrypoint, description="d")
+
+
+def test_entrypoint_absolute_module_path_is_rejected_before_import(tmp_path):
+    """절대 경로가 섞이면 루트 밖 파일을 import 한다 — 스키마가 import 전에 거절해야 한다."""
     marker = tmp_path / "imported"
     evil = tmp_path / "evil.py"
     evil.write_text(f"open({str(marker)!r}, 'w').close()\ndef a(): ...\n", encoding="utf-8")
-    entrypoint = f"{module_part.replace('/OUTSIDE', str(tmp_path))}:a"
     loader = _write_skillset(
-        tmp_path, yaml_body=HEADER + f"    - name: a\n      entrypoint: '{entrypoint}'\n"
+        tmp_path,
+        yaml_body=HEADER + f"    - name: a\n      entrypoint: '{tmp_path}/evil:a'\n",
     )
 
     with pytest.raises(AaestroError) as exc_info:
