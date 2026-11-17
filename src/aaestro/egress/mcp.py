@@ -26,6 +26,7 @@ import json
 import secrets
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
+from http.cookiejar import CookieJar, DefaultCookiePolicy
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -65,8 +66,12 @@ _FORWARDED = frozenset(
     {"content-type", "accept", "mcp-session-id", "mcp-protocol-version", "last-event-id"}
 )
 _RETURNED_EXCLUDED = frozenset(
-    {"connection", "keep-alive", "transfer-encoding", "content-length", "server", "date"}
-)
+    {
+        "connection", "keep-alive", "transfer-encoding", "content-length", "server", "date",
+        # upstream 이 심은 세션은 에이전트에게 건너가지 않는다 — 모델 종단과 같다 (#403)
+        "set-cookie", "set-cookie2",
+    }
+)  # fmt: skip
 _BODY_HEADERS = frozenset({"content-type", "content-encoding"})
 """프록시가 다시 쓴 에러 본문에는 맞지 않는 헤더 — JSON 으로 새로 직렬화하고 디코딩한 뒤다."""
 
@@ -177,6 +182,10 @@ class McpTermination:
     )
     resolver: Callable[[str, int], Awaitable[list[str]]] = resolve
     sessions: SessionSeal = field(default_factory=SessionSeal)
+
+    def __post_init__(self) -> None:
+        # 클라이언트 하나를 모든 에이전트가 쓴다 — 쿠키를 기억하면 A 의 세션이 B 에게 실린다 (#403)
+        self.http.cookies = CookieJar(policy=DefaultCookiePolicy(allowed_domains=[]))
 
     def router(self) -> APIRouter:
         router = APIRouter()
