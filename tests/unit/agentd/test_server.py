@@ -7,15 +7,17 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from structlog.testing import capture_logs
 
 from aaestro.agentd import server as server_module
 from aaestro.agentd.echo import EchoExecutor
-from aaestro.agentd.executor import MAX_STEER_CHARS, Executor, UserTurn
+from aaestro.agentd.executor import MAX_STEER_CHARS, Executor, ExecutorServices, UserTurn
 from aaestro.agentd.server import AgentRuntime, _sse_frame, create_app
 from aaestro.core.agent import (
     ComponentHealth,
@@ -30,7 +32,7 @@ from aaestro.core.events import DoneEvent, TokenEvent, ToolCallEvent, ToolResult
 from aaestro.core.markers import STEER_HEADER
 from tests.fixtures.builders import make_task
 from tests.fixtures.fake_model import FakeModel, FakeTools, calls, text
-from tests.fixtures.waiting import reached
+from tests.fixtures.waiting import reached, spin, until
 
 TOKEN = "agent-token"
 AUTH = {"authorization": f"Bearer {TOKEN}"}
@@ -772,3 +774,308 @@ async def test_the_cancel_endpoint_stops_the_task_the_invoke_endpoint_is_running
 
     assert canceled.status_code == 200
     assert response.json()["status"] == TaskStatus.CANCELED
+
+
+async def test_the_cancel_endpoint_stops_a_streaming_task_and_ends_the_stream():
+    """`/stream` 태스크도 취소된다 — 스트림은 끊기지 않고 canceled 종료 이벤트로 끝난다 (#395)."""
+    cleanups: list[None] = []
+    model = FakeModel([calls("slow"), text("done")])
+    tools = FakeTools().script("slow", delay=5)
+    executor = Executor(
+        agent="researcher",
+        model=model,
+        tools=tools,
+        render=lambda task: "prompt",
+        services=ExecutorServices(on_cleanup=lambda: cleanups.append(None)),
+    )
+    app = create_app(AgentRuntime(agent="researcher", executor=executor), token=TOKEN)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://agent", headers=AUTH
+    ) as http:
+        streaming = asyncio.create_task(http.post("/v1/stream", json=task_payload()))
+        await until(lambda: tools.started == ["slow"])
+
+        canceled = await http.post("/v1/cancel/task-0001")
+        response = await streaming
+
+    frames = [json.loads(line[5:]) for line in response.text.splitlines() if line]
+    assert canceled.status_code == 200
+    assert frames[-1]["type"] == "done"
+    assert frames[-1]["status"] == TaskStatus.CANCELED
+    assert model.turns == 1
+    assert len(cleanups) == 1
+
+
+# --- /stream 취소 · drain 이 스트림 전체를 본다 (#395) ---------------------------------
+
+
+class StreamCall:
+    """ASGI 로 `/v1/stream` 을 직접 돌린다 — 프레임 전송을 붙잡아 느린 소비자를 재현한다."""
+
+    def __init__(self, app, payload: dict, *, hold: bool) -> None:
+        self.frames: list[dict] = []
+        self.release = asyncio.Event()
+        if not hold:
+            self.release.set()
+        self.gone = asyncio.Event()
+        self._body = json.dumps(payload).encode()
+        self._delivered = False
+        scope = {
+            "type": "http",
+            "asgi": {"version": "3.0"},
+            "http_version": "1.1",
+            "method": "POST",
+            "scheme": "http",
+            "path": "/v1/stream",
+            "raw_path": b"/v1/stream",
+            "query_string": b"",
+            "root_path": "",
+            "headers": [
+                (b"authorization", f"Bearer {TOKEN}".encode()),
+                (b"content-type", b"application/json"),
+            ],
+            "client": ("test", 1),
+            "server": ("agent", 80),
+        }
+        self.running = asyncio.create_task(app(scope, self._receive, self._send))
+
+    async def _receive(self) -> dict:
+        if not self._delivered:
+            self._delivered = True
+            return {"type": "http.request", "body": self._body, "more_body": False}
+        await self.gone.wait()
+        return {"type": "http.disconnect"}
+
+    async def _send(self, message: dict) -> None:
+        if message["type"] == "http.response.body" and message.get("body"):
+            self.frames.append(json.loads(message["body"].decode().removeprefix("data: ")))
+            await self.release.wait()
+
+
+class HangingExecutor(FakeExecutor):
+    """첫 이벤트 뒤 문이 열릴 때까지 도는 스트림 — 정리 횟수를 센다."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.gate = asyncio.Event()
+        self.working = asyncio.Event()
+        self.closed: list[str] = []
+
+    async def stream(self, task):
+        try:
+            yield TokenEvent(task_id=task.task_id, text="a")
+            self.working.set()
+            await self.gate.wait()
+            yield DoneEvent(task_id=task.task_id, output={"content": "done"})
+        finally:
+            self.closed.append(task.task_id)
+
+
+async def test_a_cancel_while_a_frame_is_being_sent_stops_the_stream():
+    """느린 소비자가 프레임을 받는 사이에도 실행기는 돈다 — 그 틈의 cancel 도 닿아야 한다."""
+    executor = HangingExecutor()
+    runtime = AgentRuntime(agent="researcher", executor=executor)
+    app = create_app(runtime, token=TOKEN)
+    call = StreamCall(app, task_payload(), hold=True)
+    await until(lambda: len(call.frames) == 1 and executor.working.is_set())
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://agent", headers=AUTH
+    ) as http:
+        canceled = await http.post("/v1/cancel/task-0001")
+    call.release.set()
+    await asyncio.wait_for(call.running, timeout=5)
+
+    assert canceled.status_code == 200
+    assert call.frames[-1]["type"] == "done"
+    assert call.frames[-1]["status"] == TaskStatus.CANCELED
+    assert executor.closed == ["task-0001"]
+
+
+async def test_a_consumer_leaving_the_stream_cleans_the_executor_up_once():
+    """응답이 끊기면 실행기도 끊긴다 — 백그라운드에 남아 돌지 않는다.
+
+    다음 이벤트를 기다리는 응답이 취소되는 경우다 (연결 끊김에 Starlette 가 응답을 취소한다).
+    """
+    executor = HangingExecutor()
+    runtime = AgentRuntime(agent="researcher", executor=executor)
+    call = StreamCall(create_app(runtime, token=TOKEN), task_payload(), hold=False)
+    await until(lambda: executor.working.is_set())
+
+    call.running.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await call.running
+
+    assert executor.closed == ["task-0001"]
+    assert runtime.cancel("task-0001") is False
+
+
+async def test_drain_waits_for_a_stream_to_its_end():
+    """drain 은 스트림의 한 이벤트가 아니라 스트림 전체를 기다린다."""
+    executor = HangingExecutor()
+    runtime = AgentRuntime(agent="researcher", executor=executor)
+    call = StreamCall(create_app(runtime, token=TOKEN), task_payload(), hold=False)
+    await until(lambda: executor.working.is_set())
+
+    draining = asyncio.create_task(runtime.drain())
+    await spin(20)
+    assert not draining.done()
+
+    executor.gate.set()
+    await asyncio.wait_for(draining, timeout=5)
+    await asyncio.wait_for(call.running, timeout=5)
+    assert (call.frames[-1]["type"], call.frames[-1]["status"]) == ("done", "completed")
+
+
+async def test_an_executor_stream_keeps_its_context_and_deadline_across_events():
+    """실행기 스트림은 한 태스크에서 돈다 — ContextVar 와 asyncio.timeout 이 이벤트를 넘는다."""
+    marker: contextvars.ContextVar[str] = contextvars.ContextVar("marker", default="unset")
+
+    class Deadlined(FakeExecutor):
+        async def stream(self, task):
+            marker.set("kept")
+            try:
+                async with asyncio.timeout(0.05):
+                    yield TokenEvent(task_id=task.task_id, text="a")
+                    yield TokenEvent(task_id=task.task_id, text=marker.get())
+                    await asyncio.Event().wait()
+            except TimeoutError:
+                yield TokenEvent(task_id=task.task_id, text="deadline")
+
+    call = StreamCall(
+        create_app(AgentRuntime(agent="researcher", executor=Deadlined()), token=TOKEN),
+        task_payload(),
+        hold=False,
+    )
+    await asyncio.wait_for(call.running, timeout=5)
+
+    assert [frame.get("text") for frame in call.frames] == ["a", "kept", "deadline"]
+
+
+async def test_a_same_id_stream_finishing_does_not_drop_the_running_invoke():
+    """같은 키로 겹친 태스크는 자기 자리만 지운다 — 끝난 스트림이 invoke 를 추적에서 빼지 않는다."""
+    executor = HangingExecutor()
+    executor.gate.set()
+    runtime = AgentRuntime(agent="researcher", executor=executor)
+    invoke = make_task()
+    invoking = asyncio.create_task(asyncio.Event().wait())
+    runtime.track(invoke.key, invoking)
+
+    call = StreamCall(create_app(runtime, token=TOKEN), task_payload(), hold=False)
+    await asyncio.wait_for(call.running, timeout=5)
+    await asyncio.sleep(0)
+
+    assert runtime.cancel(invoke.task_id) is True
+    with pytest.raises(asyncio.CancelledError):
+        await invoking
+
+
+# --- 종료 이벤트는 하나 — 실행기가 만든 뒤에는 완료가 이긴다 (#395) -------------------
+
+
+def kinds(call: StreamCall) -> list[tuple[str, str | None]]:
+    return [(frame["type"], frame.get("status")) for frame in call.frames]
+
+
+async def test_a_cancel_after_the_executor_finished_keeps_its_single_done():
+    """done 을 낸 뒤 정리 중에 온 cancel 은 canceled 를 하나 더 만들지 않는다."""
+
+    class LingersAfterDone(FakeExecutor):
+        def __init__(self) -> None:
+            super().__init__()
+            self.cleaning = asyncio.Event()
+
+        async def stream(self, task):
+            yield DoneEvent(task_id=task.task_id, output={"content": "done"})
+            self.cleaning.set()
+            await asyncio.Event().wait()
+
+    executor = LingersAfterDone()
+    runtime = AgentRuntime(agent="researcher", executor=executor)
+    call = StreamCall(create_app(runtime, token=TOKEN), task_payload(), hold=False)
+    await until(lambda: executor.cleaning.is_set() and len(call.frames) == 1)
+
+    assert runtime.cancel("task-0001") is True
+    await asyncio.wait_for(call.running, timeout=5)
+
+    assert kinds(call) == [("done", "completed")]
+
+
+async def test_a_cancel_while_the_done_waits_for_a_slow_consumer_keeps_the_result():
+    """느린 소비자로 큐에 넣지 못한 done 도 실행기의 결과다 — cancel 이 output 을 지우지 않는다."""
+
+    class Finishes(FakeExecutor):
+        def __init__(self) -> None:
+            super().__init__()
+            self.done_made = asyncio.Event()
+
+        async def stream(self, task):
+            yield TokenEvent(task_id=task.task_id, text="1")
+            yield TokenEvent(task_id=task.task_id, text="2")
+            self.done_made.set()
+            yield DoneEvent(task_id=task.task_id, output={"content": "kept"})
+
+    executor = Finishes()
+    runtime = AgentRuntime(agent="researcher", executor=executor)
+    call = StreamCall(create_app(runtime, token=TOKEN), task_payload(), hold=True)
+    await until(lambda: executor.done_made.is_set() and len(call.frames) == 1)
+    await spin(5)  # producer 가 done 의 put 에서 막힐 자리까지 간다
+
+    assert runtime.cancel("task-0001") is True
+    call.release.set()
+    await asyncio.wait_for(call.running, timeout=5)
+
+    assert kinds(call)[-1] == ("done", "completed")
+    assert call.frames[-1]["output"] == {"content": "kept"}
+    assert [kind for kind, _ in kinds(call)].count("done") == 1
+
+
+async def test_a_failing_custom_stream_is_reported_once():
+    """응답이 거둔 실행기 예외를 정리 단계가 'already failed' 로 한 번 더 남기지 않는다."""
+
+    class Breaks(FakeExecutor):
+        async def stream(self, task):
+            yield TokenEvent(task_id=task.task_id, text="a")
+            raise RuntimeError("boom")
+
+    runtime = AgentRuntime(agent="researcher", executor=Breaks())
+    with capture_logs() as logs:
+        call = StreamCall(create_app(runtime, token=TOKEN), task_payload(), hold=False)
+        with pytest.raises(RuntimeError, match="boom"):
+            await asyncio.wait_for(call.running, timeout=5)
+
+    assert [entry for entry in logs if entry["event"] == "task had already failed"] == []
+
+
+async def test_a_cancel_while_blocked_on_a_slow_consumer_closes_the_executor_stream():
+    """put 에서 끊긴 producer 는 실행기 생성기를 닫는다 — yield 에 멈춘 채 GC 를 기다리지 않게."""
+
+    class Chatty(FakeExecutor):
+        def __init__(self) -> None:
+            super().__init__()
+            self.third = asyncio.Event()
+            self.closed: list[str] = []
+
+        async def stream(self, task):
+            try:
+                yield TokenEvent(task_id=task.task_id, text="1")
+                yield TokenEvent(task_id=task.task_id, text="2")
+                self.third.set()
+                yield TokenEvent(task_id=task.task_id, text="3")
+                await asyncio.Event().wait()
+            finally:
+                self.closed.append(task.task_id)
+
+    executor = Chatty()
+    runtime = AgentRuntime(agent="researcher", executor=executor)
+    call = StreamCall(create_app(runtime, token=TOKEN), task_payload(), hold=True)
+    await until(lambda: executor.third.is_set() and len(call.frames) == 1)
+    await spin(5)
+
+    assert runtime.cancel("task-0001") is True
+    await until(lambda: executor.closed == ["task-0001"])
+    call.release.set()
+    await asyncio.wait_for(call.running, timeout=5)
+
+    assert kinds(call)[-1] == ("done", "canceled")

@@ -17,7 +17,7 @@ import pytest
 from aaestro.core.agent import CONTROL_OVERHEAD_S, HealthState, TaskConfig, TaskResult, TaskStatus
 from aaestro.core.errors import AaestroError, ErrorCategory
 from aaestro.core.events import DoneEvent, TokenEvent, ToolCallEvent
-from aaestro.runtime.control import ControlClient, control_url
+from aaestro.runtime.control import DEFAULT_CANCEL_TIMEOUT_S, ControlClient, control_url
 from tests.fixtures.builders import make_task
 from tests.fixtures.waiting import reached
 
@@ -191,6 +191,20 @@ async def test_invoke_waits_past_the_task_timeout_for_the_agents_answer():
         await client.invoke(task)
 
     assert seen["read"] == 10 + CONTROL_OVERHEAD_S
+
+
+async def test_cancel_uses_its_own_short_timeout():
+    """취소가 태스크 timeout(300s) 동안 매달리면 취소가 늦는다 — 전용 상한을 쓴다 (#395)."""
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(request.extensions["timeout"])
+        return httpx.Response(200, json={"status": "canceled"})
+
+    async with client_with(handler) as client:
+        await client.cancel("task-9")
+
+    assert seen["read"] == DEFAULT_CANCEL_TIMEOUT_S
 
 
 async def test_server_error_is_retryable_runtime_error():

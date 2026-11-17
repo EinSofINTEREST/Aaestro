@@ -1266,6 +1266,9 @@ runtime 이 에이전트보다 먼저 `aaestro-<agent>--mcp-<server>` 라는 이
 - **태스크를 다시 읽거나 취소할 수 없다.** `GetTask`, `ListTasks`, `SubscribeToTask`, `CancelTask`,
   push 알림 설정 요청, `GetExtendedAgentCard` 는 "This operation is not supported" (`-32004`) 로
   거절한다. 응답은 누가 묻든, 어떤 task id 든 같으므로 태스크가 있는지 알려 주지 않는다.
+- **위임 태스크는 호출자가 기다리기를 멈추면 멈춘다.** 메시지는 호출자의 마감 (`config.timeout_s` —
+  호출자의 A2A 호출 timeout, 기본 120초) 을 싣는다. 피호출자는 그것으로 자기 태스크 상한을 줄이기만 하고
+  늘리지 않으며, 마감을 넘긴 태스크는 `TO_001` 로 실패한다. 양수가 아닌 마감은 `VAL_002` 다.
 - **기존 태스크에 메시지를 이을 수 없다.** `taskId` 를 지정한 send 도 같은 응답으로 거절한다. 위임은
   늘 새 태스크다.
 - **태스크 store 는 끝난 태스크를 쥐지 않는다.** 태스크를 실행 중에만 들고, 완료·실패·거부되면

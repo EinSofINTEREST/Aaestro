@@ -21,13 +21,21 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from aaestro.core.agent import HealthState, HealthStatus, TaskKey, TaskRequest, TaskResult
+from aaestro.core.agent import (
+    HealthState,
+    HealthStatus,
+    TaskKey,
+    TaskRequest,
+    TaskResult,
+    TaskStatus,
+)
 from aaestro.core.errors import AaestroError, AaestroErrorPayload, ErrorCategory, ErrorCode
 from aaestro.core.events import DoneEvent, ErrorEvent, TaskEvent, ToolCallEvent, ToolResultEvent
 from aaestro.core.identifiers import identifier_problem
 from aaestro.core.tools import is_mcp_tool
 from aaestro.http_auth import AdmitBeforeRouting, admit_first, require_token
 from aaestro.http_errors import request_validation_error, status_for, unroutable_problem
+from aaestro.resilience import cancel_and_wait
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
@@ -87,7 +95,9 @@ class AgentRuntime:
         # direct 요청과 그래프 태스크가 같은 큐를 공유한다 (02 Direct Request Rules 5)
         self.semaphore = asyncio.Semaphore(max_concurrent_tasks)
         self.draining = False
-        self._inflight: dict[TaskKey, asyncio.Task[Any]] = {}
+        # 같은 키로 겹친 태스크는 등록 순서대로 쌓인다 — 취소 대상은 마지막 등록이고, 끝난 태스크는
+        # 자기 자리만 빠진다 (먼저 끝난 쪽이 남의 자리를 지우지 않게)
+        self._inflight: dict[TaskKey, list[asyncio.Task[Any]]] = {}
 
     def card(self) -> dict[str, Any]:
         """A2A AgentCard."""
@@ -123,8 +133,16 @@ class AgentRuntime:
         키는 멱등 캐시와 같은 ``TaskRequest.key`` 다: id 만으로 잡으면 peer 가 같은 id 의
         A2A 태스크로 진행 중 노드 태스크의 자리를 덮을 수 있다 (#400).
         """
-        self._inflight[key] = task
-        task.add_done_callback(lambda _t: self._inflight.pop(key, None))
+        self._inflight.setdefault(key, []).append(task)
+
+        def forget(_done: asyncio.Task[Any]) -> None:
+            tasks = self._inflight.get(key, [])
+            if task in tasks:
+                tasks.remove(task)
+            if not tasks:
+                self._inflight.pop(key, None)
+
+        task.add_done_callback(forget)
 
     def cancel(self, task_id: str) -> bool:
         """Control API 로 들어온 진행 중 태스크를 취소한다. 없으면 False.
@@ -132,17 +150,17 @@ class AgentRuntime:
         취소를 부를 수 있는 것은 Control API 뿐이므로 대상도 그쪽 태스크뿐이다 — peer 가 만든
         동명 태스크는 이 id 로 가리켜지지 않는다.
         """
-        task = self._inflight.get(TaskKey.from_control(task_id))
-        if task is None:
+        tasks = self._inflight.get(TaskKey.from_control(task_id))
+        if not tasks:
             return False
-        task.cancel()
+        tasks[-1].cancel()
         return True
 
     async def steer(self, task_id: str, text: str, *, by: str) -> bool:
         """진행 중 태스크에 운영자 지시를 대기시킨다 — steer 를 모르는 실행기면 False.
 
-        진행 여부는 실행기가 안다: `/invoke` 뿐 아니라 `/stream` 과 A2A 로 받은 태스크도 같은
-        루프를 돌기 때문에, 서버의 취소 추적표(`/invoke` 만 등록)로 판정하면 그 둘이 빠진다.
+        진행 여부는 실행기가 안다: A2A 로 받은 태스크도 같은 루프를 돌기 때문에, 서버의 취소
+        추적표 (Control API 의 `/invoke` · `/stream` 만 등록) 로 판정하면 그것이 빠진다.
         """
         steer = getattr(self.executor, "steer", None)
         if not callable(steer):
@@ -153,7 +171,7 @@ class AgentRuntime:
     async def drain(self) -> None:
         """새 태스크 수락을 멈추고 진행 중 태스크를 기다린다."""
         self.draining = True
-        inflight = list(self._inflight.values())
+        inflight = [task for tasks in self._inflight.values() for task in tasks]
         if inflight:
             await asyncio.gather(*inflight, return_exceptions=True)
 
@@ -360,9 +378,70 @@ def create_app(runtime: AgentRuntime, *, token: str | None = None) -> FastAPI:
 
         async def events() -> AsyncIterator[bytes]:
             async with runtime.semaphore:
-                async for event in runtime.executor.stream(task):
-                    if frame := _sse_frame(event, runtime.agent):
-                        yield frame
+                # 실행기 스트림은 태스크 하나가 끝까지 돈다 — 그것을 추적해야 cancel · drain 이
+                # 스트림 전체를 보고, 응답은 취소된 실행을 종료 이벤트로 닫을 수 있다 (#395).
+                # 한 태스크라 생성기 안의 ContextVar · asyncio.timeout 이 이벤트를 넘어 유지된다
+                relay: asyncio.Queue[TaskEvent] = asyncio.Queue(maxsize=1)
+                # 실행기가 만든 종료 이벤트 — 큐에 넣기 전에 남긴다: 그 뒤의 취소는 완료를 이기지
+                # 못한다 (정리 중 · 느린 소비자로 put 에 막힌 중 온 cancel 이 결과를 지우지 않게)
+                terminal: list[TaskEvent] = []
+
+                async def produce() -> None:
+                    source = runtime.executor.stream(task)
+                    try:
+                        async for produced in source:
+                            if isinstance(produced, DoneEvent | ErrorEvent):
+                                terminal.append(produced)
+                            await relay.put(produced)
+                    finally:
+                        # put 에서 끊기면 생성기는 yield 에 멈춘 채 남는다 — 닫아야 실행기의 정리
+                        # (steer 창구 등) 가 GC 를 기다리지 않는다. aclose 없는 반복자도 받는다
+                        close = getattr(source, "aclose", None)
+                        if close is not None:
+                            await close()
+
+                producer = asyncio.create_task(produce())
+                runtime.track(task.key, producer)
+                ended = False  # 종료 이벤트를 이미 냈다 — 응답은 종료 이벤트를 하나만 낸다
+                collected = False  # producer 의 예외를 응답이 이미 거뒀다
+                try:
+                    while True:
+                        getting = asyncio.ensure_future(relay.get())
+                        try:
+                            await asyncio.wait(
+                                {getting, producer}, return_when=asyncio.FIRST_COMPLETED
+                            )
+                        finally:
+                            getting.cancel()
+                        if getting.done() and not getting.cancelled():
+                            event = getting.result()
+                        elif not relay.empty():
+                            event = relay.get_nowait()
+                        elif producer.cancelled():
+                            if ended:
+                                return
+                            # canceled 합성은 실행기가 종료 이벤트를 만들기 전의 취소에만
+                            event = (
+                                terminal[0]
+                                if terminal
+                                else DoneEvent(task_id=task.task_id, status=TaskStatus.CANCELED)
+                            )
+                            if frame := _sse_frame(event, runtime.agent):
+                                yield frame
+                            return
+                        else:
+                            collected = True
+                            producer.result()  # 실행기의 예외는 응답이 거둔다
+                            return
+                        if isinstance(event, DoneEvent | ErrorEvent):
+                            ended = True
+                        if frame := _sse_frame(event, runtime.agent):
+                            yield frame
+                finally:
+                    # 소비자가 떠나거나 응답이 끝나면 실행을 끊고 정리가 끝날 때까지 기다린다.
+                    # 예외를 이미 거둔 producer 는 다시 다루지 않는다 — 실패를 두 번 남기지 않게
+                    if not collected:
+                        await cancel_and_wait(producer)
 
         return StreamingResponse(events(), media_type=SSE_MEDIA_TYPE)
 
