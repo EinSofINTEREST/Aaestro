@@ -11,16 +11,27 @@
 # 리뷰마다 멈췄고 (#574), 신호 워크플로 + workflow_run 중계도 그 승인 대기가 workflow_run 실행으로 번졌다
 # (#578 → #584). 둘 다 기본 브랜치의 워크플로 파일로 돌아서, 이 파일을 고친 PR 이 자기 head 에 success 를
 # 쓰지 못한다.
+# 예외로 리뷰 봇의 PR 코멘트 (issue_comment) 는 받는다 (#633): Codex 는 리뷰가 끝나면 자기 "Codex Review
+# Summary" 코멘트를 수정하고 몇 초 뒤 👍 를 단다 — 리액션은 트리거가 없으니 그 수정이 판정을 깨운다.
+# job 은 작성자가 리뷰 봇인 PR 코멘트에서만 돈다 — 판정하지 않는 코멘트 (사람 · 목록 밖 봇) 에 runner 를
+# 띄우지 않는다. 대기 중인 판정이 밀려 취소되지 않는 것은 concurrency 큐가 보장한다 (아래 주석). job if 는 env 를 읽지 못해 봇 목록이
+# if 와 env REVIEW_BOTS 두 곳에 있다 — 둘이 같은지는 테스트가 본다. 스크립트 (--comment-by) 도 한 번 더
+# 대조한다. 봇 코멘트도 승인 대기에 걸리는지는 기본 브랜치에서만 실측할 수 있다 — 걸리면 이 트리거를
+# 되돌린다 (status-checks.md "Known limits").
 # 이 트리거들의 일반적 위험 (쓰기 토큰으로 PR 코드를 실행) 은 여기 해당하지 않는다: PR 코드를 checkout
 # 하지 않고 (아래 checkout 은 기본 브랜치), PR 은 API 로 읽기만 한다. PR 에서 온 값 (제목 · 본문 ·
-# 브랜치명) 을 셸에 넣지 않는다 — GitHub 이 채운 PR 번호만 env 로 받는다. 남는 위조 경로 (쓰기 권한
-# 토큰으로 status 를 직접 쓰기) 와 schedule 의 한계는 status-checks.md "Known limits" 에 있다.
+# 브랜치명 · 코멘트 본문) 을 셸에 넣지 않는다 — GitHub 이 채운 PR 번호와 코멘트 작성자 login 만 env 로
+# 받아 인자로 넘긴다. 남는 위조 경로 (쓰기 권한 토큰으로 status 를 직접 쓰기) 와 schedule 의 한계는
+# status-checks.md "Known limits" 에 있다.
 name: ci-review
 
 on:
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review]
-  # 리뷰 · 리뷰 코멘트 · 리액션 (Codex 👍) 은 이 경로로만 반영된다.
+  # 리뷰 봇의 리뷰 시작 · 완료 코멘트 — 그 밖의 코멘트는 job if 에서 걸러진다
+  issue_comment:
+    types: [created, edited]
+  # 리뷰 · 리뷰 코멘트와, 봇 코멘트 수정이 깨우지 못한 리액션 (Codex 👍) 은 이 경로로만 반영된다.
   # 판정과 다른 status (한 번 쓴 위조 포함) 도 이 실행이 덮어쓴다. 반복해 쓰는 위조는 이기지 못한다.
   # schedule 은 best-effort 라 수 시간 늦거나 빠질 수 있고 (#574 실측: 간격 3.4 ~ 8.7시간, 평균 6.5시간),
   # 정시 (매시 0분) 가 가장 붐비므로 피한다
@@ -34,20 +45,28 @@ permissions:
   issues: read
   statuses: write
 
-# PR 단위 판정은 PR 번호별 그룹, 전체 판정 (schedule · 수동 실행) 은
-# 따로 한 그룹이다. GitHub 은 그룹당 대기 실행을 하나만 두고 더 새 실행이 오면 대기 중이던 것을
-# 취소한다 — 한 그룹으로 묶으면 다른 PR 의 이벤트가 철회 이벤트를 지워 리뷰 없는 success 가 남는다.
-# PR 별 그룹에서는 대기 실행을 대신하는 것이 같은 PR 의 더 새 실행이고, 그것이 실행 시점의 상태를 다시
-# 읽으므로 잃는 것이 없다. 브랜치명은 키에 쓰지 않는다 — 그룹 이름은 대소문자를 구분하지 않아
-# `Feature` 와 `feature` 가 한 그룹이 된다. 전체 판정과 PR 단위 판정은 서로 겹칠 수 있다 — 남는 경합
-# 창은 status-checks.md "Known limits"
-concurrency:
-  group: ci-review-${{ github.event.pull_request.number || 'all-open' }}
-  cancel-in-progress: false
-
 jobs:
   judge:
     name: Review Presence Judge
+    # issue_comment 는 리뷰 봇의 PR 코멘트에서만. 목록은 아래 env REVIEW_BOTS 와 같아야 한다 (테스트가 본다)
+    if: >-
+      github.event_name != 'issue_comment'
+      || (github.event.issue.pull_request
+          && contains(fromJSON('["chatgpt-codex-connector[bot]","copilot-pull-request-reviewer[bot]","coderabbitai[bot]"]'),
+                      github.event.comment.user.login))
+    # PR 단위 판정 (PR 이벤트 · 리뷰 봇의 PR 코멘트) 은 PR 번호별 그룹, 전체 판정 (schedule · 수동 실행) 은
+    # 따로 한 그룹이다. `queue: max` 로 그룹마다 실행이 순서대로 줄을 선다 (최대 100, 대기 실행을 교체 ·
+    # 취소하지 않는다 — cancel-in-progress 가 false 일 때만 쓰인다, GitHub changelog 2026-05-07
+    # "concurrency groups now allow larger queues"). 기본 동작 (대기 하나, 새 실행이 대기 중이던 것을
+    # 취소) 이면 철회 이벤트의 판정이나 Codex 완료 코멘트의 판정이 다른 실행에 밀려 사라질 수 있다.
+    # 줄 선 판정은 각자 실행 시점의 상태를 다시 읽으므로 순서대로 다 돌아도 마지막 쓰기가 최신이다.
+    # PR 별 그룹은 한 PR 의 줄이 다른 PR 의 판정을 늦추지 않고 큐 상한에서 멀게 둔다. 브랜치명은 키에 쓰지
+    # 않는다 — 그룹 이름은 대소문자를 구분하지 않아 `Feature` 와 `feature` 가 한 그룹이 된다. 전체 판정과
+    # PR 단위 판정은 서로 겹칠 수 있다 — 남는 경합 창은 status-checks.md "Known limits"
+    concurrency:
+      group: ci-review-${{ github.event.pull_request.number || github.event.issue.number || 'all-open' }}
+      cancel-in-progress: false
+      queue: max
     runs-on: ubuntu-latest
     steps:
       # 판정 스크립트는 기본 브랜치의 것을 쓴다 — PR 이 자기 게이트를 고쳐 통과시키지 못하게
@@ -59,8 +78,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          NUMBER: ${{ github.event.pull_request.number }}
-          # docs/en/ci/status-checks.md "Review Presence" 와 동기화 유지 (쉼표 구분)
+          NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+          # issue_comment 에서만 채워진다 — 스크립트가 REVIEW_BOTS 와 대조하고 재시도를 켠다
+          COMMENT_BY: ${{ github.event.comment.user.login }}
+          # docs/en/ci/status-checks.md "Review Presence" · 위 job if 의 목록과 동기화 유지 (쉼표 구분)
           REVIEW_BOTS: chatgpt-codex-connector[bot],copilot-pull-request-reviewer[bot],coderabbitai[bot]
         run: |
           script=scripts/ci/review_presence.py
@@ -76,5 +97,8 @@ jobs:
           fi
           if [ ${#args[@]} -eq 0 ]; then
             args=(--all-open)
+          fi
+          if [ -n "$COMMENT_BY" ]; then
+            args+=(--comment-by "$COMMENT_BY")
           fi
           python3 "$script" --repo "$REPO" "${args[@]}"

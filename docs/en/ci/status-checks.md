@@ -53,10 +53,23 @@ status context.
   by a manual `workflow_dispatch`. A review-event trigger waits for approval whenever the
   account behind the event needs it — every Copilot review ended `action_required` with no
   job (#574) — and so did a relay through a signal workflow and `workflow_run` (#578; the
-  judging run inherited the waiting state, #584). Reactions do not fire workflows either, so a
-  review bot's 👍 lands through the same path. PR events use one concurrency group per PR
-  number (a group name is case-insensitive, so branch names are not used); full judgments —
-  the schedule and manual runs — share another.
+  judging run inherited the waiting state, #584). Reactions do not fire workflows either.
+  The exception is a review bot's PR comment (`issue_comment` created / edited, #633): Codex
+  posts a "Codex Review Summary" comment when it starts and edits it when it finishes, then
+  adds its 👍 a few seconds later (3 s measured on #630). The job runs only for a PR comment
+  whose author is on the review-bot allowlist (the job `if` holds the same list as
+  `REVIEW_BOTS`, since a job condition cannot read `env`; a test keeps the two equal, and the
+  script checks `--comment-by` against `REVIEW_BOTS` again), and while the verdict is
+  `pending` it re-reads up to 4 times, 5 s apart, before writing (still `pending` → it writes
+  `pending`). Other paths judge once. Every other review bot 👍 lands through the schedule.
+  PR events and review-bot PR comments use one concurrency group per PR number (a group name
+  is case-insensitive, so branch names are not used); full judgments — the schedule and manual
+  runs — share another. Each group is a queue (`queue: max`, up to 100 runs in order, nothing
+  pending is replaced or cancelled — [GitHub changelog, 2026-05-07](https://github.blog/changelog/2026-05-07-github-actions-concurrency-groups-now-allow-larger-queues)).
+  Without it a group keeps one pending run and a newer run cancels it, so the judgment of a
+  dismissal or of Codex's completion comment could be dropped. Queued judgments each re-read
+  the state when they run, so the last write is current. Per-PR groups keep one PR's queue
+  from delaying another's.
 - **Trusted accounts** — only these can count, and never the PR author:
   - a human whose `author_association` is `OWNER`, `MEMBER` or `COLLABORATOR`
     (the repository is public — an outsider's review does not open the gate)
@@ -92,7 +105,7 @@ status context.
   PRs, so a closed PR never holds an open one back. `--all-open` groups by sha and writes each sha once, reading and writing right
   after judging that sha before moving to the next. A failure on one PR (API error, malformed response)
   is logged and skipped; the run still exits 1.
-- **Gate integrity**: the automatic paths — `pull_request_target` and `schedule` — run the
+- **Gate integrity**: the automatic paths — `pull_request_target`, `issue_comment` and `schedule` — run the
   default branch's workflow file, which checks the judging script out from the default
   branch, so a PR that edits `ci-review.yml` cannot change how its own head is judged. A
   manual `workflow_dispatch` runs the workflow file of the ref its runner picks; only
@@ -105,7 +118,14 @@ status context.
     under load or drop them. Measured on #574, scheduled runs came 3.4 to 8.7 hours apart
     (6.5 on average), so a status fixed only by the schedule can stay wrong for hours.
   - A 👍 from a review bot with no review event lands only with the next judgment of any
-    kind — usually the schedule, so hours later.
+    kind. When the bot also edits its own PR comment (Codex), that edit wakes a judgment
+    within seconds; if the 👍 comes later than the retries (about 20 s), it waits for the
+    schedule, so hours later.
+  - Not verified: whether a review bot's `issue_comment` run waits for approval the way
+    Copilot's review runs did (#574). It can only be measured once the trigger is on the
+    default branch. If it does, the trigger only adds waiting runs and is reverted (#633).
+    Every PR comment — human ones included — creates a run; unless its author is a review bot
+    the job is skipped (no runner).
   - Review events are judged only by the schedule or a manual run, so a review bot's review
     or 👍 can take hours to show (best-effort — 3.4 to 8.7 hours between runs measured on
     #574), and a new push (`pull_request_target`) judges it sooner. There is no
