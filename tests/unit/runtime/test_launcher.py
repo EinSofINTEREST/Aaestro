@@ -737,3 +737,34 @@ async def test_admit_counts_agent_and_sidecar_maxima_of_differing_declarations_s
     with pytest.raises(AaestroError) as excinfo:
         agents.admit(grouped(cpu="2.0"), replica=1)
     assert excinfo.value.code == ErrorCode.RT_006
+
+
+def test_admit_accepts_fractional_cpu_that_exactly_fits_the_quota():
+    """합계에서 사이드카 몫을 빼면 0.2 × 3 + 0.4 가 1.0 을 넘어 딱 맞는 quota 가 거절된다."""
+    from tests.fixtures.builders import make_manifest
+
+    worker = make_manifest(
+        metadata={"name": "worker", "version": "0.1.0", "group": "research"},
+        spec={
+            "model": {"provider": "anthropic", "name": "claude-sonnet-5"},
+            "promptset": {"ref": "promptsets/test@0.1.0"},
+            "runtime": {"resources": {"cpu": "0.2", "memory": "1Gi"}},
+            "mcp": {
+                "servers": [
+                    {
+                        "name": "browser",
+                        "transport": "streamable-http",
+                        "sidecar": {
+                            "image": "mcp/playwright:1.2.0",
+                            "resources": {"cpu": "0.4", "memory": "1Gi"},
+                        },
+                    }
+                ]
+            },
+        },
+    )
+    agents = held_launcher(HeldClient("create"), cpu="1.0")
+    agents._admitted[("worker", 0)] = worker
+    agents._admitted[("worker", 1)] = worker
+
+    agents.admit(worker, replica=2)

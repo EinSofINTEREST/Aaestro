@@ -28,7 +28,7 @@ from aaestro.runtime.quota import (
     ResourceTotals,
     check_group_totals,
     check_host_totals,
-    demand_of,
+    sidecar_demand,
 )
 from aaestro.runtime.spec import LOOPBACK, build_container_spec, container_name
 from aaestro.runtime.tokens import TokenIssuer, authenticated_env
@@ -365,7 +365,7 @@ class AgentLauncher:
         (제거에 실패한 Stopped 포함) 와 quota 를 통과해 기동 중인 레플리카, 취소돼 엔진이 아직
         정리 중인 기동 (#648), 그리고 이번 것.
         제거된 컨테이너 (`stopped`) 는 자원을 쥐지 않는다. 재부착한 컨테이너는 선언과 실제
-        한도 (`held`) 중 큰 쪽으로 센다. 계산은 배포 검증과 같은 `demand_of`.
+        한도 (`held`) 중 큰 쪽으로 센다. 떠 있는 것만 있으면 배포 검증의 `demand_of` 와 같은 값이다.
         그룹 quota 는 부를 때마다 `groups` 로 지금의 선언을 찾는다 (01 Group Rules 4).
 
         Raises:
@@ -400,12 +400,13 @@ class AgentLauncher:
             # 성분별 최댓값으로 세어 과소 계산하지 않는다. 사이드카는 에이전트당 한 번이다 (#648)
             helds = [held for slot in owned for held in slot]
             each = [held.spec.runtime.resources for held in helds]
-            whole = [demand_of(held, replicas=1) for held in helds]
+            # 사이드카 몫은 직접 센다 — 합계에서 빼면 부동소수 오차로 딱 맞는 quota 를 넘긴다
+            sidecars = [sidecar_demand(held) for held in helds]
             demand = ResourceTotals(
                 cpu_cores=max(r.cpu_cores for r in each) * len(owned)
-                + max(w.cpu_cores - r.cpu_cores for w, r in zip(whole, each, strict=True)),
+                + max(s.cpu_cores for s in sidecars),
                 memory_bytes=max(r.memory_bytes for r in each) * len(owned)
-                + max(w.memory_bytes - r.memory_bytes for w, r in zip(whole, each, strict=True)),
+                + max(s.memory_bytes for s in sidecars),
                 agents=len(owned),
             ).plus(excess.get(name, ResourceTotals()))
             host = host.plus(demand)

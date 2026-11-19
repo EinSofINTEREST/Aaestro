@@ -59,18 +59,28 @@ def demand_of(manifest: AgentManifest, *, replicas: int | None = None) -> Resour
             agent=manifest.name,
             details={"replicas": replicas},
         )
-    # MCP 사이드카도 이 에이전트 몫이다 (#304) — 레플리카 수와 무관하게 서버마다 하나.
-    # 미선언은 에이전트와 같은 프레임워크 기본값이다 (02 Resources)
+    sidecars = sidecar_demand(manifest)
+    return ResourceTotals(
+        cpu_cores=runtime.resources.cpu_cores * replicas + sidecars.cpu_cores,
+        memory_bytes=runtime.resources.memory_bytes * replicas + sidecars.memory_bytes,
+        agents=replicas,
+    )
+
+
+def sidecar_demand(manifest: AgentManifest) -> ResourceTotals:
+    """Sum the resources of one agent's MCP sidecars.
+
+    MCP 사이드카도 이 에이전트 몫이다 (#304) — 레플리카 수와 무관하게 서버마다 하나.
+    미선언은 에이전트와 같은 프레임워크 기본값이다 (02 Resources).
+    """
     sidecars = [
         server.sidecar.resources or ResourceSpec()
         for server in manifest.spec.mcp.servers
         if server.sidecar is not None
     ]
     return ResourceTotals(
-        cpu_cores=runtime.resources.cpu_cores * replicas + sum(r.cpu_cores for r in sidecars),
-        memory_bytes=runtime.resources.memory_bytes * replicas
-        + sum(r.memory_bytes for r in sidecars),
-        agents=replicas,
+        cpu_cores=sum(r.cpu_cores for r in sidecars),
+        memory_bytes=sum(r.memory_bytes for r in sidecars),
     )
 
 
