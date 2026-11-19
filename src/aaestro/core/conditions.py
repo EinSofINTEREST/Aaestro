@@ -47,7 +47,7 @@ _COMPARE: dict[type[ast.cmpop], Callable[[Any, Any], bool]] = {
 
 def is_import_ref(condition: str) -> bool:
     """조건이 함수 import ref 인지 — 아니면 선언식이다."""
-    return IMPORT_REF.match(condition) is not None
+    return IMPORT_REF.fullmatch(condition) is not None
 
 
 def parse_condition(expression: str) -> Predicate:

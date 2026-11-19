@@ -89,6 +89,20 @@ def test_declarations_decide_memory(baseline, who, target, mode, allowed, why):
     assert baseline.allows(who, target, mode) is allowed, why
 
 
+@pytest.mark.parametrize(
+    ("who", "target"),
+    [
+        ("worker", "local:worker:longterm\n"),
+        ("worker", "group:research:knowledge\n"),
+        ("outsider", "global:global:org\n"),
+    ],
+)
+def test_a_target_with_a_trailing_newline_is_not_the_same_space(baseline, who, target):
+    """`$` 는 끝 개행 앞에서도 맞는다 — 개행 붙은 대상이 원래 space 로 판정되면 안 된다 (#622)."""
+    assert baseline.allows(who, target.rstrip("\n"), Mode.RO) is True
+    assert baseline.allows(who, target, Mode.RO) is False
+
+
 def test_a_declaration_change_is_read_on_the_next_decision(baseline, tmp_path):
     """재시작 없이 — 그룹 space 를 ro 로 강등하면 다음 판정부터 쓰기가 없다."""
     assert baseline.allows("worker", "group:research:knowledge", Mode.RW)

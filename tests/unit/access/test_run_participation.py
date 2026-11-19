@@ -90,6 +90,14 @@ def test_a_node_agent_reaches_a_live_runs_space(registry, manager, mode):
     assert decision.decided_by == DECLARATION
 
 
+def test_a_run_space_with_a_trailing_newline_is_not_the_same_space(registry, manager):
+    """`$` 는 끝 개행 앞에서도 맞는다 — `x\\n` 이 `x` 와 같은 space 로 판정되면 안 된다 (#622)."""
+    run_id = start(manager)
+
+    assert decide(registry, NODE, f"run:{run_id}:scratch", Mode.RW) is Outcome.ALLOW
+    assert decide(registry, NODE, f"run:{run_id}:scratch\n", Mode.RW) is Outcome.DENY
+
+
 def test_a_draining_run_is_still_writable(registry, manager):
     run_id = start(manager)
     manager.runs[run_id].request_drain()

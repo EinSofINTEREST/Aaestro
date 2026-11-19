@@ -12,12 +12,16 @@ from aaestro.core.manifest import (
     MAX_VOLUME_NAME_LENGTH,
     RESERVED_GLOBAL_GROUP,
     AgentManifest,
+    CeilingMemory,
     GroupManifest,
     GroupQuotas,
     McpServerSpec,
     McpSidecar,
+    MemorySpaceRef,
+    Metadata,
     ModelConfig,
     ModelOverride,
+    ModuleRef,
     ParsedModuleRef,
     ResourceSpec,
     VolumeSpec,
@@ -950,3 +954,79 @@ def test_merged_lets_the_later_override_win_only_where_it_speaks():
 
     assert (merged.name, merged.max_tokens) == ("claude-opus-5", 300)
     assert merged.model_fields_set == {"name", "max_tokens"}
+
+
+# --- 끝 개행 거절 (#622) — `$` 는 끝 개행 앞에서도 맞으므로 전체 일치로 검사한다 -----
+
+
+def test_group_with_trailing_newline_is_rejected():
+    with pytest.raises(ValidationError):
+        AgentManifest.model_validate(manifest_dict(metadata={"group": "research\n"}))
+
+
+def test_mcp_server_name_with_trailing_newline_is_rejected():
+    with pytest.raises(ValidationError):
+        McpServerSpec(name="fs\n", transport="stdio", command=("x",))
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [{"cpu": "1.0\n"}, {"memory": "1Gi\n"}],
+)
+def test_resource_spec_with_trailing_newline_is_rejected(kwargs):
+    with pytest.raises(ValidationError):
+        ResourceSpec(**kwargs)
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [{"cpu": "8.0\n"}, {"memory": "16Gi\n"}],
+)
+def test_group_quotas_with_trailing_newline_is_rejected(kwargs):
+    with pytest.raises(ValidationError):
+        GroupQuotas(**kwargs)
+
+
+def test_artifact_quota_with_trailing_newline_is_rejected():
+    from aaestro.core.manifest import ArtifactSpec
+
+    with pytest.raises(ValidationError):
+        ArtifactSpec(quota="50Gi\n")
+
+
+@pytest.mark.parametrize("alias", ["notes\n", "a b", "a:b", "a*", "", " ", "\t"])
+def test_memory_space_alias_must_be_a_readable_space_id_piece(alias):
+    # 별칭으로 만든 space id 를 판정 지점이 거절하면 선언만 받고 접근이 조용히 막힌다
+    with pytest.raises(ValidationError):
+        MemorySpaceRef.model_validate({"ref": "memorysets/a@1.0.0", "as": alias})
+
+
+def test_memory_space_alias_error_does_not_carry_the_value():
+    with pytest.raises(ValidationError) as exc_info:
+        MemorySpaceRef.model_validate({"ref": "memorysets/a@1.0.0", "as": "secret value"})
+
+    assert "secret value" not in str(exc_info.value.errors()[0]["msg"])
+
+
+def test_memory_alias_accepts_what_the_decision_point_reads():
+    from aaestro.access.baselines import SPACE_ID
+
+    ref = MemorySpaceRef.model_validate({"ref": "memorysets/a@1.0.0", "as": "long-term_1.x"})
+
+    assert SPACE_ID.fullmatch(f"local:worker:{ref.alias}") is not None
+
+
+@pytest.mark.parametrize(
+    ("model", "payload"),
+    [
+        (Metadata, {"name": "agent\n", "version": "0.1.0"}),
+        (Metadata, {"name": "agent", "version": "0.1.0\n"}),
+        (ModuleRef, {"ref": "skillsets/a@1.0.0\n"}),
+        (MemorySpaceRef, {"ref": "memorysets/a@1.0.0\n", "as": "notes"}),
+        (MemorySpaceRef, {"ref": "memorysets/a@1.0.0", "as": "notes", "writers": ["w\n"]}),
+        (CeilingMemory, {"space": "local:worker:notes\n"}),
+    ],
+)
+def test_pattern_validated_fields_reject_a_trailing_newline(model, payload):
+    with pytest.raises(ValidationError):
+        model.model_validate(payload)
