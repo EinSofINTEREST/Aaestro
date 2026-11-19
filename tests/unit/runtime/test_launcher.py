@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import threading
 from pathlib import Path
 
 import pytest
@@ -18,6 +20,7 @@ from aaestro.runtime.docker.engine import DockerEngine
 from aaestro.runtime.launcher import AgentLauncher
 from aaestro.runtime.lifecycle import AgentState
 from tests.fixtures.fake_docker import FakeDockerClient
+from tests.fixtures.waiting import until
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -470,3 +473,298 @@ async def test_a_restart_after_the_quota_shrank_fails_permanently():
 
 async def _no_wait(_delay: float) -> None:
     return None
+
+
+# --- 취소 경로의 quota 셈 (#648) ----------------------------------------------------
+
+
+class HeldClient(FakeDockerClient):
+    """고른 Docker 호출을 스레드 안에서 붙잡는다 — 취소가 스레드를 멈추지 못하는 자리를 재현한다.
+
+    붙잡힌 호출마다 문이 하나다 (`held`) — 차례로 하나씩 풀어 순서를 정한다.
+    """
+
+    def __init__(self, *steps: str) -> None:
+        super().__init__()
+        self.steps = set(steps)
+        self.held: list[threading.Event] = []
+        self.opened = False
+
+    def _hold(self, step: str) -> None:
+        if step not in self.steps:
+            return
+        gate = threading.Event()
+        self.held.append(gate)
+        if self.opened:
+            gate.set()
+        gate.wait(5.0)
+
+    def release(self) -> None:
+        self.opened = True
+        for gate in list(self.held):
+            gate.set()
+
+    def create(self, **kwargs):
+        self._hold("create")
+        return super().create(**kwargs)
+
+    def remove(self, container_id: str) -> None:
+        self._hold("remove")
+        super().remove(container_id)
+
+
+def held_launcher(client: HeldClient, **quotas: object) -> AgentLauncher:
+    groups = {"research": quota_group(**quotas)}
+    return AgentLauncher(
+        engine=DockerEngine(client=client, cancel_wait_s=0.01),
+        groups=groups.get,
+        restart_sleep=_no_wait,
+    )
+
+
+def fresh_engine_log(monkeypatch) -> None:
+    """앞선 테스트가 모듈 로거를 굳혀 두면 capture_logs 가 보지 못한다 (test_engine 과 같다)."""
+    import structlog
+
+    from aaestro.runtime.docker import engine as engine_module
+
+    monkeypatch.setattr(engine_module, "log", structlog.get_logger("test"))
+
+
+async def cancel_while_held(client: HeldClient, task: asyncio.Task, held: int) -> None:
+    """`held` 번째 호출이 붙잡힐 때까지 기다려 태스크를 끊는다."""
+    await until(lambda: len(client.held) >= held)
+    task.cancel()
+    await until(task.done, timeout_s=1.0)
+    assert task.cancelled()
+
+
+async def test_a_cancelled_start_handed_to_the_engine_holds_its_quota_until_cleaned_up():
+    """#648 — 엔진이 정리를 넘겨받은 사이 컨테이너가 생기는 중인데 예약을 먼저 풀면 겹친다."""
+    client = HeldClient("create")
+    agents = held_launcher(client, max_agents=1)
+    try:
+        await cancel_while_held(client, asyncio.create_task(agents.start(grouped())), 1)
+
+        with pytest.raises(AaestroError) as excinfo:
+            await agents.start(grouped("other"))
+        assert excinfo.value.code == ErrorCode.RT_006, "정리 중인 기동의 자리를 세지 않았다"
+    finally:
+        client.release()
+
+    await agents.engine.settle_cleanups()
+    assert client.removed, "넘겨받은 정리가 컨테이너를 지우지 않았다"
+    assert not agents._settling
+
+    await agents.start(grouped("other"))
+    assert ("other", 0) in agents.launched
+    await agents.stop_all()
+
+
+async def test_two_cancelled_starts_of_one_replica_hold_the_quota_until_both_are_cleaned_up():
+    """#648 — 같은 이름의 정리가 둘이면 먼저 끝난 하나가 다른 하나의 자리까지 풀었다."""
+    client = HeldClient("create")
+    agents = held_launcher(client, cpu="2.0")
+    try:
+        await cancel_while_held(client, asyncio.create_task(agents.start(grouped())), 1)
+        await cancel_while_held(client, asyncio.create_task(agents.start(grouped())), 2)
+
+        client.held[0].set()  # 첫 정리만 끝낸다
+        await until(lambda: len(agents.engine._cleanups) == 1)
+
+        with pytest.raises(AaestroError) as excinfo:
+            await agents.start(grouped("other", cpu="2.0"))
+        assert excinfo.value.code == ErrorCode.RT_006, "두 번째 정리가 도는 중에 자리가 풀렸다"
+    finally:
+        client.release()
+
+    await agents.engine.settle_cleanups()
+    assert not agents._settling
+    await agents.stop_all()
+
+
+async def test_shutdown_keeps_a_removal_its_cut_cleanup_left_running(monkeypatch):
+    """#648 — 종료 상한에 끊긴 정리가 넘긴 제거를 놓치면 지우는 중인 컨테이너의 자리가 풀린다."""
+    import structlog.testing
+
+    fresh_engine_log(monkeypatch)
+
+    client = HeldClient("create", "remove")
+    agents = held_launcher(client, max_agents=1)
+    try:
+        await cancel_while_held(client, asyncio.create_task(agents.start(grouped())), 1)
+        client.held[0].set()  # 생성은 끝나고 정리가 제거에서 붙잡힌다
+        await until(lambda: len(client.held) == 2)
+
+        with structlog.testing.capture_logs() as logs:
+            await agents.engine.settle_cleanups(timeout_s=0.01)
+
+        assert agents.engine._removals, "끊긴 정리가 넘긴 제거가 추적에서 빠졌다"
+        assert [e for e in logs if e["event"].startswith("container removal still running")]
+        with pytest.raises(AaestroError) as excinfo:
+            await agents.start(grouped("other"))
+        assert excinfo.value.code == ErrorCode.RT_006, "지우는 중인 컨테이너의 자리가 풀렸다"
+    finally:
+        client.release()
+
+    await until(lambda: not agents.engine._cleanups)
+    assert client.removed
+    assert not agents._settling
+    await agents.stop_all()
+
+
+async def test_a_cancelled_stop_whose_removal_finished_frees_the_quota():
+    """#648 — 취소된 정지가 끝낸 제거를 모르면 없는 컨테이너를 세어 다음 기동이 거짓 RT_006 이다."""
+    client = HeldClient("remove")
+    agents = held_launcher(client, max_agents=1)
+    launched = await agents.start(grouped())
+    await cancel_while_held(client, asyncio.create_task(agents.stop("worker")), 1)
+    client.release()
+    await agents.engine.settle_cleanups()
+
+    assert client.removed
+    assert launched.stopped, "제거가 끝났는데 남은 컨테이너로 센다"
+    await agents.start(grouped("other"))
+    assert ("other", 0) in agents.launched
+    await agents.stop_all()
+
+
+async def test_a_cancelled_stop_whose_removal_failed_reports_it_and_keeps_the_quota(monkeypatch):
+    """#648 — 끊긴 뒤 실패한 제거가 WARN 없이 사라지고 예외가 루프로 새면 05 위반이다."""
+    import gc
+
+    import structlog.testing
+
+    fresh_engine_log(monkeypatch)
+
+    client = HeldClient("remove")
+    agents = held_launcher(client, max_agents=1)
+    launched = await agents.start(grouped())
+    loop = asyncio.get_running_loop()
+    leaked: list[dict] = []
+    loop.set_exception_handler(lambda _loop, context: leaked.append(context))
+    try:
+        with structlog.testing.capture_logs() as logs:
+            await cancel_while_held(client, asyncio.create_task(agents.stop("worker")), 1)
+            client._remove_failures = 1
+            client.release()
+            await until(lambda: not agents.engine._cleanups)
+            await asyncio.sleep(0)
+        gc.collect()
+    finally:
+        loop.set_exception_handler(None)
+
+    failed = [e for e in logs if e["event"] == "container removal failed"]
+    assert len(failed) == 1
+    assert {"agent", "container_id", "image"} <= failed[0].keys()
+    assert not leaked, "끊긴 제거의 예외가 회수되지 않았다"
+    assert not launched.stopped
+    with pytest.raises(AaestroError) as excinfo:
+        await agents.start(grouped("other"))
+    assert excinfo.value.code == ErrorCode.RT_006, "지우지 못한 컨테이너의 자리가 풀렸다"
+    await agents.stop_all()
+
+
+async def test_an_overlapping_stop_does_not_unmark_a_replica_an_earlier_removal_cleared():
+    """#648 — 먼저 끝난 제거가 세운 표시를, 이미 없는 컨테이너에 대한 늦은 실패가 되돌렸다."""
+    client = HeldClient("remove")
+    agents = held_launcher(client, max_agents=1)
+    launched = await agents.start(grouped())
+    await cancel_while_held(client, asyncio.create_task(agents.stop("worker")), 1)
+    assert not launched.stopped
+
+    second = asyncio.create_task(agents.stop("worker"))
+    await until(lambda: len(client.held) == 2)  # 두 번째 정지가 가드를 지나 제거에 닿았다
+    client.held[0].set()
+    await until(lambda: launched.stopped)
+    client._remove_failures = 1  # 이미 지운 컨테이너 — 두 번째 제거는 실패한다
+    client.held[1].set()
+    await second
+
+    assert launched.stopped, "지운 레플리카가 다시 남은 것으로 돌아갔다"
+    assert ("worker", 0) not in agents.launched
+    client.release()
+    await agents.start(grouped("other"))
+    await agents.stop_all()
+
+
+async def test_cancelled_starts_of_one_replica_with_different_declarations_are_not_undercounted():
+    """#648 — 첫 선언 하나를 건수에 곱하면 CPU 1 과 2 의 두 자리를 2 로 세어 상한을 넘긴다."""
+    client = HeldClient("create")
+    agents = held_launcher(client, cpu="4.0")
+    try:
+        await cancel_while_held(client, asyncio.create_task(agents.start(grouped(cpu="1.0"))), 1)
+        await cancel_while_held(client, asyncio.create_task(agents.start(grouped(cpu="2.0"))), 2)
+
+        with pytest.raises(AaestroError) as excinfo:
+            await agents.start(grouped("other", cpu="1.5"))
+        assert excinfo.value.code == ErrorCode.RT_006, "정리 중인 두 자리의 예약 3 을 2 로 셌다"
+    finally:
+        client.release()
+
+    await agents.engine.settle_cleanups()
+    await agents.stop_all()
+
+
+async def test_admit_counts_agent_and_sidecar_maxima_of_differing_declarations_separately():
+    """#648 — 합계의 최댓값은 에이전트 몫이 큰 선언과 사이드카 몫이 큰 선언이 갈리면 모자란다."""
+    from tests.fixtures.builders import make_manifest
+
+    sidecar = make_manifest(
+        metadata={"name": "worker", "version": "0.1.0", "group": "research"},
+        spec={
+            "model": {"provider": "anthropic", "name": "claude-sonnet-5"},
+            "promptset": {"ref": "promptsets/test@0.1.0"},
+            "runtime": {"resources": {"cpu": "1.0", "memory": "1Gi"}},
+            "mcp": {
+                "servers": [
+                    {
+                        "name": "browser",
+                        "transport": "streamable-http",
+                        "sidecar": {
+                            "image": "mcp/playwright:1.2.0",
+                            "resources": {"cpu": "2.0", "memory": "1Gi"},
+                        },
+                    }
+                ]
+            },
+        },
+    )
+    agents = held_launcher(HeldClient("create"), cpu="5.5")
+    # 정리 중인 한 자리가 두 선언 중 어느 것인지 모른다 — 에이전트 2 + 이번 2 + 사이드카 2 = 6
+    agents._settling[asyncio.get_running_loop().create_future()] = [grouped(cpu="2.0"), sidecar]  # type: ignore[index]
+
+    with pytest.raises(AaestroError) as excinfo:
+        agents.admit(grouped(cpu="2.0"), replica=1)
+    assert excinfo.value.code == ErrorCode.RT_006
+
+
+def test_admit_accepts_fractional_cpu_that_exactly_fits_the_quota():
+    """합계에서 사이드카 몫을 빼면 0.2 × 3 + 0.4 가 1.0 을 넘어 딱 맞는 quota 가 거절된다."""
+    from tests.fixtures.builders import make_manifest
+
+    worker = make_manifest(
+        metadata={"name": "worker", "version": "0.1.0", "group": "research"},
+        spec={
+            "model": {"provider": "anthropic", "name": "claude-sonnet-5"},
+            "promptset": {"ref": "promptsets/test@0.1.0"},
+            "runtime": {"resources": {"cpu": "0.2", "memory": "1Gi"}},
+            "mcp": {
+                "servers": [
+                    {
+                        "name": "browser",
+                        "transport": "streamable-http",
+                        "sidecar": {
+                            "image": "mcp/playwright:1.2.0",
+                            "resources": {"cpu": "0.4", "memory": "1Gi"},
+                        },
+                    }
+                ]
+            },
+        },
+    )
+    agents = held_launcher(HeldClient("create"), cpu="1.0")
+    agents._admitted[("worker", 0)] = worker
+    agents._admitted[("worker", 1)] = worker
+
+    agents.admit(worker, replica=2)

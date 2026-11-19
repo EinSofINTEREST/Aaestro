@@ -28,9 +28,9 @@ from aaestro.runtime.quota import (
     ResourceTotals,
     check_group_totals,
     check_host_totals,
-    demand_of,
+    sidecar_demand,
 )
-from aaestro.runtime.spec import LOOPBACK, build_container_spec
+from aaestro.runtime.spec import LOOPBACK, build_container_spec, container_name
 from aaestro.runtime.tokens import TokenIssuer, authenticated_env
 
 if TYPE_CHECKING:
@@ -171,6 +171,11 @@ class AgentLauncher:
     launched: dict[tuple[str, int], LaunchedAgent] = field(default_factory=dict)
     _admitted: dict[tuple[str, int], AgentManifest] = field(default_factory=dict, init=False)
     """quota 를 통과했지만 아직 `launched` 에 오르지 않은 기동 — 동시 기동이 서로를 세게 한다."""
+    _settling: dict[asyncio.Task[None], list[AgentManifest]] = field(
+        default_factory=dict, init=False
+    )
+    """취소된 기동 중 엔진이 정리를 넘겨받은 것 (정리 태스크 → 선언) — 그 컨테이너가 아직 생기거나
+    남아 있을 수 있어 정리가 끝날 때까지 quota 에 센다 (#648). 태스크는 엔진이 쥔다."""
     _cursors: dict[str, int] = field(default_factory=dict, init=False)
     _starting: dict[str, int] = field(default_factory=dict, init=False)
     _forget_deferred: set[str] = field(default_factory=set, init=False)
@@ -244,6 +249,7 @@ class AgentLauncher:
         # 기동 중인 레플리카는 아직 목록에 없다 — 이 사이의 늦은 정지가 이미 주입한 토큰을
         # 버리지 못하게 센다 (#623)
         self._starting[agent] = self._starting.get(agent, 0) + 1
+        started = False
         try:
             # 검사와 등록 사이에 await 가 없어야 동시 기동이 둘 다 통과하지 못한다
             self.admit(manifest, replica=replica)
@@ -311,9 +317,12 @@ class AgentLauncher:
                 image=handle.image,
                 port=handle.control_port,
             )
+            started = True
             return launched
         finally:
-            self._admitted.pop((agent, replica), None)
+            reserved = self._admitted.pop((agent, replica), None)
+            if reserved is not None and not started:
+                self._settle(reserved, replica=replica)
             self._starting[agent] -= 1
             if not self._starting[agent]:
                 del self._starting[agent]
@@ -326,6 +335,26 @@ class AgentLauncher:
                         self.issuer.forget(agent)
                         self._cursors.pop(agent, None)
 
+    def _settle(self, manifest: AgentManifest, *, replica: int) -> None:
+        """실패 · 취소된 기동의 정리가 엔진에 넘어갔으면 끝날 때까지 quota 자리를 옮겨 쥔다.
+
+        이름의 정리 **전부** 를 쥔다 — 같은 레플리카가 차례로 취소되면 여럿이다. 하나가 끝나면
+        다시 찾는다: 끊긴 정리가 넘긴 제거가 그 이름으로 이어 맡겨진다 (#648). 어느 정리가 어느
+        선언의 것인지는 가를 수 없어 자리마다 선언을 전부 쌓는다 — 과다 계산은 허용하고 과소
+        계산은 하지 않는다.
+        """
+
+        def settled(done: asyncio.Task[None]) -> None:
+            for held in self._settling.pop(done, []):
+                self._settle(held, replica=replica)
+
+        for cleanup in self.engine.pending_cleanups(container_name(manifest.name, replica)):
+            if cleanup not in self._settling:
+                self._settling[cleanup] = []
+                cleanup.add_done_callback(settled)
+            if manifest not in self._settling[cleanup]:
+                self._settling[cleanup].append(manifest)
+
     def admit(self, manifest: AgentManifest, *, replica: int = 0) -> None:
         """Check that one more replica fits the group and host quota.
 
@@ -333,9 +362,10 @@ class AgentLauncher:
         `start` 가 컨테이너를 만들기 직전에 부르고, 배포는 사이드카를 세우기 전에도 부른다.
 
         배포 검증은 선언을 세고, 여기는 실제를 센다 (#474): 컨테이너가 남아 있는 레플리카
-        (제거에 실패한 Stopped 포함) 와 quota 를 통과해 기동 중인 레플리카, 그리고 이번 것.
+        (제거에 실패한 Stopped 포함) 와 quota 를 통과해 기동 중인 레플리카, 취소돼 엔진이 아직
+        정리 중인 기동 (#648), 그리고 이번 것.
         제거된 컨테이너 (`stopped`) 는 자원을 쥐지 않는다. 재부착한 컨테이너는 선언과 실제
-        한도 (`held`) 중 큰 쪽으로 센다. 계산은 배포 검증과 같은 `demand_of`.
+        한도 (`held`) 중 큰 쪽으로 센다. 떠 있는 것만 있으면 배포 검증의 `demand_of` 와 같은 값이다.
         그룹 quota 는 부를 때마다 `groups` 로 지금의 선언을 찾는다 (01 Group Rules 4).
 
         Raises:
@@ -356,18 +386,31 @@ class AgentLauncher:
                 )
         live[manifest.name, replica] = manifest
 
-        counts: dict[str, int] = {}
-        manifests: dict[str, AgentManifest] = {}
+        # 자리 (slot) 마다 그 자리일 수 있는 선언들 — 떠 있는 자리는 하나, 정리 중인 자리는 여럿
+        slots: dict[str, list[list[AgentManifest]]] = {}
         for (name, _), held in live.items():
-            counts[name] = counts.get(name, 0) + 1
-            manifests.setdefault(name, held)
+            slots.setdefault(name, []).append([held])
+        for helds in self._settling.values():
+            slots.setdefault(helds[0].name, []).append(helds)
 
         host = ResourceTotals()
         members = ResourceTotals()
-        for name, held in manifests.items():
-            demand = demand_of(held, replicas=counts[name]).plus(excess.get(name, ResourceTotals()))
+        for name, owned in slots.items():
+            # 자리마다 선언이 다를 수 있다 (취소된 재기동) — 에이전트 몫과 사이드카 몫을 따로,
+            # 성분별 최댓값으로 세어 과소 계산하지 않는다. 사이드카는 에이전트당 한 번이다 (#648)
+            helds = [held for slot in owned for held in slot]
+            each = [held.spec.runtime.resources for held in helds]
+            # 사이드카 몫은 직접 센다 — 합계에서 빼면 부동소수 오차로 딱 맞는 quota 를 넘긴다
+            sidecars = [sidecar_demand(held) for held in helds]
+            demand = ResourceTotals(
+                cpu_cores=max(r.cpu_cores for r in each) * len(owned)
+                + max(s.cpu_cores for s in sidecars),
+                memory_bytes=max(r.memory_bytes for r in each) * len(owned)
+                + max(s.memory_bytes for s in sidecars),
+                agents=len(owned),
+            ).plus(excess.get(name, ResourceTotals()))
             host = host.plus(demand)
-            if group is not None and held.group == group.name:
+            if group is not None and any(held.group == group.name for held in helds):
                 members = members.plus(demand)
         try:
             if group is not None:
@@ -589,7 +632,14 @@ class AgentLauncher:
         if launched.stopped:
             return
         await launched.aclose()
-        launched.stopped = await self.engine.stop(launched.handle)
+
+        def removed() -> None:
+            # 정지가 취소돼도 보낸 제거가 끝나면 표시한다 — quota 가 지운 것을 세지 않게 (#648)
+            launched.stopped = True
+
+        # 겹친 정지의 이른 성공 표시를 늦게 끝난 실패 (이미 없는 컨테이너) 가 되돌리지 않게
+        removed_now = await self.engine.stop(launched.handle, on_removed=removed)
+        launched.stopped = launched.stopped or removed_now
 
     async def _replace(self, launched: LaunchedAgent) -> None:
         """정지한 자리에 같은 선언으로 컨테이너를 다시 세운다.
