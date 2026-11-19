@@ -70,6 +70,10 @@ def trigger_of(err: BaseException) -> FallbackTrigger | None:
     """
     if not isinstance(err, AaestroError):
         return None
+    # 이그레스 프록시의 거절은 모델이 아니라 이 에이전트의 권한이다 — 다른 모델도 같은 프록시가
+    # 막고, provider 가 멀쩡한데 circuit 이 열리면 회수가 풀려도 모델을 건너뛴다 (#398)
+    if err.code in (ErrorCode.ACC_001, ErrorCode.ACC_002):
+        return None
     if err.category is ErrorCategory.RATE_LIMIT:
         return RATE_LIMIT
     if err.code == ErrorCode.LLM_002:

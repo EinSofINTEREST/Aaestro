@@ -1078,6 +1078,13 @@ fails to read or decompress, uses another encoding, or holds a number JSON canno
 are kept. A remote MCP server that the proxy adds a token to gets the same masking of non-2xx bodies
 and header values, and an answer whose `mcp-session-id` carries the token is refused with `502`.
 
+The proxy's own access refusals on the provider listener carry the response header
+`x-aaestro-egress-error-code` (`ACC_001` on `403`, `ACC_002` on `503`). The agent's model adapters
+read that header, not the body, so a revoked model API fails the task with `ACC_001` (`forbidden`,
+not retried) and a registry outage with `ACC_002` (`network`, retried by the agent) — neither moves
+the model fallback or the model circuit breaker. The header is outside the response allowlist, so an
+upstream that sends it, or an error body shaped like the proxy's, is still read as a provider answer.
+
 `openai-compat` is decided under `openai-compat.invalid`, not under the upstream's address: what an
 operator revokes is "the model API", wherever this deployment points it. The name is synthetic —
 `.invalid` is reserved, and the CONNECT listener refuses any `.invalid` destination with

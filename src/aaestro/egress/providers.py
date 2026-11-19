@@ -70,6 +70,13 @@ RETURNED_HEADER_PREFIXES = ("anthropic-ratelimit-", "x-ratelimit-")
 게이트웨이)은 주입한 키를 아무 이름으로나 돌려줄 수 있어 이름을 하나씩 막아서는 닫히지 않는다 —
 쿠키(upstream 세션)도 여기서 빠진다. 남는 값도 가린다."""
 
+EGRESS_ERROR_CODE_HEADER = "x-aaestro-egress-error-code"
+"""프록시 **자신의** 거절에만 싣는 에러 코드 (``ACC_001`` · ``ACC_002``).
+
+에이전트가 이것으로 프록시의 거절을 provider 실패와 가른다 (#398). 본문의 ``code`` 는 upstream 이
+흉내 낼 수 있지만 이 헤더는 위 허용 목록 밖이라 upstream 에서 오지 않는다. agentd 쪽
+``EGRESS_ERROR_CODE_HEADER`` 와 같은 이름이어야 한다."""
+
 _BODY_HEADERS = frozenset({"content-type", "content-encoding"})
 """프록시가 다시 쓴 에러 본문에는 맞지 않는 헤더 — JSON 으로 새로 직렬화하고 디코딩한 뒤다."""
 
@@ -282,6 +289,7 @@ def _error(status: int, message: str, *, code: str | None = None) -> JSONRespons
             "type": "error",
             "error": {"type": "permission_error", "message": message, "code": code},
         },
+        headers={EGRESS_ERROR_CODE_HEADER: code} if code else None,
     )
 
 
@@ -315,6 +323,7 @@ __all__ = [
     "ANTHROPIC_ENDPOINTS",
     "ANTHROPIC_REQUEST_HEADERS",
     "COMMON_REQUEST_HEADERS",
+    "EGRESS_ERROR_CODE_HEADER",
     "OPENAI_COMPAT_ENDPOINTS",
     "OPENAI_COMPAT_KEY_HEADER",
     "OPENAI_COMPAT_KEY_SCHEME",

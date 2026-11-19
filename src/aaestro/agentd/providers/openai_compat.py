@@ -26,6 +26,7 @@ from aaestro.agentd.executor import (
     ToolTurn,
     UserTurn,
 )
+from aaestro.agentd.providers.egress_refusal import egress_refusal
 from aaestro.core.agent import ModelUsage
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 from aaestro.core.markers import TOOL_ERROR_MARK
@@ -192,7 +193,8 @@ class OpenAICompatModel:
                 context exceeded, MODEL/``LLM_003`` provider server error (5xx),
                 TIMEOUT/``NET_002`` request timed out, NETWORK/``NET_001``
                 connection failed, MODEL/``LLM_004`` if the response cannot be
-                interpreted.
+                interpreted, FORBIDDEN/``ACC_001`` · NETWORK/``ACC_002`` if the egress
+                proxy refused the call (``egress_refusal``).
             httpx.HTTPStatusError: Configuration errors (bad credentials, unknown
                 model, invalid arguments) propagate unchanged — 프레임워크가 고칠 수
                 있는 실패가 아닙니다.
@@ -250,6 +252,13 @@ class OpenAICompatModel:
         """2xx 가 아닌 응답을 실패로 올린다 — 변환 대상이 아니면 httpx 에러 그대로."""
         status = response.status_code
         cause = f"http_{status}"
+        refusal = egress_refusal(response.headers, status, agent=self.agent)
+        if refusal is not None:
+            # raise_for_status 가 던질 것과 같은 원인을 남긴다 — 어느 요청 · 상태였는지 (05)
+            cause_error = httpx.HTTPStatusError(
+                f"egress proxy refused with {status}", request=response.request, response=response
+            )
+            raise refusal from cause_error
         if status == HTTP_RATE_LIMITED:
             raise _model_error(
                 ErrorCode.LLM_001,

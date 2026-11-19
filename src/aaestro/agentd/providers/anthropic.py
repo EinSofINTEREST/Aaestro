@@ -23,6 +23,7 @@ from aaestro.agentd.executor import (
     ToolTurn,
     UserTurn,
 )
+from aaestro.agentd.providers.egress_refusal import egress_refusal
 from aaestro.core.agent import ModelUsage
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 
@@ -112,7 +113,8 @@ class AnthropicModel:
                 context exceeded, MODEL/``LLM_003`` provider server error (5xx),
                 TIMEOUT/``NET_002`` request timed out, NETWORK/``NET_001``
                 connection failed, MODEL/``LLM_004`` if the response cannot be
-                interpreted.
+                interpreted, FORBIDDEN/``ACC_001`` · NETWORK/``ACC_002`` if the egress
+                proxy refused the call (``egress_refusal``).
             anthropic.APIStatusError: Configuration errors (unknown model,
                 invalid arguments) propagate unchanged — 프레임워크가 고칠 수
                 있는 실패가 아닙니다.
@@ -136,7 +138,14 @@ class AnthropicModel:
             request["tools"] = [_to_tool_schema(tool) for tool in tools]
 
         try:
-            message = await self.client.messages.create(**request)
+            try:
+                message = await self.client.messages.create(**request)
+            except anthropic.APIStatusError as err:
+                # 프록시의 거절이 상태 코드별 변환 (403 · 503) 에 provider 실패로 잡히기 전에
+                refusal = egress_refusal(err.response.headers, err.status_code, agent=self.agent)
+                if refusal is not None:
+                    raise refusal from err
+                raise
         except anthropic.RateLimitError as err:
             raise _model_error(
                 ErrorCode.LLM_001,

@@ -12,6 +12,7 @@ from aaestro.egress.connect import EgressMode
 from aaestro.egress.providers import (
     ANTHROPIC_ENDPOINTS,
     ANTHROPIC_REQUEST_HEADERS,
+    EGRESS_ERROR_CODE_HEADER,
     OPENAI_COMPAT_ENDPOINTS,
     OPENAI_COMPAT_KEY_HEADER,
     OPENAI_COMPAT_KEY_SCHEME,
@@ -579,3 +580,57 @@ def test_an_upstream_passes_only_the_common_headers_unless_it_declares_more():
         "anthropic-version",
         "anthropic-beta",
     }
+
+
+# --- 프록시 자신의 거절 표시 (#398) ------------------------------------------------------
+
+
+async def test_the_proxys_own_refusals_carry_its_error_code_header():
+    """에이전트는 본문이 아니라 이 헤더로 프록시의 거절을 provider 실패와 가른다."""
+    registry = Registry()
+    async with app_for(registry, Provider()) as client:
+        registry.allowed.discard("api.anthropic.com")
+        denied = await call(client)
+        registry.down = True
+        undecided = await call(client)
+        endpoint = await client.post(
+            "/anthropic/v1/files", headers={"x-api-key": "cred-researcher"}
+        )
+        unknown = await client.post("/openai/v1/chat", headers={"x-api-key": "cred-researcher"})
+
+    assert (denied.status_code, denied.headers[EGRESS_ERROR_CODE_HEADER]) == (403, "ACC_001")
+    assert (undecided.status_code, undecided.headers[EGRESS_ERROR_CODE_HEADER]) == (503, "ACC_002")
+    assert endpoint.headers[EGRESS_ERROR_CODE_HEADER] == "ACC_001"
+    # 코드가 없는 프록시 응답(404 unknown provider)은 표시하지 않는다
+    assert EGRESS_ERROR_CODE_HEADER not in unknown.headers
+
+
+@pytest.mark.parametrize("status", [403, 503])
+async def test_an_upstream_cannot_pass_itself_off_as_the_proxy(status):
+    """upstream 이 같은 헤더 · 같은 본문을 보내도 에이전트에는 헤더가 닿지 않는다."""
+
+    def spoof(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            status,
+            headers={
+                EGRESS_ERROR_CODE_HEADER: "ACC_001",
+                "retry-after": "1",
+                "content-type": "application/json",
+            },
+            stream=httpx.ByteStream(
+                json.dumps(
+                    {"type": "error", "error": {"type": "permission_error", "code": "ACC_001"}}
+                ).encode()
+            ),
+        )
+
+    provider = Provider()
+    provider.handle = spoof  # type: ignore[method-assign]
+    async with app_for(Registry(), provider) as client:
+        response = await call(client)
+
+    assert response.status_code == status
+    assert EGRESS_ERROR_CODE_HEADER not in response.headers
+    # 본문의 code 는 그대로 닿는다 — 본문 모양으로는 프록시의 거절을 가를 수 없는 이유
+    assert response.json()["error"]["code"] == "ACC_001"
+    assert response.headers["retry-after"] == "1", "허용 목록의 헤더는 그대로 돌아온다"

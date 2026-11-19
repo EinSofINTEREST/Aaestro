@@ -1017,6 +1017,13 @@ JSON 본문의 모든 문자열을 가리고, `401` / `403` 은 메시지를 고
 는 그대로). 프록시가 토큰을 붙이는 원격 MCP 서버의 비-2xx 본문과 헤더 값도 같이 가리고,
 `mcp-session-id` 에 토큰이 든 응답은 `502` 로 거절한다.
 
+Provider 리스너에서 프록시 **자신이** 판정으로 거절한 응답은 응답 헤더 `x-aaestro-egress-error-code`
+(`403` 이면 `ACC_001`, `503` 이면 `ACC_002`) 를 싣는다. 에이전트의 모델 어댑터는 본문이 아니라 이 헤더를
+읽는다 — 모델 API 를 회수하면 태스크는 `ACC_001` (`forbidden`, 재시도 없음) 로, 레지스트리 장애는
+`ACC_002` (`network`, 에이전트가 재시도) 로 실패하고, 둘 다 모델 fallback 과 모델 circuit breaker 를
+움직이지 않는다. 이 헤더는 응답 허용 목록 밖이라, upstream 이 같은 헤더나 프록시와 같은 모양의 에러 본문을
+보내도 provider 의 응답으로 읽힌다.
+
 `openai-compat` 의 판정 대상은 upstream 주소가 아니라 `openai-compat.invalid` 다: 운영자가 회수하는
 것은 이 배치가 어디를 가리키든 "모델 API" 다. 합성 이름이다 — `.invalid` 는 예약 TLD 이고, CONNECT
 창구는 `.invalid` 목적지를 레지스트리에 묻기 전에 `403 ACC_001` 로 거절하므로 provider 선언이 터널을

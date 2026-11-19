@@ -11,6 +11,7 @@ from typing import Any
 
 import anthropic
 import httpx
+import httpx2
 import pytest
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -20,12 +21,16 @@ from aaestro.agentd.executor import (
     Executor,
     ExecutorConfig,
     ExecutorServices,
+    UserTurn,
 )
 from aaestro.agentd.models import ModelChains
 from aaestro.agentd.providers.anthropic import AnthropicModel
+from aaestro.agentd.providers.egress_refusal import EGRESS_ERROR_CODE_HEADER
 from aaestro.agentd.providers.openai_compat import API_KEY_ENV, BASE_URL_ENV
 from aaestro.core.agent import TaskStatus
+from aaestro.core.errors import AaestroError
 from aaestro.core.manifest import (
+    CircuitDeclaration,
     FallbackModel,
     ModelConfig,
     ModelRetry,
@@ -33,6 +38,8 @@ from aaestro.core.manifest import (
 )
 from aaestro.core.skill import SkillSpec
 from aaestro.egress.providers import (
+    ANTHROPIC_ENDPOINTS,
+    ANTHROPIC_REQUEST_HEADERS,
     OPENAI_COMPAT_ENDPOINTS,
     OPENAI_COMPAT_KEY_HEADER,
     OPENAI_COMPAT_KEY_SCHEME,
@@ -49,6 +56,7 @@ AGENT = "researcher"
 IDENTITY = "cred-researcher"
 PROVIDER_KEY = "sk-compat-provider-key"
 LOGICAL_HOST = "llm.internal.example"
+ANTHROPIC_HOST = "api.anthropic.com"
 TOOL = "mcp__kb__lookup"
 CLAUDE = "claude-primary"
 RATE_LIMIT_ATTEMPTS = 2
@@ -73,11 +81,31 @@ class CompatProvider:
         self.rate_limit_from: int | None = None
         """이 번째 요청부터 429 로 답한다 (0 이면 처음부터)."""
         self.authorizations: list[list[str]] = []
+        self.spoof: int | None = None
+        """이 상태 코드로 프록시의 거절을 흉내 낸다 — 프록시 표시 헤더와 같은 모양의 본문 (#398)."""
         self.app = FastAPI()
         self.app.post("/v1/chat/completions")(self._complete)
+        self.app.post("/v1/messages")(self._messages)
+
+    def _spoofed(self) -> JSONResponse:
+        # 프록시가 그 상태에 싣는 코드 그대로 — 403 은 ACC_001, 503 은 ACC_002
+        status = self.spoof or 500
+        code = "ACC_002" if status == 503 else "ACC_001"
+        return JSONResponse(
+            {"type": "error", "error": {"type": "permission_error", "code": code}},
+            status_code=status,
+            headers={EGRESS_ERROR_CODE_HEADER: code},
+        )
+
+    async def _messages(self) -> Any:
+        """Anthropic 경로 — 흉내 낸 거절만 답한다 (정상 답은 SDK 대역이 낸다)."""
+        self.attempts += 1
+        return self._spoofed()
 
     async def _complete(self, request: Request) -> Any:
         self.attempts += 1
+        if self.spoof is not None:
+            return self._spoofed()
         if self.rate_limit_from is not None and self.attempts > self.rate_limit_from:
             return JSONResponse({"error": {"message": "rate limited"}}, status_code=429)
         self.authorizations.append(request.headers.getlist("authorization"))
@@ -143,7 +171,7 @@ class Stack:
     ) -> None:
         self.provider = provider or CompatProvider()
         self.registry = Registry()
-        self.registry.allowed.add(LOGICAL_HOST)
+        self.registry.allowed.update({LOGICAL_HOST, ANTHROPIC_HOST})
         self.bound = bound or {}
         proxy = create_provider_app(
             self.registry,
@@ -155,10 +183,18 @@ class Stack:
                     key_header=OPENAI_COMPAT_KEY_HEADER,
                     key_scheme=OPENAI_COMPAT_KEY_SCHEME,
                     endpoints=OPENAI_COMPAT_ENDPOINTS,
-                )
+                ),
+                "anthropic": Upstream(
+                    base_url=f"https://{ANTHROPIC_HOST}",
+                    logical_host=ANTHROPIC_HOST,
+                    api_key=PROVIDER_KEY,
+                    request_headers=ANTHROPIC_REQUEST_HEADERS,
+                    endpoints=ANTHROPIC_ENDPOINTS,
+                ),
             },
             http=httpx.AsyncClient(transport=httpx.ASGITransport(app=self.provider.app)),
         )
+        self._proxy = proxy
         self._to_proxy = httpx.ASGITransport(app=proxy)
         self._bind = model_factory(
             AGENT, {BASE_URL_ENV: "http://egress:8081/openai-compat", API_KEY_ENV: IDENTITY}
@@ -170,9 +206,10 @@ class Stack:
             self.waits.append(delay)
 
         chains = ModelChains(agent=AGENT, factory=self._factory)
+        self.chain = chains.for_config(config)
         self.executor = Executor(
             agent=AGENT,
-            model=chains.for_config(config),
+            model=self.chain,
             tools=self.tools,
             render=lambda _task: "what is aaestro?",
             tool_schemas=[LOOKUP],
@@ -185,6 +222,19 @@ class Stack:
         if config.name in self.bound:
             # SDK 클라이언트를 대역으로 갈아 끼운 어댑터 — 테이블은 실 SDK 를 세운다
             return self.bound[config.name]
+        if config.provider == "anthropic":
+            # 실 SDK 가 실 HTTP 로 프록시를 부른다 — 프록시의 거절이 SDK 예외로 올라오는 경로 (#398)
+            return AnthropicModel(
+                config=config,
+                agent=AGENT,
+                client=anthropic.AsyncAnthropic(
+                    api_key=IDENTITY,
+                    base_url="http://egress:8081/anthropic",
+                    # SDK 는 자기가 묶은 httpx2 클라이언트만 받는다
+                    http_client=httpx2.AsyncClient(transport=httpx2.ASGITransport(app=self._proxy)),
+                    max_retries=0,
+                ),
+            )
         # 실제 조립과 같은 테이블로 어댑터를 고르고, 전송만 프로세스 안의 프록시로 돌린다
         adapter = self._bind(config)
         adapter.client = httpx.AsyncClient(transport=self._to_proxy)
@@ -383,3 +433,114 @@ async def test_execute_openai_compat_tool_turn_is_continued_by_anthropic_mid_con
             }
         ],
     }
+
+
+# --- 프록시의 거절은 provider 실패가 아니다 (#398) — 두 어댑터 모두 실 HTTP 로 프록시를 지난다 ---
+
+CLAUDE_VIA_PROXY = ModelConfig(provider="anthropic", name=CLAUDE)
+NETWORK_ATTEMPTS = 2
+PRIMARY_HOST = {"openai-compat": LOGICAL_HOST, "anthropic": ANTHROPIC_HOST}
+
+
+def guarded(primary: ModelConfig, fallback: ModelConfig) -> ModelConfig:
+    """server_error 로 넘어가는 fallback, 한 번에 열리는 circuit, 짧은 network 재시도."""
+    return primary.model_copy(
+        update={
+            "fallbacks": (
+                FallbackModel(provider=fallback.provider, name=fallback.name, on=("server_error",)),
+            ),
+            "retry": ModelRetry(network=RetryDeclaration(start_s=1, attempts=NETWORK_ATTEMPTS)),
+            "circuit": CircuitDeclaration(max_failures=1, reset_s=60),
+        }
+    )
+
+
+BOTH = pytest.mark.parametrize(
+    ("primary", "fallback"),
+    [(COMPAT, CLAUDE_VIA_PROXY), (CLAUDE_VIA_PROXY, COMPAT)],
+    ids=["openai-compat", "anthropic"],
+)
+
+
+@BOTH
+async def test_execute_revoked_model_api_mid_task_is_acc_001(primary, fallback):
+    """권한 회수는 설정 오류 (INTERNAL) 도 provider 장애도 아니다 — 비재시도 ACC_001."""
+    stack = Stack(guarded(primary, fallback))
+    stack.registry.allowed.clear()
+
+    result = await stack.executor.execute(make_task())
+
+    assert result.status == TaskStatus.FAILED
+    assert result.error is not None
+    assert (result.error.category, result.error.code) == ("forbidden", "ACC_001")
+    assert result.error.retryable is False
+    # 재시도 · fallback 없이 한 번 — 다른 모델도 같은 프록시가 막는다
+    assert stack.registry.asked == [(IDENTITY, PRIMARY_HOST[primary.provider])]
+    assert stack.provider.attempts == 0
+    assert stack.chain.links[0].breaker is not None
+    assert stack.chain.links[0].breaker.can_attempt()
+
+
+@BOTH
+async def test_execute_registry_outage_is_retryable_acc_002_without_fallback_or_circuit(
+    primary, fallback
+):
+    stack = Stack(guarded(primary, fallback))
+    stack.registry.down = True
+
+    result = await stack.executor.execute(make_task())
+
+    assert result.error is not None
+    assert (result.error.category, result.error.code) == ("network", "ACC_002")
+    assert result.error.retryable is True
+    # agentd 의 network 재시도는 돌지만, fallback 으로 넘어가지 않는다
+    assert stack.registry.asked == [(IDENTITY, PRIMARY_HOST[primary.provider])] * NETWORK_ATTEMPTS
+    assert len(stack.waits) == NETWORK_ATTEMPTS - 1
+    # 한 번에 열리는 circuit 이 닫힌 채다 — 레지스트리가 돌아오면 바로 같은 모델을 쓴다
+    breaker = stack.chain.links[0].breaker
+    assert breaker is not None and breaker.can_attempt()
+
+
+@BOTH
+async def test_execute_upstream_mimicking_a_proxy_refusal_is_a_provider_answer(primary, fallback):
+    """upstream 이 프록시의 헤더 · 본문을 흉내 내도 ACC_001 이 아니다 — 헤더는 프록시만 낸다."""
+    stack = Stack(primary)
+    stack.provider.spoof = 403
+
+    result = await stack.executor.execute(make_task())
+
+    assert stack.provider.attempts == 1, "upstream 까지 닿았다"
+    assert result.error is not None
+    assert result.error.code != "ACC_001"
+
+
+@BOTH
+async def test_execute_upstream_503_mimicking_acc_002_still_falls_back(primary, fallback):
+    stack = Stack(guarded(primary, fallback))
+    stack.provider.spoof = 503
+
+    result = await stack.executor.execute(make_task())
+
+    assert result.error is not None
+    assert result.error.code == "LLM_003", "provider 장애로 읽혀 fallback 까지 갔다"
+    hosts = {target for _, target in stack.registry.asked}
+    assert hosts == {LOGICAL_HOST, ANTHROPIC_HOST}
+
+
+@BOTH
+async def test_run_proxy_refusal_keeps_the_http_failure_as_its_cause(primary, fallback):
+    """거절로 바꾼 뒤에도 원 응답 (상태 · 요청) 이 원인 체인에 남는다 (05 Error Context)."""
+    stack = Stack(primary)
+    stack.registry.allowed.clear()
+    adapter = stack._factory(primary)
+
+    with pytest.raises(AaestroError) as caught:
+        await adapter.run("operator rules", [UserTurn(parts=("hi",))], [])
+
+    assert caught.value.code == "ACC_001"
+    cause = caught.value.__cause__
+    expected = (
+        httpx.HTTPStatusError if primary.provider == "openai-compat" else anthropic.APIStatusError
+    )
+    assert isinstance(cause, expected)
+    assert cause.response.status_code == 403
