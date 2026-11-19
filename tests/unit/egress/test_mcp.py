@@ -526,3 +526,110 @@ async def test_an_upstream_error_response_carries_no_cookie_either_way(tmp_path,
     assert all("set-cookie" not in r.headers for r in responses)
     assert "cookie" not in server.seen[1].headers
     assert len(target.http.cookies.jar) == 0
+
+
+SSE_HEADERS = (
+    # 127.0.0.1 에서 띄운 mcp 2.1.0 streamable-http 서버의 SSE 응답 헤더 그대로 (#636)
+    ("date", "Thu, 19 Nov 2026 07:25:21 GMT"),
+    ("server", "uvicorn"),
+    ("cache-control", "no-cache, no-transform"),
+    ("connection", "keep-alive"),
+    ("content-type", "text/event-stream"),
+    ("mcp-session-id", "s-1"),
+    ("x-accel-buffering", "no"),
+)
+
+
+class GatewayServer(Server):
+    """게이트웨이를 거친 원격 MCP 서버 대역 — 허용 밖 헤더를 섞어 SSE 로 답한다 (#636).
+
+    GET 은 ``last-event-id`` 다음 이벤트부터 다시 보낸다 (재연결).
+    """
+
+    events = (
+        b'id: 0\nevent: message\ndata: {"jsonrpc":"2.0","id":1,"result":{}}\n\n',
+        b'id: 1\nevent: message\ndata: {"jsonrpc":"2.0","method":"notifications/progress"}\n\n',
+    )
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        self.seen.append(request)
+        last = request.headers.get("last-event-id")
+        events = self.events if last is None else self.events[int(last) + 1 :]
+        return httpx.Response(
+            200,
+            headers=[
+                *SSE_HEADERS,
+                ("x-upstream-session", "gw-session-42"),
+                ("x-request-id", "gw-req-7"),
+                ("set-cookie", "route=sticky; Path=/"),
+                ("via", "1.1 gateway"),
+            ],
+            stream=httpx.ByteStream(b"".join(events)),
+        )
+
+
+async def test_only_allowlisted_upstream_headers_reach_the_agent(tmp_path):
+    """denylist 로는 새 헤더가 생길 때마다 뚫린다 — 허용 목록 밖은 이름과 무관하게 떨어진다."""
+    server = GatewayServer()
+    async with client_for(termination(tmp_path, Identities(), server)) as client:
+        response = await post(client, body={"jsonrpc": "2.0", "id": 1, "method": "initialize"})
+
+    assert response.status_code == 200
+    for dropped in ("x-upstream-session", "x-request-id", "set-cookie", "via", "server"):
+        assert dropped not in response.headers, f"{dropped} 가 에이전트에게 건너갔다"
+    assert "gw-session-42" not in str(response.headers)
+    assert response.headers["cache-control"] == "no-cache, no-transform"
+    assert response.headers["x-accel-buffering"] == "no"
+
+
+async def test_a_session_streams_and_resumes_under_the_allowlist(tmp_path):
+    """세션 수립 · SSE 스트리밍 · ``last-event-id`` 재연결이 허용 목록 아래에서 그대로 된다."""
+    server = GatewayServer()
+    async with client_for(termination(tmp_path, Identities(), server)) as client:
+        opened = await post(
+            client,
+            body={"jsonrpc": "2.0", "id": 1, "method": "initialize"},
+            accept="application/json, text/event-stream",
+        )
+        sealed = opened.headers["mcp-session-id"]
+        resumed = await client.get(
+            "/mcp/corp",
+            headers={
+                "authorization": "Bearer cred-researcher",
+                "accept": "text/event-stream",
+                "mcp-session-id": sealed,
+                "mcp-protocol-version": "2025-06-18",
+                "last-event-id": "0",
+            },
+        )
+
+    assert opened.headers["content-type"].startswith("text/event-stream")
+    assert sealed.startswith("s-1.") and sealed != "s-1"
+    assert opened.content == b"".join(GatewayServer.events), "SSE 본문이 바뀌었다"
+
+    assert resumed.status_code == 200
+    assert resumed.headers["content-type"].startswith("text/event-stream")
+    assert resumed.headers["mcp-session-id"] == sealed
+    assert resumed.content == GatewayServer.events[1], "재연결이 다음 이벤트부터 이어지지 않았다"
+    sent = server.seen[1]
+    assert (sent.method, sent.headers["last-event-id"]) == ("GET", "0")
+    assert sent.headers["mcp-session-id"] == "s-1" and sent.headers["mcp-protocol-version"]
+
+
+async def test_allowlisted_headers_still_have_the_proxy_credential_masked(tmp_path):
+    """허용 목록 안의 헤더 값에 자격이 들어도 가린다 (#390)."""
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            429,
+            headers={"content-type": "application/json", "retry-after": f"5 {TOKEN}"},
+            stream=httpx.ByteStream(b'{"jsonrpc": "2.0", "id": 7, "error": {"code": 1}}'),
+        )
+
+    server = Server()
+    server.handle = handle  # type: ignore[method-assign]
+    async with client_for(termination(tmp_path, Identities(), server)) as client:
+        response = await post(client)
+
+    assert response.status_code == 429
+    assert "retry-after" in response.headers and TOKEN not in response.headers["retry-after"]

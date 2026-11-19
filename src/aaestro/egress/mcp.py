@@ -65,13 +65,22 @@ UPSTREAM_TIMEOUT = httpx.Timeout(connect=10.0, read=None, write=30.0, pool=10.0)
 _FORWARDED = frozenset(
     {"content-type", "accept", "mcp-session-id", "mcp-protocol-version", "last-event-id"}
 )
-_RETURNED_EXCLUDED = frozenset(
+RETURNED_HEADERS = frozenset(
     {
-        "connection", "keep-alive", "transfer-encoding", "content-length", "server", "date",
-        # upstream 이 심은 세션은 에이전트에게 건너가지 않는다 — 모델 종단과 같다 (#403)
-        "set-cookie", "set-cookie2",
+        "content-type", "content-encoding", "mcp-session-id", "cache-control",
+        "x-accel-buffering", "allow", "retry-after",
     }
 )  # fmt: skip
+"""에이전트에게 돌려주는 응답 헤더 — 허용 목록이다 (#636, 모델 종단 #390 과 같은 결).
+
+근거 (lockfile 의 ``mcp`` 2.1.0): 클라이언트가 응답에서 읽는 것은 ``content-type`` (JSON / SSE 분기,
+``client/streamable_http.py:348,381``) 과 ``mcp-session-id`` (``:143``) 뿐이다. 서버는 그 둘에 더해
+SSE 에 ``cache-control`` · ``x-accel-buffering`` 을, 405 에 ``allow`` 를 낸다
+(``server/streamable_http.py:647,717,840`` — 127.0.0.1 실측도 같다). ``content-encoding`` 은 2xx 를
+압축된 원문 그대로 흘리므로 필요하고, ``retry-after`` 는 429 · 503 의 HTTP 재시도 힌트다.
+재연결은 요청 헤더 ``last-event-id`` 와 본문의 SSE ``id`` · ``retry`` 로 하므로 응답 헤더가 없다.
+그 밖 (쿠키 #403, 게이트웨이의 추적 · 세션 · 에코 헤더) 은 이름을 하나씩 막아서는 닫히지 않는다.
+남는 값도 가린다."""
 _BODY_HEADERS = frozenset({"content-type", "content-encoding"})
 """프록시가 다시 쓴 에러 본문에는 맞지 않는 헤더 — JSON 으로 새로 직렬화하고 디코딩한 뒤다."""
 
@@ -293,7 +302,7 @@ class McpTermination:
                         resource=ResourceKind.EGRESS.value, target=upstream.target,
                         exc_info=err)  # fmt: skip
             return _http_error(502, "remote mcp server unreachable")
-        headers = {k: v for k, v in answer.headers.items() if k.lower() not in _RETURNED_EXCLUDED}
+        headers = {k: v for k, v in answer.headers.items() if k.lower() in RETURNED_HEADERS}
         if upstream.token is not None:
             # 프록시가 붙인 자격이 되비치지 않게 — 모델 API 종단과 같은 가림 (#390)
             headers = {k: redact(v, upstream.token) for k, v in headers.items()}
@@ -415,4 +424,11 @@ def _rpc_error(request_id: Any, refused: tuple[int, str, str | None]) -> JSONRes
     )
 
 
-__all__ = ["MCP_PREFIX", "McpTermination", "McpUpstream", "McpUpstreams", "SessionSeal"]
+__all__ = [
+    "MCP_PREFIX",
+    "RETURNED_HEADERS",
+    "McpTermination",
+    "McpUpstream",
+    "McpUpstreams",
+    "SessionSeal",
+]
