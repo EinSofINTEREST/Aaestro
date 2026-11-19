@@ -1232,6 +1232,7 @@ The proxy needs two more settings for this:
 |---|---|
 | `AAESTRO_REPO_ROOT` | the declarations, mounted read-only — without it, remote MCP calls are `404` |
 | `AAESTRO_EGRESS_MCP_TOKENS` | comma-separated credential names the proxy may send to MCP servers, each set in the proxy's environment |
+| `AAESTRO_REGISTRY_ROOT_<TYPE>` | a `registry.roots` entry for the declarations (`AGENTS`, `GRAPHS`, `GROUPS`, …), relative to `AAESTRO_REPO_ROOT`; unset means the default layout. The proxy does not read the config file, so the deployment passes the roots it configured. An unknown type, an empty value, or a root without `AAESTRO_REPO_ROOT` refuses to start (`CFG_001`) |
 
 **Only listed credential names are sent.** A declaration that names another secret as
 `auth.token_env` gets `502` (`CFG_002`) instead of that value. The list itself may not name secrets the

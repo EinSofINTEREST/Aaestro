@@ -1158,6 +1158,7 @@ spec:
 |---|---|
 | `AAESTRO_REPO_ROOT` | 읽기 전용으로 마운트한 선언 — 없으면 원격 MCP 호출은 `404` |
 | `AAESTRO_EGRESS_MCP_TOKENS` | 프록시가 MCP 서버에 보내도 되는 자격 이름, 쉼표로. 각 값은 프록시 env 에 둔다 |
+| `AAESTRO_REGISTRY_ROOT_<TYPE>` | 선언의 `registry.roots` 항목 (`AGENTS`, `GRAPHS`, `GROUPS` …), `AAESTRO_REPO_ROOT` 기준 상대 경로. 없으면 기본 배치. 프록시는 설정 파일을 읽지 않으므로 배포가 설정한 루트를 실어 준다. 모르는 종류 · 빈 값 · `AAESTRO_REPO_ROOT` 없는 루트는 기동을 거부한다 (`CFG_001`) |
 
 **목록에 있는 자격 이름만 보낸다.** 선언이 다른 비밀을 `auth.token_env` 로 적으면 그 값 대신
 `502`(`CFG_002`) 로 답한다. 목록에도 프록시가 다른 용도로 쥔 비밀은 올리지 못한다 — `ANTHROPIC_API_KEY`, `OPENAI_COMPAT_API_KEY` 나

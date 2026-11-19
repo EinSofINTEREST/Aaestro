@@ -55,6 +55,7 @@ from aaestro.egress.__main__ import _mcp_routers
 
 config = {{
     "repo_root": sys.argv[1],
+    "registry_roots": {{}},
     "mcp_tokens": {{}},
     "mode": "enforce",
     "private_destinations": [],

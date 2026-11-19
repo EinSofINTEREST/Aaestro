@@ -110,7 +110,9 @@ aaestro config dev                              # resolved settings for an envir
 ```
 
 Both `validate` and `deploy` exit non-zero when a check fails, so they compose with
-scripts. Add `--json` for machine-readable output.
+scripts. Add `--json` for machine-readable output. `validate`, `deploy`, `status` and `run`
+read the declarations from the configured `registry.roots` (`--env`, `--config-dir`), the same
+tree the control plane reads; without a config directory they use the default layout.
 
 Integrity checks compare records against reality — orphaned checkpoints, dangling
 module refs, ghost containers:
