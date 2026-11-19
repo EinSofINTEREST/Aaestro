@@ -875,12 +875,16 @@ class DockerEngine:
         removed = remove and await self._discard(
             handle.container_id, agent=handle.agent, image=handle.image
         )
+        if remove and not removed:
+            # 제거 실패 WARN 은 _discard 가 남겼다 — 정리가 끝난 것처럼 INFO 를 남기지 않는다
+            return False
 
         log.info(
             "agent container stopped",
             agent=handle.agent,
             container_id=handle.short_id,
             image=handle.image,
+            removed=removed,
         )
         return removed
 
