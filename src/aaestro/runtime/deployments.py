@@ -52,7 +52,7 @@ if TYPE_CHECKING:
     from aaestro.access.registry import AccessRegistry
     from aaestro.authoring import Author
     from aaestro.catalog import Catalog
-    from aaestro.core.manifest import AgentManifest, ModelOverride
+    from aaestro.core.manifest import AgentManifest, GroupManifest, ModelOverride
     from aaestro.core.topology import GraphTopology
     from aaestro.runtime.launcher import AgentLauncher
     from aaestro.runtime.sidecars import ProxyAttachment
@@ -458,6 +458,9 @@ class DeploymentManager:
     task 의 소유자는 이 표다 — 끝나면 `_teardown_done` 이 지운다."""
 
     def __post_init__(self) -> None:
+        if self.launcher.groups is None:
+            # 기동 · 재시작 · 재부착이 모두 카탈로그의 **지금** 그룹 선언으로 quota 를 본다 (#474)
+            self.launcher.groups = self._current_group
         secretish = [k for k in self.agent_env if _looks_secret(k)]
         if secretish:
             raise AaestroError(
@@ -466,6 +469,10 @@ class DeploymentManager:
                 message="agent_env must not carry secrets — those go through env_allowlist",
                 details={"keys": secretish},
             )
+
+    def _current_group(self, name: str) -> GroupManifest | None:
+        """카탈로그의 지금 그룹 선언 — 없으면 None (그 그룹의 quota 는 보지 않는다)."""
+        return self.catalog.groups().items.get(name)
 
     # --- 조회 --------------------------------------------------------------
 
@@ -1227,7 +1234,6 @@ class DeploymentManager:
                 "mounts": provisions[m.name].mounts,
                 "image": deployed.get(m.name) or provisions[m.name].image,
                 "networks": self.sidecars.agent_networks(m),
-                "group": self.catalog.groups().items.get(m.group),
             }
             for m in manifests
         }
@@ -1293,9 +1299,8 @@ class DeploymentManager:
     async def _launch(self, manifest: AgentManifest, provision: Provision) -> LaunchedAgent:
         env = self._env_for(manifest, provision)
         sidecars = self.sidecars
-        group = self.catalog.groups().items.get(manifest.group)
         # quota 에 걸리는 기동은 사이드카도 세우지 않는다 — launcher.start 가 직전에 다시 본다
-        self.launcher.admit(manifest, group=group)
+        self.launcher.admit(manifest)
         # 에이전트보다 먼저 — agentd 가 기동하며 사이드카 세션을 연다 (03 Startup Sequence 3)
         await sidecars.start(manifest, env)
         return await self.launcher.start(
@@ -1306,8 +1311,6 @@ class DeploymentManager:
             a2a_port=provision.a2a_port,
             image=provision.image,
             networks=sidecars.agent_networks(manifest),
-            # 기동 시 재검증 — 배포 검증은 선언을 세고, launcher 는 떠 있는 컨테이너를 센다 (#474)
-            group=group,
         )
 
     def _release_ports(self, provisions: Mapping[str, Provision]) -> None:

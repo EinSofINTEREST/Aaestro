@@ -1437,18 +1437,30 @@ async def test_a_restart_after_reattach_keeps_the_baked_image(workspace, docker,
     await second.launcher.stop_all()
 
 
-async def test_a_reattached_replica_restarts_under_its_group_quota(workspace, docker, healthy):
-    """재부착한 레플리카의 재시작도 기동이다 — 그룹을 잃으면 quota 재검증이 조용히 빠진다 (#474)."""
-    wired_workspace(workspace)
-    store = InMemoryDeploymentStore()
-    await wired_manager(workspace, docker, store).deploy("wired")
+async def test_a_restart_judges_the_group_quota_the_catalog_declares_now(
+    manager, docker, workspace
+):
+    """기동 때의 그룹을 쥐면 그 뒤 늘린 quota 가 재시작에 닿지 않아 alpha 가 Failed 로 끝난다."""
+    quota_workspace(workspace)
+    global_group = yaml.safe_load((workspace / "groups" / "global.yaml").read_text("utf-8"))
+    global_group["spec"]["quotas"] = {"cpu": "1.0"}
+    write(workspace / "groups" / "global.yaml", global_group)
+    # 배포 검증은 카탈로그의 그룹 멤버 전부를 센다 — beta 는 quota 를 늘린 뒤에 선언한다
+    (workspace / "agents" / "beta" / "manifest.yaml").unlink()
+    await manager.deploy("first")
+    global_group["spec"]["quotas"] = {"cpu": "2.0"}
+    write(workspace / "groups" / "global.yaml", global_group)
+    sized(workspace, "beta", "1.0")
+    await manager.deploy("second")
+    alpha = manager.launcher.launched["alpha", 0]
+    alpha.lifecycle.record_health(healthy=False, threshold=1)
+    manager.launcher.restart_sleep = NoSleep()
 
-    second = wired_manager(workspace, docker, store)
-    await second.reattach()
+    await manager.launcher._restart(alpha)
 
-    group = second.launcher.launched[("alpha", 0)].restart_args["group"]
-    assert group is not None and group.name == "global"
-    await second.launcher.stop_all()
+    assert manager.launcher.launched["alpha", 0].lifecycle.state is not AgentState.FAILED
+    assert len(docker.created) == 3
+    await manager.launcher.stop_all()
 
 
 async def test_reattach_restarts_with_the_image_that_was_deployed(workspace, docker, healthy):

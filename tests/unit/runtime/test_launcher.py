@@ -282,15 +282,27 @@ def quota_group(**quotas: object) -> GroupManifest:
     )
 
 
+def quota_launcher(
+    client: FakeDockerClient | None = None, **quotas: object
+) -> tuple[AgentLauncher, dict[str, GroupManifest]]:
+    """`research` 그룹 quota 를 지금 선언으로 찾는 launcher — 선언은 돌려준 표를 고쳐 바꾼다."""
+    groups = {"research": quota_group(**quotas)}
+    agents = AgentLauncher(
+        engine=DockerEngine(client=client or FakeDockerClient()),
+        groups=groups.get,
+        restart_sleep=_no_wait,
+    )
+    return agents, groups
+
+
 async def test_a_replica_past_the_group_quota_is_refused_before_its_container():
     """배포 검증은 선언을 센다 — 실제로 떠 있는 레플리카를 더하면 넘는 기동은 RT_006 이다."""
     client = FakeDockerClient()
-    agents = launcher(client)
-    group = quota_group(max_agents=1)
-    await agents.start(grouped(), group=group)
+    agents, _ = quota_launcher(client, max_agents=1)
+    await agents.start(grouped())
 
     with pytest.raises(AaestroError) as excinfo:
-        await agents.start(grouped(), replica=1, group=group)
+        await agents.start(grouped(), replica=1)
 
     assert excinfo.value.code == ErrorCode.RT_006
     assert len(client.created) == 1, "거부한 레플리카의 컨테이너가 만들어졌다"
@@ -300,12 +312,11 @@ async def test_a_replica_past_the_group_quota_is_refused_before_its_container():
 
 async def test_a_stopped_replica_frees_its_share_of_the_quota():
     client = FakeDockerClient()
-    agents = launcher(client)
-    group = quota_group(cpu="1.0")
-    await agents.start(grouped(), group=group)
+    agents, _ = quota_launcher(client, cpu="1.0")
+    await agents.start(grouped())
     await agents.stop("worker")
 
-    await agents.start(grouped(), group=group)
+    await agents.start(grouped())
 
     assert len(client.created) == 2
     await agents.stop_all()
@@ -313,12 +324,11 @@ async def test_a_stopped_replica_frees_its_share_of_the_quota():
 
 async def test_a_replica_whose_container_is_gone_holds_no_quota():
     """교체가 옛 컨테이너를 지우고 넘어지면 레플리카는 자리에 남지만 자원은 쥐지 않는다."""
-    agents = launcher()
-    group = quota_group(cpu="1.0")
-    first = await agents.start(grouped(), group=group)
+    agents, _ = quota_launcher(cpu="1.0")
+    first = await agents.start(grouped())
     first.stopped = True
 
-    await agents.start(grouped("second"), group=group)
+    await agents.start(grouped("second"))
 
     assert ("second", 0) in agents.launched
     first.stopped = False
@@ -326,10 +336,10 @@ async def test_a_replica_whose_container_is_gone_holds_no_quota():
 
 
 async def test_members_of_other_groups_do_not_count_against_the_group():
-    agents = launcher()
-    await agents.start(grouped("outsider", group="other"), group=None)
+    agents, _ = quota_launcher(cpu="1.0")
+    await agents.start(grouped("outsider", group="other"))
 
-    await agents.start(grouped(), group=quota_group(cpu="1.0"))
+    await agents.start(grouped())
 
     assert ("worker", 0) in agents.launched
     await agents.stop_all()
@@ -340,12 +350,11 @@ async def test_concurrent_launches_cannot_both_slip_under_the_quota():
     import asyncio
 
     client = FakeDockerClient()
-    agents = launcher(client)
-    group = quota_group(max_agents=1)
+    agents, _ = quota_launcher(client, max_agents=1)
 
     results = await asyncio.gather(
-        agents.start(grouped(), replica=0, group=group),
-        agents.start(grouped(), replica=1, group=group),
+        agents.start(grouped(), replica=0),
+        agents.start(grouped(), replica=1),
         return_exceptions=True,
     )
 
@@ -359,7 +368,7 @@ async def test_a_second_launch_of_a_starting_replica_keeps_the_first_reservation
     """같은 자리의 두 번째 기동이 예약을 덮어쓰거나 지우면 다른 에이전트가 그 자리를 못 센다."""
     import asyncio
 
-    agents = launcher()
+    agents, _ = quota_launcher(max_agents=1)
     release = asyncio.Event()
     original = agents.engine.start
 
@@ -368,18 +377,17 @@ async def test_a_second_launch_of_a_starting_replica_keeps_the_first_reservation
         return await original(spec)
 
     monkeypatch.setattr(agents.engine, "start", held_start)
-    group = quota_group(max_agents=1)
-    first = asyncio.create_task(agents.start(grouped(), group=group))
+    first = asyncio.create_task(agents.start(grouped()))
     await asyncio.sleep(0)
     # 거부는 await 전에 난다 — 통과해 버리면 막힌 엔진에서 기다리므로 태스크로 띄워 본다
-    duplicate = asyncio.create_task(agents.start(grouped(), group=group))
+    duplicate = asyncio.create_task(agents.start(grouped()))
     await asyncio.sleep(0)
     try:
         assert duplicate.done(), "같은 레플리카의 두 번째 기동이 거부되지 않았다"
         assert isinstance(duplicate.exception(), AaestroError)
         assert duplicate.exception().code == ErrorCode.RT_010
         with pytest.raises(AaestroError) as other:
-            await agents.start(grouped("other"), group=group)
+            await agents.start(grouped("other"))
         assert other.value.code == ErrorCode.RT_006, "첫 기동의 예약이 사라졌다"
     finally:
         release.set()
@@ -401,8 +409,8 @@ async def test_the_host_capacity_counts_every_live_container():
 async def test_a_restart_replaces_its_own_share_instead_of_adding_to_it():
     """교체는 같은 자리를 다시 세운다 — 옛 것까지 세면 quota 경계의 에이전트가 못 선다."""
     client = FakeDockerClient()
-    agents = AgentLauncher(engine=DockerEngine(client=client), restart_sleep=_no_wait)
-    launched = await agents.start(grouped(), group=quota_group(cpu="1.0"))
+    agents, _ = quota_launcher(client, cpu="1.0")
+    launched = await agents.start(grouped())
     launched.lifecycle.record_health(healthy=False, threshold=1)
 
     await agents._restart(launched)
@@ -415,8 +423,8 @@ async def test_a_restart_replaces_its_own_share_instead_of_adding_to_it():
 async def test_a_restart_refused_by_the_quota_fails_permanently():
     """quota 초과는 같은 선언으로 다시 세워도 같다 — backoff 로 반복하지 않고 Failed 로 간다."""
     client = FakeDockerClient()
-    agents = AgentLauncher(engine=DockerEngine(client=client), restart_sleep=_no_wait)
-    launched = await agents.start(grouped(), group=quota_group(cpu="1.5"))
+    agents, _ = quota_launcher(client, cpu="1.5")
+    launched = await agents.start(grouped())
     # 그 사이 같은 그룹의 다른 에이전트가 quota 를 통과해 기동 중이다
     agents._admitted["other", 0] = grouped("other")
     launched.lifecycle.record_health(healthy=False, threshold=1)
@@ -425,6 +433,38 @@ async def test_a_restart_refused_by_the_quota_fails_permanently():
 
     assert len(client.created) == 1
     assert launched.lifecycle.state is AgentState.FAILED
+    await agents.stop_all()
+
+
+async def test_a_restart_sees_a_quota_raised_after_the_first_launch():
+    """기동 때의 그룹 스냅샷으로 재시작하면 늘린 quota 로 들어온 이웃 때문에 Failed 로 끝난다."""
+    client = FakeDockerClient()
+    agents, groups = quota_launcher(client, cpu="1.0")
+    alpha = await agents.start(grouped("alpha"))
+    groups["research"] = quota_group(cpu="2.0")
+    await agents.start(grouped("beta"))
+    alpha.lifecycle.record_health(healthy=False, threshold=1)
+
+    await agents._restart(alpha)
+
+    assert agents.launched["alpha", 0].lifecycle.state is AgentState.STARTING
+    assert len(client.created) == 3
+    await agents.stop_all()
+
+
+async def test_a_restart_after_the_quota_shrank_fails_permanently():
+    """줄인 quota 는 같은 선언으로 다시 세워도 넘는다 — 재시도 없이 Failed."""
+    client = FakeDockerClient()
+    agents, groups = quota_launcher(client, cpu="2.0")
+    alpha = await agents.start(grouped("alpha"))
+    await agents.start(grouped("beta"))
+    groups["research"] = quota_group(cpu="1.0")
+    alpha.lifecycle.record_health(healthy=False, threshold=1)
+
+    await agents._restart(alpha)
+
+    assert alpha.lifecycle.state is AgentState.FAILED
+    assert len(client.created) == 2
     await agents.stop_all()
 
 
