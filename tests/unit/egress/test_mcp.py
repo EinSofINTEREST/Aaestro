@@ -4,10 +4,20 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Annotated
 
 import httpx
+import httpx2
 import pytest
 import yaml
+from mcp.client.client import Client
+from mcp.client.streamable_http import streamable_http_client
+from mcp.server import MCPServer
+from mcp.server.transport_security import TransportSecuritySettings
+from mcp_types import CLIENT_CAPABILITIES_META_KEY, PROTOCOL_VERSION_META_KEY
+from mcp_types.jsonrpc import HEADER_MISMATCH
+from mcp_types.version import LATEST_MODERN_VERSION
+from pydantic import Field
 
 from aaestro.access.client import DecisionSource
 from aaestro.catalog import Catalog
@@ -115,7 +125,8 @@ def termination(tmp_path, registry, server, **options) -> McpTermination:
             environ={"CORP_TOKEN": TOKEN, "ANTHROPIC_API_KEY": "sk-model-key"},
             tokens=tokens,
         ),
-        http=httpx.AsyncClient(transport=httpx.MockTransport(server.handle)),
+        http=options.pop("http", None)
+        or httpx.AsyncClient(transport=httpx.MockTransport(server.handle)),
         resolver=resolver,
         **options,
     )
@@ -633,3 +644,117 @@ async def test_allowlisted_headers_still_have_the_proxy_credential_masked(tmp_pa
 
     assert response.status_code == 429
     assert "retry-after" in response.headers and TOKEN not in response.headers["retry-after"]
+
+
+def header_checking_upstream() -> MCPServer:
+    """헤더 검사를 하는 실제 SDK 서버 — ``query`` 는 ``Mcp-Param-Query`` 로 비춰진다."""
+    upstream = MCPServer(name="corp", version="0.1.0")
+
+    def search(query: Annotated[str, Field(json_schema_extra={"x-mcp-header": "Query"})]) -> str:
+        """Search the corpus."""
+        return f"found {query}"
+
+    upstream.add_tool(search)
+    return upstream
+
+
+async def test_a_header_checking_upstream_accepts_a_tool_call_through_the_proxy(tmp_path):
+    """2026-07-28 로 협상한 서버는 라우팅 헤더가 본문과 맞지 않으면 거절한다 (#645)."""
+    upstream = header_checking_upstream()
+    app = upstream.streamable_http_app(
+        stateless_http=True,
+        transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
+    )
+    received: list[httpx.Request] = []
+
+    async def record(request: httpx.Request) -> None:
+        received.append(request)
+
+    http = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), event_hooks={"request": [record]}
+    )
+    target = termination(tmp_path, Identities(), Server(), http=http)
+    proxy = create_provider_app(target.access, {}, routers=[target.router()])
+    agent = httpx2.AsyncClient(
+        transport=httpx2.ASGITransport(app=proxy),
+        headers={"authorization": "Bearer cred-researcher"},
+    )
+    async with upstream.session_manager.run():
+        transport = streamable_http_client("http://egress/mcp/corp", http_client=agent)
+        async with Client(transport, mode=LATEST_MODERN_VERSION) as client:
+            await client.list_tools()
+            result = await client.call_tool("search", {"query": "a b"})
+
+    assert result.is_error is False and result.structured_content == {"result": "found a b"}
+    call = received[-1]
+    assert call.headers["mcp-method"] == "tools/call" and call.headers["mcp-name"] == "search"
+    assert call.headers["mcp-param-query"] == "a b", "인자 헤더가 upstream 에 닿지 않았다"
+    assert call.headers["authorization"] == f"Bearer {TOKEN}"
+
+
+async def test_only_the_mcp_routing_headers_are_forwarded_and_the_credential_stays_the_proxys(
+    tmp_path,
+):
+    server = Server()
+    async with client_for(termination(tmp_path, Identities(), server)) as client:
+        await post(
+            client,
+            **{
+                "mcp-method": "tools/call",
+                "mcp-name": "search",
+                "mcp-param-query": "q",
+                "mcp-paramquery": "no",
+                "x-mcp-name": "no",
+                "x-forwarded-for": "10.0.0.1",
+            },
+        )
+
+    [sent] = server.seen
+    forwarded = {k for k in sent.headers if k.startswith(("mcp-", "x-"))}
+    assert forwarded == {"mcp-method", "mcp-name", "mcp-param-query"}
+    assert sent.headers["authorization"] == f"Bearer {TOKEN}"
+
+
+@pytest.mark.parametrize(
+    "duplicated", [("mcp-name", "search"), ("mcp-param-query", "q")], ids=lambda d: d[0]
+)
+async def test_a_duplicated_routing_header_is_refused_through_the_proxy_as_it_is_directly(
+    tmp_path, duplicated
+):
+    """중복 헤더를 합치면 upstream 의 중복 거절을 프록시가 흐린다 — 그대로 넘긴다 (#645)."""
+    upstream = header_checking_upstream()
+    app = upstream.streamable_http_app(
+        stateless_http=True,
+        transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
+    )
+    meta = {PROTOCOL_VERSION_META_KEY: LATEST_MODERN_VERSION, CLIENT_CAPABILITIES_META_KEY: {}}
+    body = {
+        "jsonrpc": "2.0",
+        "id": 7,
+        "method": "tools/call",
+        "params": {"name": "search", "arguments": {"query": "q"}, "_meta": meta},
+    }
+    headers = [
+        ("content-type", "application/json"),
+        ("accept", "application/json, text/event-stream"),
+        ("mcp-protocol-version", LATEST_MODERN_VERSION),
+        ("mcp-method", "tools/call"),
+        ("mcp-name", "search"),
+        ("mcp-param-query", "q"),
+        duplicated,
+    ]
+    upstream_http = httpx.AsyncClient(transport=httpx.ASGITransport(app=app))
+    target = termination(tmp_path, Identities(), Server(), http=upstream_http)
+    async with upstream.session_manager.run(), client_for(target) as client:
+        direct = await upstream_http.post(
+            "http://corp/mcp", content=json.dumps(body).encode(), headers=headers
+        )
+        proxied = await client.post(
+            "/mcp/corp",
+            content=json.dumps(body).encode(),
+            headers=[*headers, ("authorization", "Bearer cred-researcher")],
+        )
+
+    assert direct.status_code == 400 and direct.json()["error"]["code"] == HEADER_MISMATCH
+    assert proxied.status_code == 400, "프록시를 거친 중복 헤더가 합쳐져 통과했다"
+    assert proxied.json()["error"]["code"] == HEADER_MISMATCH

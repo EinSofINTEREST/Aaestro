@@ -63,8 +63,22 @@ UPSTREAM_TIMEOUT = httpx.Timeout(connect=10.0, read=None, write=30.0, pool=10.0)
 """읽기는 끝을 두지 않는다 — MCP 의 서버 알림 스트림(GET)은 세션 내내 열려 있다."""
 
 _FORWARDED = frozenset(
-    {"content-type", "accept", "mcp-session-id", "mcp-protocol-version", "last-event-id"}
-)
+    {
+        "content-type", "accept", "mcp-session-id", "mcp-protocol-version", "last-event-id",
+        "mcp-method", "mcp-name",
+    }
+)  # fmt: skip
+_FORWARDED_PREFIX = "mcp-param-"
+"""upstream 에 넘기는 요청 헤더 — 이름 허용 목록과 ``mcp-param-`` 접두사 (#645).
+
+근거 (lockfile 의 ``mcp`` 2.1.0): 클라이언트는 요청마다 ``mcp-protocol-version`` ·
+``mcp-method`` 를, 이름을 갖는 메서드에 ``mcp-name`` 을, ``tools/call`` 에 인자를 비춘
+``Mcp-Param-*`` 을 붙인다 (``client/session.py:190-196``, 이름 ``shared/inbound.py:60,63,66,234``).
+2026-07-28 로 협상한 서버는 본문과 맞지 않거나 빠진 헤더를 ``HEADER_MISMATCH`` 로 거절한다
+(``shared/inbound.py:449-471`` · ``:526-595``, 호출은
+``server/_streamable_http_modern.py:433,438``). 값은 upstream 이 이미 받는 본문의 복사라 새로
+내보내는 것이 없다. 도구 판정은 계속 본문으로 한다 — 헤더는 판정에 쓰지 않는다.
+``host`` · ``authorization`` 은 이 목록 밖이라 넘어가지 않고 프록시가 따로 싣는다."""
 RETURNED_HEADERS = frozenset(
     {
         "content-type", "content-encoding", "mcp-session-id", "cache-control",
@@ -358,15 +372,18 @@ class McpTermination:
     ) -> httpx.Request:
         host = f"[{address}]" if ":" in address else address
         netloc = f"{host}:{parts.port}" if parts.port else host
-        # 세션 id 는 서명을 벗긴 값으로 호출자가 따로 싣는다
-        headers = {
-            k: v
+        # 세션 id 는 서명을 벗긴 값으로 호출자가 따로 싣는다. 목록으로 둬 중복 헤더도 그대로 간다 —
+        # 합치면 upstream 의 중복 라우팅 헤더 거절 (HEADER_MISMATCH) 을 프록시가 흐린다 (#645)
+        headers = [
+            (k, v)
             for k, v in request.headers.items()
-            if k.lower() in _FORWARDED and k.lower() != SESSION_HEADER
-        }
-        headers["host"] = parts.netloc
+            if (k.lower() in _FORWARDED or k.lower().startswith(_FORWARDED_PREFIX))
+            and k.lower() != SESSION_HEADER
+        ]
+        # host · authorization 은 허용 목록 밖이라 위에 없다 — 프록시 값만 실린다
+        headers.append(("host", parts.netloc))
         if upstream.token is not None:
-            headers["authorization"] = f"Bearer {upstream.token}"
+            headers.append(("authorization", f"Bearer {upstream.token}"))
         extensions = {"sni_hostname": parts.hostname} if parts.scheme == "https" else {}
         return self.http.build_request(
             request.method,
