@@ -111,6 +111,8 @@ aaestro config dev                              # 환경별 해석된 설정
 
 `validate` 와 `deploy` 는 검증 실패 시 0이 아닌 코드로 종료하므로 스크립트와
 조합할 수 있습니다. `--json` 을 붙이면 기계 판독 가능한 출력이 나옵니다.
+`validate` · `deploy` · `status` · `run` 은 설정의 `registry.roots` (`--env`, `--config-dir`) 에서
+선언을 읽는다 — control plane 이 읽는 것과 같은 트리다. 설정 디렉토리가 없으면 기본 배치를 쓴다.
 
 무결성 점검은 기록과 실체를 대조합니다 — 고아 checkpoint, 끊어진 모듈 ref,
 유령 컨테이너:

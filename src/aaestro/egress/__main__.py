@@ -50,6 +50,9 @@ OPENAI_COMPAT_KEY_ENV = "OPENAI_COMPAT_API_KEY"  # noqa: S105 — 키 이름이�
 PROXY_HELD_SECRETS = frozenset({ANTHROPIC_KEY_ENV, OPENAI_COMPAT_KEY_ENV})
 """프록시가 provider 호출에만 쓰는 비밀 — 원격 MCP 자격 목록에 올릴 수 없다."""
 MCP_TOKENS_ENV = "AAESTRO_EGRESS_MCP_TOKENS"
+REGISTRY_ROOT_ENV_PREFIX = "AAESTRO_REGISTRY_ROOT_"
+"""``registry.roots`` 의 루트별 env — 뒤에 키 이름 대문자 (`..._GRAPHS`). 프록시는 설정 파일을
+읽지 않으므로 (비밀을 쥔 컴포넌트라 입력을 줄인다) 배포가 이 env 로 같은 루트를 실어 준다."""
 """원격 MCP 서버에 붙여도 되는 자격 이름 — 쉼표로. 선언의 ``auth.token_env`` 가 이 목록에 있을 때만
 그 값을 보낸다 (모델 키 같은 다른 비밀을 선언으로 끌어내지 못하게)."""
 
@@ -96,8 +99,31 @@ def settings(environ: Mapping[str, str]) -> dict[str, Any]:
         **_openai_compat(environ, private),
         "allow_plaintext": environ.get(PLAINTEXT_UPSTREAM_ENV, "").lower() == "true",
         "repo_root": environ.get(REPO_ROOT_ENV, ""),
+        "registry_roots": _registry_roots(environ),
         "mcp_tokens": _mcp_tokens(environ),
     }
+
+
+def _registry_roots(environ: Mapping[str, str]) -> dict[str, str]:
+    """Per-type registry roots set in the environment — unknown or empty ones refuse to start.
+
+    Raises:
+        AaestroError: CONFIG/``CFG_001`` on an unknown type, an empty path, or roots without
+            ``AAESTRO_REPO_ROOT`` (it would be silently ignored).
+    """
+    from aaestro.config import RegistryRoots
+
+    known = {name.upper(): name for name in RegistryRoots.model_fields}
+    given = {k: v for k, v in environ.items() if k.startswith(REGISTRY_ROOT_ENV_PREFIX)}
+    bad = sorted(
+        k for k, v in given.items()
+        if k[len(REGISTRY_ROOT_ENV_PREFIX):] not in known or not v.strip()
+    )  # fmt: skip
+    if bad:
+        raise _config("unknown or empty registry root setting", bad)
+    if given and not environ.get(REPO_ROOT_ENV, "").strip():
+        raise _config("registry roots need the declarations root", [REPO_ROOT_ENV, *sorted(given)])
+    return {known[k[len(REGISTRY_ROOT_ENV_PREFIX) :]]: v for k, v in given.items()}
 
 
 def _mcp_tokens(environ: Mapping[str, str]) -> frozenset[str]:
@@ -317,12 +343,17 @@ def _mcp_routers(config: Mapping[str, Any], access: Any) -> list[Any]:
     from pathlib import Path
 
     from aaestro.catalog import Catalog
+    from aaestro.config import RegistryRoots
     from aaestro.egress.mcp import McpTermination, McpUpstreams, SessionSeal
 
     termination = McpTermination(
         access=access,
         upstreams=McpUpstreams(
-            catalog=Catalog.under(Path(config["repo_root"])),
+            # control plane 과 같은 루트 해석 — 설정된 위치가 기본과 달라도 같은 선언을 본다
+            catalog=Catalog.from_config(
+                {**RegistryRoots().model_dump(), **config["registry_roots"]},
+                base=Path(config["repo_root"]),
+            ),
             environ=os.environ,
             tokens=config["mcp_tokens"],
         ),

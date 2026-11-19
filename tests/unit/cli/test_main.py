@@ -878,3 +878,95 @@ def test_empty_per_agent_env_falls_back_to_the_shared_token(monkeypatch):
     )
 
     assert clients["planner"]._token == "SHARED-ENV"
+
+
+# --- registry.roots (#502) ----------------------------------------------------
+
+
+def _relocate(workspace, tmp_path):
+    """agents · graphs · groups 를 기본 배치 밖으로 옮기고 설정이 그 위치를 가리키게 한다."""
+    import shutil
+
+    (workspace / "alt").mkdir()
+    for name in ("agents", "graphs", "groups"):
+        shutil.move(str(workspace / name), str(workspace / "alt" / name))
+    config = _config_dir(
+        tmp_path,
+        "registry:\n  roots:\n    agents: ./alt/agents\n    graphs: ./alt/graphs\n"
+        "    groups: ./alt/groups\n",
+    )
+    return workspace, ["--config-dir", config]
+
+
+@pytest.fixture
+def relocated(workspace, tmp_path):
+    return _relocate(workspace, tmp_path)
+
+
+def test_status_reads_the_configured_roots(relocated, capsys):
+    import json
+
+    workspace, config = relocated
+
+    run_cli(["--root", str(workspace), "--json", "status", *config])
+
+    assert json.loads(capsys.readouterr().out)["agents"] == ["solo"]
+
+
+def test_validate_reads_the_configured_roots(relocated, capsys):
+    import json
+
+    workspace, config = relocated
+
+    assert run_cli(["--root", str(workspace), "--json", "validate", *config]) == EXIT_OK
+
+    # 빈 저장소도 통과하므로 읽은 선언 수까지 본다
+    payload = json.loads(capsys.readouterr().out)
+    assert (payload["graphs"], payload["agents"]) == (1, 1)
+
+
+def test_deploy_reads_the_configured_roots(relocated):
+    workspace, config = relocated
+    graph = str(workspace / "alt" / "graphs" / "solo-graph.yaml")
+
+    assert run_cli(["--root", str(workspace), "deploy", graph, *config]) == EXIT_OK
+
+
+def test_run_reads_the_configured_roots(relocated, monkeypatch):
+    from aaestro.core.agent import TaskResult
+    from aaestro.runtime.nodes import ControlNodeRuntime
+
+    workspace, config = relocated
+    seen = []
+
+    async def invoke(self, node, task):
+        seen.append(task.config.model)
+        return TaskResult.completed(task, output={})
+
+    monkeypatch.setattr(ControlNodeRuntime, "invoke", invoke)
+    graph = str(workspace / "alt" / "graphs" / "solo-graph.yaml")
+
+    run_cli(["--root", str(workspace), "run", graph, "--input", '{"query": "q"}', *config])
+
+    assert len(seen) == 1, "설정된 루트에서 에이전트를 찾아 검증을 통과해 노드까지 간다"
+
+
+def test_run_resolves_models_from_the_configured_roots(workspace, tmp_path, monkeypatch):
+    from aaestro.core.agent import TaskResult
+    from aaestro.runtime.nodes import ControlNodeRuntime
+
+    with_model_layers(workspace)  # 옮기기 전에 manifest 에 fallback · 노드 override 를 심는다
+    _, config = _relocate(workspace, tmp_path)
+    seen = []
+
+    async def invoke(self, node, task):
+        seen.append(task.config.model)
+        return TaskResult.completed(task, output={})
+
+    monkeypatch.setattr(ControlNodeRuntime, "invoke", invoke)
+    graph = str(workspace / "alt" / "graphs" / "solo-graph.yaml")
+
+    run_cli(["--root", str(workspace), "run", graph, "--input", '{"query": "q"}', *config])
+
+    # fallback 은 옮긴 루트의 manifest 에만 있다 — 기본 배치를 읽으면 비어 나온다
+    assert [f.name for f in seen[0].fallbacks] == ["claude-haiku-4-5"]

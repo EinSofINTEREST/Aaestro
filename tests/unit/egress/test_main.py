@@ -298,3 +298,53 @@ def test_openai_compat_upstream_follows_the_plaintext_rule():
 
     assert exc_info.value.details["settings"][0] == "AAESTRO_EGRESS_OPENAI_COMPAT_UPSTREAM"
     assert allowed["openai_compat_upstream"] == "http://fake-provider:8000"
+
+
+def test_remote_mcp_reads_the_configured_registry_roots(tmp_path, monkeypatch):
+    """설정된 agents 루트가 기본과 달라도 프록시가 같은 선언을 본다 (#502)."""
+    import aaestro.egress.mcp as mcp_module
+    from aaestro.egress.__main__ import _mcp_routers
+
+    seen = []
+    real = mcp_module.McpUpstreams
+
+    def recording(**kwargs):
+        seen.append(kwargs["catalog"])
+        return real(**kwargs)
+
+    monkeypatch.setattr(mcp_module, "McpUpstreams", recording)
+    env = {
+        **REGISTRY,
+        "AAESTRO_REPO_ROOT": str(tmp_path),
+        "AAESTRO_REGISTRY_ROOT_AGENTS": "./alt/agents",
+    }
+
+    _mcp_routers(settings(env), access=None)
+
+    assert seen[0].roots.agents == (tmp_path / "alt" / "agents").resolve()
+    assert seen[0].roots.graphs == (tmp_path / "graphs").resolve()
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"AAESTRO_REGISTRY_ROOT_NOPE": "./x"},
+        {"AAESTRO_REGISTRY_ROOT_AGENTS": " "},
+    ],
+)
+def test_registry_root_env_refuses_unknown_or_empty(extra):
+    with pytest.raises(AaestroError) as exc_info:
+        settings({**REGISTRY, "AAESTRO_REPO_ROOT": "/repo", **extra})
+    assert exc_info.value.code == "CFG_001"
+
+
+def test_registry_root_env_without_repo_root_refuses():
+    with pytest.raises(AaestroError):
+        settings({**REGISTRY, "AAESTRO_REGISTRY_ROOT_AGENTS": "./alt/agents"})
+
+
+def test_registry_root_env_with_blank_repo_root_refuses():
+    env = {**REGISTRY, "AAESTRO_REPO_ROOT": " ", "AAESTRO_REGISTRY_ROOT_AGENTS": "./alt/agents"}
+    with pytest.raises(AaestroError) as exc_info:
+        settings(env)
+    assert exc_info.value.code == "CFG_001"

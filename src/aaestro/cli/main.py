@@ -56,6 +56,7 @@ def validate_root(
     a2a_port_range: tuple[int, int] | None = None,
     providers: frozenset[str] | None = None,
     state_artifacts: bool = False,
+    catalog: Catalog | None = None,
 ) -> ValidationReport:
     """Validate topologies against the repository's declarations.
 
@@ -66,13 +67,28 @@ def validate_root(
     """
     # 조립은 Author.validate 한 곳 — CLI 는 지목한 그래프만 판정한다 (with_saved_graphs=False)
     author = Author(
-        catalog=Catalog.under(root),
+        catalog=catalog or Catalog.under(root),
         a2a_port_range=a2a_port_range,
         providers=providers,
         # state 압축(summarize)의 원문 저장소가 있는지 — 없으면 그런 그래프는 거절된다 (#371)
         state_artifacts=state_artifacts,
     )
     return author.validate(graphs=topologies, with_saved_graphs=False)
+
+
+def catalog_for(args: argparse.Namespace, root: Path) -> Catalog:
+    """The declarations this invocation reads — the configured ``registry.roots``.
+
+    설정의 ``registry.roots`` 를 레포 루트 기준으로 읽는다 — control plane 과 같은 선언
+    트리여야 한다. 설정 디렉토리가 없으면 기본 배치다 (`state_artifact_root_for` 와 같은 규칙).
+    """
+    if not Path(getattr(args, "config_dir", DEFAULT_CONFIG_DIR)).is_dir():
+        return Catalog.under(root)
+    config = load_config(
+        resolve_environment(getattr(args, "environment", None)),
+        config_dir=getattr(args, "config_dir", DEFAULT_CONFIG_DIR),
+    )
+    return Catalog.from_config(config.registry.roots, base=root)
 
 
 def node_models(catalog: Catalog, topologies: Sequence[GraphTopology]) -> list[dict[str, Any]]:
@@ -150,7 +166,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     """
     root = Path(args.root)
     topology = parse_declaration(Path(args.graph), GraphTopology)
-    catalog = Catalog.under(root)
+    catalog = catalog_for(args, root)
     manifests = catalog.agents().items
 
     report = validate_root(
@@ -159,6 +175,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         a2a_port_range=args.a2a_port_range,
         providers=args.providers,
         state_artifacts=state_artifact_root_for(args) is not None,
+        catalog=catalog,
     )
 
     # 경고는 실패가 아니다 — 판정(status · 종료 코드)을 바꾸지 않고, 있을 때만 싣는다
@@ -214,7 +231,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
     저장소의 모든 그래프를 검증합니다 — 배포 전 일괄 점검용입니다.
     """
     root = Path(args.root)
-    catalog = Catalog.under(root)
+    catalog = catalog_for(args, root)
     manifests = catalog.agents().items
     # 깨진 그래프 하나가 나머지 검증을 막지 않는다 — 일괄 점검은 전부 보고 전부 말한다
     graphs = catalog.graphs()
@@ -226,6 +243,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
         a2a_port_range=args.a2a_port_range,
         providers=args.providers,
         state_artifacts=state_artifact_root_for(args) is not None,
+        catalog=catalog,
     )
     ok = report.ok and not graphs.problems
 
@@ -257,7 +275,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     저장소에 선언된 것을 요약합니다. 실행 중 상태 조회는 runtime 연결이
     필요하므로, 이 명령은 **선언 상태**를 보고합니다.
     """
-    catalog = Catalog.under(Path(args.root))
+    catalog = catalog_for(args, Path(args.root))
     agents, groups, graphs = catalog.agents(), catalog.groups(), catalog.graphs()
 
     payload: dict[str, Any] = {
@@ -408,6 +426,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     root = Path(args.root)
     topology = parse_declaration(Path(args.graph), GraphTopology)
+    catalog = catalog_for(args, root)
 
     state_artifact_root = state_artifact_root_for(args)
     report = validate_root(
@@ -415,6 +434,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         [topology],
         providers=args.providers,
         state_artifacts=state_artifact_root is not None,
+        catalog=catalog,
     )
     if not report.ok:
         # 검증에 실패한 그래프를 굴리면 노드 실행 중에야 실패한다
@@ -439,7 +459,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         manager=run_manager_for(args),
         checkpointer=checkpointer,
         metrics=Metrics(),
-        models=CatalogModels(Catalog.under(root)),
+        models=CatalogModels(catalog),
         artifacts=state_artifact_store(state_artifact_root),
     )
 
@@ -893,6 +913,8 @@ def build_parser() -> argparse.ArgumentParser:
     validate.set_defaults(handler=cmd_validate)
 
     status = subcommands.add_parser("status", help="summarise declared artifacts")
+    status.add_argument("--env", default=None, dest="environment")
+    status.add_argument("--config-dir", default=DEFAULT_CONFIG_DIR, dest="config_dir")
     status.set_defaults(handler=cmd_status)
 
     config = subcommands.add_parser("config", help="show resolved configuration")
