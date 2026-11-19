@@ -263,8 +263,9 @@ Network). 외부로 나가는 호출은 전부 **egress proxy** 를 거치고, �
    에이전트에 프록시 CA 를 심지 않는다
 2. **자격증명은 프록시가 주입한다**: 종단하는 서비스의 키는 에이전트 env 에 없다
    ([02-agent-implementation.md](02-agent-implementation.md) Secrets Injection).
-   주입한 값은 응답으로도 돌아가지 않는다 (#390, `egress/redact.py`): 모델 API 의 응답 헤더는
-   허용 목록이고, 남는 헤더 값 (원격 MCP 는 헤더 전부) 의 키 · 식별 가능한 조각은 가린다 (대소문자
+   주입한 값은 응답으로도 돌아가지 않는다 (#390, `egress/redact.py`): 모델 API 와 원격 MCP 의 응답
+   헤더는 허용 목록이고 (원격 MCP 는 `egress/mcp.py` `RETURNED_HEADERS` — `mcp` SDK 가 읽고 내는 헤더가
+   근거, #636), 남는 헤더 값의 키 · 식별 가능한 조각은 가린다 (대소문자
    무시, `%XX` · base64 형태 포함). 비-2xx 본문은 상한 안에서 읽어 (압축은 프록시가 상한까지만 푼다)
    가리고 (401 · 403 은 메시지를 고정 문구로, 에러 `type` · `code` 는 보존), JSON 이 아니거나 상한을
    넘거나 읽기 · 해제가 실패하면 상태 코드와 허용 헤더를 남긴 고정 본문이다. 원격 MCP 의 세션 id 에
