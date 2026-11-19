@@ -456,6 +456,50 @@ async def test_the_registry_reaches_deployments_and_the_served_app(tmp_path, mon
     assert response.status_code == 200
 
 
+@pytest.mark.parametrize(("value", "allowed"), [(None, False), ("1", True), ("false", False)])
+def test_the_token_mode_opt_in_reaches_deployments(tmp_path, monkeypatch, value, allowed):
+    """레지스트리 없는 A2A 는 env opt-in 이 배포까지 가야 허용된다 (#415)."""
+    if value is None:
+        monkeypatch.delenv("AAESTRO_ALLOW_A2A_TOKEN_MODE", raising=False)
+    else:
+        monkeypatch.setenv("AAESTRO_ALLOW_A2A_TOKEN_MODE", value)
+
+    _, deployments, _ = _serve_with(tmp_path, monkeypatch, {})
+
+    assert deployments.allow_token_mode is allowed
+
+
+def test_a_malformed_token_mode_opt_in_is_refused(tmp_path, monkeypatch):
+    monkeypatch.setenv("AAESTRO_ALLOW_A2A_TOKEN_MODE", "yes")
+    write_config(tmp_path, {"run_store": str(tmp_path / "runs.db")})
+    monkeypatch.setenv("AAESTRO_ENV", "local")
+    monkeypatch.setenv("AAESTRO_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(entrypoint, "_setup_observability", lambda: None)
+    monkeypatch.setattr(entrypoint, "_deployment_manager", lambda *a, **k: type("D", (), {})())
+
+    with pytest.raises(AaestroError) as exc_info:
+        entrypoint._start(None)
+
+    assert exc_info.value.code == ErrorCode.CFG_001
+    assert exc_info.value.details["setting"] == "AAESTRO_ALLOW_A2A_TOKEN_MODE"
+
+
+def test_a_malformed_token_mode_opt_in_is_refused_without_deployments(tmp_path, monkeypatch):
+    """배포 표면이 꺼진 구성에서도 모르는 opt-in 값은 조용히 무시되지 않는다 (#415)."""
+    monkeypatch.setenv("AAESTRO_ALLOW_A2A_TOKEN_MODE", "yes")
+    write_config(tmp_path, {"run_store": str(tmp_path / "runs.db")})
+    monkeypatch.setenv("AAESTRO_ENV", "local")
+    monkeypatch.setenv("AAESTRO_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(entrypoint, "_setup_observability", lambda: None)
+    monkeypatch.setattr(entrypoint.uvicorn, "run", lambda *a, **k: None)
+
+    with pytest.raises(AaestroError) as exc_info:
+        entrypoint._start(None)
+
+    assert exc_info.value.code == ErrorCode.CFG_001
+    assert exc_info.value.details["setting"] == "AAESTRO_ALLOW_A2A_TOKEN_MODE"
+
+
 def test_an_exposed_registry_without_an_enforcer_token_is_refused(tmp_path, monkeypatch):
     write_config(
         tmp_path,

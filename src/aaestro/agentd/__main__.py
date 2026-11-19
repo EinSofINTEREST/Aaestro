@@ -21,7 +21,7 @@ import structlog
 import uvicorn
 from pydantic import ValidationError
 
-from aaestro.agentd.a2a_server import build_peer_client
+from aaestro.agentd.a2a_server import admit_a2a_mode, build_peer_client
 from aaestro.agentd.health import agent_health
 from aaestro.agentd.mcp import build_mcp_client
 from aaestro.agentd.server import AgentRuntime, create_app
@@ -706,6 +706,7 @@ def main() -> None:
     # (``details.setting``) 가 사라진다. 값은 메시지 · details 어디에도 싣지 않는다
     with startup_guard(log, "agent startup rejected"):
         serving = _serving_from_env()
+        admit_a2a_mode()
     with startup_guard(log, "agent manifest rejected"):
         manifest = load_manifest(Path(os.environ.get(MANIFEST_ENV, DEFAULT_MANIFEST_PATH)))
     with startup_guard(log, "agent startup rejected"):

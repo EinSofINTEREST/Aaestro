@@ -394,6 +394,10 @@ def entry(monkeypatch):
         agentd.AGENT_TOKEN_ENV,
         agentd.BIND_HOST_ENV,
         "AAESTRO_ALLOW_UNAUTHENTICATED",
+        "AAESTRO_A2A_SECRET",
+        "AAESTRO_ALLOW_A2A_TOKEN_MODE",
+        "AAESTRO_ACCESS_URL",
+        "AAESTRO_ACCESS_CREDENTIAL",
     ):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv(agentd.MANIFEST_ENV, str(ECHO_MANIFEST))
@@ -464,6 +468,68 @@ def test_main_passes_the_judged_token_and_bind_host_to_the_server(entry):
     agentd.main()
 
     assert seen == {"token": "issued-token", "bind_host": "10.1.2.3"}
+
+
+# --- A2A 토큰 모드는 opt-in 이 있을 때만 기동한다 (#415) -----------------------------------
+
+
+def test_main_in_token_mode_without_the_opt_in_refuses_to_start(entry):
+    agentd, monkeypatch, seen = entry
+    monkeypatch.setenv(agentd.AGENT_TOKEN_ENV, "issued-token")
+    monkeypatch.setenv("AAESTRO_A2A_SECRET", "shared-signing-secret")
+
+    with capture_logs() as logs, pytest.raises(SystemExit) as exc:
+        agentd.main()
+
+    assert exc.value.code == 1
+    (line,) = [entry for entry in logs if entry["log_level"] == "critical"]
+    assert line["error_code"] == "CFG_001"
+    assert line["details"]["setting"] == "AAESTRO_ALLOW_A2A_TOKEN_MODE"
+    assert "shared-signing-secret" not in str(logs)
+    assert seen == {}
+
+
+def test_main_in_token_mode_with_the_opt_in_starts_and_warns(entry):
+    agentd, monkeypatch, seen = entry
+    monkeypatch.setenv(agentd.AGENT_TOKEN_ENV, "issued-token")
+    monkeypatch.setenv("AAESTRO_A2A_SECRET", "shared-signing-secret")
+    monkeypatch.setenv("AAESTRO_ALLOW_A2A_TOKEN_MODE", "1")
+
+    with capture_logs() as logs:
+        agentd.main()
+
+    assert seen["token"] == "issued-token"
+    warned = [e for e in logs if e.get("setting") == "AAESTRO_ALLOW_A2A_TOKEN_MODE"]
+    assert [e["log_level"] for e in warned] == ["warning"]
+    assert "impersonation" in warned[0]["event"]
+
+
+def test_main_in_registry_mode_needs_no_token_mode_opt_in(entry):
+    agentd, monkeypatch, seen = entry
+    from aaestro.access.client import ACCESS_URL_ENV
+    from aaestro.access.model import ACCESS_CREDENTIAL_ENV
+
+    monkeypatch.setenv(agentd.AGENT_TOKEN_ENV, "issued-token")
+    monkeypatch.setenv("AAESTRO_A2A_SECRET", "leftover-secret")
+    monkeypatch.setenv(ACCESS_URL_ENV, "http://control-plane:8700")
+    monkeypatch.setenv(ACCESS_CREDENTIAL_ENV, "identity")
+
+    agentd.main()
+
+    assert seen["token"] == "issued-token"
+
+
+def test_main_with_a_malformed_token_mode_opt_in_refuses_to_start(entry):
+    agentd, monkeypatch, seen = entry
+    monkeypatch.setenv(agentd.AGENT_TOKEN_ENV, "issued-token")
+    monkeypatch.setenv("AAESTRO_ALLOW_A2A_TOKEN_MODE", "yes")
+
+    with capture_logs() as logs, pytest.raises(SystemExit):
+        agentd.main()
+
+    (line,) = [entry for entry in logs if entry["log_level"] == "critical"]
+    assert line["details"]["setting"] == "AAESTRO_ALLOW_A2A_TOKEN_MODE"
+    assert seen == {}
 
 
 def test_main_without_bind_override_binds_the_container_default(entry):

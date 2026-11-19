@@ -774,6 +774,10 @@ class VolumeSpec(BaseModel):
         return clean
 
 
+FRAMEWORK_ENV_PREFIX = "AAESTRO_"
+"""프레임워크가 소유하는 env 이름의 접두사 — 매니페스트 ``env_allowlist`` 로 들이지 못한다."""
+
+
 class RuntimeSpec(BaseModel):
     """Container runtime settings.
 
@@ -804,6 +808,23 @@ class RuntimeSpec(BaseModel):
             # 범위 밖 포트는 어떤 CONNECT 와도 맞지 않는다 — 선언이 조용히 쓸모없어진다
             if matched is None or (port and not 0 < int(port) < 65536):
                 raise ValueError("egress destination must be host or host:port without wildcards")
+        return values
+
+    @field_validator("env_allowlist")
+    @classmethod
+    def _no_framework_env(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        """``AAESTRO_`` 키는 프레임워크가 배선으로 넣는다.
+
+        allowlist 로 들이면 control plane 의 값이 그 자리를 차지한다 (예: 레지스트리 모드
+        에이전트에 공유 A2A 서명 키 · 토큰 모드 opt-in, #415). 이그레스 프록시의 MCP 자격 목록과
+        같은 규칙이다. 위치만 싣는다 — 키 자리에 값을 적는 실수가 있다.
+        """
+        reserved = [at for at, key in enumerate(values) if key.startswith(FRAMEWORK_ENV_PREFIX)]
+        if reserved:
+            raise ValueError(
+                f"env_allowlist must not name framework-owned {FRAMEWORK_ENV_PREFIX}* keys "
+                f"(at index {', '.join(map(str, reserved))})"
+            )
         return values
 
     @field_validator("volumes")

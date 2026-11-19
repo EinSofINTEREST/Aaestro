@@ -64,6 +64,9 @@ spec:
      있으므로 01 의 원칙을 만족한다 ([01-architecture.md](01-architecture.md) Access Control)
    - 호출자 신원은 호출자 컨테이너가 위조할 수 없어야 한다 — 피호출자는 호출자가 내민 자격을
      레지스트리로 확인하고, 그 자격은 다른 강제 지점에서 재사용할 수 없게 호출 대상에 묶는다
+   - 레지스트리 없이 배포가 공유하는 서명 키로 호출자를 확인하는 **토큰 모드** 는 강제 지점이
+     아니다 — 키를 쥔 모든 에이전트가 다른 에이전트 행세를 할 수 있다. 명시적 opt-in
+     (`AAESTRO_ALLOW_A2A_TOKEN_MODE=1`) 이 있을 때만 받는다 (Rule 8, #415)
    - Caller 측: agentd 가 allowlist 에 없는 callee 로의 호출을 `A2A_004` 로 먼저 거부한다 —
      헛호출을 줄이는 **편의**이지 강제 수단이 아니다 (컨테이너 안의 검사)
    - 그래프 `connections` 선언이 기본 권한이고, 운영자는 그것을 실시간으로 회수할 수 있다
@@ -106,8 +109,14 @@ spec:
      같은 id 재호출만 멱등이다. `task_id` 로 상태를 쥐는 새 자리는 반드시 이 키를 쓴다
    - **보장은 호출자 확인만큼이다**: 두 모드 공통으로 peer 는 Control 공간(`caller=None`)의 결과 ·
      상태에 닿지 못한다. peer 와 peer 사이의 분리는 레지스트리 모드에서만 성립한다 — 토큰 모드의
-     호출자는 배포가 공유하는 서명 키로 확인한 헤더 주장이라 다른 peer 가 그 이름을 댈 수 있다
-     (#415). SDK 의 task 조회 · 취소 메서드(`GetTask` / `ListTasks` / `CancelTask`)는 이 분리의
+     호출자는 배포가 공유하는 서명 키로 확인한 헤더 주장이라 다른 peer 가 그 이름을 댈 수 있다.
+     그래서 토큰 모드는 개발 · 단일 신뢰 영역 전용이다 (#415): 레지스트리 없이 양끝이 에이전트
+     노드인 연결을 이으려면 `AAESTRO_ALLOW_A2A_TOKEN_MODE=1` opt-in 이 control plane 과 agentd 에
+     있어야 하고, 없으면 배포는 컨테이너를 띄우기 전에, agentd 는 기동에서 `CFG_001` 로 거절한다.
+     opt-in 이 있으면 사칭을 막지 못한다는 WARN 을 남긴다. opt-in 은 control plane 에 허용이 있을
+     때만 에이전트에 넘긴다 — 게이트를 거치지 않는 재부착 · 재시작에서 허용이 없으면 넘기지 않아
+     agentd 가 거절한다 (fail closed, WARN 에 graph · agent). `AAESTRO_*` 키는 매니페스트
+     `env_allowlist` 에 적을 수 없다. 레지스트리 모드에는 opt-in 이 필요 없다. SDK 의 task 조회 · 취소 메서드(`GetTask` / `ListTasks` / `CancelTask`)는 이 분리의
      밖이다 (#414)
    - 로그 · 메트릭 · 응답의 `task_id` / `a2a_task_id` 는 보낸 쪽이 준 그대로다 — 갈리는 것은 내부
      키뿐이다
