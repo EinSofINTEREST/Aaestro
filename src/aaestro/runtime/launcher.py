@@ -24,13 +24,19 @@ from aaestro.runtime.docker.errors import previous_not_removed
 from aaestro.runtime.health import DEFAULT_STARTUP_GRACE_S
 from aaestro.runtime.lifecycle import AgentLifecycle, AgentState
 from aaestro.runtime.ports import A2APortAllocator
+from aaestro.runtime.quota import (
+    ResourceTotals,
+    check_group_totals,
+    check_host_totals,
+    demand_of,
+)
 from aaestro.runtime.spec import LOOPBACK, build_container_spec
 from aaestro.runtime.tokens import TokenIssuer, authenticated_env
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping, Sequence
 
-    from aaestro.core.manifest import AgentManifest
+    from aaestro.core.manifest import AgentManifest, GroupManifest
     from aaestro.observability.metrics import Metrics
     from aaestro.runtime.docker.engine import ContainerHandle, DockerEngine
 
@@ -39,6 +45,19 @@ log = structlog.get_logger(__name__)
 RESTART_REASONS = ("unhealthy", "failed", "gave_up", "permanent")
 """`aaestro_container_restarts_total{reason}` 의 값 — 교체됨 · 교체 기동 실패 · 상한 도달 ·
 재시도 불가 기동 실패."""
+
+
+NANO_CPUS_PER_CORE = 1_000_000_000
+"""Docker `HostConfig.NanoCpus` 의 단위 — 코어 하나."""
+
+
+def _excess(held: tuple[float, int], manifest: AgentManifest) -> ResourceTotals:
+    """컨테이너가 선언보다 더 쥔 몫 — 선언보다 적게 쥐었으면 0 (과소 계산하지 않는다)."""
+    declared = manifest.spec.runtime.resources
+    return ResourceTotals(
+        cpu_cores=max(0.0, held[0] - declared.cpu_cores),
+        memory_bytes=max(0, held[1] - declared.memory_bytes),
+    )
 
 
 @dataclass
@@ -58,6 +77,9 @@ class LaunchedAgent:
     # 들고 있지 않으면 정지가 엉뚱한 레플리카의 포트를 놓아준다
     replica: int = 0
     restart_args: dict[str, Any] = field(default_factory=dict, repr=False)
+    held: tuple[float, int] | None = None
+    """컨테이너가 실제로 쥔 (CPU 코어, 메모리 바이트) — 재부착 때 읽는다. 지금 선언이 줄었어도
+    떠 있는 컨테이너는 만들 때의 한도를 쥐므로 quota 재검증이 이것을 센다 (#474)."""
     a2a_port: int | None = None
     """할당받은 A2A 포트 — 배포 기록이 재시작 뒤 같은 포트를 돌려줘야 한다 (#243)."""
     """재기동에 필요한 인자 — 컨테이너를 새로 만들려면 원래 선언이 있어야 한다."""
@@ -138,7 +160,17 @@ class AgentLauncher:
     """Ready 가 되기 전의 유예 — 이 안의 health 실패는 재시작을 일으키지 않는다 (#297)."""
     drain_timeout_s: float = DEFAULT_DRAIN_TIMEOUT_S
     """정지 전 진행 중 태스크를 기다리는 상한 (02 Lifecycle 4, 기본 30s)."""
+    groups: Callable[[str], GroupManifest | None] | None = None
+    """그룹 이름 → **지금의** 그룹 선언. 기동 · 재시작마다 이것으로 quota 를 본다 — 기동 때의
+    스냅샷을 쥐면 그 뒤 늘린 quota 가 재시작에 닿지 않아 정상 레플리카가 Failed 로 끝난다.
+    None 이거나 그룹을 찾지 못하면 그룹 quota 는 보지 않는다 (호스트 한도는 본다)."""
+    host_cpu_cores: float | None = None
+    """기동 시 재검증의 호스트 CPU 한도 — None 이면 보지 않는다 (배포 검증과 같은 기본값)."""
+    host_memory_bytes: int | None = None
+    """기동 시 재검증의 호스트 메모리 한도 — None 이면 보지 않는다."""
     launched: dict[tuple[str, int], LaunchedAgent] = field(default_factory=dict)
+    _admitted: dict[tuple[str, int], AgentManifest] = field(default_factory=dict, init=False)
+    """quota 를 통과했지만 아직 `launched` 에 오르지 않은 기동 — 동시 기동이 서로를 세게 한다."""
     _cursors: dict[str, int] = field(default_factory=dict, init=False)
     _starting: dict[str, int] = field(default_factory=dict, init=False)
     _forget_deferred: set[str] = field(default_factory=set, init=False)
@@ -193,11 +225,14 @@ class AgentLauncher:
         Raises:
             AaestroError: RUNTIME/``RT_010`` if this replica is already launched —
                 호출자가 겹치는 배포를 해체하면 되는 상태 충돌입니다 (HTTP 409).
+            AaestroError: RUNTIME/``RT_006`` if this replica would push its group
+                or the host past the quota — 컨테이너를 만들기 전에 거부합니다.
         """
         agent = manifest.name
         # 같은 **레플리카**를 두 번 띄우면 첫 핸들을 덮어 컨테이너가 미아가 된다.
         # 다른 레플리카는 별개의 컨테이너이므로 허용한다 (01 Scalability)
-        if (agent, replica) in self.launched:
+        # 기동 중인 같은 레플리카도 — 덮어쓰면 첫 기동의 quota 예약이 사라진다
+        if (agent, replica) in self.launched or (agent, replica) in self._admitted:
             raise AaestroError(
                 category=ErrorCategory.RUNTIME,
                 code=ErrorCode.RT_010,
@@ -210,6 +245,9 @@ class AgentLauncher:
         # 버리지 못하게 센다 (#623)
         self._starting[agent] = self._starting.get(agent, 0) + 1
         try:
+            # 검사와 등록 사이에 await 가 없어야 동시 기동이 둘 다 통과하지 못한다
+            self.admit(manifest, replica=replica)
+            self._admitted[agent, replica] = manifest
             self._prime_restart_counter(agent)
 
             # 03 Rule 2 — 포트는 runtime 이 준다. 호출자가 명시하면 그것을 존중하고,
@@ -275,6 +313,7 @@ class AgentLauncher:
             )
             return launched
         finally:
+            self._admitted.pop((agent, replica), None)
             self._starting[agent] -= 1
             if not self._starting[agent]:
                 del self._starting[agent]
@@ -286,6 +325,64 @@ class AgentLauncher:
                     if not self.replicas_of(agent):
                         self.issuer.forget(agent)
                         self._cursors.pop(agent, None)
+
+    def admit(self, manifest: AgentManifest, *, replica: int = 0) -> None:
+        """Check that one more replica fits the group and host quota.
+
+        이 레플리카를 더해도 그룹 · 호스트 quota 안인지 — 떠 있는 컨테이너 기준으로 센다.
+        `start` 가 컨테이너를 만들기 직전에 부르고, 배포는 사이드카를 세우기 전에도 부른다.
+
+        배포 검증은 선언을 세고, 여기는 실제를 센다 (#474): 컨테이너가 남아 있는 레플리카
+        (제거에 실패한 Stopped 포함) 와 quota 를 통과해 기동 중인 레플리카, 그리고 이번 것.
+        제거된 컨테이너 (`stopped`) 는 자원을 쥐지 않는다. 재부착한 컨테이너는 선언과 실제
+        한도 (`held`) 중 큰 쪽으로 센다. 계산은 배포 검증과 같은 `demand_of`.
+        그룹 quota 는 부를 때마다 `groups` 로 지금의 선언을 찾는다 (01 Group Rules 4).
+
+        Raises:
+            AaestroError: RUNTIME/``RT_006`` if the group or host quota would be exceeded.
+        """
+        group = None if self.groups is None else self.groups(manifest.group)
+        live: dict[tuple[str, int], AgentManifest] = dict(self._admitted)
+        excess: dict[str, ResourceTotals] = {}
+        for key, launched in self.launched.items():
+            held = launched.restart_args.get("manifest")
+            # shortcut: restart_args 없이 adopt 한 레플리카는 셀 수 없다 — 배포 경로는 늘 싣는다
+            if launched.stopped or held is None:
+                continue
+            live.setdefault(key, held)
+            if launched.held is not None:
+                excess[key[0]] = excess.get(key[0], ResourceTotals()).plus(
+                    _excess(launched.held, held)
+                )
+        live[manifest.name, replica] = manifest
+
+        counts: dict[str, int] = {}
+        manifests: dict[str, AgentManifest] = {}
+        for (name, _), held in live.items():
+            counts[name] = counts.get(name, 0) + 1
+            manifests.setdefault(name, held)
+
+        host = ResourceTotals()
+        members = ResourceTotals()
+        for name, held in manifests.items():
+            demand = demand_of(held, replicas=counts[name]).plus(excess.get(name, ResourceTotals()))
+            host = host.plus(demand)
+            if group is not None and held.group == group.name:
+                members = members.plus(demand)
+        try:
+            if group is not None:
+                check_group_totals(group, members, agent=manifest.name)
+            check_host_totals(
+                host, cpu_cores=self.host_cpu_cores, memory_bytes=self.host_memory_bytes
+            )
+        except AaestroError as err:
+            log.error(
+                "agent launch refused by quota",
+                agent=manifest.name,
+                replica=replica,
+                error_code=err.code,
+            )
+            raise
 
     def _watch(self, launched: LaunchedAgent, *, ready_once: bool = False) -> None:
         """Start this replica's health loop, when supervision is on.
@@ -676,6 +773,7 @@ class AgentLauncher:
             return False
         if not state.get("Running"):
             return False
+        held = await self._held_by(container_id, agent)
 
         handle = ContainerHandle(
             agent=agent,
@@ -700,6 +798,7 @@ class AgentLauncher:
             lifecycle=lifecycle,
             a2a_port=a2a_port,
             restart_args=dict(restart_args or {}),
+            held=held,
         )
         self.launched[agent, replica] = launched
         # 이미 Ready 였던 기록만 붙인다 — control plane 재시작이 떠 있던 에이전트에게 기동 유예를
@@ -713,6 +812,23 @@ class AgentLauncher:
             port=control_port,
         )
         return True
+
+    async def _held_by(self, container_id: str, agent: str) -> tuple[float, int] | None:
+        """컨테이너에 걸린 CPU · 메모리 한도 — 읽지 못하면 None (선언으로 센다)."""
+        try:
+            found = await asyncio.to_thread(self.engine.client.hardening_of, container_id)
+        except Exception as err:  # noqa: BLE001 — 한도를 못 읽어도 붙는다; quota 는 선언으로 센다
+            log.warning(
+                "agent container limits not inspected",
+                agent=agent,
+                container_id=container_id[:12],
+                error=type(err).__name__,
+            )
+            return None
+        nano_cpus, memory = found.get("NanoCpus"), found.get("Memory")
+        if not isinstance(nano_cpus, int) or not isinstance(memory, int):
+            return None
+        return nano_cpus / NANO_CPUS_PER_CORE, memory
 
     def replicas_of(self, agent: str) -> list[LaunchedAgent]:
         """이 에이전트의 기동된 레플리카 — replica 순서로."""

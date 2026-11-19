@@ -226,6 +226,81 @@ async def test_an_unknown_graph_is_not_found(manager):
     assert excinfo.value.code == ErrorCode.NF_001
 
 
+def sized(workspace: Path, name: str, cpu: str) -> None:
+    """리소스만 바꾼 에이전트 선언."""
+    doc = agent_doc(name)
+    doc["spec"]["runtime"]["resources"] = {"cpu": cpu, "memory": "256Mi"}
+    write(workspace / "agents" / name / "manifest.yaml", doc)
+
+
+def quota_workspace(workspace: Path) -> None:
+    """global 그룹 CPU 한도 2.0, alpha 1.0 · beta 1.0 을 각자 띄우는 두 그래프."""
+    global_group = yaml.safe_load((workspace / "groups" / "global.yaml").read_text("utf-8"))
+    global_group["spec"]["quotas"] = {"cpu": "2.0"}
+    write(workspace / "groups" / "global.yaml", global_group)
+    write(workspace / "graphs" / "first.yaml", graph_doc("first", ["alpha"]))
+    write(workspace / "graphs" / "second.yaml", graph_doc("second", ["beta"]))
+    sized(workspace, "alpha", "1.0")
+    sized(workspace, "beta", "1.0")
+
+
+def spy_sidecars(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """사이드카를 세우려 한 에이전트 이름 — `manager.sidecars` 는 부를 때마다 새로 만든다."""
+    from aaestro.runtime.sidecars import McpSidecars
+
+    started: list[str] = []
+    original = McpSidecars.start
+
+    async def start(self, manifest, *args, **kwargs):
+        started.append(manifest.name)
+        return await original(self, manifest, *args, **kwargs)
+
+    monkeypatch.setattr(McpSidecars, "start", start)
+    return started
+
+
+async def test_a_launch_past_the_group_quota_is_refused_at_launch(
+    manager, docker, workspace, monkeypatch
+):
+    """배포 검증은 지금의 선언을 센다 — 떠 있는 컨테이너는 띄울 때의 선언으로 센다 (#474)."""
+    quota_workspace(workspace)
+    await manager.deploy("first")
+    # 떠 있는 alpha 는 1.0 을 쥔 채다 — 선언만 줄면 검증 (0.5 + 1.5) 은 통과한다
+    sized(workspace, "alpha", "0.5")
+    sized(workspace, "beta", "1.5")
+    sidecars = spy_sidecars(monkeypatch)
+
+    with pytest.raises(AaestroError) as excinfo:
+        await manager.deploy("second")
+
+    assert excinfo.value.code == ErrorCode.RT_006
+    assert len(docker.created) == 1, "quota 를 넘는 컨테이너가 만들어졌다"
+    assert sidecars == [], "quota 에 걸리는 기동의 사이드카를 세우려 했다"
+    await manager.launcher.stop_all()
+
+
+async def test_a_reattached_container_counts_the_limits_it_was_started_with(
+    workspace, docker, healthy
+):
+    """재부착은 지금 선언으로 인자를 만든다 — 줄어든 선언으로 세면 실제 합계가 한도를 넘는다."""
+    quota_workspace(workspace)
+    store = InMemoryDeploymentStore()
+    await wired_manager(workspace, docker, store).deploy("first")
+    sized(workspace, "alpha", "0.5")
+    sized(workspace, "beta", "1.5")
+
+    second = wired_manager(workspace, docker, store)
+    await second.reattach()
+    assert ("alpha", 0) in second.launcher.launched, "재부착되지 않았다"
+
+    with pytest.raises(AaestroError) as excinfo:
+        await second.deploy("second")
+
+    assert excinfo.value.code == ErrorCode.RT_006
+    assert len(docker.created) == 1
+    await second.launcher.stop_all()
+
+
 # --- 되감기 -----------------------------------------------------------------------
 
 
@@ -1360,6 +1435,32 @@ async def test_a_restart_after_reattach_keeps_the_baked_image(workspace, docker,
     )
     assert second.launcher.launched[("beta", 0)].restart_args["image"] == DEFAULT_BASE_IMAGE
     await second.launcher.stop_all()
+
+
+async def test_a_restart_judges_the_group_quota_the_catalog_declares_now(
+    manager, docker, workspace
+):
+    """기동 때의 그룹을 쥐면 그 뒤 늘린 quota 가 재시작에 닿지 않아 alpha 가 Failed 로 끝난다."""
+    quota_workspace(workspace)
+    global_group = yaml.safe_load((workspace / "groups" / "global.yaml").read_text("utf-8"))
+    global_group["spec"]["quotas"] = {"cpu": "1.0"}
+    write(workspace / "groups" / "global.yaml", global_group)
+    # 배포 검증은 카탈로그의 그룹 멤버 전부를 센다 — beta 는 quota 를 늘린 뒤에 선언한다
+    (workspace / "agents" / "beta" / "manifest.yaml").unlink()
+    await manager.deploy("first")
+    global_group["spec"]["quotas"] = {"cpu": "2.0"}
+    write(workspace / "groups" / "global.yaml", global_group)
+    sized(workspace, "beta", "1.0")
+    await manager.deploy("second")
+    alpha = manager.launcher.launched["alpha", 0]
+    alpha.lifecycle.record_health(healthy=False, threshold=1)
+    manager.launcher.restart_sleep = NoSleep()
+
+    await manager.launcher._restart(alpha)
+
+    assert manager.launcher.launched["alpha", 0].lifecycle.state is not AgentState.FAILED
+    assert len(docker.created) == 3
+    await manager.launcher.stop_all()
 
 
 async def test_reattach_restarts_with_the_image_that_was_deployed(workspace, docker, healthy):
