@@ -42,7 +42,9 @@ def test_a_memory_space_must_be_an_explicit_persistent_space_id(space):
 
 
 @pytest.mark.parametrize("field", ["egress", "mcp_tool", "a2a"])
-@pytest.mark.parametrize("target", ["*", "*.example.com", "", "  "])
+@pytest.mark.parametrize(
+    "target", ["*", "*.example.com", "", "  ", "host\n", "ho st", "host\t:443", "a/b\r"]
+)
 def test_other_targets_refuse_blanks_and_wildcards(field, target):
     with pytest.raises(ValidationError):
         ceiling(**{field: [target]})

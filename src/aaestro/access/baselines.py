@@ -17,21 +17,28 @@ from urllib.parse import urlsplit
 
 from aaestro.access.model import Mode
 from aaestro.core.errors import AaestroError, ErrorCode
-from aaestro.core.manifest import RESERVED_GLOBAL_GROUP, MemoryMode, agent_name
+from aaestro.core.manifest import (
+    MEMORY_ALIAS_CHARS,
+    RESERVED_GLOBAL_GROUP,
+    MemoryMode,
+    agent_name,
+)
 
 if TYPE_CHECKING:
     from aaestro.access.store import AccessStore, Identity
     from aaestro.catalog import Catalog
     from aaestro.core.manifest import AgentManifest, GroupManifest, McpServerSpec
 
-SPACE_ID = re.compile(r"^(?P<scope>local|group|global):(?P<owner>[^:\s*]+):(?P<alias>[^:\s*]+)$")
+SPACE_ID = re.compile(
+    rf"^(?P<scope>local|group|global):(?P<owner>[^:\s*]+):(?P<alias>{MEMORY_ALIAS_CHARS})$"
+)
 """Memory Service 의 영구 space id — ``MemorySpace.space_id`` 와 같은 모양이다.
 
 run scope 는 여기 없다: run space 는 run 이 경계이고 선언이 아니라 run 기록으로 판정한다
 (``RUN_SPACE_ID``).
 """
 
-RUN_SPACE_ID = re.compile(r"^run:(?P<run>.+):(?P<alias>[^:\s*]+)$")
+RUN_SPACE_ID = re.compile(rf"^run:(?P<run>.+):(?P<alias>{MEMORY_ALIAS_CHARS})$")
 """run space id — ``run:<run_id>:<alias>``. 별칭은 마지막 조각이다: 재개한 service run 의 id 는
 ``:`` 를 품는다 (``x:resumed``)."""
 
@@ -84,10 +91,10 @@ class MemoryBaseline:
     def allows(
         self, agent: str, target: str, mode: Mode | None, identity: Identity | None = None
     ) -> bool:
-        run_space = RUN_SPACE_ID.match(target)
+        run_space = RUN_SPACE_ID.fullmatch(target)
         if run_space is not None:
             return self._run_allows(agent, run_space["run"], run_space["alias"], mode, identity)
-        matched = SPACE_ID.match(target)
+        matched = SPACE_ID.fullmatch(target)
         if matched is None:
             return False
         try:

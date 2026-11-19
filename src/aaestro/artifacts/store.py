@@ -77,7 +77,7 @@ def parse_ref(raw: str) -> ArtifactRef:
     Raises:
         AaestroError: VALIDATION/``VAL_002`` if the reference is malformed.
     """
-    match = _REF_PATTERN.match(raw)
+    match = _REF_PATTERN.fullmatch(raw)
     if match is None:
         raise invalid_key(raw, "reference must be artifact://scope/key")
     # 참조 안의 key 도 같은 검사를 통과해야 한다 — 읽기 경로로 탈출당하면
@@ -112,7 +112,7 @@ def validate_key(key: str) -> str:
         raise invalid_key(key, "key must not contain '.' segments")
     if key.startswith("/"):
         raise invalid_key(key, "key must be relative")
-    if not _SAFE_KEY.match(key):
+    if not _SAFE_KEY.fullmatch(key):
         raise invalid_key(key, "key has characters outside [A-Za-z0-9._/-]")
     return key
 

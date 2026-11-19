@@ -186,7 +186,7 @@ class Metadata(BaseModel):
             raise ValueError(
                 "group 'global' is reserved — omit metadata.group instead of declaring it"
             )
-        if not _NAME_PATTERN.match(value):
+        if not _NAME_PATTERN.fullmatch(value):
             raise ValueError("group must be lowercase alphanumeric with hyphens")
         return value
 
@@ -392,6 +392,13 @@ class ModuleRef(BaseModel):
     ref: ModuleRefStr
 
 
+MEMORY_ALIAS_CHARS = r"[^:\s*]+"
+"""space 별칭의 문자 클래스 — 판정 지점 (``access.baselines.SPACE_ID``) 이 space id 를 읽는 데 쓴다.
+선언이 받는 별칭과 판정이 받는 별칭이 어긋나면 선언은 통과하고 접근만 조용히 막힌다."""
+
+_MEMORY_ALIAS_PATTERN = re.compile(MEMORY_ALIAS_CHARS)
+
+
 class MemorySpaceRef(BaseModel):
     """A memory space attachment.
 
@@ -405,6 +412,14 @@ class MemorySpaceRef(BaseModel):
     alias: str = Field(alias="as")
     mode: MemoryMode = MemoryMode.RW
     writers: tuple[AgentName, ...] = ()
+
+    @field_validator("alias")
+    @classmethod
+    def _valid_alias(cls, value: str) -> str:
+        """별칭은 space id 의 한 조각 — 비거나 ``:`` · 공백류 · ``*`` 면 id 로 못 읽는다."""
+        if not _MEMORY_ALIAS_PATTERN.fullmatch(value):
+            raise ValueError("memory space alias must be non-empty without ':', whitespace or '*'")
+        return value
 
     @field_validator("ref")
     @classmethod
@@ -536,7 +551,7 @@ class McpServerSpec(BaseModel):
     @classmethod
     def _valid_name(cls, value: str) -> str:
         """서버 이름은 tool 네임스페이스(``mcp__{server}__{tool}``)에 쓰인다."""
-        if not _NAME_PATTERN.match(value):
+        if not _NAME_PATTERN.fullmatch(value):
             raise ValueError("mcp server name must be lowercase alphanumeric with hyphens")
         return value
 
@@ -642,7 +657,7 @@ class ResourceSpec(BaseModel):
     @classmethod
     def _valid_cpu(cls, value: str) -> str:
         """CPU 는 코어 수 문자열 (예: ``"1.0"``)."""
-        if not _RESOURCE_CPU_PATTERN.match(value):
+        if not _RESOURCE_CPU_PATTERN.fullmatch(value):
             raise ValueError("cpu must be a decimal core count string, e.g. '1.0'")
         return value
 
@@ -650,7 +665,7 @@ class ResourceSpec(BaseModel):
     @classmethod
     def _valid_memory(cls, value: str) -> str:
         """Memory 는 Ki/Mi/Gi/Ti 접미사 (예: ``"1Gi"``)."""
-        if not _RESOURCE_MEMORY_PATTERN.match(value):
+        if not _RESOURCE_MEMORY_PATTERN.fullmatch(value):
             raise ValueError("memory must be an integer with Ki/Mi/Gi/Ti suffix, e.g. '1Gi'")
         return value
 
@@ -681,7 +696,7 @@ class ArtifactSpec(BaseModel):
     @classmethod
     def _valid_quota(cls, value: str | None) -> str | None:
         """quota 는 Ki/Mi/Gi/Ti 접미사 — resources.memory 와 같은 표기."""
-        if value is not None and not _RESOURCE_MEMORY_PATTERN.match(value):
+        if value is not None and not _RESOURCE_MEMORY_PATTERN.fullmatch(value):
             raise ValueError("quota must be an integer with Ki/Mi/Gi/Ti suffix, e.g. '50Gi'")
         return value
 
@@ -936,7 +951,7 @@ class GroupQuotas(BaseModel):
     @classmethod
     def _valid_cpu(cls, value: str | None) -> str | None:
         """quota 오타를 집계 시점이 아니라 배포 검증에서 잡는다."""
-        if value is not None and not _RESOURCE_CPU_PATTERN.match(value):
+        if value is not None and not _RESOURCE_CPU_PATTERN.fullmatch(value):
             raise ValueError("cpu must be a decimal core count string, e.g. '8.0'")
         return value
 
@@ -944,7 +959,7 @@ class GroupQuotas(BaseModel):
     @classmethod
     def _valid_memory(cls, value: str | None) -> str | None:
         """quota 오타를 집계 시점이 아니라 배포 검증에서 잡는다."""
-        if value is not None and not _RESOURCE_MEMORY_PATTERN.match(value):
+        if value is not None and not _RESOURCE_MEMORY_PATTERN.fullmatch(value):
             raise ValueError("memory must be an integer with Ki/Mi/Gi/Ti suffix, e.g. '16Gi'")
         return value
 
@@ -996,9 +1011,9 @@ class AccessCeiling(BaseModel):
     @field_validator("egress", "mcp_tool", "a2a")
     @classmethod
     def _no_blank_targets(cls, values: tuple[str, ...]) -> tuple[str, ...]:
-        # 빈 문자열이나 와일드카드를 허용하면 상한이 "무엇이든" 이 된다
+        # 빈 문자열 · 공백류 · 와일드카드를 허용하면 상한이 "무엇이든" 이 된다
         for value in values:
-            if not value.strip() or "*" in value:
+            if not value or "*" in value or re.search(r"\s", value):
                 raise ValueError("ceiling targets must be explicit — no blanks or wildcards")
         return values
 

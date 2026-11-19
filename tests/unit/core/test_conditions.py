@@ -91,6 +91,7 @@ def test_an_uncomparable_value_is_an_error_not_a_silent_false():
         ("aaestro.graphs.conditions:needs_research", True),
         ("state.needs_research", False),
         ("state.meta.stage == 'x:y'", False),
+        ("aaestro.graphs.conditions:needs_research\n", False),
     ],
 )
 def test_import_refs_and_expressions_are_told_apart(condition, expected):

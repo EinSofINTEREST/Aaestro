@@ -64,7 +64,7 @@ async def test_storing_the_same_key_twice_overwrites(store):
 
 @pytest.mark.parametrize(
     "key",
-    ["../escape", "/absolute", "", "a/../../x", "sub/../ok", "..", "a//b"],
+    ["../escape", "/absolute", "", "a/../../x", "sub/../ok", "..", "a//b", "ok.txt\n"],
 )
 async def test_a_key_cannot_escape_the_store_root(store, key):
     """`../` 한 조각이면 루트 밖 어디든 쓸 수 있다."""
@@ -120,7 +120,14 @@ def test_a_reference_round_trips():
 
 @pytest.mark.parametrize(
     "raw",
-    ["not-a-ref", "artifact://", "artifact://scope", "http://scope/key", ""],
+    [
+        "not-a-ref",
+        "artifact://",
+        "artifact://scope",
+        "http://scope/key",
+        "",
+        "artifact://scope/key\n",
+    ],
 )
 def test_a_malformed_reference_is_rejected(raw):
     with pytest.raises(AaestroError) as exc_info:
