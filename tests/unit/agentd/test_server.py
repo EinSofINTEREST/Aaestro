@@ -28,7 +28,13 @@ from aaestro.core.agent import (
     TaskStatus,
 )
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
-from aaestro.core.events import DoneEvent, TokenEvent, ToolCallEvent, ToolResultEvent
+from aaestro.core.events import (
+    DoneEvent,
+    ErrorEvent,
+    TokenEvent,
+    ToolCallEvent,
+    ToolResultEvent,
+)
 from aaestro.core.markers import STEER_HEADER
 from tests.fixtures.builders import make_task
 from tests.fixtures.fake_model import FakeModel, FakeTools, calls, text
@@ -1045,7 +1051,8 @@ async def test_a_failing_custom_stream_is_reported_once():
         with pytest.raises(RuntimeError, match="boom"):
             await asyncio.wait_for(call.running, timeout=5)
 
-    assert [entry for entry in logs if entry["event"] == "task had already failed"] == []
+    closing = [entry for entry in logs if entry["event"] == "executor stream failed while closing"]
+    assert closing == []
 
 
 async def test_a_cancel_while_blocked_on_a_slow_consumer_closes_the_executor_stream():
@@ -1079,3 +1086,334 @@ async def test_a_cancel_while_blocked_on_a_slow_consumer_closes_the_executor_str
     await asyncio.wait_for(call.running, timeout=5)
 
     assert kinds(call)[-1] == ("done", "canceled")
+
+
+# --- 커스텀 실행기의 종료 경합 (#639) ---------------------------------------------------
+
+
+async def test_a_consumer_leaving_during_a_canceled_cleanup_lets_the_cleanup_finish():
+    """/cancel 로 정리 중인 실행기를 소비자 이탈이 다시 끊지 않는다 — finally 의 await 가 끝난다.
+
+    응답은 기다리다 소비자 이탈의 취소로 먼저 끝날 수 있다 — 정리는 추적된 채 끝까지 돈다.
+    """
+
+    class SlowCleanup(FakeExecutor):
+        def __init__(self) -> None:
+            super().__init__()
+            self.working = asyncio.Event()
+            self.cleanup_gate = asyncio.Event()
+            self.log: list[str] = []
+
+        async def stream(self, task):
+            try:
+                yield TokenEvent(task_id=task.task_id, text="a")
+                self.working.set()
+                await asyncio.Event().wait()
+            finally:
+                self.log.append("cleanup-start")
+                try:
+                    await self.cleanup_gate.wait()
+                except asyncio.CancelledError:
+                    self.log.append("cleanup-cut")
+                    raise
+                self.log.append("cleanup-end")
+
+    executor = SlowCleanup()
+    runtime = AgentRuntime(agent="researcher", executor=executor)
+    call = StreamCall(create_app(runtime, token=TOKEN), task_payload(), hold=False)
+    await until(lambda: executor.working.is_set())
+    (producer,) = runtime._inflight[make_task().key]
+
+    assert runtime.cancel("task-0001") is True
+    await until(lambda: executor.log == ["cleanup-start"])
+    call.running.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(call.running, timeout=5)
+    await spin(20)
+    assert executor.log == ["cleanup-start"]  # 소비자가 떠나도 정리는 끊기지 않고 기다린다
+
+    executor.cleanup_gate.set()
+    await until(lambda: len(executor.log) == 2)
+    assert executor.log == ["cleanup-start", "cleanup-end"]
+    await until(lambda: not runtime._inflight)  # 끝난 producer 는 추적에서 빠진다
+    assert producer.cancelling() == 1  # /cancel 의 한 번뿐 — 소비자 이탈은 다시 끊지 않는다
+
+
+async def test_an_executor_error_after_its_done_is_logged_and_the_stream_ends_normally():
+    """종료 이벤트를 낸 뒤의 실행기 예외는 응답을 깨지 않는다 — 기록만 남는다."""
+
+    class BreaksAfterDone(FakeExecutor):
+        async def stream(self, task):
+            yield DoneEvent(task_id=task.task_id, output={"content": "done"})
+            raise RuntimeError("boom")
+
+    runtime = AgentRuntime(agent="researcher", executor=BreaksAfterDone())
+    with capture_logs() as logs:
+        call = StreamCall(create_app(runtime, token=TOKEN), task_payload(), hold=False)
+        await asyncio.wait_for(call.running, timeout=5)
+
+    assert kinds(call) == [("done", "completed")]
+    failures = [entry for entry in logs if entry["event"] == "executor stream failed after its end"]
+    assert len(failures) == 1
+    assert failures[0]["agent"] == "researcher"
+    assert failures[0]["task_id"] == "task-0001"
+
+
+async def test_an_executor_ignoring_generator_exit_still_ends_with_one_canceled_done():
+    """GeneratorExit 을 무시하는 실행기도 취소는 canceled done 하나로 끝나고 WARN 이 남는다."""
+
+    class IgnoresClose(FakeExecutor):
+        def __init__(self) -> None:
+            super().__init__()
+            self.third = asyncio.Event()
+
+        async def stream(self, task):
+            try:
+                yield TokenEvent(task_id=task.task_id, text="1")
+                yield TokenEvent(task_id=task.task_id, text="2")
+                self.third.set()
+                yield TokenEvent(task_id=task.task_id, text="3")
+            except GeneratorExit:
+                yield TokenEvent(task_id=task.task_id, text="refused")
+
+    executor = IgnoresClose()
+    runtime = AgentRuntime(agent="researcher", executor=executor)
+    with capture_logs() as logs:
+        call = StreamCall(create_app(runtime, token=TOKEN), task_payload(), hold=True)
+        await until(lambda: executor.third.is_set() and len(call.frames) == 1)
+        await spin(5)  # producer 가 put 에서 막힐 자리까지 간다
+
+        assert runtime.cancel("task-0001") is True
+        call.release.set()
+        await asyncio.wait_for(call.running, timeout=5)
+
+    assert kinds(call)[-1] == ("done", "canceled")
+    assert [kind for kind, _ in kinds(call)].count("done") == 1
+    warnings = [entry for entry in logs if entry["event"] == "executor stream ignored close"]
+    assert len(warnings) == 1
+    assert warnings[0]["log_level"] == "warning"
+    assert warnings[0]["task_id"] == "task-0001"
+
+
+async def test_a_real_error_while_closing_is_not_taken_for_an_ignored_close():
+    """정리 중 실제로 터진 RuntimeError 는 'ignored close' 로 삼키지 않는다 — 실패로 올라간다."""
+
+    class BreaksOnClose(FakeExecutor):
+        def __init__(self) -> None:
+            super().__init__()
+            self.third = asyncio.Event()
+
+        async def stream(self, task):
+            try:
+                yield TokenEvent(task_id=task.task_id, text="1")
+                yield TokenEvent(task_id=task.task_id, text="2")
+                self.third.set()
+                yield TokenEvent(task_id=task.task_id, text="3")
+            finally:
+                raise RuntimeError("cleanup broke")
+
+    executor = BreaksOnClose()
+    runtime = AgentRuntime(agent="researcher", executor=executor)
+    with capture_logs() as logs:
+        call = StreamCall(create_app(runtime, token=TOKEN), task_payload(), hold=True)
+        await until(lambda: executor.third.is_set() and len(call.frames) == 1)
+        await spin(5)
+
+        assert runtime.cancel("task-0001") is True
+        call.release.set()
+        with pytest.raises(RuntimeError, match="cleanup broke"):
+            await asyncio.wait_for(call.running, timeout=5)
+
+    assert [entry for entry in logs if entry["event"] == "executor stream ignored close"] == []
+
+
+class SlowCleanupExecutor(FakeExecutor):
+    """finally 가 문이 열릴 때까지 await 하는 스트림 — 정리가 잘리면 cleanup-cut 을 남긴다."""
+
+    def __init__(self, *, fail_cleanup: bool = False) -> None:
+        super().__init__()
+        self.working = asyncio.Event()
+        self.cleanup_gate = asyncio.Event()
+        self.fail_cleanup = fail_cleanup
+        self.log: list[str] = []
+
+    async def stream(self, task):
+        try:
+            yield TokenEvent(task_id=task.task_id, text="a")
+            self.working.set()
+            await asyncio.Event().wait()
+        finally:
+            self.log.append("cleanup-start")
+            try:
+                await self.cleanup_gate.wait()
+            except asyncio.CancelledError:
+                self.log.append("cleanup-cut")
+                raise
+            self.log.append("cleanup-end")
+            if self.fail_cleanup:
+                raise RuntimeError("cleanup broke")
+
+
+async def test_a_consumer_leaving_alone_cancels_once_and_lets_the_cleanup_finish():
+    """소비자만 떠나도 실행은 한 번만 끊긴다 — 응답이 거듭 취소돼도 finally 의 await 가 끝난다."""
+    executor = SlowCleanupExecutor()
+    runtime = AgentRuntime(agent="researcher", executor=executor)
+    free_slots = runtime.semaphore._value
+    call = StreamCall(create_app(runtime, token=TOKEN), task_payload(), hold=False)
+    await until(lambda: executor.working.is_set())
+    (producer,) = runtime._inflight[make_task().key]
+
+    call.running.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(call.running, timeout=5)
+    await spin(20)
+    assert executor.log == ["cleanup-start"]  # 응답은 떠났고 정리는 끊기지 않고 기다린다
+
+    executor.cleanup_gate.set()
+    await until(lambda: producer.done())
+    assert executor.log == ["cleanup-start", "cleanup-end"]
+    assert producer.cancelling() == 1
+    assert runtime.cancel("task-0001") is False
+    assert runtime.semaphore._value == free_slots
+
+
+async def test_a_cleanup_failing_after_the_consumer_left_is_logged_once():
+    """응답이 떠난 뒤 정리 중 예외는 WARN 한 줄로 거둔다 — 'never retrieved' 로 새지 않는다."""
+    import gc
+
+    loop = asyncio.get_running_loop()
+    unhandled: list[dict] = []
+    previous = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _loop, context: unhandled.append(context))
+    try:
+        executor = SlowCleanupExecutor(fail_cleanup=True)
+        runtime = AgentRuntime(agent="researcher", executor=executor)
+        with capture_logs() as logs:
+            call = StreamCall(create_app(runtime, token=TOKEN), task_payload(), hold=False)
+            await until(lambda: executor.working.is_set())
+            call.running.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(call.running, timeout=5)
+            executor.cleanup_gate.set()
+            await until(lambda: not runtime._inflight)
+            await spin(5)
+        del call
+        gc.collect()
+        await spin(5)
+    finally:
+        loop.set_exception_handler(previous)
+
+    failures = [entry for entry in logs if entry["event"] == "executor stream failed while closing"]
+    assert len(failures) == 1
+    assert (failures[0]["agent"], failures[0]["task_id"]) == ("researcher", "task-0001")
+    assert [c for c in unhandled if "never retrieved" in c.get("message", "")] == []
+
+
+def _late_error():
+    return AaestroError(
+        category=ErrorCategory.INTERNAL, code=ErrorCode.INTERNAL_001, message="late"
+    ).payload()
+
+
+@pytest.mark.parametrize(
+    "after",
+    [
+        lambda task_id: ErrorEvent(task_id=task_id, error=_late_error()),
+        lambda task_id: DoneEvent(task_id=task_id, output={"content": "again"}),
+        lambda task_id: TokenEvent(task_id=task_id, text="late"),
+    ],
+    ids=["error", "done", "token"],
+)
+async def test_events_after_the_end_are_dropped_with_one_warning(after):
+    """종료 이벤트는 하나다 — 실행기가 그 뒤에 더 내는 이벤트는 SSE 에 실리지 않고 WARN 한 번."""
+
+    class KeepsTalking(FakeExecutor):
+        async def stream(self, task):
+            yield DoneEvent(task_id=task.task_id, output={"content": "first"})
+            yield after(task.task_id)
+            yield after(task.task_id)
+
+    runtime = AgentRuntime(agent="researcher", executor=KeepsTalking())
+    with capture_logs() as logs:
+        call = StreamCall(create_app(runtime, token=TOKEN), task_payload(), hold=False)
+        await asyncio.wait_for(call.running, timeout=5)
+
+    assert kinds(call) == [("done", "completed")]
+    assert call.frames[0]["output"] == {"content": "first"}
+    dropped = [e for e in logs if e["event"] == "executor stream event after its end dropped"]
+    assert len(dropped) == 1
+    assert (dropped[0]["agent"], dropped[0]["task_id"]) == ("researcher", "task-0001")
+
+
+async def test_a_close_while_the_generator_is_running_elsewhere_is_not_swallowed():
+    """'already running' RuntimeError 는 GeneratorExit 무시로 오인하지 않는다 — 그대로 올라간다."""
+
+    class SharedGenerator(FakeExecutor):
+        def __init__(self) -> None:
+            super().__init__()
+            self.third = asyncio.Event()
+            self.gate = asyncio.Event()
+            self.gen = None
+
+        async def _events(self, task):
+            yield TokenEvent(task_id=task.task_id, text="1")
+            yield TokenEvent(task_id=task.task_id, text="2")
+            self.third.set()
+            yield TokenEvent(task_id=task.task_id, text="3")
+            await self.gate.wait()  # 다른 태스크가 이 자리에서 생성기를 돌리고 있다
+
+        def stream(self, task):
+            self.gen = self._events(task)
+            return self.gen
+
+    executor = SharedGenerator()
+    runtime = AgentRuntime(agent="researcher", executor=executor)
+    with capture_logs() as logs:
+        call = StreamCall(create_app(runtime, token=TOKEN), task_payload(), hold=True)
+        await until(lambda: executor.third.is_set() and len(call.frames) == 1)
+        await spin(5)  # producer 가 "3" 의 put 에서 막힌다
+        elsewhere = asyncio.create_task(anext(executor.gen))
+        await until(lambda: executor.gen.ag_running)
+
+        assert runtime.cancel("task-0001") is True
+        call.release.set()
+        with pytest.raises(RuntimeError, match="already running"):
+            await asyncio.wait_for(call.running, timeout=5)
+        executor.gate.set()
+        with pytest.raises(StopAsyncIteration):
+            await elsewhere
+
+    assert [e for e in logs if e["event"] == "executor stream ignored close"] == []
+
+
+async def test_only_the_first_terminal_event_is_kept_while_the_executor_keeps_ending():
+    """종료 이벤트를 거듭 내는 실행기도 응답이 쥐는 종료 이벤트는 첫 하나뿐이다 — 쌓이지 않는다."""
+
+    class EndsRepeatedly(FakeExecutor):
+        def __init__(self) -> None:
+            super().__init__()
+            self.ended = asyncio.Event()
+            self.gate = asyncio.Event()
+
+        async def stream(self, task):
+            yield DoneEvent(task_id=task.task_id, output={"content": "first"})
+            for n in range(50):
+                yield DoneEvent(task_id=task.task_id, output={"content": f"again-{n}"})
+                yield ErrorEvent(task_id=task.task_id, error=_late_error())
+            self.ended.set()
+            await self.gate.wait()
+
+    executor = EndsRepeatedly()
+    runtime = AgentRuntime(agent="researcher", executor=executor)
+    call = StreamCall(create_app(runtime, token=TOKEN), task_payload(), hold=False)
+    await until(lambda: executor.ended.is_set())
+    (producer,) = runtime._inflight[make_task().key]
+    # 화이트박스: produce() 가 닫아 쥔 terminal 목록 — 밖에서 누적을 볼 다른 자리가 없다
+    terminal = producer.get_coro().cr_frame.f_locals["terminal"]
+    assert len(terminal) == 1
+    assert terminal[0].output == {"content": "first"}
+
+    executor.gate.set()
+    await asyncio.wait_for(call.running, timeout=5)
+    assert kinds(call) == [("done", "completed")]
+    assert call.frames[0]["output"] == {"content": "first"}

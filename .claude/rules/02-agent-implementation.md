@@ -406,8 +406,14 @@ POST /v1/drain           # graceful drain 개시
    구현하지 않은 실행기(커스텀 entrypoint, echo)는 `/reload` 와 같은 `unsupported` 본문을
    **501** 로 답한다 — 200 으로 삼키지 않는다
 6. `/cancel` 은 `/invoke` 와 `/stream` 태스크 모두에 닿는다 (#395). 스트림은 끊기지 않고
-   `status: canceled` 의 `done` 이벤트로 끝난다. A2A 로 받은 태스크는 대상이 아니다 — 키 공간이
-   다르다 (03 A2A Client Rules 8). 그것은 호출자의 마감으로 멈춘다 (03 A2A Client Rules 4).
+   `status: canceled` 의 `done` 이벤트로 끝난다. 스트림의 종료 이벤트는 하나다 (#639): 실행기가 종료
+   이벤트 뒤에 더 낸 이벤트 (두 번째 `done` · `error` 포함) 는 버리고 WARN 을 한 번 남기며, 종료 이벤트
+   뒤에 던진 예외도 WARN 으로만 남는다. 닫기 (`aclose`) 의 `GeneratorExit` 을 무시하는 실행기 (규약
+   위반) 도 `canceled` `done` 으로 끝나며 WARN 이 남는다 — 그 밖의 닫기 오류 (`already running` 등) 는
+   실패로 올라간다. 소비자가 떠나면 실행을 **한 번** 끊고 (`/cancel` 이 먼저 끊었으면 다시 끊지
+   않는다), 정리 (`finally`) 는 끝까지 돈다 — 응답은 먼저 끝날 수 있고 그 동안 태스크는 추적에 남아
+   drain 이 기다린다. 응답이 떠난 뒤의 정리 실패는 WARN 으로 남는다. A2A 로 받은 태스크는 대상이
+   아니다 — 키 공간이 다르다 (03 A2A Client Rules 8). 그것은 호출자의 마감으로 멈춘다 (03 A2A Client Rules 4).
    runtime 의 cancel 요청은 태스크 timeout 이 아니라 전용 짧은 상한 (`DEFAULT_CANCEL_TIMEOUT_S`, 10초) 을 쓴다
 
 ## Execution Loop (agentd internals)
