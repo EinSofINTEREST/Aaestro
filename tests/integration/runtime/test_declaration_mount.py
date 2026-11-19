@@ -13,6 +13,7 @@ import subprocess
 import uuid
 from collections.abc import Iterator
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -64,7 +65,7 @@ def container(workspace: Path, base_image: str) -> Iterator[str]:
     manager = DeploymentManager(
         catalog=catalog,
         author=Author(catalog=catalog),
-        launcher=None,  # type: ignore[arg-type] — 마운트 계산만 쓴다
+        launcher=SimpleNamespace(groups=None),  # type: ignore[arg-type] — 마운트 계산만 쓴다
         store=InMemoryDeploymentStore(),
     )
     flags: list[str] = []
