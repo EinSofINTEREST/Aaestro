@@ -428,7 +428,23 @@ async def test_stop_survives_a_failing_removal():
     handle = await docker.start(spec())
 
     # 제거 실패는 삼키되 False 로 알린다 — 호출자가 같은 handle 로 다시 지울 수 있게 (#491)
-    assert await docker.stop(handle) is False
+    with structlog.testing.capture_logs() as logs:
+        assert await docker.stop(handle) is False
+
+    # 제거 실패는 WARN 만 남고 "stopped" INFO 는 남지 않는다 (#632)
+    assert "agent container stopped" not in [entry["event"] for entry in logs]
+    assert "container removal failed" in [entry["event"] for entry in logs]
+
+
+async def test_stop_logs_the_stop_when_removal_was_not_requested():
+    docker = engine(FakeDockerClient())
+    handle = await docker.start(spec())
+
+    with structlog.testing.capture_logs() as logs:
+        await docker.stop(handle, remove=False)
+
+    stopped = [entry for entry in logs if entry["event"] == "agent container stopped"]
+    assert [entry["removed"] for entry in stopped] == [False]
 
 
 async def test_stop_can_keep_the_container():
