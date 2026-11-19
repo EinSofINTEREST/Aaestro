@@ -40,13 +40,16 @@ class ResourceTotals:
         )
 
 
-def demand_of(manifest: AgentManifest) -> ResourceTotals:
+def demand_of(manifest: AgentManifest, *, replicas: int | None = None) -> ResourceTotals:
     """Compute one agent's resource demand, including replicas.
 
     에이전트 한 대(레플리카 포함)의 리소스 요구량을 계산합니다.
+    ``replicas`` 를 주면 선언 대신 그 수로 셉니다 — 기동 시 재검증이 실제로 떠 있는
+    레플리카 수로 같은 계산을 쓰는 자리입니다 (#474).
     """
     runtime = manifest.spec.runtime
-    replicas = runtime.replicas
+    if replicas is None:
+        replicas = runtime.replicas
     if replicas < 1:
         # 조용히 1 로 보정하면 잘못된 manifest 가 quota 검증을 통과해버린다
         raise AaestroError(
@@ -117,11 +120,24 @@ def check_group_quota(
     totals = total_demand(members)
     if candidate is not None:
         totals = totals.plus(demand_of(candidate))
+    return check_group_totals(group, totals, agent=None if candidate is None else candidate.name)
 
+
+def check_group_totals(
+    group: GroupManifest, totals: ResourceTotals, *, agent: str | None = None
+) -> ResourceTotals:
+    """Verify precomputed totals against a group's quota.
+
+    이미 합산한 리소스가 그룹 quota 이내인지 검증합니다 — 배포 검증
+    (`check_group_quota`) 과 기동 시 재검증이 같은 대조를 쓴다.
+
+    Raises:
+        AaestroError: RUNTIME/``RT_006`` if any quota dimension is exceeded.
+    """
     quotas = group.spec.quotas
     context: dict[str, object] = {"group": group.name}
-    if candidate is not None:
-        context["agent"] = candidate.name
+    if agent is not None:
+        context["agent"] = agent
 
     cpu_limit = quotas.cpu_cores
     if cpu_limit is not None and totals.cpu_cores > cpu_limit:
@@ -173,8 +189,24 @@ def check_host_capacity(
     Raises:
         AaestroError: RUNTIME/``RT_006`` if the host ceiling is exceeded.
     """
-    totals = total_demand(manifests)
+    return check_host_totals(
+        total_demand(manifests), cpu_cores=cpu_cores, memory_bytes=memory_bytes
+    )
 
+
+def check_host_totals(
+    totals: ResourceTotals,
+    *,
+    cpu_cores: float | None = None,
+    memory_bytes: int | None = None,
+) -> ResourceTotals:
+    """Verify precomputed totals against the host ceiling.
+
+    이미 합산한 리소스가 호스트 한도 이내인지 검증합니다.
+
+    Raises:
+        AaestroError: RUNTIME/``RT_006`` if the host ceiling is exceeded.
+    """
     if cpu_cores is not None and totals.cpu_cores > cpu_cores:
         raise _quota_error(
             "host cpu capacity exceeded",

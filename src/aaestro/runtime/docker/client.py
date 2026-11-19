@@ -212,6 +212,9 @@ class SdkDockerClient:
         return {
             **{field: host.get(field) for field in HARDENING_FIELDS},
             "User": container.attrs["Config"].get("User"),
+            # 경화 대조가 아니라 quota 재검증이 읽는다 — 떠 있는 컨테이너가 실제로 쥔 한도 (#474)
+            "NanoCpus": host.get("NanoCpus"),
+            "Memory": host.get("Memory"),
             # 바인드 · 볼륨 · `--mount type=tmpfs` 는 `Mounts`, `--tmpfs` 는 `HostConfig.Tmpfs` 에만
             "Mounts": container.attrs.get("Mounts") or [],
             "Tmpfs": host.get("Tmpfs") or {},

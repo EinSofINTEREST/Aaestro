@@ -146,6 +146,8 @@ class FakeDockerClient:
                     "DeviceCgroupRules": kwargs.get("device_cgroup_rules"),
                     "Runtime": kwargs.get("runtime"),
                     "Image": kwargs.get("image"),
+                    "NanoCpus": kwargs.get("nano_cpus"),
+                    "Memory": kwargs.get("mem_limit"),
                     **self._mounts_with_anonymous(container_id, kwargs),
                 }
         raise LookupError(container_id)

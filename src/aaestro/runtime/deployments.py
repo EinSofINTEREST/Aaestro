@@ -1227,6 +1227,7 @@ class DeploymentManager:
                 "mounts": provisions[m.name].mounts,
                 "image": deployed.get(m.name) or provisions[m.name].image,
                 "networks": self.sidecars.agent_networks(m),
+                "group": self.catalog.groups().items.get(m.group),
             }
             for m in manifests
         }
@@ -1292,6 +1293,9 @@ class DeploymentManager:
     async def _launch(self, manifest: AgentManifest, provision: Provision) -> LaunchedAgent:
         env = self._env_for(manifest, provision)
         sidecars = self.sidecars
+        group = self.catalog.groups().items.get(manifest.group)
+        # quota 에 걸리는 기동은 사이드카도 세우지 않는다 — launcher.start 가 직전에 다시 본다
+        self.launcher.admit(manifest, group=group)
         # 에이전트보다 먼저 — agentd 가 기동하며 사이드카 세션을 연다 (03 Startup Sequence 3)
         await sidecars.start(manifest, env)
         return await self.launcher.start(
@@ -1302,6 +1306,8 @@ class DeploymentManager:
             a2a_port=provision.a2a_port,
             image=provision.image,
             networks=sidecars.agent_networks(manifest),
+            # 기동 시 재검증 — 배포 검증은 선언을 세고, launcher 는 떠 있는 컨테이너를 센다 (#474)
+            group=group,
         )
 
     def _release_ports(self, provisions: Mapping[str, Provision]) -> None:
