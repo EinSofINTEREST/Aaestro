@@ -35,7 +35,6 @@ from aaestro.core.identifiers import identifier_problem
 from aaestro.core.tools import is_mcp_tool
 from aaestro.http_auth import AdmitBeforeRouting, admit_first, require_token
 from aaestro.http_errors import request_validation_error, status_for, unroutable_problem
-from aaestro.resilience import cancel_and_wait
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
@@ -390,7 +389,8 @@ def create_app(runtime: AgentRuntime, *, token: str | None = None) -> FastAPI:
                     source = runtime.executor.stream(task)
                     try:
                         async for produced in source:
-                            if isinstance(produced, DoneEvent | ErrorEvent):
+                            # 응답은 첫 종료 이벤트만 쓴다 — 뒤의 것은 쌓지 않는다 (#639)
+                            if isinstance(produced, DoneEvent | ErrorEvent) and not terminal:
                                 terminal.append(produced)
                             await relay.put(produced)
                     finally:
@@ -398,12 +398,37 @@ def create_app(runtime: AgentRuntime, *, token: str | None = None) -> FastAPI:
                         # (steer 창구 등) 가 GC 를 기다리지 않는다. aclose 없는 반복자도 받는다
                         close = getattr(source, "aclose", None)
                         if close is not None:
-                            await close()
+                            try:
+                                await close()
+                            except RuntimeError:
+                                # GeneratorExit 을 무시한 생성기 (규약 위반) 만 프레임이 남은 채
+                                # 실행 중이 아니다 (yield 에 멈춤) — 그때만 기록하고 넘긴다. 끝난
+                                # 생성기의 정리 오류 · 'already running' 은 그대로 올린다 (#639)
+                                if getattr(source, "ag_frame", None) is None or getattr(
+                                    source, "ag_running", True
+                                ):
+                                    raise
+                                log.warning(
+                                    "executor stream ignored close",
+                                    agent=runtime.agent,
+                                    task_id=task.task_id,
+                                )
+
+                def reap(finished: asyncio.Task[None]) -> None:
+                    # 응답이 거두지 않은 실패를 기록한다 — 안 읽으면 "never retrieved" 로 샌다
+                    if not finished.cancelled() and (err := finished.exception()) is not None:
+                        log.warning(
+                            "executor stream failed while closing",
+                            agent=runtime.agent,
+                            task_id=task.task_id,
+                            exc_info=err,
+                        )
 
                 producer = asyncio.create_task(produce())
                 runtime.track(task.key, producer)
                 ended = False  # 종료 이벤트를 이미 냈다 — 응답은 종료 이벤트를 하나만 낸다
                 collected = False  # producer 의 예외를 응답이 이미 거뒀다
+                dropped = False  # 종료 뒤 이벤트를 버린 사실을 이미 남겼다
                 try:
                     while True:
                         getting = asyncio.ensure_future(relay.get())
@@ -431,8 +456,27 @@ def create_app(runtime: AgentRuntime, *, token: str | None = None) -> FastAPI:
                             return
                         else:
                             collected = True
-                            producer.result()  # 실행기의 예외는 응답이 거둔다
+                            if not ended:
+                                producer.result()  # 실행기의 예외는 응답이 거둔다
+                            elif (err := producer.exception()) is not None:
+                                # 종료 이벤트를 이미 냈다 — 끝난 응답을 예외로 깨지 않는다 (#639)
+                                log.warning(
+                                    "executor stream failed after its end",
+                                    agent=runtime.agent,
+                                    task_id=task.task_id,
+                                    exc_info=err,
+                                )
                             return
+                        if ended:
+                            # 종료 이벤트는 하나다 — 그 뒤에 실행기가 더 낸 이벤트는 버린다 (#639)
+                            if not dropped:
+                                dropped = True
+                                log.warning(
+                                    "executor stream event after its end dropped",
+                                    agent=runtime.agent,
+                                    task_id=task.task_id,
+                                )
+                            continue
                         if isinstance(event, DoneEvent | ErrorEvent):
                             ended = True
                         if frame := _sse_frame(event, runtime.agent):
@@ -441,7 +485,18 @@ def create_app(runtime: AgentRuntime, *, token: str | None = None) -> FastAPI:
                     # 소비자가 떠나거나 응답이 끝나면 실행을 끊고 정리가 끝날 때까지 기다린다.
                     # 예외를 이미 거둔 producer 는 다시 다루지 않는다 — 실패를 두 번 남기지 않게
                     if not collected:
-                        await cancel_and_wait(producer)
+                        # 끊는 것은 한 번뿐이다 (/cancel 이 먼저 끊었으면 그것으로). 연결이 끊기면
+                        # anyio 가 응답을 거듭 취소한다 — wait 는 그 취소를 producer 에 넘기지 않아
+                        # 실행기 finally 의 await 가 잘리지 않는다 (#639)
+                        if not producer.done() and not producer.cancelling():
+                            producer.cancel()
+                        try:
+                            await asyncio.wait({producer})
+                        except asyncio.CancelledError:
+                            # 응답이 먼저 떠난다 — 정리는 추적된 채 끝까지 돌고 결과는 콜백이 거둔다
+                            producer.add_done_callback(reap)
+                            raise
+                        reap(producer)
 
         return StreamingResponse(events(), media_type=SSE_MEDIA_TYPE)
 
