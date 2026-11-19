@@ -500,8 +500,17 @@ class DockerEngine:
     stop_grace_s: float = DEFAULT_STOP_GRACE_S
     cancel_wait_s: float = CANCELLED_START_WAIT_S
     """취소된 기동을 그 자리에서 기다리는 상한 — 넘기면 `_cleanups` 가 이어받는다."""
-    _cleanups: set[asyncio.Task[None]] = field(default_factory=set, init=False, repr=False)
-    """상한을 넘긴 정리 — 엔진이 쥐고, 종료가 `settle_cleanups` 로 끝까지 기다리거나 끊는다."""
+    _cleanups: dict[asyncio.Task[None], str | None] = field(
+        default_factory=dict, init=False, repr=False
+    )
+    """상한을 넘긴 정리 → 그 기동의 컨테이너 이름 (취소된 정지의 제거는 None) — 엔진이 쥐고,
+    종료가 `settle_cleanups` 로 끝까지 기다리거나 끊는다. launcher 는 이름으로 찾아 끝날 때까지
+    quota 자리를 쥔다 (#648)."""
+    _removals: dict[asyncio.Task[None], tuple[str, str, str]] = field(
+        default_factory=dict, init=False, repr=False
+    )
+    """기다리던 쪽이 끊긴 뒤에도 도는 제거 → (agent, container_id, image) — 스레드는 끊을 수 없어
+    종료 상한을 넘겨도 추적에 남기고 WARN 으로 드러낸다 (#648)."""
 
     async def start(self, spec: ContainerSpec) -> ContainerHandle:
         """Create and start one agent container.
@@ -562,7 +571,9 @@ class DockerEngine:
         try:
             container_id, host, port = await asyncio.shield(creating)
         except asyncio.CancelledError:
-            await self._discard_after_cancel(creating, agent=agent, image=spec.image)
+            await self._discard_after_cancel(
+                creating, agent=agent, image=spec.image, name=spec.name
+            )
             raise
 
         handle = ContainerHandle(
@@ -624,7 +635,7 @@ class DockerEngine:
         return container_id, host, port
 
     async def _discard_after_cancel(
-        self, creating: asyncio.Task[tuple[str, str, int]], *, agent: str, image: str
+        self, creating: asyncio.Task[tuple[str, str, int]], *, agent: str, image: str, name: str
     ) -> None:
         """취소된 기동이 끝나길 잠깐 기다렸다가 만들어진 컨테이너를 지운다.
 
@@ -635,15 +646,15 @@ class DockerEngine:
         try:
             done, _ = await asyncio.wait({creating}, timeout=self.cancel_wait_s)
         except asyncio.CancelledError:
-            self._hand_off_cleanup(creating, agent=agent, image=image)
+            self._hand_off_cleanup(creating, agent=agent, image=image, name=name)
             raise
         if not done:
-            self._hand_off_cleanup(creating, agent=agent, image=image)
+            self._hand_off_cleanup(creating, agent=agent, image=image, name=name)
             return
-        await self._discard_started(creating, agent=agent, image=image)
+        await self._discard_started(creating, agent=agent, image=image, name=name)
 
     def _hand_off_cleanup(
-        self, creating: asyncio.Task[tuple[str, str, int]], *, agent: str, image: str
+        self, creating: asyncio.Task[tuple[str, str, int]], *, agent: str, image: str, name: str
     ) -> None:
         """정리를 엔진이 쥔 태스크로 넘긴다 — 아직 만들어지는 중이라 id 는 모른다."""
         log.warning(
@@ -653,12 +664,29 @@ class DockerEngine:
             image=image,
             timeout_s=self.cancel_wait_s,
         )
-        cleanup = asyncio.create_task(self._discard_when_done(creating, agent=agent, image=image))
-        self._cleanups.add(cleanup)
-        cleanup.add_done_callback(self._cleanups.discard)
+        self._hold(
+            asyncio.create_task(
+                self._discard_when_done(creating, agent=agent, image=image, name=name)
+            ),
+            name,
+        )
+
+    def _hold(self, task: asyncio.Task[None], name: str | None) -> None:
+        """넘겨받은 정리를 끝날 때까지 쥔다."""
+        self._cleanups[task] = name
+        task.add_done_callback(lambda done: self._cleanups.pop(done, None))
+
+    def pending_cleanups(self, name: str) -> list[asyncio.Task[None]]:
+        """The handed-off cleanups of cancelled starts of this container still running.
+
+        이 이름의 취소된 기동에서 넘겨받아 아직 끝나지 않은 정리 전부 — 같은 레플리카가 차례로
+        취소되면 여럿이다. 그 사이 컨테이너가 생기거나 남아 있을 수 있어 launcher 가 전부 끝날
+        때까지 quota 자리를 쥔다 (#648).
+        """
+        return [task for task, held in self._cleanups.items() if held == name]
 
     async def _discard_when_done(
-        self, creating: asyncio.Task[tuple[str, str, int]], *, agent: str, image: str
+        self, creating: asyncio.Task[tuple[str, str, int]], *, agent: str, image: str, name: str
     ) -> None:
         """걸린 기동이 끝나면 만들어진 컨테이너를 지운다."""
         try:
@@ -673,10 +701,10 @@ class DockerEngine:
             # 끊긴 뒤 끝나는 기동의 예외를 거둔다 — 아니면 'Task exception was never retrieved'
             creating.add_done_callback(lambda done: done.cancelled() or done.exception())
             raise
-        await self._discard_started(creating, agent=agent, image=image)
+        await self._discard_started(creating, agent=agent, image=image, name=name)
 
     async def _discard_started(
-        self, creating: asyncio.Task[tuple[str, str, int]], *, agent: str, image: str
+        self, creating: asyncio.Task[tuple[str, str, int]], *, agent: str, image: str, name: str
     ) -> None:
         """끝난 기동이 만든 컨테이너를 지운다 — 실패한 기동은 `_create_and_start` 가 이미 지웠다."""
         if creating.cancelled() or creating.exception() is not None:
@@ -688,23 +716,34 @@ class DockerEngine:
             container_id=container_id[:12],
             image=image,
         )
-        await self._discard(container_id, agent=agent, image=image)
+        await self._discard(container_id, agent=agent, image=image, name=name)
 
     async def settle_cleanups(self, *, timeout_s: float | None = None) -> None:
         """Finish the cleanups handed off by cancelled starts, or abandon them loudly.
 
-        넘겨받은 정리를 끝까지 기다린다 — 상한 (기본 `stop_grace_s`) 을 넘기면 끊고, 끊긴
-        정리는 남았을 수 있는 컨테이너를 WARN 으로 알린다. 종료 경로가 부른다.
+        넘겨받은 정리를 끝까지 기다린다 — 기다리는 사이 새로 맡겨진 것까지. 상한 (기본
+        `stop_grace_s`) 을 넘기면 정리는 끊고, 끊긴 정리는 남았을 수 있는 컨테이너를 WARN 으로
+        알린다. 이미 보낸 제거는 스레드라 끊을 수 없다 — 추적에 남기고 WARN 으로 드러낸다 (#648).
+        종료 경로가 부른다.
         """
-        pending = set(self._cleanups)
-        if not pending:
-            return
+        loop = asyncio.get_running_loop()
         limit = self.stop_grace_s if timeout_s is None else timeout_s
-        _, still = await asyncio.wait(pending, timeout=limit)
+        deadline = loop.time() + limit
+        while self._cleanups and (remaining := deadline - loop.time()) > 0:
+            await asyncio.wait(set(self._cleanups), timeout=remaining)
+        still = [task for task in self._cleanups if task not in self._removals]
         for task in still:
             task.cancel()
         if still:
             await asyncio.gather(*still, return_exceptions=True)
+        # 끊긴 정리가 제거를 기다리던 중이면 그 제거가 여기서 새로 맡겨진다
+        for agent, container_id, image in self._removals.values():
+            log.warning(
+                "container removal still running at shutdown; container may remain",
+                agent=agent,
+                container_id=container_id[:12],
+                image=image,
+            )
 
     async def control_address(self, container_id: str, container_port: int) -> tuple[str, int]:
         """Where the control plane reaches this container's Control API — (host, port).
@@ -848,12 +887,22 @@ class DockerEngine:
                 )
             await sleeper(poll_s)
 
-    async def stop(self, handle: ContainerHandle, *, remove: bool = True) -> bool:
+    async def stop(
+        self,
+        handle: ContainerHandle,
+        *,
+        remove: bool = True,
+        on_removed: Callable[[], object] | None = None,
+    ) -> bool:
         """Stop a container, SIGTERM then SIGKILL.
 
         컨테이너를 정지합니다 — SIGTERM 후 유예 시간이 지나면 SIGKILL.
         정지 경로는 실패해도 진행합니다: 남은 컨테이너가 유령으로 쌓이는 편이
         더 나쁩니다.
+
+        Args:
+            on_removed: 제거가 성공하면 부른다 — 기다리던 정지가 취소돼도 이미 보낸 제거가
+                끝나면 불린다. 반환값만 보면 취소된 정지는 지운 컨테이너를 남은 것으로 센다 (#648).
 
         Returns:
             True if the container was removed. 제거 실패는 예외가 아니라 False 다 —
@@ -873,7 +922,7 @@ class DockerEngine:
             )
 
         removed = remove and await self._discard(
-            handle.container_id, agent=handle.agent, image=handle.image
+            handle.container_id, agent=handle.agent, image=handle.image, on_removed=on_removed
         )
         if remove and not removed:
             # 제거 실패 WARN 은 _discard 가 남겼다 — 정리가 끝난 것처럼 INFO 를 남기지 않는다
@@ -888,24 +937,67 @@ class DockerEngine:
         )
         return removed
 
-    async def _discard(self, container_id: str, *, agent: str, image: str) -> bool:
+    async def _discard(
+        self,
+        container_id: str,
+        *,
+        agent: str,
+        image: str,
+        name: str | None = None,
+        on_removed: Callable[[], object] | None = None,
+    ) -> bool:
         """컨테이너를 제거한다 — 실패는 로그만 남기고 False 를 돌려준다.
 
         제거 실패 로그에도 소유자와 이미지를 남긴다: 여러 이미지가 함께 도는
         환경에서 이 필드가 없으면 사고 추적이 끊긴다 (05 필수 필드).
         """
-        try:
-            await asyncio.to_thread(self.client.remove, container_id)
-        except Exception as err:  # noqa: BLE001
-            log.warning(
-                "container removal failed",
-                agent=agent,
-                container_id=container_id[:12],
-                image=image,
-                error=type(err).__name__,
+        removing = asyncio.ensure_future(asyncio.to_thread(self.client.remove, container_id))
+        if on_removed is not None:
+            removing.add_done_callback(
+                lambda done: done.cancelled() or done.exception() is not None or on_removed()
             )
+        try:
+            # 스레드는 취소로 멈추지 않는다 — 기다리는 쪽이 끊겨도 제거의 끝을 엔진이 쥐어
+            # on_removed 가 불리고 종료가 기다릴 수 있게 한다 (#648)
+            await asyncio.shield(removing)
+        except asyncio.CancelledError:
+            # 끊긴 뒤 끝나는 제거의 실패도 같은 WARN 으로 남긴다 — 예외를 거두지 않으면 새어 나간다
+            removing.add_done_callback(
+                lambda done: self._report_removal(
+                    done, agent=agent, container_id=container_id, image=image
+                )
+            )
+            if not removing.done():
+                # name — 취소된 기동의 정리였으면 launcher 가 이어서 자리를 쥔다
+                self._hold(removing, name)
+                self._removals[removing] = (agent, container_id, image)
+                removing.add_done_callback(lambda done: self._removals.pop(done, None))
+            raise
+        except Exception as err:  # noqa: BLE001
+            _removal_failed(err, agent=agent, container_id=container_id, image=image)
             return False
         return True
+
+    @staticmethod
+    def _report_removal(
+        done: asyncio.Future[None], *, agent: str, container_id: str, image: str
+    ) -> None:
+        """기다리던 쪽이 끊긴 제거가 실패했으면 WARN 을 남긴다."""
+        if done.cancelled():
+            return
+        err = done.exception()
+        if err is not None:
+            _removal_failed(err, agent=agent, container_id=container_id, image=image)
+
+
+def _removal_failed(err: BaseException, *, agent: str, container_id: str, image: str) -> None:
+    log.warning(
+        "container removal failed",
+        agent=agent,
+        container_id=container_id[:12],
+        image=image,
+        error=type(err).__name__,
+    )
 
 
 __all__ = [
