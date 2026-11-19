@@ -18,7 +18,12 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
-from aaestro.protocols.a2a.allowlist import Allowlist, Edge
+from aaestro.protocols.a2a.allowlist import (
+    Allowlist,
+    Edge,
+    admit_token_mode,
+    token_mode_allowed,
+)
 from aaestro.resilience import cancel_and_wait
 
 if TYPE_CHECKING:
@@ -64,6 +69,21 @@ def registry_identity() -> tuple[str, str] | None:
     url = os.environ.get(ACCESS_URL_ENV, "").strip()
     credential = os.environ.get(ACCESS_CREDENTIAL_ENV, "").strip()
     return (url, credential) if url and credential else None
+
+
+def admit_a2a_mode() -> None:
+    """Refuse to start in token mode unless it is explicitly allowed (#415).
+
+    서명 키만 있고 레지스트리가 없으면 토큰 모드다 — 같은 키를 쥔 peer 가 다른 에이전트 행세를
+    할 수 있으므로 opt-in 이 있을 때만 기동한다. opt-in 값의 형식은 모드와 무관하게 본다.
+
+    Raises:
+        AaestroError: CONFIG/``CFG_001`` if token mode is selected without the opt-in, or the
+            opt-in value is malformed.
+    """
+    allowed = token_mode_allowed(os.environ)
+    if os.environ.get(SECRET_ENV, "") and registry_identity() is None:
+        admit_token_mode(allowed=allowed, component="agentd")
 
 
 def _local_secret() -> bytes:

@@ -14,16 +14,78 @@ import hmac
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+import structlog
+
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 from aaestro.protocols.a2a.errors import depth_exceeded, not_allowed
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Mapping
 
     from aaestro.core.agent import TraceContext
 
 DEFAULT_MAX_DEPTH = 3
 """위임 체인 깊이 상한 — 순환 위임 폭주를 막는 유일한 장치다."""
+
+ALLOW_TOKEN_MODE_ENV = "AAESTRO_ALLOW_A2A_TOKEN_MODE"  # noqa: S105 — 키 이름이지 값이 아니다
+"""토큰 모드 opt-in — 개발 · 단일 신뢰 영역 전용.
+
+토큰 모드는 레지스트리 없이 배포가 공유하는 서명 키로 호출자를 확인한다.
+
+그래프의 모든 에이전트가 같은 키를 쥐므로 한 에이전트가 다른 에이전트 이름으로 토큰을 만들 수 있다
+(#415). 그래서 명시적으로 켠 구성에서만 받는다 — 무인증 opt-in (``AAESTRO_ALLOW_UNAUTHENTICATED``)
+과 같은 결이다."""
+
+_OPT_IN_VALUES = frozenset({"1", "true"})
+_OPT_OUT_VALUES = frozenset({"", "0", "false"})
+
+log = structlog.get_logger(__name__)
+
+
+def token_mode_allowed(environ: Mapping[str, str]) -> bool:
+    """Read the token-mode opt-in.
+
+    토큰 모드 opt-in 을 읽는다. 모르는 값을 조용히 끄면 오설정이 늦게 드러나므로 거절한다.
+
+    Raises:
+        AaestroError: CONFIG/``CFG_001`` if the value is not 1, true, 0 or false.
+    """
+    raw = environ.get(ALLOW_TOKEN_MODE_ENV, "").strip().lower()
+    if raw not in _OPT_IN_VALUES | _OPT_OUT_VALUES:
+        raise AaestroError(
+            category=ErrorCategory.CONFIG,
+            code=ErrorCode.CFG_001,
+            message=f"{ALLOW_TOKEN_MODE_ENV} must be 1, true, 0 or false",
+            details={"setting": ALLOW_TOKEN_MODE_ENV},
+        )
+    return raw in _OPT_IN_VALUES
+
+
+def admit_token_mode(*, allowed: bool, component: str, **context: str) -> None:
+    """Refuse token mode unless opted in; warn when it is.
+
+    토큰 모드가 선택됐을 때 부른다 — opt-in 이 없으면 거절하고, 있으면 사칭을 막지 못한다고 WARN.
+
+    Raises:
+        AaestroError: CONFIG/``CFG_001`` if token mode is not explicitly allowed.
+    """
+    if not allowed:
+        raise AaestroError(
+            category=ErrorCategory.CONFIG,
+            code=ErrorCode.CFG_001,
+            message=(
+                "a2a token mode cannot stop one agent from impersonating another — "
+                f"configure the access registry, or set {ALLOW_TOKEN_MODE_ENV}=1 "
+                "for development or a single trust domain"
+            ),
+            details={"component": component, "setting": ALLOW_TOKEN_MODE_ENV, **context},
+        )
+    log.warning(
+        "a2a token mode allowed by opt-in — it does not stop peer impersonation",
+        component=component,
+        setting=ALLOW_TOKEN_MODE_ENV,
+        **context,
+    )
 
 
 @dataclass(frozen=True)
@@ -175,9 +237,12 @@ class Allowlist:
 
 
 __all__ = [
+    "ALLOW_TOKEN_MODE_ENV",
     "DEFAULT_MAX_DEPTH",
     "Allowlist",
     "Edge",
+    "admit_token_mode",
     "edges_from",
     "issue_token",
+    "token_mode_allowed",
 ]

@@ -44,6 +44,7 @@ from aaestro.observability.metrics import (
 from aaestro.orchestrator.control import create_app
 from aaestro.orchestrator.inuse import any_of, run_backed
 from aaestro.orchestrator.runstore import SqliteRunStore
+from aaestro.protocols.a2a.allowlist import token_mode_allowed
 
 if TYPE_CHECKING:
     from aaestro.authoring import InUse
@@ -123,6 +124,9 @@ def _start(metrics: Metrics) -> None:
     if orchestrator.access_store is not None and orchestrator.access_agent_url is None:
         raise config_missing_agent_url()
     warn_if_agents_reach_the_host(config.runtime, orchestrator.control_host)
+    # 레지스트리 없는 A2A (토큰 모드) 는 env opt-in 이 있을 때만 — agentd 와 같은 키다 (#415).
+    # 배포 표면이 꺼져 있어도 읽는다 — 모르는 값을 조용히 무시하지 않는다
+    allow_token_mode = token_mode_allowed(os.environ)
 
     store = SqliteRunStore(path=orchestrator.run_store)
     # 설정의 registry.roots 는 상대 경로다 — 작업 디렉토리가 아니라 레포 루트 기준
@@ -134,6 +138,7 @@ def _start(metrics: Metrics) -> None:
         # 배포가 에이전트마다 신원을 발급해 주입한다 (#277)
         deployments.access = access
         deployments.access_url = orchestrator.access_agent_url
+        deployments.allow_token_mode = allow_token_mode
         if config.runtime.egress_proxy is not None:
             from aaestro.runtime.deployments import EgressEndpoints
 

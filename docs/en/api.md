@@ -710,6 +710,23 @@ without `access_agent_url` also refuses to start (`CFG_001`): agents need it to 
 are on A2A calls, and without it they would fall back to a signing key every agent in the graph
 holds.
 
+**Without the registry, A2A runs in token mode — development or a single trust domain only.** The
+deployment hands every agent in the graph one shared signing key, so any of them can mint a token in
+another agent's name. A graph with a connection whose caller and callee are both agent nodes
+therefore deploys without the registry only when the control plane runs with
+`AAESTRO_ALLOW_A2A_TOKEN_MODE=1`; otherwise the deployment is refused before any container starts
+(`CFG_001`, `details.setting` names the variable). With the opt-in the deployment proceeds as
+before, logs a warning that token mode does not stop peer impersonation, and passes the opt-in to
+its agents. agentd checks the same variable at startup: an A2A signing key without the registry and
+without the opt-in refuses to start (`CFG_001`). The opt-in is passed only while the control plane
+itself has it — a deployment reattached by a control plane without the registry and without the
+opt-in (for example one deployed in registry mode) gets the signing key but not the opt-in, so its
+next container restart is refused; the control plane logs a warning naming the graph and agent.
+Values other than `1`, `true`, `0` and `false` are refused. Registry mode needs no opt-in.
+`AAESTRO_*` names belong to the framework and cannot be listed in a manifest's
+`spec.runtime.env_allowlist` (the manifest is refused) — otherwise the control plane's own signing
+key or opt-in could reach an agent through the allowlist.
+
 **Agents present credentials over this URL.** Plain `http` is for the private network that only
 agents and framework services share — the same trust boundary as the Agent Control API and the
 Memory Service. When agent traffic crosses hosts or any network you do not control, terminate TLS

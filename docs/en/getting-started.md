@@ -179,6 +179,12 @@ and is valid only when the bind address is loopback (`AAESTRO_AGENT_BIND_HOST=12
 the container default `0.0.0.0` is rejected). It logs a warning on start. The token value
 never appears in a message or log.
 
+The `make e2e-up` agents call each other over A2A without the access registry — token mode, where
+every agent shares one signing key and so could act as another. That is acceptable only in
+development or a single trust domain, so it is an explicit opt-in too: the stack sets
+`AAESTRO_ALLOW_A2A_TOKEN_MODE=1`, and agentd refuses to start (`CFG_001`) with a signing key, no
+registry and no opt-in. See the [API reference](api.md#access-registry).
+
 Every agent service has its own token, so one agent's token cannot call another agent's
 Control API (`401`). `make e2e-up` (`compose.e2e.yaml`) reads `AAESTRO_AGENT_TOKEN_<AGENT>`
 (`ECHO`, `PLANNER`, `RESEARCHER`, `WRITER`) and defaults to `e2e-token-<agent>`; the plain dev

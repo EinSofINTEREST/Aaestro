@@ -311,6 +311,8 @@ Runtime layer →  env_allowlist 각 키를 local > group > global 순으로 해
 - 키 해석은 **local > 소속 group > global** — 가까운 스코프 값이 우선 (shadowing 허용)
 - Group 스코프 키는 group.yaml 의 `secrets` 목록에 선언된 것만 멤버에게 제공 —
   비멤버 에이전트는 같은 키를 allowlist 에 넣어도 group 값으로 해석되지 않는다
+- `AAESTRO_*` 키는 프레임워크가 배선으로 넣는 것이라 `env_allowlist` 에 적을 수 없다 — 매니페스트
+  검증이 위치만 실어 거절한다 (#415: allowlist 로 공유 A2A 서명 키 · 토큰 모드 opt-in 이 들어가지 않게)
 - 배포 검증: `env_allowlist` 의 각 키가 세 스코프 중 하나에서 해석 가능해야 함
   (실패 시 `CFG_002`)
 - 로그에 secret 값 출력 금지 (structlog processor 로 마스킹)
