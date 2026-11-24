@@ -486,13 +486,13 @@ async def test_a_repeated_teardown_that_would_outlive_the_first_spares_a_new_dep
             in_drain.set()
             await go_first.wait()
 
-    async def stop(self, handle, *, remove=True):
+    async def stop(self, handle, *, remove=True, on_removed=None):
         if handle.agent == "beta":
             beta_stops.append(handle)
             if not go_first.is_set():  # 첫 해체가 drain 에 멈춘 사이 다른 해체가 beta 를 멈춘다
                 in_stop.set()
                 await go_second.wait()
-        return await original_stop(self, handle, remove=remove)
+        return await original_stop(self, handle, remove=remove, on_removed=on_removed)
 
     monkeypatch.setattr(ControlClient, "drain", drain)
     monkeypatch.setattr(DockerEngine, "stop", stop)
