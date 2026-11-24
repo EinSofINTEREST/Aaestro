@@ -119,6 +119,9 @@ def start_plane(
             # secrets 의 값 원천은 control plane 의 환경이다 (02 Secrets Injection)
             "ANTHROPIC_API_KEY": "e2e-fake-key",
             "SEARCH_API_KEY": "e2e-search-key",
+            # 레지스트리 없이 뜬 plane 의 A2A 는 토큰 모드다 — e2e 는 단일 신뢰 영역이라
+            # 허용한다 (#415). 레지스트리를 켠 plane 에는 효과가 없다
+            "AAESTRO_ALLOW_A2A_TOKEN_MODE": "1",
             **(env or {}),
         },
     )

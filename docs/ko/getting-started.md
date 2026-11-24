@@ -179,6 +179,12 @@ agentd 는 `AAESTRO_AGENT_TOKEN` 이 없으면 (미설정 · 빈 값 · 공백�
 `0.0.0.0` 은 거절됩니다). 기동 시 WARN 로그를 남기며, 토큰 값은 어떤 메시지·로그에도 나오지
 않습니다.
 
+`make e2e-up` 의 에이전트는 권한 레지스트리 없이 A2A 로 서로를 부릅니다 — 모든 에이전트가 서명 키
+하나를 나눠 쥐어 다른 에이전트 행세를 할 수 있는 토큰 모드입니다. 개발 · 단일 신뢰 영역에서만 받아들일
+수 있으므로 이것도 명시적 opt-in 입니다: 스택이 `AAESTRO_ALLOW_A2A_TOKEN_MODE=1` 을 넣고, agentd 는
+서명 키가 있는데 레지스트리도 opt-in 도 없으면 기동을 거부합니다 (`CFG_001`).
+[API 레퍼런스](api.md#권한-레지스트리) 를 참조하세요.
+
 에이전트 서비스마다 토큰이 달라, 한 에이전트의 토큰으로 다른 에이전트의 Control API 를
 부르면 `401` 입니다. `make e2e-up` (`compose.e2e.yaml`) 은 `AAESTRO_AGENT_TOKEN_<AGENT>`
 (`ECHO` · `PLANNER` · `RESEARCHER` · `WRITER`) 를 읽고 기본값은 `e2e-token-<agent>` 입니다.

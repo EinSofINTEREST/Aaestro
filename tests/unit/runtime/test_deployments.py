@@ -24,6 +24,7 @@ from aaestro.core.manifest import ModelOverride
 from aaestro.orchestrator.__main__ import server_options
 from aaestro.orchestrator.control import create_app
 from aaestro.orchestrator.runstore import InMemoryRunStore
+from aaestro.protocols.a2a.allowlist import ALLOW_TOKEN_MODE_ENV
 from aaestro.runtime.control import ControlClient
 from aaestro.runtime.deployments import (
     DeploymentManager,
@@ -599,7 +600,10 @@ def wired_workspace(workspace: Path) -> None:
     write(workspace / "graphs" / "wired.yaml", graph)
 
 
-def wired_manager(workspace: Path, docker: TrackingDocker, store=None) -> DeploymentManager:
+def wired_manager(
+    workspace: Path, docker: TrackingDocker, store=None, *, allow_token_mode: bool = True
+) -> DeploymentManager:
+    """연결이 있는 그래프의 배포 — 레지스트리가 없으면 토큰 모드라 기본으로 허용한다 (#415)."""
     catalog = Catalog.under(workspace)
     return DeploymentManager(
         catalog=catalog,
@@ -612,6 +616,7 @@ def wired_manager(workspace: Path, docker: TrackingDocker, store=None) -> Deploy
         ),
         store=store or InMemoryDeploymentStore(),
         secrets_env={"ANTHROPIC_API_KEY": "k"},
+        allow_token_mode=allow_token_mode,
         ready_poll_s=0.0,
         sleep=NoSleep(),
     )
@@ -661,6 +666,40 @@ async def test_declarations_are_mounted_read_only_into_the_base_image(workspace,
     assert not any(v["bind"].endswith(".yaml") for v in volumes.values())
     created = next(c for c in docker.created if c["name"] == "aaestro-alpha-0")
     assert created["environment"]["AAESTRO_MANIFEST"] == "/app/declaration/manifest.yaml"
+    await manager.launcher.stop_all()
+
+
+async def test_token_mode_without_the_opt_in_is_refused_before_any_container(
+    workspace, docker, healthy
+):
+    """#415 — 공유 키로는 peer 사칭을 막지 못한다. opt-in 없이는 기동 전에 거절한다."""
+    wired_workspace(workspace)
+    manager = wired_manager(workspace, docker, allow_token_mode=False)
+
+    with pytest.raises(AaestroError) as caught:
+        await manager.deploy("wired")
+
+    assert caught.value.code == ErrorCode.CFG_001
+    assert caught.value.details["setting"] == ALLOW_TOKEN_MODE_ENV
+    assert caught.value.details["graph"] == "wired"
+    assert docker.created == []
+    assert manager.store.list() == []
+
+
+async def test_token_mode_with_the_opt_in_deploys_and_warns(workspace, docker, healthy):
+    """opt-in 이 있으면 지금처럼 띄우되, 사칭을 막지 못한다는 WARN 을 남긴다 (#415)."""
+    wired_workspace(workspace)
+    manager = wired_manager(workspace, docker, allow_token_mode=True)
+
+    with structlog.testing.capture_logs() as logs:
+        record = await manager.deploy("wired")
+
+    assert record.status == "ready"
+    warned = [e for e in logs if e.get("setting") == ALLOW_TOKEN_MODE_ENV]
+    assert [e["log_level"] for e in warned] == ["warning"]
+    assert warned[0]["graph"] == "wired"
+    # agentd 의 기동 검사도 같은 opt-in 을 본다 — 게이트를 지난 배포가 넘겨준다
+    assert env_of(docker, "alpha")[ALLOW_TOKEN_MODE_ENV] == "1"
     await manager.launcher.stop_all()
 
 
@@ -1046,6 +1085,66 @@ async def test_reattach_hands_the_launcher_what_a_restart_needs(workspace, docke
     # 기록된 포트를 그대로 잡는다 — 컨테이너 안의 env 는 이미 그 포트로 굳어 있다
     assert adopted.a2a_port == next(a.a2a_port for a in record.agents if a.name == "beta")
     await second.launcher.stop_all()
+
+
+def test_token_mode_env_without_the_opt_in_carries_no_opt_in(workspace, docker):
+    """#415 — 허용 없는 control plane 은 토큰 모드 env 에 opt-in 을 싣지 않는다 (fail closed)."""
+    wired_workspace(workspace)
+    manager = wired_manager(workspace, docker, allow_token_mode=False)
+    topology = manager.catalog.graph("wired")
+
+    with structlog.testing.capture_logs() as logs:
+        provisions = manager._provision(  # noqa: SLF001 — 게이트를 거치지 않는 조립 경로
+            topology, manager._agents_of(topology), a2a_secret="s", ports={"alpha": 9100}
+        )
+
+    for agent in ("alpha", "beta"):
+        assert provisions[agent].env[A2A_SECRET_ENV] == "s"
+        assert ALLOW_TOKEN_MODE_ENV not in provisions[agent].env
+    warned = [e for e in logs if e.get("setting") == ALLOW_TOKEN_MODE_ENV]
+    assert {(e["log_level"], e["graph"], e["agent"]) for e in warned} == {
+        ("warning", "wired", "alpha"),
+        ("warning", "wired", "beta"),
+    }
+    assert "s" not in [v for e in warned for v in e.values()]
+
+
+async def test_registry_deployment_reattached_without_registry_restarts_without_opt_in(
+    workspace, docker, healthy
+):
+    """#415 — 레지스트리로 배포한 뒤 레지스트리 · 허용 없이 재부착하면 재시작 env 에 opt-in 이 없다.
+
+    게이트를 지난 적 없는 토큰 모드가 agentd 검사를 통과하면 안 된다 — 재시작은 거절된다.
+    """
+    wired_workspace(workspace)
+    store = InMemoryDeploymentStore()
+    first = wired_manager(workspace, docker, store, allow_token_mode=False)
+    with_access(first)
+    first.access_url = "http://control-plane:8700"
+    await first.deploy("wired")
+
+    second = wired_manager(workspace, docker, store, allow_token_mode=False)
+    await second.reattach()
+
+    for agent in ("alpha", "beta"):
+        restart_env = second.launcher.launched[(agent, 0)].restart_args["secrets"]
+        assert ALLOW_TOKEN_MODE_ENV not in restart_env
+    await second.launcher.stop_all()
+    await first.launcher.stop_all()
+
+
+def test_framework_env_in_env_allowlist_is_refused():
+    """#415 — 공유 서명 키 · 토큰 모드 opt-in 은 manifest allowlist 로 들어갈 수 없다."""
+    from pydantic import ValidationError
+
+    from aaestro.core.manifest import RuntimeSpec
+
+    for key in (A2A_SECRET_ENV, ALLOW_TOKEN_MODE_ENV):
+        with pytest.raises(ValidationError) as caught:
+            RuntimeSpec(env_allowlist=("ANTHROPIC_API_KEY", key))
+        (problem,) = caught.value.errors()
+        assert "at index 1" in problem["msg"]
+        assert key not in problem["msg"], "키 자리의 값을 메시지에 싣지 않는다"
 
 
 async def test_reattach_without_the_secrets_marks_the_deployment_lost(workspace, docker, healthy):
@@ -1692,7 +1791,8 @@ async def test_registry_mode_gives_agents_the_registry_address_and_no_shared_sec
     from aaestro.access.client import ACCESS_URL_ENV
 
     wired_workspace(workspace)
-    manager = wired_manager(workspace, docker)
+    # 레지스트리 모드는 토큰 모드 opt-in 없이 뜬다 (#415)
+    manager = wired_manager(workspace, docker, allow_token_mode=False)
     with_access(manager)
     manager.access_url = "http://control-plane:8700"
 
@@ -1701,6 +1801,7 @@ async def test_registry_mode_gives_agents_the_registry_address_and_no_shared_sec
     for agent in ("alpha", "beta"):
         env = env_of(docker, agent)
         assert A2A_SECRET_ENV not in env, "레지스트리 모드에 공유 서명 키가 들어갔다"
+        assert ALLOW_TOKEN_MODE_ENV not in env
         assert env[ACCESS_URL_ENV] == "http://control-plane:8700"
         assert env[A2A_EDGES_ENV] == "beta>alpha", "호출자 쪽 편의 검사는 그대로 쓴다"
     assert record.status == "ready"

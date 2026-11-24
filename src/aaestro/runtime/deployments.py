@@ -31,6 +31,7 @@ from aaestro.access.client import ACCESS_URL_ENV
 from aaestro.access.model import ACCESS_CREDENTIAL_ENV
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 from aaestro.core.manifest import MANIFEST_ENV, agent_name
+from aaestro.protocols.a2a.allowlist import ALLOW_TOKEN_MODE_ENV, admit_token_mode
 from aaestro.protocols.mcp.transport import MCP_PROXY_URL_ENV
 from aaestro.runtime.docker.engine import AGENT_LABEL, ContainerHandle
 from aaestro.runtime.images import image_tag
@@ -437,6 +438,10 @@ class DeploymentManager:
     해체·되감기 때 폐기한다."""
     access_url: str | None = None
     """에이전트 컨테이너에서 닿는 레지스트리 주소 (#281) — A2A 표를 받고 확인하는 곳."""
+    allow_token_mode: bool = False
+    """레지스트리 없이 공유 서명 키로 A2A 를 잇는 것을 허용하는가
+    (#415, ``AAESTRO_ALLOW_A2A_TOKEN_MODE``). 개발 · 단일 신뢰 영역 전용 — 꺼져 있으면 연결을
+    선언한 그래프의 배포를 기동 전에 거절한다."""
     egress: EgressEndpoints | None = None
     """이그레스 프록시 (#293) — 있으면 외부 HTTPS·모델 API 를 프록시로 보내고 모델 키를 넣지
     않는다."""
@@ -538,7 +543,9 @@ class DeploymentManager:
             AaestroError: VALIDATION/``VAL_002`` if an override names an unknown node,
                 ``VAL_001`` if the graph fails deployment validation,
                 RUNTIME/``RT_010`` if one of its agents already runs (or is starting) under
-                another deployment (HTTP 409).
+                another deployment (HTTP 409),
+                CONFIG/``CFG_001`` if the graph declares connections, the access registry is off
+                and token mode is not explicitly allowed (#415).
         """
         overrides = dict(model_overrides or {})
         topology = self.catalog.graph(graph_name).with_model_overrides(overrides)
@@ -556,6 +563,7 @@ class DeploymentManager:
         self._check_images(manifests)
         _check_volume_paths(manifests)
         self._check_sidecars(manifests)
+        self._check_token_mode(topology)
         # 사이드카 · 포트 · 신원 · 기록 어느 것보다 먼저 — 겹치는 배포의 되감기는 떠 있는 배포의
         # 사이드카와 포트 기록을 치운다 (#473). 첫 await 전에 잡아야 동시에 온 배포도 막힌다
         # 배포 id 를 점유 전에 정한다 — 기동 중에 막힌 배포가 무엇을 기다리는지 알 수 있게
@@ -937,6 +945,20 @@ class DeploymentManager:
 
     # --- 내부 --------------------------------------------------------------
 
+    def _check_token_mode(self, topology: GraphTopology) -> None:
+        """레지스트리 없이 연결을 이으면 토큰 모드다 — opt-in 이 없으면 기동 전에 거절한다 (#415).
+
+        Raises:
+            AaestroError: CONFIG/``CFG_001`` if the graph needs token mode and it is not allowed.
+        """
+        if self.access is not None and self.access_url:
+            return
+        agents = {node.id for node in topology.spec.nodes if node.agent}
+        if any(c.caller in agents and c.callee in agents for c in topology.spec.connections):
+            admit_token_mode(
+                allowed=self.allow_token_mode, component="deployments", graph=topology.metadata.name
+            )
+
     def _agents_of(self, topology: GraphTopology) -> list[AgentManifest]:
         """노드별 에이전트 — 여러 노드가 같은 에이전트를 쓰면 **한 번만**."""
         seen: dict[str, AgentManifest] = {}
@@ -1010,6 +1032,17 @@ class DeploymentManager:
                     # 레지스트리 모드에서는 공유 서명 키를 넣지 않는다 — 그래프의 모든 에이전트가
                     # 쥐는 키로는 누구든 다른 에이전트 행세의 토큰을 만든다 (#281)
                     env[A2A_SECRET_ENV] = a2a_secret
+                    if self.allow_token_mode:
+                        env[ALLOW_TOKEN_MODE_ENV] = "1"
+                    else:
+                        # 게이트를 거치지 않는 재부착 · 재시작 경로다 (예: 레지스트리를 끄고
+                        # 재시작한 control plane). opt-in 을 넘기지 않으므로 agentd 가 거절한다
+                        log.warning(
+                            "a2a token mode is not allowed — the agent will refuse to start",
+                            graph=topology.metadata.name,
+                            agent=manifest.name,
+                            setting=ALLOW_TOKEN_MODE_ENV,
+                        )
             peers = [
                 f"{callee}={container_name(callee, 0)}:{assigned[callee]}"
                 for caller, callee in edges

@@ -122,7 +122,9 @@ controlled container, on every request**:
   the in-flight table behind `/v1/cancel`) by the caller together with the id, and tasks from the
   Control API form their own space: a peer never reaches the results or state of a graph or direct
   task. Separation between two peers holds in registry mode only — in token mode the caller is a
-  header checked with the deployment's shared signing key, so one peer can name another — and the
+  header checked with the deployment's shared signing key, so one peer can name another; token mode
+  is therefore for development or a single trust domain and needs an explicit opt-in
+  (`AAESTRO_ALLOW_A2A_TOKEN_MODE=1`, see the [API reference](api.md#access-registry)) — and the
   SDK's task lookup and cancel methods are not covered yet. Retrying the same id is idempotent only
   for the same caller. A peer's message body is checked before the agent runs: a missing required
   field is refused with `VAL_001`, and a malformed body or identifier (empty, over 128 characters,
