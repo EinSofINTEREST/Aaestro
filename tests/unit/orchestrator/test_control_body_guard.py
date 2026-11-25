@@ -127,3 +127,31 @@ async def test_a_content_length_with_leading_zeros_is_read_by_value(api):
     )
 
     assert response.status_code != 413
+
+
+async def test_deeply_nested_body_is_400_not_500(api):
+    body = b"[" * 10_000 + b"]" * 10_000
+
+    response = await api.post(STEER, content=body, headers={**JSON, **AUTH})
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "VAL_002"
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        pytest.param("\\ud800", id="lone-surrogate"),
+        pytest.param("\\u001b[31m\\u0007", id="control-chars"),
+        pytest.param("k" * 5000, id="very-long"),
+    ],
+)
+async def test_a_duplicate_key_with_an_odd_name_still_answers_valid_json(api, key):
+    body = f'{{"{key}": 1, "{key}": 2}}'.encode()
+
+    response = await api.post(STEER, content=body, headers={**JSON, **AUTH})
+
+    assert response.status_code == 400
+    shown = response.json()["error"]["details"]["key"]  # 응답 본문이 UTF-8 JSON 으로 읽힌다
+    assert len(shown) <= 65
+    assert shown.isprintable()

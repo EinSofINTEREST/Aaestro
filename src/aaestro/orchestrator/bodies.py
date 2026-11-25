@@ -16,6 +16,7 @@ from aaestro.core.errors import (
     ErrorCategory,
     ErrorCode,
     field_problems,
+    printable_label,
     raise_detached,
 )
 from aaestro.materials import MAX_FILE_BYTES, MAX_FILES, MAX_PATH_CHARS
@@ -92,7 +93,15 @@ async def guard_body(request: Request) -> None:
             category=ErrorCategory.VALIDATION,
             code=ErrorCode.VAL_002,
             message="request body has a duplicate key",
-            details={"key": dup.key},
+            # 키는 호출자가 고른 문자열이다 — 짝 없는 surrogate · 제어 문자 · 긴 값을 정제해 싣는다
+            details={"key": printable_label(dup.key)},
+        ) from None
+    except RecursionError:
+        # FastAPI 가 같은 본문을 다시 파싱하기 전에 여기서 끝낸다 — 500 이 되지 않게
+        raise AaestroError(
+            category=ErrorCategory.VALIDATION,
+            code=ErrorCode.VAL_002,
+            message="request body is nested too deeply",
         ) from None
     except ValueError:  # 깨진 JSON · UTF-8 은 FastAPI 의 기존 거절이 맡는다
         return
