@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
+import structlog
+
 from aaestro.artifacts.store import parse_ref
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 
@@ -19,6 +21,8 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from aaestro.artifacts.store import FilesystemArtifactStore
+
+log = structlog.get_logger(__name__)
 
 
 class ArtifactScope(StrEnum):
@@ -79,6 +83,7 @@ class ScopedArtifacts:
 
     쓰기가 스레드로 넘어가면 동시에 온 두 저장이 둘 다 같은 사용량을 보고 검사를 통과해
     상한을 넘는다. 보호 대상은 스코프별 사용량 (디스크) 이고, 쓰기는 직렬화된다.
+    취소된 저장도 쓰기가 끝날 때 놓는다.
     """
     """쓰기가 허용된 스코프.
 
@@ -86,6 +91,8 @@ class ScopedArtifacts:
     ro** (전역 write 는 명시 허가). local 만 쓰게 막으면 01 이 규정한
     "그룹 산출물"에 아무도 쓸 수 없어 노드 간 전달이 성립하지 않는다.
     """
+    _writes: set[asyncio.Future[str]] = field(default_factory=set, init=False, repr=False)
+    """이 객체가 소유한 진행 중 쓰기 태스크 — 호출자가 취소된 뒤에도 락 해제를 위해 쥔다."""
 
     async def put(
         self, key: str, data: bytes, *, scope: ArtifactScope = ArtifactScope.LOCAL
@@ -114,9 +121,25 @@ class ScopedArtifacts:
             # global 에 아무나 쓰면 전사 공용 산출물이 오염된다 (09 와 같은 규약)
             raise denied(str(scope), "scope is read-only for this agent")
 
-        async with self._write_lock:
+        await self._write_lock.acquire()
+        try:
             await self._check_quota(scope, store, len(data))
-            return await store.put(key, data)
+            write = asyncio.ensure_future(store.put(key, data))
+        except BaseException:
+            self._write_lock.release()
+            raise
+        # 호출자가 취소돼도 쓰기 스레드는 계속 돈다 — 락은 쓰기가 끝날 때 놓아야
+        # 다음 저장이 반영 전 사용량으로 quota 를 통과하지 못한다
+        self._writes.add(write)
+        write.add_done_callback(self._finish_write)
+        return await asyncio.shield(write)
+
+    def _finish_write(self, write: asyncio.Future[str]) -> None:
+        """쓰기 태스크의 소유자 — 락을 놓고, 호출자가 떠난 뒤의 실패도 남긴다."""
+        self._writes.discard(write)
+        self._write_lock.release()
+        if not write.cancelled() and (err := write.exception()) is not None:
+            log.warning("artifact write failed", error_type=type(err).__name__)
 
     async def get(self, ref: str) -> bytes:
         """Read from whichever declared scope owns the reference.
