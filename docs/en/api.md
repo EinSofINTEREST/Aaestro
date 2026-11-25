@@ -362,13 +362,19 @@ src/              # your materials
 The skeleton copies those three into `/app` and puts `/app/src` on `PYTHONPATH`, so a manifest
 `spec.entrypoint: agent:MyAgent` resolves to `src/agent.py`. A `Dockerfile` of your own must:
 
-- start `FROM aaestro/agent-base:<tag>` — the base carries `agentd`;
+- end on `FROM aaestro/agent-base:<tag>` — the base carries `agentd`. The image that gets baked is the
+  **last stage**; it must reach the base directly or through earlier stage names (`AS name`). Builder
+  stages from other images are fine;
 - not end as `root` (going up to install and back down is fine);
 - `COPY`/`ADD` only from inside the context — no absolute paths, no `..`, no remote URLs.
 
 The check reads instructions, not lines: `\` continuations are joined, comments are skipped, keywords
 are case-insensitive, and the JSON form (`ADD ["src", "dst"]`) is read as such. `USER` counts as root
-when the user part of `user:group` is `root` or `0` (`root:0`, `0:1000`; `agent:0` is not root). A
+when the user part of `user:group` is `root` or `0` (`root:0`, `0:1000`; `agent:0` is not root); only the last stage's last `USER` counts (a stage inheriting from a named
+stage inherits its `USER`), and one containing a variable (`$`) is refused since it cannot be checked.
+`COPY --from=` must name an earlier stage (its `AS` name or index); sources are then files of that stage
+and are not path-checked. Any other value — an image reference, a later stage, a `$` variable — is refused,
+since it would pull an outside image at build time. A
 `# escape=` parser directive is refused, since it changes how continuations read. A refusal
 carries only the line the instruction starts on (`details.line`), never the value.
 

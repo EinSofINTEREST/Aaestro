@@ -169,18 +169,43 @@ def check_dockerfile(text: str) -> None:
     """
     _check_parser_directives(text)
     instructions = _instructions(text)
-    first_from = next((i for i in instructions if i[1] == "FROM"), None)
-    if first_from is None:
+    # 스테이지 = (FROM 줄, 이미지, 별칭, 그 스테이지의 USER 지시문들)
+    stages: list[tuple[int, str, str, list[tuple[int, str]]]] = []
+    for line, keyword, rest in instructions:
+        if keyword == "FROM":
+            image, alias = _from_parts(rest)
+            stages.append((line, image, alias, []))
+        elif keyword == "USER" and stages:
+            stages[-1][3].append((line, rest))
+    if not stages:
         raise _invalid("Dockerfile must declare a FROM")
-    image = next((t for t in first_from[2].split() if not _FLAG.match(t)), "")
+    # 굽히는 이미지는 마지막 스테이지다 — 앞 스테이지 별칭을 따라 base 에 닿아야 한다.
+    # 빌더 스테이지 (COPY --from 으로 산출물만 가져오는) 는 base 일 필요가 없다
+    index = len(stages) - 1
+    user: tuple[int, str] | None = None
+    while True:
+        line, image, _, users = stages[index]
+        if user is None and users:
+            user = users[-1]  # 스테이지마다 가장 가까운 USER — 별칭 상속이면 부모의 것이 이어진다
+        parent = next((i for i in range(index - 1, -1, -1) if stages[i][2] == image.lower()), None)
+        if parent is None:
+            break
+        index = parent
     if not image.startswith(BASE_IMAGE_PREFIX):
         # agentd 가 base 에 들어 있다 — 다른 이미지에서 시작하면 Control API 가 없다
-        raise _invalid(f"Dockerfile must start FROM {BASE_IMAGE_PREFIX}<tag>", line=first_from[0])
-    users = [i for i in instructions if i[1] == "USER"]
-    if users and _is_root(users[-1][2]):
-        # 설치 동안 root 로 올라가는 것은 흔하다 — 되돌리지 않고 끝나는 것이 문제다
-        raise _invalid("Dockerfile must not end as root (02 Security)", line=users[-1][0])
+        raise _invalid(f"Dockerfile must end FROM {BASE_IMAGE_PREFIX}<tag>", line=stages[-1][0])
+    if user is not None and ("$" in user[1] or _is_root(user[1])):
+        # 변수는 검사할 수 없다 — fail closed. 설치 동안 root 로 올라가는 것은 흔하다:
+        # 되돌리지 않고 끝나는 것이 문제다
+        raise _invalid("Dockerfile must not end as root (02 Security)", line=user[0])
     _check_sources(instructions)
+
+
+def _from_parts(rest: str) -> tuple[str, str]:
+    """`FROM [--flag] image [AS name]` 의 (이미지, 소문자 별칭)."""
+    tokens = [t for t in rest.split() if not _FLAG.match(t)]
+    alias = tokens[2].lower() if len(tokens) >= 3 and tokens[1].lower() == "as" else ""
+    return (tokens[0] if tokens else ""), alias
 
 
 def _is_root(spec: str) -> bool:
@@ -201,12 +226,27 @@ def _check_sources(instructions: list[tuple[int, str, str]]) -> None:
     02 는 이미지를 배포 파이프라인이 굽고 버전을 고정하라고 규정하므로, 굽는 도중의
     임의 다운로드는 그 계약 밖이다.
     """
+    names: list[str] = []  # 선언된 스테이지 별칭 — 인덱스는 이 목록의 위치와 같다
     for line, directive, rest in instructions:
+        if directive == "FROM":
+            names.append(_from_parts(rest)[1])
+            continue
         if directive not in ("COPY", "ADD"):
             continue
         tokens = rest.split()
+        source_stage: str | None = None
         while tokens and _FLAG.match(tokens[0]):
+            if tokens[0].lower().startswith("--from="):
+                source_stage = tokens[0][len("--from=") :].strip("\"'").lower()
             tokens.pop(0)
+        if source_stage is not None:
+            # --from 은 이미지 참조도 받는다 — 앞 스테이지가 아니면 굽는 시점에 외부 이미지를 당긴다
+            earlier = names[:-1]  # 마지막은 지금 스테이지
+            if source_stage in earlier or (
+                source_stage.isdigit() and int(source_stage) < len(earlier)
+            ):
+                continue  # 다른 스테이지의 파일 — 컨텍스트 경로가 아니다
+            raise _invalid(f"{directive} --from must name an earlier stage", line=line)
         body = " ".join(tokens)
         parsed = None
         if body.startswith("["):

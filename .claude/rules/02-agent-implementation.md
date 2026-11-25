@@ -247,8 +247,9 @@ spec:
    COPY --chown=1000:1000 src/ /app/src/
    # base 이미지가 이미 non-root (uid 1000, user: agent) 로 실행
    ```
-   - 빌더가 **굽기 전에** 검사한다 (`VAL_002`): `FROM aaestro/agent-base:<tag>` 로 시작,
-     root 로 끝나지 않음 (`user:group` 의 user 쪽이 `root`/`0` 이면 root), `COPY`/`ADD` 소스가 컨텍스트 안의 로컬 경로 (원격 `ADD` 금지).
+   - 빌더가 **굽기 전에** 검사한다 (`VAL_002`): `FROM aaestro/agent-base:<tag>` 로 끝남
+     (굽히는 것은 마지막 스테이지 — 별칭을 거쳐 base 에 닿아야 하고 빌더 스테이지는 자유),
+     root 로 끝나지 않음 (마지막 스테이지의 마지막 `USER`, 변수가 든 값은 거절) (`user:group` 의 user 쪽이 `root`/`0` 이면 root), `COPY`/`ADD` 소스가 컨텍스트 안의 로컬 경로 (원격 `ADD` 금지). `--from=` 은 앞 스테이지 (이름 · 인덱스) 만 허용 — 이미지 참조 · 뒤 스테이지 · `$` 는 거절.
      줄 이어 쓰기 · 주석 · 대소문자 · JSON 형식은 지시문 단위로 해석해 검사하고, `# escape=` 파서 지시문은 거절한다
    - MUST run as non-root user
    - MUST NOT bake secrets into images (빌드 arg 로도 금지)

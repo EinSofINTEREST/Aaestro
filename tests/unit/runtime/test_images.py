@@ -178,6 +178,51 @@ def test_legitimate_forms_still_pass(text):
     check_dockerfile(text)
 
 
+@pytest.mark.parametrize(
+    ("text", "line"),
+    [
+        (_BASE + "FROM python:3.12\n", 2),
+        ("FROM python:3.12 AS build\n" + _BASE.replace("\n", " AS a\n") + "FROM build\n", 3),
+        ("FROM $MARKER\n", 1),
+        (_BASE + "ARG U\nUSER $MARKER\n", 3),
+        (_BASE + "USER root AS x\nUSER 1000\nUSER $MARKER\n", 4),
+        (_BASE.replace("\n", " AS a\n") + "USER root\nFROM a\n", 2),
+        ("FROM python:3.12 AS b\n" + _BASE + "COPY --from=MARKER/image:1 /x /y\n", 3),
+        ("FROM python:3.12 AS b\n" + _BASE + "ADD --from=$MARKER /x /y\n", 3),
+        ("FROM python:3.12 AS b\n" + _BASE + "COPY --from=1 /x /y\n", 3),
+        (
+            "FROM python:3.12 AS b\nCOPY --from=later /x /y\n" + _BASE.replace("\n", " AS later\n"),
+            2,
+        ),
+        (_BASE.replace("\n", " AS a\n") + "COPY --from=a /x /y\n", 2),
+    ],
+)
+def test_multi_stage_and_variable_bypasses_are_refused(text, line):
+    with pytest.raises(AaestroError) as exc_info:
+        check_dockerfile(text)
+
+    err = exc_info.value
+    assert err.code == ErrorCode.VAL_002
+    assert err.details == {"line": line}
+    assert "marker" not in (err.message + str(err.details)).lower()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "FROM python:3.12 AS build\nUSER root\nRUN x\n" + _BASE + "COPY --from=build /o /o\n",
+        "FROM python:3.12 AS build\n" + _BASE.replace("\n", " AS a\n") + "FROM a AS b\nFROM b\n",
+        _BASE.replace("\n", " AS a\n") + "USER root\nUSER 1000\nFROM a\n",
+        "FROM aaestro/agent-base:0.1.0 AS a\nUSER root\n" + _BASE,
+        "ARG T=1\nFROM aaestro/agent-base:${T}\n",
+        "FROM python:3.12 AS b\n" + _BASE + "COPY --from=0 /o /o\n",
+        "FROM python:3.12 AS B\n" + _BASE + "COPY --from=b --chown=1 /o /o\n",
+    ],
+)
+def test_builder_stages_and_alias_chains_pass(text):
+    check_dockerfile(text)
+
+
 def test_the_shipped_material_dockerfiles_still_pass():
     for path in Path("examples/materials").glob("*/Dockerfile"):
         check_dockerfile(path.read_text(encoding="utf-8"))
