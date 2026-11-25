@@ -302,6 +302,160 @@ async def test_a_reattached_container_counts_the_limits_it_was_started_with(
     await second.launcher.stop_all()
 
 
+def with_sized_sidecar(workspace: Path, cpu: str, *more: tuple[str, str, str]) -> None:
+    """alpha (0.5 코어 · 256Mi) 와 사이드카 `search` (``cpu`` · 64Mi), 그리고 ``more`` 서버들."""
+    doc = agent_doc("alpha")
+    doc["spec"]["runtime"]["resources"] = {"cpu": "0.5", "memory": "256Mi"}
+    doc["spec"]["mcp"] = {
+        "servers": [
+            {
+                "name": name,
+                "transport": "streamable-http",
+                "sidecar": {"image": "mcp/search:0.3.0", "resources": {"cpu": c, "memory": m}},
+            }
+            for name, c, m in [("search", cpu, "64Mi"), *more]
+        ]
+    }
+    write(workspace / "agents" / "alpha" / "manifest.yaml", doc)
+
+
+def sized_memory(workspace: Path, name: str, memory: str) -> None:
+    """메모리만 바꾼 에이전트 선언."""
+    doc = agent_doc(name)
+    doc["spec"]["runtime"]["resources"] = {"cpu": "0.5", "memory": memory}
+    write(workspace / "agents" / name / "manifest.yaml", doc)
+
+
+@pytest.mark.parametrize(("shrunk", "refused"), [("0.25", True), ("1.0", False)])
+async def test_a_reused_sidecar_counts_the_limits_it_was_started_with(
+    workspace, docker, healthy, shrunk, refused
+):
+    """재사용한 사이드카는 줄어든 선언이 아니라 만들 때의 한도를 쥔다 (#649).
+
+    실제 0.5 + 1.0 (사이드카) + beta 1.0 = 2.5 > 2.0 — 선언으로 세면 1.75 라 통과한다.
+    대조군: 선언을 줄이지 않고 beta 0.5 면 딱 2.0 — 과대 계산하지 않는다.
+    """
+    quota_workspace(workspace)
+    with_sized_sidecar(workspace, "1.0")
+    sized(workspace, "beta", "0.25")  # 배포 검증은 그룹의 선언 전부를 센다
+    store = InMemoryDeploymentStore()
+    await sidecar_manager(workspace, docker, store).deploy("first")
+    reused = docker.find(SIDECAR)
+    with_sized_sidecar(workspace, shrunk)
+    sized(workspace, "beta", "1.0" if refused else "0.5")
+
+    second = sidecar_manager(workspace, docker, store)
+    await second.reattach()
+    assert ("alpha", 0) in second.launcher.launched, "재부착되지 않았다"
+    assert docker.find(SIDECAR) == reused, "사이드카를 재사용하지 않았다"
+
+    if refused:
+        with pytest.raises(AaestroError) as excinfo:
+            await second.deploy("second")
+        assert excinfo.value.code == ErrorCode.RT_006
+    else:
+        await second.deploy("second")
+    await second.launcher.stop_all()
+
+
+@pytest.mark.parametrize(("beta", "refused"), [("0.75", True), ("0.5", False)])
+async def test_reused_sidecars_count_each_server_the_limits_it_was_started_with(
+    workspace, docker, healthy, beta, refused
+):
+    """서버마다 실제 한도를 더한다 — 하나만 세면 둘의 합으로만 넘는 quota 를 놓친다 (#649).
+
+    실제 0.5 + (0.5 + 0.5) + beta 0.75 = 2.25 > 2.0, 선언 0.5 + 0.2 + 0.75 = 1.45.
+    대조군 beta 0.5 는 실제로 딱 2.0.
+    """
+    quota_workspace(workspace)
+    with_sized_sidecar(workspace, "0.5", ("fetch", "0.5", "64Mi"))
+    sized(workspace, "beta", "0.25")
+    store = InMemoryDeploymentStore()
+    await sidecar_manager(workspace, docker, store).deploy("first")
+    with_sized_sidecar(workspace, "0.1", ("fetch", "0.1", "64Mi"))
+    sized(workspace, "beta", beta)
+
+    second = sidecar_manager(workspace, docker, store)
+    await second.reattach()
+    assert ("alpha", 0) in second.launcher.launched, "재부착되지 않았다"
+
+    if refused:
+        with pytest.raises(AaestroError) as excinfo:
+            await second.deploy("second")
+        assert excinfo.value.code == ErrorCode.RT_006
+    else:
+        await second.deploy("second")
+    await second.launcher.stop_all()
+
+
+@pytest.mark.parametrize(("beta", "refused"), [("512Mi", True), ("256Mi", False)])
+async def test_a_reused_sidecar_counts_the_memory_it_was_started_with(
+    workspace, docker, healthy, beta, refused
+):
+    """메모리 선언만 줄여도 사이드카는 만들 때의 메모리를 쥔다 (#649).
+
+    실제 256Mi + 512Mi (사이드카) + beta 512Mi = 1280Mi > 1Gi, 선언 256 + 64 + 512 = 832Mi.
+    대조군 beta 256Mi 는 실제로 딱 1Gi.
+    """
+    quota_workspace(workspace)
+    global_group = yaml.safe_load((workspace / "groups" / "global.yaml").read_text("utf-8"))
+    global_group["spec"]["quotas"] = {"memory": "1Gi"}
+    write(workspace / "groups" / "global.yaml", global_group)
+    doc = agent_doc("alpha")
+    doc["spec"]["runtime"]["resources"] = {"cpu": "0.5", "memory": "256Mi"}
+
+    def with_memory(memory: str) -> None:
+        sidecar = {"image": "mcp/search:0.3.0", "resources": {"cpu": "0.5", "memory": memory}}
+        doc["spec"]["mcp"] = {
+            "servers": [{"name": "search", "transport": "streamable-http", "sidecar": sidecar}]
+        }
+        write(workspace / "agents" / "alpha" / "manifest.yaml", doc)
+
+    with_memory("512Mi")
+    sized_memory(workspace, "beta", "64Mi")
+    store = InMemoryDeploymentStore()
+    await sidecar_manager(workspace, docker, store).deploy("first")
+    with_memory("64Mi")
+    sized_memory(workspace, "beta", beta)
+
+    second = sidecar_manager(workspace, docker, store)
+    await second.reattach()
+    assert ("alpha", 0) in second.launcher.launched, "재부착되지 않았다"
+
+    if refused:
+        with pytest.raises(AaestroError) as excinfo:
+            await second.deploy("second")
+        assert excinfo.value.code == ErrorCode.RT_006
+    else:
+        await second.deploy("second")
+    await second.launcher.stop_all()
+
+
+async def test_reattach_refuses_an_agent_whose_limits_cannot_be_read(workspace, docker, healthy):
+    """한도를 읽지 못한 컨테이너는 선언으로 세지 않고 붙이지 않는다 (#649)."""
+    quota_workspace(workspace)
+    store = InMemoryDeploymentStore()
+    await wired_manager(workspace, docker, store).deploy("first")
+    alpha = docker.find("aaestro-alpha-0")
+
+    class Unreadable(TrackingDocker):
+        def hardening_of(self, container_id: str) -> dict:
+            if container_id == alpha:
+                raise RuntimeError("daemon hiccup")
+            return super().hardening_of(container_id)
+
+    later = Unreadable()
+    later.created = list(docker.created)
+    second = wired_manager(workspace, later, store)
+
+    touched = await second.reattach()
+
+    assert [(r.status, r.error) for r in touched] == [
+        (DeploymentStatus.LOST, "network isolation unverifiable: alpha")
+    ]
+    assert second.launcher.launched == {}
+
+
 # --- 되감기 -----------------------------------------------------------------------
 
 
@@ -844,6 +998,10 @@ async def test_reattach_refuses_containers_that_are_not_isolated(
         ("Privileged", True),
         # 기록 → 기대값 유도 고리: 기대값에서 pids_limit 이 빠지면 이 케이스가 붙어 버린다
         ("PidsLimit", None),
+        # 한도 없는 컨테이너는 quota 가 셀 수 없다 — 0 · int 아님도 무제한이다 (#649)
+        ("NanoCpus", None),
+        ("Memory", 0),
+        ("NanoCpus", True),
         ("SecurityOpt", ["seccomp=unconfined"]),
         # 선언 마운트는 그대로 두고 docker.sock 바인드만 더한다 (#488)
         ("Mounts", [{"Type": "bind", "Source": "/var/run/docker.sock",

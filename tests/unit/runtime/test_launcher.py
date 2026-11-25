@@ -768,3 +768,100 @@ def test_admit_accepts_fractional_cpu_that_exactly_fits_the_quota():
     agents._admitted[("worker", 1)] = worker
 
     agents.admit(worker, replica=2)
+
+
+# --- 재부착이 세는 한도 (#649) ----------------------------------------------------
+
+
+async def adopt_first(
+    client: FakeDockerClient, agents: AgentLauncher, declared=None, found=None
+) -> bool:
+    """한 번 띄운 컨테이너를 (같은 프로세스에서) 다시 붙인다 — 재부착의 한도 읽기만 본다.
+
+    ``found`` 는 기동 뒤 그 컨테이너의 inspect 값에 덮을 필드다 (기동 대조는 통과시킨다).
+    """
+    first = await agents.start(manifest())
+    agents.launched.clear()
+    if found is not None:
+        container_id = first.handle.container_id
+        client.hardening_by_id[container_id] = {**client.hardening_of(container_id), **found}
+    return await agents.adopt(
+        first.agent,
+        replica=0,
+        container_id=first.handle.container_id,
+        image=first.handle.image,
+        control_port=first.handle.control_port,
+        token="remembered",  # noqa: S106 — 테스트 값
+        restart_args={"manifest": declared or manifest()},
+    )
+
+
+@pytest.mark.parametrize(
+    "found", [{"NanoCpus": None}, {"NanoCpus": 0}, {"Memory": -1}, {"Memory": False}]
+)
+async def test_adopt_refuses_a_container_without_resource_limits(found):
+    """경화 대조 뒤에 한도가 사라졌어도 선언으로 세지 않는다 — 붙이지 않는다 (#649)."""
+    client = FakeDockerClient()
+    agents = launcher(client)
+
+    assert await adopt_first(client, agents, found=found) is False
+    assert agents.launched == {}
+
+
+async def test_adopt_refuses_a_container_whose_limits_cannot_be_read():
+    client = FakeDockerClient()
+    agents = launcher(client)
+    first = await agents.start(manifest())
+    agents.launched.clear()
+    client._hardening_error = RuntimeError("daemon hiccup")
+
+    adopted = await agents.adopt(
+        first.agent,
+        replica=0,
+        container_id=first.handle.container_id,
+        image=first.handle.image,
+        control_port=first.handle.control_port,
+        token="remembered",  # noqa: S106 — 테스트 값
+    )
+
+    assert adopted is False
+    assert agents.launched == {}
+
+
+async def test_adopt_counts_a_sidecar_as_the_larger_of_declared_and_held():
+    """사이드카 몫은 서버마다 max(지금 선언, 실제 한도) — 줄인 선언으로 과소 계산하지 않는다."""
+    from aaestro.runtime.sidecars import McpSidecars
+
+    client = FakeDockerClient()
+    agents = launcher(client)
+
+    def declared(cpu: str) -> AgentManifest:
+        doc = manifest().model_dump(by_alias=True, mode="json")
+        sidecar = {"image": "mcp/search:0.3.0", "resources": {"cpu": cpu, "memory": "64Mi"}}
+        doc["spec"]["mcp"] = {
+            "servers": [{"name": "search", "transport": "streamable-http", "sidecar": sidecar}]
+        }
+        return AgentManifest.model_validate(doc)
+
+    await McpSidecars(client).start(declared("1.0"), {})
+
+    assert await adopt_first(client, agents, declared("0.25")) is True
+    [launched] = agents.launched.values()
+    assert launched.sidecars_held is not None
+    assert launched.sidecars_held.cpu_cores == 1.0
+    assert launched.sidecars_held.memory_bytes == 64 * 1024**2
+
+
+async def test_adopt_refuses_when_a_declared_sidecar_is_missing():
+    """선언한 사이드카의 한도를 확인하지 못하면 붙이지 않는다 — 세지 못한 몫이 남는다."""
+    client = FakeDockerClient()
+    agents = launcher(client)
+    doc = manifest().model_dump(by_alias=True, mode="json")
+    doc["spec"]["mcp"] = {
+        "servers": [
+            {"name": "search", "transport": "streamable-http",
+             "sidecar": {"image": "mcp/search:0.3.0"}}
+        ]
+    }  # fmt: skip
+
+    assert await adopt_first(client, agents, AgentManifest.model_validate(doc)) is False
