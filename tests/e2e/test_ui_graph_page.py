@@ -49,6 +49,7 @@ class Fake:
         self.puts, self.validates, self.log = [], [], []
         self.fail_get = 0
         self.catalog_loads = 0
+        self.validate_reply = None  # 지정하면 스키마 검증 뒤 이 본문으로 답한다 (경고 시나리오)
 
     def handle(self, route):
         req = route.request
@@ -117,7 +118,7 @@ class Fake:
                     GraphTopology.model_validate(g)
             except ValidationError as e:
                 return err(400, "VAL_002", "invalid", schema_errors(e))
-            return ok({"ok": True, "findings": []})
+            return ok(self.validate_reply or {"ok": True, "findings": []})
         m = re.fullmatch(r"/v1/graphs/([^/]+)", path)
         if m:
             name = m.group(1)
@@ -654,3 +655,59 @@ def test_fractional_idle_delays_pass_the_form(ui):
 
     assert body["spec"]["service"]["idle"]["min_delay_s"] == 0.5
     assert body["spec"]["service"]["idle"]["max_delay_s"] == 2.5
+
+
+# --- 검증 경고 (#666) -------------------------------------------------------------------
+
+
+def warning(message):
+    return {"check": "build", "code": "W_001", "message": message}
+
+
+def test_warnings_only_response_renders_amber_items_and_still_saves(ui):
+    ui.load("rich")
+    ui.fake.validate_reply = {"ok": True, "findings": [], "warnings": [warning("heads up")]}
+
+    text = ui.save()
+
+    assert text.startswith("저장됨"), ui.findings()
+    assert ui.fake.puts
+    assert ui.page.locator("#graph-findings li.warning").all_text_contents() == [
+        "경고: build [W_001] heads up"
+    ]
+
+
+def test_findings_and_warnings_are_both_shown_and_block_the_save(ui):
+    ui.load("rich")
+    ui.fake.validate_reply = {
+        "ok": False,
+        "findings": [{"check": "topology", "code": "GRAPH_001", "message": "broken"}],
+        "warnings": [warning("also this")],
+    }
+
+    ui.save()
+
+    assert ui.fake.puts == []
+    assert ui.findings() == ["topology [GRAPH_001] broken", "경고: build [W_001] also this"]
+    assert ui.page.locator("#graph-findings li.warning").count() == 1
+
+
+def test_a_warning_that_looks_like_html_is_shown_as_text(ui):
+    ui.load("rich")
+    payload = "<img src=x onerror=window.__pwned=1>"
+    ui.fake.validate_reply = {"ok": True, "findings": [], "warnings": [warning(payload)]}
+
+    ui.save()
+
+    assert ui.findings() == [f"경고: build [W_001] {payload}"]
+    assert ui.page.locator("#graph-findings img").count() == 0
+    assert ui.page.evaluate("() => window.__pwned") is None
+
+
+def test_a_response_without_a_warnings_key_still_says_validation_passed(ui):
+    ui.load("rich")
+
+    text = ui.save()
+
+    assert text.startswith("저장됨"), ui.findings()
+    assert ui.findings() == ["검증 통과"]

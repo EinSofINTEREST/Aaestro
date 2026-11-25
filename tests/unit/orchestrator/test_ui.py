@@ -110,6 +110,23 @@ def test_the_unbuilt_warning_compares_the_recorded_tag_with_the_expected_one():
     assert "image.image" in body
 
 
+def test_validation_warnings_are_visible_and_do_not_block_saving():
+    """같은 렌더 경로가 그래프·에이전트 검증의 경고를 보여 주고 성공 판정을 보존한다."""
+    source = (UI_ROOT / "app.js").read_text(encoding="utf-8")
+    body = source.split("function showFindings(selector, result)")[1].split("\n}")[0]
+    css = (UI_ROOT / "app.css").read_text(encoding="utf-8")
+
+    assert "result.findings.map" in body
+    assert "result.warnings" in body
+    assert 'className: "warning"' in body
+    assert "textContent:" in body and "innerHTML" not in body
+    assert "return result.ok" in body
+    assert 'showFindings("#graph-findings"' in source
+    assert 'showFindings("#agent-findings"' in source
+    assert ".findings li.warning { color: #b26a00; }" in css
+    assert ".findings li, .problems li { color: #b00020;" in css
+
+
 def test_the_graph_editor_saves_over_the_declaration_of_its_own_name():
     """그래프 저장·검증 경로도 저장 대상 이름의 원본(`graphBase`)을 거친다 (#385).
 
