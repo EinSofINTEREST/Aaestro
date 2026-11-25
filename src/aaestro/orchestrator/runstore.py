@@ -15,6 +15,7 @@ import threading
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -23,7 +24,6 @@ from aaestro.core.manifest import agent_name
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-    from pathlib import Path
 
     from aaestro.core.topology import GraphTopology
 
@@ -222,6 +222,8 @@ class SqliteRunStore:
     """
 
     path: str | Path = ":memory:"
+    read_only: bool = False
+    """True 면 sqlite 를 ``mode=ro`` 로 연다 — 파일을 만들지도 스키마를 쓰지도 않는다 (#665)."""
     _conn: sqlite3.Connection = field(init=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False)
 
@@ -230,6 +232,15 @@ class SqliteRunStore:
             # Control Plane 은 별도 스레드에서 서빙된다 — 기본값(스레드 고정)이면
             # 서버 스레드의 첫 질의가 ProgrammingError 로 죽는다. 쓰기는 아래
             # 락으로 직렬화한다
+            if self.read_only:
+                self._conn = sqlite3.connect(
+                    f"{Path(self.path).resolve().as_uri()}?mode=ro",
+                    uri=True,
+                    isolation_level=None,
+                    check_same_thread=False,
+                )
+                self._conn.row_factory = sqlite3.Row
+                return
             self._conn = sqlite3.connect(
                 str(self.path), isolation_level=None, check_same_thread=False
             )

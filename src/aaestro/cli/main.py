@@ -26,7 +26,7 @@ from aaestro.cli.integrity import (
     orphan_checkpoints,
 )
 from aaestro.config import DEFAULT_CONFIG_DIR, ENVIRONMENT_ENV, load_config, resolve_environment
-from aaestro.core.errors import AaestroError
+from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 from aaestro.core.topology import GraphTopology
 from aaestro.deploy import ValidationReport
 from aaestro.observability.logging import configure
@@ -420,6 +420,62 @@ def run_manager_for(args: argparse.Namespace) -> Any:
         max_service_runs=orchestrator.max_service_runs,
         store=store,
     )
+
+
+def cmd_state_artifacts_prune(args: argparse.Namespace) -> int:
+    """Delete state-compaction originals past the retention period.
+
+    보존 기간이 지난 state 압축 원문을 지웁니다. 진행 중 run 의 원문은 남기고, run 저장소를
+    읽지 못하면 (진행 중 여부를 모르므로) 아무것도 지우지 않고 실패합니다.
+    """
+    import asyncio
+
+    from aaestro.orchestrator.run import run_generations
+    from aaestro.orchestrator.runstore import SqliteRunStore
+    from aaestro.orchestrator.state_artifacts import prune_originals, state_artifact_store
+
+    store = state_artifact_store(state_artifact_root_for(args))
+    if store is None:
+        emit({"status": "nothing to do", "reason": "no state artifact root"}, as_json=args.json)
+        return EXIT_OK
+
+    orchestrator = orchestrator_config(args)
+    if orchestrator.run_store is None:
+        raise AaestroError(
+            category=ErrorCategory.CONFIG,
+            code=ErrorCode.CFG_001,
+            message="cannot tell which runs are live without orchestrator.run_store",
+        )
+    # 읽기 전용으로 연다 — 없는 파일을 새로 만들어 "진행 중인 run 없음" 으로 읽는 일이 없다
+    run_store = SqliteRunStore(path=orchestrator.run_store, read_only=True)
+
+    def read_live() -> list[tuple[str, str]]:
+        # 재개된 run 의 원문은 최초 run id 로 놓인다 — 이어진 id 전부를 보호한다
+        return [
+            (record.graph, generation)
+            for record in run_store.list()
+            if record.live
+            for generation in run_generations(record.run_id)
+        ]
+
+    result = asyncio.run(
+        prune_originals(
+            store,
+            retention_days=orchestrator.state_artifact_retention_days,
+            now=time.time(),
+            read_live_runs=read_live,
+        )
+    )
+    emit(
+        {
+            "deleted": result.deleted,
+            "skipped_live": result.skipped_live,
+            "skipped_young": result.skipped_young,
+            "failed": result.failed,
+        },
+        as_json=args.json,
+    )
+    return EXIT_FAILED if result.failed else EXIT_OK
 
 
 def cmd_run(args: argparse.Namespace) -> int:
@@ -1073,6 +1129,13 @@ def build_parser() -> argparse.ArgumentParser:
             dest="control_token",
             help=f"control plane token (defaults to ${CONTROL_TOKEN_ENV})",
         )
+
+    prune = subcommands.add_parser(
+        "state-artifacts-prune",
+        help="delete state compaction originals older than the retention period",
+    )
+    _add_state_artifacts(prune, with_config=True)
+    prune.set_defaults(handler=cmd_state_artifacts_prune)
 
     check = subcommands.add_parser("check", help="report integrity discrepancies")
     check.add_argument("state", help="path to a yaml document describing observed state")

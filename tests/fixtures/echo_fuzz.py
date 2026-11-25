@@ -222,6 +222,7 @@ RICH_CONFIG: dict[str, Any] = {
         "checkpointer": "redis",
         "checkpointer_url": "redis://checkpoints:6379/0",
         "state_artifact_root": "/var/lib/aaestro/state-artifacts",
+        "state_artifact_retention_days": 14,
         "run_store": "/var/lib/aaestro/runs.db",
         "deployment_ready_timeout_s": 60,
         "control_host": "127.0.0.1",

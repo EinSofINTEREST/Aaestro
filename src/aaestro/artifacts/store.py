@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import os
 import re
+import stat
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -261,6 +262,78 @@ class FilesystemArtifactStore:
             if path.is_file()
             and not any(part.startswith(".") for part in path.relative_to(base).parts)
         )
+
+    async def delete(self, key: str) -> None:
+        """Delete one artifact by key; a missing key is not an error.
+
+        key 하나를 지웁니다 — 이미 없으면 조용히 끝납니다 (정리가 겹쳐 돌아도 안전).
+
+        Raises:
+            AaestroError: VALIDATION/``VAL_002`` for an unsafe key,
+                STORAGE/``STOR_003`` if the delete fails.
+        """
+        key = validate_key(key)
+        try:
+            await asyncio.to_thread(self._delete, key)
+        except OSError as err:
+            raise storage_error(
+                "artifact could not be deleted", key=key, cause=type(err).__name__
+            ) from err
+
+    def _plain_path(self, key: str) -> Path | None:
+        """링크를 따라가지 않고, 경로 전체가 일반 파일일 때만 그 경로 — 아니면 None."""
+        path = self.root.resolve() / self.scope / key
+        try:
+            if not stat.S_ISREG(path.lstat().st_mode) or path.resolve() != path:
+                return None
+        except FileNotFoundError:
+            return None
+        return path
+
+    def _delete(self, key: str) -> None:
+        # 링크는 지우지도, 따라가지도 않는다 — 대상이 스코프 안의 다른 파일일 수 있다
+        path = self._plain_path(key)
+        if path is not None:
+            path.unlink(missing_ok=True)
+
+    async def modified_at(self, key: str) -> float | None:
+        """Modified time of one stored plain file (epoch seconds), None if it is gone.
+
+        key 하나의 수정 시각 — 일반 파일이 아니거나 없으면 None.
+        """
+        key = validate_key(key)
+
+        def read() -> float | None:
+            path = self._plain_path(key)
+            return None if path is None else path.stat().st_mtime
+
+        try:
+            return await asyncio.to_thread(read)
+        except OSError as err:
+            raise storage_error(
+                "artifact could not be inspected", key=key, cause=type(err).__name__
+            ) from err
+
+    async def stored_entries(self) -> list[tuple[str, float]]:
+        """Stored ``(key, modified time as epoch seconds)`` pairs, oldest first.
+
+        저장된 key 와 수정 시각 — 임시 파일 (``.`` 로 시작하는 조각) 은 빠집니다.
+        """
+        try:
+            return await asyncio.to_thread(self._entries)
+        except OSError as err:
+            raise storage_error("artifacts could not be listed", cause=type(err).__name__) from err
+
+    def _entries(self) -> list[tuple[str, float]]:
+        found: list[tuple[str, float]] = []
+        for key in self.stored_keys():
+            try:
+                path = self._plain_path(key)
+                if path is not None:
+                    found.append((key, path.stat().st_mtime))
+            except FileNotFoundError:
+                continue  # 목록을 만드는 사이 지워졌다
+        return sorted(found, key=lambda entry: entry[1])
 
     def used_bytes(self) -> int:
         """이 스코프가 차지한 바이트 — quota 검증에 쓴다."""
