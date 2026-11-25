@@ -1709,6 +1709,72 @@ async def test_a_rolled_back_start_still_settling_keeps_its_port_until_the_clean
     assert ports.held("alpha") is None
 
 
+async def test_a_redeploy_while_a_rolled_back_start_settles_is_refused(workspace, healthy):
+    """정리 중인 기동을 남긴 배포는 LOST 로 남고 같은 에이전트의 새 배포는 RT_010 이다 — 새 배포가
+    같은 키의 포트를 다시 잡으면 정리가 끝나며 그 포트를 놓아 다른 에이전트가 받는다 (#686)."""
+    wired_workspace(workspace)
+    docker = HeldClient("create")
+    manager = wired_manager(workspace, docker)  # type: ignore[arg-type]
+    manager.launcher.engine.cancel_wait_s = 0.01
+    ports = manager.launcher.ports
+    assert ports is not None
+    deploying = asyncio.create_task(manager.deploy("wired"))
+    try:
+        await until(lambda: len(docker.held) >= 1)
+        deploying.cancel()
+        await until(deploying.done, timeout_s=1.0)
+        [record] = manager.deployments()
+        assert record.status == DeploymentStatus.LOST, "정리 중 기동을 남긴 배포를 FAILED 로 적었다"
+        held = ports.held("alpha")
+        with pytest.raises(AaestroError) as excinfo:
+            await manager.deploy("wired")
+        assert excinfo.value.code == ErrorCode.RT_010
+        assert ports.held("alpha") == held
+        # 기록 없이도 막는다 — 정리 중인 기동은 launcher · 기록 어디에도 레플리카가 없다
+        manager.store.upsert(
+            DeploymentRecord(
+                **{**record.__dict__, "status": DeploymentStatus.FAILED}  # type: ignore[arg-type]
+            )
+        )
+        with pytest.raises(AaestroError) as excinfo:
+            await manager.deploy("wired")
+        assert excinfo.value.code == ErrorCode.RT_010, "정리 중인 기동이 있는 이름을 점유했다"
+        manager.store.upsert(record)
+    finally:
+        docker.release()
+    await manager.launcher.engine.settle_cleanups()
+
+    assert ports.held("alpha") is None, "정리가 끝났는데 포트를 놓지 않았다"
+    assert (await manager.teardown(record.deployment_id)).status == DeploymentStatus.STOPPED
+    await manager.launcher.stop_all()
+
+
+async def test_provision_out_of_ports_releases_only_what_it_allocated(workspace, healthy, docker):
+    """범위가 마르면 이번에 새로 잡은 포트만 돌려준다 — 같은 키가 이미 쥐던 포트는 주인의 것.
+
+    #686 의 이웃 결함.
+    """
+    wired_workspace(workspace)
+    manager = wired_manager(workspace, docker)
+    ports = manager.launcher.ports
+    assert ports is not None
+    owned = ports.allocate("alpha")  # 정리 중인 기동 · 넘겨받은 컨테이너가 쥔 자리
+    low, high = ports.port_range
+    for i in range(high - low):  # beta 몫이 남지 않게 채운다
+        ports.allocate(f"filler{i}")
+    topology = manager.catalog.graph("wired")
+
+    with pytest.raises(AaestroError) as excinfo:
+        manager._provision(  # noqa: SLF001
+            topology,
+            manager._agents_of(topology),
+            a2a_secret="s",  # noqa: SLF001
+        )
+
+    assert excinfo.value.code == ErrorCode.RT_001
+    assert ports.held("alpha") == owned, "되돌림이 이미 쥐던 포트를 놓았다"
+
+
 async def test_a_kept_leftover_counts_the_limits_it_was_started_with(workspace, docker, healthy):
     """넘겨받은 컨테이너는 줄어든 선언이 아니라 만들 때의 한도로 센다 — #649 와 같다 (#676)."""
     wired_workspace(workspace)
