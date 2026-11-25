@@ -965,3 +965,208 @@ async def test_a_released_replica_keeps_its_container_and_quota_until_the_next_s
     assert agents.launched == {}
     await agents.start(grouped("other"))
     await agents.stop_all()
+
+
+# --- 취소된 기동의 제거 실패 — launcher 가 소유한다 (#654) ------------------------------
+
+
+def orphan_launcher(client: HeldClient, *, cancel_wait_s: float) -> AgentLauncher:
+    groups = {"research": quota_group(max_agents=1)}
+    return AgentLauncher(
+        engine=DockerEngine(client=client, cancel_wait_s=cancel_wait_s),
+        groups=groups.get,
+        restart_sleep=_no_wait,
+    )
+
+
+async def assert_quota_held(agents: AgentLauncher, reason: str) -> None:
+    with pytest.raises(AaestroError) as excinfo:
+        await agents.start(grouped("other"))
+    assert excinfo.value.code == ErrorCode.RT_006, reason
+
+
+async def test_a_cancelled_start_whose_immediate_removal_failed_keeps_the_quota_until_stop():
+    """#654 — 상한 안에 끝난 취소 기동의 제거가 실패하면 WARN 만 남고 자리가 풀렸다."""
+    client = HeldClient("create")
+    agents = orphan_launcher(client, cancel_wait_s=5.0)
+    starting = asyncio.create_task(agents.start(grouped()))
+    await until(lambda: len(client.held) >= 1)
+    client._remove_failures = 1
+    starting.cancel()
+    await asyncio.sleep(0)  # 취소가 엔진의 기다림에 닿게 한다
+    client.release()
+    await until(starting.done, timeout_s=1.0)
+
+    assert starting.cancelled()
+    assert not agents.engine._cleanups, "그 자리에서 끝나야 하는 정리가 넘어갔다"
+    assert not client.removed
+    await assert_quota_held(agents, "제거에 실패한 컨테이너의 자리가 풀렸다")
+
+    await agents.stop("worker")  # 다음 정지가 다시 지운다
+    assert client.removed == ["container-0001" + "0" * 20]
+    assert not agents._orphans
+    await agents.start(grouped("other"))
+    await agents.stop_all()
+
+
+async def test_a_handed_off_cleanup_whose_removal_failed_keeps_the_quota_until_the_next_start():
+    """#654 — 백그라운드 정리의 제거가 실패하면 정리 태스크가 끝나며 `_settling` 자리가 풀렸다."""
+    client = HeldClient("create")
+    agents = orphan_launcher(client, cancel_wait_s=0.01)
+    try:
+        await cancel_while_held(client, asyncio.create_task(agents.start(grouped())), 1)
+        client._remove_failures = 1
+    finally:
+        client.release()
+    await agents.engine.settle_cleanups()
+
+    assert not agents._settling
+    assert not client.removed
+    await assert_quota_held(agents, "정리가 제거에 실패한 컨테이너의 자리가 풀렸다")
+
+    # 같은 레플리카의 다음 기동이 남은 컨테이너를 먼저 지우고 자리를 푼다
+    await agents.start(grouped())
+    assert len(client.removed) == 1
+    assert not agents._orphans
+    assert ("worker", 0) in agents.launched
+    await agents.stop_all()
+
+
+async def test_a_cut_cleanup_whose_removal_later_failed_keeps_the_quota():
+    """#654 — 종료 상한에 끊긴 정리가 넘긴 제거가 늦게 실패하면 WARN 만 남고 자리가 풀렸다."""
+    client = HeldClient("create", "remove")
+    agents = orphan_launcher(client, cancel_wait_s=0.01)
+    try:
+        await cancel_while_held(client, asyncio.create_task(agents.start(grouped())), 1)
+        client.held[0].set()  # 생성은 끝나고 정리가 제거에서 붙잡힌다
+        await until(lambda: len(client.held) == 2)
+        await agents.engine.settle_cleanups(timeout_s=0.01)
+        client._remove_failures = 1
+    finally:
+        client.release()
+    await until(lambda: not agents.engine._cleanups)
+
+    assert not agents._settling
+    assert agents._orphans, "끊긴 뒤 실패한 제거의 컨테이너를 넘겨받지 않았다"
+    await assert_quota_held(agents, "끊긴 뒤 제거에 실패한 컨테이너의 자리가 풀렸다")
+
+    await agents.stop_all()
+    assert not agents._orphans
+    assert client.removed
+
+
+async def test_an_orphan_whose_removal_fails_again_stays_counted():
+    """#654 — 다시 지우다 실패하면 놓지 않는다 — 놓으면 그 컨테이너는 다시 소유자가 없다."""
+    client = HeldClient("create")
+    agents = orphan_launcher(client, cancel_wait_s=0.01)
+    try:
+        await cancel_while_held(client, asyncio.create_task(agents.start(grouped())), 1)
+        client._remove_failures = 2
+    finally:
+        client.release()
+    await agents.engine.settle_cleanups()
+
+    await agents.stop("worker")
+    assert agents._orphans
+    await assert_quota_held(agents, "다시 지우지 못한 컨테이너의 자리가 풀렸다")
+    await agents.stop("worker")
+    assert not agents._orphans
+
+
+async def test_an_orphan_is_counted_with_every_declaration_its_cleanup_held():
+    """#654 — 정리가 쥔 선언 중 첫 것만 넘기면 다시 선언된 큰 자리를 작은 것으로 센다."""
+    client = HeldClient("create")
+    agents = held_launcher(client, cpu="4.0")
+    try:
+        await cancel_while_held(client, asyncio.create_task(agents.start(grouped(cpu="1.0"))), 1)
+        await cancel_while_held(client, asyncio.create_task(agents.start(grouped(cpu="2.0"))), 2)
+        client._remove_failures = 1
+        client.held[0].set()  # 첫 정리만 끝나며 제거에 실패한다
+        await until(lambda: len(agents.engine._cleanups) == 1)
+    finally:
+        client.release()
+    await agents.engine.settle_cleanups()
+
+    assert len(agents._orphans) == 1
+    with pytest.raises(AaestroError) as excinfo:
+        await agents.start(grouped("other", cpu="2.5"))
+    assert excinfo.value.code == ErrorCode.RT_006, "남은 컨테이너를 첫 선언 (CPU 1) 으로만 셌다"
+    await agents.stop_all()
+
+
+@pytest.mark.parametrize("failure", ["hardening_error", "start_error"])
+async def test_a_failed_start_whose_half_made_container_was_not_removed_keeps_the_quota(failure):
+    """#654 — 경화 대조 · 시작이 실패한 뒤 반쯤 만든 컨테이너의 제거가 실패하면 자리가 풀렸다."""
+    client = FakeDockerClient(remove_failures=1, **{failure: RuntimeError("daemon hiccup")})
+    agents = orphan_launcher(client, cancel_wait_s=0.01)
+    with pytest.raises(AaestroError) as excinfo:
+        await agents.start(grouped())
+    assert excinfo.value.code == ErrorCode.RT_001
+
+    assert not client.removed
+    assert agents._orphans, "지우지 못한 반쯤 만든 컨테이너를 넘겨받지 않았다"
+    await assert_quota_held(agents, "지우지 못한 반쯤 만든 컨테이너의 자리가 풀렸다")
+
+    await agents.stop("worker")  # 다음 정지가 다시 지운다
+    assert client.removed == ["container-0001" + "0" * 20]
+    assert not agents._orphans
+    setattr(client, f"_{failure}", None)
+    await agents.start(grouped("other"))
+    await agents.stop_all()
+
+
+async def test_an_orphan_taken_by_a_smaller_start_keeps_the_larger_declaration():
+    """#654 qa — 큰 선언의 정리가 남긴 컨테이너를 그 정리의 완료 콜백보다 먼저 작은 선언의 실패한
+    기동이 넘겨받으면 CPU 2 의 컨테이너를 1 로 세었다."""
+    from aaestro.runtime.docker.engine import ContainerHandle
+    from aaestro.runtime.spec import container_name
+
+    client = FakeDockerClient(start_error=RuntimeError("daemon hiccup"))
+    agents = held_launcher(client, cpu="4.0")
+    name = container_name("worker", 0)
+    failed, finish = asyncio.Event(), asyncio.Event()
+    big = ContainerHandle(agent="worker", container_id="big" + "0" * 20, image="x", control_port=0)
+
+    async def big_cleanup() -> None:
+        # 엔진의 정리가 제거에 실패해 넘긴 직후 — 완료 콜백 (`settled`) 은 아직 돌지 않았다
+        agents.engine._orphans.setdefault(name, []).append(big)
+        failed.set()
+        await finish.wait()
+
+    cleanup = asyncio.create_task(big_cleanup())
+    agents.engine._hold(cleanup, name)
+    agents._settle(grouped(cpu="2.0"), replica=0)
+    await failed.wait()
+
+    with pytest.raises(AaestroError):  # 작은 선언의 기동이 실패하며 그 이름의 것을 넘겨받는다
+        await agents.start(grouped(cpu="1.0"))
+    finish.set()
+    await cleanup
+    await asyncio.sleep(0)
+
+    assert not agents._settling
+    assert big.container_id in agents._orphans
+    client._start_error = None
+    with pytest.raises(AaestroError) as excinfo:
+        await agents.start(grouped("other", cpu="2.5"))
+    assert excinfo.value.code == ErrorCode.RT_006, "CPU 2 의 남은 컨테이너를 1 로 셌다"
+    await agents.stop_all()
+
+
+async def test_stop_all_retries_an_orphan_its_settling_left_behind():
+    """#654 qa — 종료가 정리를 기다리는 사이 제거에 실패한 컨테이너는 다시 지우는 순회가 없었다."""
+    client = HeldClient("create", "remove")
+    agents = orphan_launcher(client, cancel_wait_s=0.01)
+    await cancel_while_held(client, asyncio.create_task(agents.start(grouped())), 1)
+    client.held[0].set()  # 생성은 끝나고 정리가 제거에서 붙잡힌다
+    await until(lambda: len(client.held) == 2)
+
+    stopping = asyncio.create_task(agents.stop_all())
+    await asyncio.sleep(0)  # 정지 대상 이름이 정해지고 정리를 기다리기 시작한다
+    assert not agents._orphans
+    client._remove_failures = 1
+    client.release()
+    await stopping
+
+    assert not agents._orphans, "종료 중에 생긴 남은 컨테이너를 다시 지우지 않았다"
+    assert client.removed == ["container-0001" + "0" * 20]
