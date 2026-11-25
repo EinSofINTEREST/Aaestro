@@ -344,7 +344,10 @@ class MemoryAccess(Protocol):
     """
 
     async def search(self, query: str, **kwargs: Any) -> list[Any]:
-        """하이브리드 검색 — 접근 가능한 space 로 한정된다."""
+        """하이브리드 검색 — 접근 가능한 space 로 한정된다.
+
+        ``kwargs`` 의 ``run_id`` 는 검색하는 태스크의 run 이다 — 그 run 의 space 를 고른다 (#610).
+        """
         ...
 
     async def append(self, space: str, **kwargs: Any) -> Any:

@@ -1085,7 +1085,11 @@ In registry mode:
   is the provenance; only writes to the run spaces stop); otherwise it is empty. A run space whose
   entry in the registry's answer is malformed is left out (refused with `MEM_001`, logged as a
   warning without the value). A token-mode Memory Service
-  ignores the header — it carries no run scope (below).
+  ignores the header — it carries no run scope (below). agentd sends each task's own `run_id` on
+  that task's auto-recall and `memory_search` calls (#610) — per call, not per client, because one
+  agent serves concurrent tasks. A `direct-` run is sent as is and resolves to no run. A task
+  delegated over A2A carries the run id the calling peer chose; it is not authenticated, but it only
+  opens the run spaces of runs this agent is a node of (#468).
 
 The service follows the change feed while it runs. When the feed is lost but the registry still
 answers, cached decisions older than two seconds are asked again.

@@ -531,7 +531,9 @@ def _task_recall(manifest: AgentManifest, registry: Any, memory: Any) -> Any:
     async def recall(task: TaskRequest) -> str:
         # 회상 질의는 태스크 입력이다 — 프롬프트 전체를 쓰면 템플릿 문구가
         # 검색을 지배한다
-        return str(await recall_for_task(json.dumps(task.input, ensure_ascii=False), policy=policy))
+        # run 은 태스크마다 다르다 — 클라이언트에 두면 동시 태스크끼리 섞인다 (#610)
+        query = json.dumps(task.input, ensure_ascii=False)
+        return str(await recall_for_task(query, policy=policy, run_id=task.run_id))
 
     return recall
 

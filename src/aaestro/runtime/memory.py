@@ -56,6 +56,8 @@ class ServiceMemoryAccess:
         Returns:
             Scored entries, best-first.
         """
+        # run 은 토큰이 발급될 때 정해졌다 — 호출의 run (#610) 은 HTTP 클라이언트의 선택자다
+        kwargs.pop("run_id", None)
         requested: Sequence[str] | None = kwargs.pop("spaces", None)
         if requested is None:
             requested = [space.alias for space in self.token.spaces]
@@ -72,7 +74,9 @@ class ServiceMemoryAccess:
         self.service.record_search(self.token, requested)
         return found
 
-    async def recall_for_task(self, query: str, *, policy: RecallSpec) -> str:
+    async def recall_for_task(
+        self, query: str, *, policy: RecallSpec, run_id: str | None = None
+    ) -> str:
         """Recall once at task entry and render it for the prompt.
 
         태스크 진입 시 1회 회상해 프롬프트에 넣을 형태로 렌더링합니다 —
@@ -81,6 +85,7 @@ class ServiceMemoryAccess:
         Args:
             query: The task input to recall against.
             policy: The memoryset recall policy (k / min_score / budget_tokens).
+            run_id: Ignored — 이 어댑터의 run 은 토큰이 정한다 (HTTP 클라이언트와 같은 시그니처).
 
         Returns:
             The rendered context, or an empty string when nothing survives the

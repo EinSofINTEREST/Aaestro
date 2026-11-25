@@ -36,7 +36,9 @@
    TIMEOUT 은 없다 — 지울 기억은 메모리 정리 판정과 운영자 조작이 정한다). Service run 은 iteration 이 이어지는 동안 계속 누적 + compaction 적용.
    > **구현 상태**: 레지스트리는 run space 를 판정하고 (#608, Access Enforcement 9), Memory Service 는
    > 요청 헤더 `X-Aaestro-Run` 의 run 에 대해 레지스트리의 run 스냅샷 (`POST /v1/access/runs`) 으로 run
-   > space 를 조립해 space 마다 판정을 묻는다 (#609). agentd 가 헤더를 싣는 경로는 아직이다 (#610).
+   > space 를 조립해 space 마다 판정을 묻는다 (#609). agentd 는 태스크마다 그 태스크의 `run_id` 를
+   > 회상 · `memory_search` 요청에 싣는다 (#610) — 클라이언트는 동시 태스크가 함께 쓰므로 run 은 호출
+   > 인자다. agentd 기본 루프에는 아직 쓰기 (append) 경로가 없다.
    Cross-group 배선 그래프에서도 run 참여 노드 전원이 접근 (run 이 곧 경계)
 2. **local scope**: 컨테이너 재시작/재배포/그룹 이동과 무관하게 유지 — 에이전트 이름 기준.
    에이전트 버전 교체 시에도 승계 (기억은 이름에, 계약은 버전에)
@@ -313,7 +315,11 @@ Agent 컨테이너 (agentd) ──HTTP──▶ Memory Service (강제 지점) �
    run 을 고르는 헤더 `X-Aaestro-Run` (#609) 도 이 단계에서 읽는다 — 식별자 규칙 (`core/identifiers.py`) 에
    어긋나면 신원 확인 **뒤에** `VAL_002` 다 (값은 싣지 않는다). 그 run 의 run space 후보와 출처의 run
    (`source.run_id`) 은 헤더가 아니라 레지스트리의 run 조회 (그 run 의 노드인가 + 시작 시점 스냅샷의 별칭) 가
-   정한다 — 노드가 아니거나 레지스트리에 닿지 않고 캐시도 없으면 run 이 없는 요청으로 처리한다 (Rule 9)
+   정한다 — 노드가 아니거나 레지스트리에 닿지 않고 캐시도 없으면 run 이 없는 요청으로 처리한다 (Rule 9).
+   agentd 는 태스크의 `run_id` 를 그대로 싣는다 (#610): `direct-` run 도 싣고 서비스가 run 없음으로
+   본다. A2A 위임 태스크의 run id 는 호출자 (peer) 가 고른 값이라 인증된 것이 아니다 — 판정이 "이
+   신원이 그 run 의 노드인가" 라 자기가 노드가 아닌 run 의 space 에는 닿지 않고, 노드인 다른 run 의
+   id 를 대는 위임은 감수한 한계다 (#468, 01 Access Control 권한 모델 7)
 8. **run scope 는 레지스트리 모드 전용이다**: 토큰 모드 (레지스트리 없는 고정 토큰) 의 토큰은 run
    없이 발급돼 run space 가 실리지 않는다. 요청의 `X-Aaestro-Run` 헤더는 무시한다 (형식만 거른다) — 기동 검사가
    run space 선언을 막았으므로 열 것이 없고, 거절하면 run space 없는 그래프의 태스크까지 실패한다. 토큰 모드 Memory Service 는 카탈로그의 그래프가

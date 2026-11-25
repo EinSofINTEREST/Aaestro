@@ -88,7 +88,8 @@ class AgentToolRegistry:
         if name == MEMORY_SEARCH_TOOL:
             if self.memory is None:
                 raise unknown_tool(name, self.agent)
-            return await run_memory_search(self.memory, dict(arguments))
+            # run 은 태스크의 것이다 — 레지스트리를 동시 태스크가 함께 쓰므로 호출마다 싣는다
+            return await run_memory_search(self.memory, dict(arguments), run_id=ctx.run_id)
 
         if name == ASK_PEER_TOOL:
             if self.peers is None:

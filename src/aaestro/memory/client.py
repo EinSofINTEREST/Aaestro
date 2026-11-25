@@ -217,13 +217,22 @@ class HttpMemoryAccess:
             await self._owned.aclose()
             self._owned = None
 
-    async def _request(self, method: str, path: str, payload: dict[str, Any] | None = None) -> Any:
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        run_id: str | None = None,
+    ) -> Any:
         """서비스에 요청하고 실패를 구조화 에러로 옮긴다.
 
         모든 호출이 이 하나를 지납니다 — 메서드마다 따로 변환하면 한쪽이
         빠져 같은 장애가 어떤 창구를 썼는지에 따라 다른 타입으로 나옵니다.
+        ``run_id`` 는 이 요청만의 run 이고, 없으면 인스턴스의 것을 씁니다 (#610).
         """
         http = self._http()
+        run_id = run_id if run_id is not None else self.run_id
         try:
             response = await http.request(
                 method,
@@ -231,7 +240,7 @@ class HttpMemoryAccess:
                 json=payload,
                 headers={
                     "authorization": f"Bearer {self.token}",
-                    **({MEMORY_RUN_HEADER: self.run_id} if self.run_id is not None else {}),
+                    **({MEMORY_RUN_HEADER: run_id} if run_id is not None else {}),
                 },
             )
         except httpx.HTTPError as err:
@@ -247,9 +256,9 @@ class HttpMemoryAccess:
             raise _service_error(response, agent=self.agent)
         return response.json()
 
-    async def _post(self, path: str, payload: dict[str, Any]) -> Any:
+    async def _post(self, path: str, payload: dict[str, Any], *, run_id: str | None = None) -> Any:
         """POST 요청 — 변환은 ``_request`` 가 맡는다."""
-        return await self._request("POST", path, payload)
+        return await self._request("POST", path, payload, run_id=run_id)
 
     async def search(self, query: str, **kwargs: Any) -> list[ScoredEntry]:
         """Search the spaces this agent may read.
@@ -259,7 +268,9 @@ class HttpMemoryAccess:
 
         Args:
             query: The search text.
-            **kwargs: ``spaces`` / ``k``.
+            **kwargs: ``spaces`` / ``k`` / ``run_id`` — ``run_id`` 는 이 검색이 속한 태스크의
+                run 이다. 한 클라이언트를 동시 태스크가 함께 쓰므로 인스턴스가 아니라 호출이
+                싣는다 (#610).
 
         Returns:
             Scored entries, best-first.
@@ -269,7 +280,7 @@ class HttpMemoryAccess:
             if key in kwargs and kwargs[key] is not None:
                 payload[key] = kwargs[key]
 
-        found = await self._post("/v1/search", payload)
+        found = await self._post("/v1/search", payload, run_id=kwargs.get("run_id"))
         return [
             ScoredEntry(
                 entry=MemoryEntry.model_validate(item["entry"]),
@@ -279,7 +290,9 @@ class HttpMemoryAccess:
             for item in found
         ]
 
-    async def recall_for_task(self, query: str, *, policy: RecallSpec) -> str:
+    async def recall_for_task(
+        self, query: str, *, policy: RecallSpec, run_id: str | None = None
+    ) -> str:
         """Recall once for a task entry, ready for prompt injection.
 
         태스크 진입 시 1회 회상해 프롬프트에 붙일 텍스트를 만듭니다.
@@ -291,6 +304,7 @@ class HttpMemoryAccess:
         Args:
             query: The task text to recall against.
             policy: The memoryset recall policy (k / min_score / budget_tokens).
+            run_id: The run of the task recalling — 그 run 의 space 도 회상 대상이 된다.
 
         Returns:
             The rendered context, or an empty string when auto-recall is off or
@@ -299,7 +313,7 @@ class HttpMemoryAccess:
         if not policy.auto:
             return ""
 
-        found = await self.search(query, k=policy.k)
+        found = await self.search(query, k=policy.k, run_id=run_id)
         # 정정으로 대체된 항목은 서비스의 검색이 이미 걸러 보낸다 (09 Rule 4)
         selected = apply_budget(
             found, min_score=policy.min_score, budget_tokens=policy.budget_tokens
