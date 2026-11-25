@@ -298,6 +298,10 @@ either — a deploy **refuses** a custom agent whose image for that version is n
 (`409`, `RT_012`; see [`POST /v1/deployments`](#post-v1deployments)) — or whose `built` record
 names a different tag than the one a deploy would run.
 
+A custom executor that builds its own prompt from the task input must fence that input like a
+promptset render does: use `aaestro.modules.boundary.fence_input` (the notice plus untrusted-input
+markers); the task input is untrusted data.
+
 ### `GET /v1/agents/{name}/materials`
 
 The materials for the agent's **current** version. An agent without any is not an error:

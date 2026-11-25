@@ -308,6 +308,19 @@ class Boundary:
         return BOUNDARY_NOTICE.format(id=self.id)
 
 
+def fence_input(scope: str, values: Mapping[str, Any], text: str) -> str:
+    """Fence task input for a custom executor's own prompt.
+
+    커스텀 실행기 (``spec.entrypoint``) 가 태스크 입력으로 직접 프롬프트를 만들 때 쓰는 공개 헬퍼.
+    promptset 렌더와 같은 경계 안내문 + 경계 표시로 ``text`` 를 감싼다 —
+    ``values`` (태스크 입력) 에서 id 를 유도하고, ``text`` 안의 그 id 는 무효로 바꾼다
+    (03 MCP Rules 5, 04 Promptset Rules 2).
+    """
+    boundary = Boundary(scope, values, output_budget=len(text) + FENCE_COST)
+    boundary.arm()
+    return f"{boundary.notice()}\n{boundary(text)}"
+
+
 class GuardedEnvironment(ImmutableSandboxedEnvironment):
     """Sandbox that refuses ``*`` and ``**`` before they build an oversized result.
 
@@ -370,4 +383,5 @@ __all__ = [
     "UnsupportedSyntaxError",
     "boundary_id",
     "check_syntax",
+    "fence_input",
 ]

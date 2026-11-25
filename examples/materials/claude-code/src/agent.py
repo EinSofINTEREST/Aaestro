@@ -20,6 +20,7 @@ import structlog
 from aaestro.core.agent import TaskResult, TaskStatus
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 from aaestro.core.events import DoneEvent, TokenEvent
+from aaestro.modules.boundary import fence_input
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Sequence
@@ -62,12 +63,15 @@ def build_prompt(task: TaskRequest) -> str:
     """태스크 입력을 프롬프트로 옮긴다.
 
     ``prompt`` 키가 있으면 그것을, 없으면 입력 전체를 JSON 으로 넘긴다 —
-    조용히 빈 프롬프트를 보내면 모델이 맥락 없이 답한다.
+    조용히 빈 프롬프트를 보내면 모델이 맥락 없이 답한다. 입력은 앞 노드의 산출물 ·
+    direct 요청 본문이라 신뢰하지 않는다 — 경계 표시로 감싼다 (03 MCP Rules 5).
     """
     value = task.input.get(PROMPT_KEY)
     if isinstance(value, str) and value.strip():
-        return value
-    return json.dumps(task.input, ensure_ascii=False)
+        text = value
+    else:
+        text = json.dumps(task.input, ensure_ascii=False)
+    return fence_input("claude-code", task.input, text)
 
 
 def decode_prefix(raw: str) -> Any | None:
