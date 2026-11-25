@@ -634,3 +634,32 @@ async def test_an_upstream_cannot_pass_itself_off_as_the_proxy(status):
     # 본문의 code 는 그대로 닿는다 — 본문 모양으로는 프록시의 거절을 가를 수 없는 이유
     assert response.json()["error"]["code"] == "ACC_001"
     assert response.headers["retry-after"] == "1", "허용 목록의 헤더는 그대로 돌아온다"
+
+
+# --- 중계 provider 목록 (#644) -----------------------------------------------------------
+
+
+async def test_the_provider_list_names_only_providers_with_an_upstream():
+    """배포가 기동 전에 묻는다 — 키가 없는 provider 는 목록에 없다. 신원 없이 답한다."""
+    registry = Registry()
+    async with app_for(registry, Provider()) as client:
+        response = await client.get("/v1/providers")
+
+    assert response.status_code == 200
+    assert response.json() == {"providers": ["anthropic"]}
+    assert registry.asked == [], "목록은 판정을 거치지 않는다 — 무인증"
+
+
+async def test_the_provider_list_is_routed_before_the_provider_catch_all():
+    """catch-all 이 먼저 잡으면 ``v1`` 이라는 provider 의 404 가 된다."""
+    upstream = Upstream(
+        base_url="https://api.anthropic.com", logical_host="api.anthropic.com", api_key=KEY
+    )
+    app = create_provider_app(Registry(), {"openai-compat": upstream, "anthropic": upstream})
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://egress"
+    ) as client:
+        response = await client.get("/v1/providers")
+
+    assert response.status_code == 200
+    assert response.json() == {"providers": ["anthropic", "openai-compat"]}

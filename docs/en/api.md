@@ -489,6 +489,9 @@ Failures leave no ghost containers. What you get back tells you which kind it wa
   `model_providers` check: an unknown provider, a provider missing from
   `runtime.egress_proxy.providers`, or an override leaving the manifest's provider set — the finding
   is in `details.findings`.
+- `400` (`VAL_002`) — a provider the deployment uses has no upstream on the egress proxy right now
+  (`details.agent`, `details.provider`); `503` / `500` (`NET_001`, `NET_002`) — the proxy did not
+  answer which providers it relays. Nothing was started. See [Egress enforcement](#egress-enforcement).
 - `400` (`VAL_002`) — an agent with build materials declares a `runtime.image` other than the
   tag its build produces (`aaestro/agent-<name>:<version>`). Two places naming two images
   leave no way to tell what runs.
@@ -1114,12 +1117,29 @@ runtime:
   egress_proxy:
     connect_url: http://aaestro-egress:8080
     providers_url: http://aaestro-egress:8081
+    control_url: http://127.0.0.1:18095   # optional — where the control plane reaches the provider listener (default: providers_url)
     container: aaestro-egress   # needed only for MCP sidecars — see below
     providers: [anthropic]      # providers the proxy terminates — add openai-compat when its upstream is set (default [anthropic])
 ```
 
 Deployment validation refuses a model provider (primary or fallback) that is not in `providers`
-(`400 VAL_001`, finding `model_providers`).
+(`400 VAL_001`, finding `model_providers`). That list is what you declare; it does not prove the proxy
+holds a key for each provider. So every deploy also asks the proxy itself: `GET /v1/providers` on
+`control_url` (or `providers_url` when it is not set) answers `{"providers": [...]}` — the providers that have an upstream (a key) right now,
+sorted. It needs no identity and names no keys. A provider the deployment uses — primary, fallback,
+node `model` or a deploy `model_overrides` — that is not in that answer refuses the deploy before any
+container starts (`400 VAL_002`, `details.agent` · `details.provider`). If the proxy does not answer,
+the deploy is refused too — it never falls back to the declared list: connection refused `503 NET_001`
+and timeout `503 NET_002` (both retryable — the whole query has a 5-second deadline), a `5xx`
+`503 NET_001` (retryable), and any other status or a body of the wrong shape, over 64 KiB or compressed (the
+control plane asks for `identity` and counts the bytes as received, so it never inflates an answer)
+`500 NET_001` (not retryable — a proxy without this endpoint answers `404`). The proxy is
+asked before the graph and its declarations are read, so with the proxy unreachable even an unknown
+graph is refused this way.
+The control plane therefore has to reach the proxy's provider listener. `providers_url` is the
+address agents use on the agent network; a control plane outside that network (on the host) cannot
+resolve it, so set `control_url` to an address it can reach — for example the listener published on
+loopback. Without `control_url` the control plane asks `providers_url`. Agents never see `control_url`.
 
 Deployments then give each agent `HTTPS_PROXY` (its own identity as credentials),
 `ANTHROPIC_BASE_URL` and `OPENAI_COMPAT_BASE_URL` pointing at the proxy, and its identity where

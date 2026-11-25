@@ -144,7 +144,9 @@ def _start(metrics: Metrics) -> None:
 
             proxy = config.runtime.egress_proxy
             deployments.egress = EgressEndpoints(
-                connect_url=proxy.connect_url, providers_url=proxy.providers_url
+                connect_url=proxy.connect_url,
+                providers_url=proxy.providers_url,
+                control_url=proxy.control_url,
             )
             deployments.sidecar_proxy = sidecar_proxy(proxy)
     # 실행 중 run 과 배포가 참조하는 선언은 지우거나 덮어쓰지 못한다 (#242 리뷰 / #243)

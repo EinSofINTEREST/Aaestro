@@ -25,6 +25,7 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 from urllib.parse import quote, urlsplit
 
+import httpx
 import structlog
 
 from aaestro.access.client import ACCESS_URL_ENV
@@ -62,6 +63,14 @@ log = structlog.get_logger(__name__)
 
 DEFAULT_READY_TIMEOUT_S = 60.0
 DEFAULT_READY_POLL_S = 0.5
+PROXY_PROVIDERS_PATH = "/v1/providers"
+"""프록시가 실제로 중계하는 provider 목록 — ``egress/providers.py`` ``PROVIDERS_PATH`` 와 같다.
+
+runtime 은 egress 패키지 (FastAPI 앱) 를 import 하지 않는다 — 경로 문자열만 공유한다."""
+PROXY_QUERY_TIMEOUT_S = 5.0
+"""배포 전 프록시 provider 조회의 **총** 마감 — 목록 하나라 길 이유가 없다."""
+PROXY_ANSWER_MAX_BYTES = 64 * 1024
+"""프록시 provider 목록 응답의 상한 (풀린 뒤 바이트) — control plane 밖에서 온 입력이다."""
 
 
 class DeploymentStatus(StrEnum):
@@ -445,6 +454,8 @@ class DeploymentManager:
     egress: EgressEndpoints | None = None
     """이그레스 프록시 (#293) — 있으면 외부 HTTPS·모델 API 를 프록시로 보내고 모델 키를 넣지
     않는다."""
+    proxy_transport: httpx.AsyncBaseTransport | None = None
+    """프록시 provider 조회의 전송 (#644) — 테스트가 주입한다. None 이면 실제 네트워크."""
     sidecar_proxy: ProxyAttachment | None = None
     """사이드카 네트워크에 붙일 프록시 컨테이너 (#304) — 프록시를 켠 배포에서 사이드카를 쓰려면
     필요하다. 에이전트가 사이드카에 직접 닿지 않고 프록시의 도구 판정을 거치게 한다."""
@@ -547,6 +558,9 @@ class DeploymentManager:
                 CONFIG/``CFG_001`` if the graph declares connections, the access registry is off
                 and token mode is not explicitly allowed (#415).
         """
+        # 선언을 읽기 **전에** 묻는다 — 이 뒤로 `_claim` 까지 await 가 없어야 묻는 사이 바뀐 선언이
+        # 검증을 비켜 가지 않고, 동시에 온 배포 · 선언 저장도 점유로 막힌다 (#644)
+        relayed = await self._relayed_providers()
         overrides = dict(model_overrides or {})
         topology = self.catalog.graph(graph_name).with_model_overrides(overrides)
         report = self.author.validate(graphs=[topology], with_saved_graphs=False)
@@ -564,6 +578,8 @@ class DeploymentManager:
         _check_volume_paths(manifests)
         self._check_sidecars(manifests)
         self._check_token_mode(topology)
+        # 기록 · 점유 전에 — 프록시에 upstream 이 없는 provider 는 기동해도 호출마다 404 다 (#644)
+        _check_proxy_upstreams(topology, manifests, relayed)
         # 사이드카 · 포트 · 신원 · 기록 어느 것보다 먼저 — 겹치는 배포의 되감기는 떠 있는 배포의
         # 사이드카와 포트 기록을 치운다 (#473). 첫 await 전에 잡아야 동시에 온 배포도 막힌다
         # 배포 id 를 점유 전에 정한다 — 기동 중에 막힌 배포가 무엇을 기다리는지 알 수 있게
@@ -958,6 +974,65 @@ class DeploymentManager:
             admit_token_mode(
                 allowed=self.allow_token_mode, component="deployments", graph=topology.metadata.name
             )
+
+    async def _relayed_providers(self) -> frozenset[str] | None:
+        """프록시가 지금 중계하는 provider — 프록시가 없으면 None (묻지 않는다).
+
+        배포마다 묻는다 — 프록시의 키는 control plane 재시작 없이 바뀐다. 답하지 못하면 거절한다
+        (설정 목록으로 물러나지 않는다).
+
+        Raises:
+            AaestroError: NETWORK/``NET_001`` (refused, 5xx — retryable; other statuses, a body
+                that is malformed, undecodable or over the size cap — not) or ``NET_002``
+                (timeout or the total deadline, retryable).
+        """
+        if self.egress is None:
+            return None
+        base = self.egress.control_url or self.egress.providers_url
+        url = f"{base.rstrip('/')}{PROXY_PROVIDERS_PATH}"
+        details: dict[str, Any] = {"setting": "runtime.egress_proxy.control_url (or providers_url)"}
+        try:
+            async with asyncio.timeout(PROXY_QUERY_TIMEOUT_S):
+                body = await self._read_proxy_answer(url, details)
+        except (TimeoutError, httpx.TimeoutException) as err:
+            raise _proxy_error(ErrorCode.NET_002, "egress proxy timed out", details) from err
+        except httpx.HTTPError as err:
+            raise _proxy_error(ErrorCode.NET_001, "egress proxy unreachable", details) from err
+        try:
+            names = json.loads(body)
+        except (ValueError, RecursionError) as err:  # 상한 안에서도 깊은 중첩은 재귀 한도를 넘는다
+            raise _malformed(details) from err
+        names = names.get("providers") if isinstance(names, dict) else None
+        if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
+            raise _malformed(details)
+        return frozenset(names)
+
+    async def _read_proxy_answer(self, url: str, details: dict[str, Any]) -> bytes:
+        """상한까지만 읽는다 — 넘으면 거기서 멈춘다."""
+        async with (
+            httpx.AsyncClient(
+                transport=self.proxy_transport, timeout=PROXY_QUERY_TIMEOUT_S
+            ) as client,
+            client.stream("GET", url, headers={"accept-encoding": "identity"}) as answer,
+        ):
+            if not answer.is_success:
+                # 5xx 는 일시 장애일 수 있다. 4xx 는 이 엔드포인트가 없는 옛 프록시 — 다시 해도 같다
+                raise _proxy_error(
+                    ErrorCode.NET_001,
+                    f"egress proxy answered {answer.status_code} to the provider query",
+                    {**details, "status": answer.status_code},
+                    retryable=answer.is_server_error,
+                )
+            # 압축을 풀지 않는다 — 풀면 작은 조각 하나가 상한 검사 전에 메모리에서 부풀어 오른다.
+            # identity 를 청했으니 정상 프록시는 압축하지 않는다
+            if (answer.headers.get("content-encoding") or "identity").strip().lower() != "identity":
+                raise _malformed({**details, "content_encoding": "not identity"})
+            body = bytearray()
+            async for chunk in answer.aiter_raw():
+                body += chunk
+                if len(body) > PROXY_ANSWER_MAX_BYTES:
+                    raise _malformed({**details, "max_bytes": PROXY_ANSWER_MAX_BYTES})
+            return bytes(body)
 
     def _agents_of(self, topology: GraphTopology) -> list[AgentManifest]:
         """노드별 에이전트 — 여러 노드가 같은 에이전트를 쓰면 **한 번만**."""
@@ -1439,6 +1514,9 @@ class EgressEndpoints:
 
     connect_url: str
     providers_url: str
+    control_url: str | None = None
+    """control plane 이 프록시 provider 창구에 닿는 주소 (#644) — 비우면 ``providers_url``.
+    에이전트 env 에는 실리지 않는다."""
 
     def env_for(self, agent: str, credential: str) -> dict[str, str]:
         """이 에이전트의 외부 호출 배선 — 프록시 자격은 **그 에이전트의 신원**이다."""
@@ -1506,6 +1584,67 @@ def _check_volume_paths(manifests: Sequence[AgentManifest]) -> None:
                     "runtime_path": kind,
                 },
             )
+
+
+def _providers_of(
+    topology: GraphTopology, manifests: Sequence[AgentManifest]
+) -> set[tuple[str, str]]:
+    """(에이전트, provider) — 배포 검증 ``model_providers`` 가 보는 것과 같은 집합.
+
+    manifest 의 primary · fallback 에, 노드 ``model`` (배포 ``model_overrides`` 가 이미 입혀진 것)
+    으로 해석된 모델의 provider 를 더한다. 검증을 지난 뒤라 override 는 해석된다.
+    """
+    by_name = {m.name: m for m in manifests}
+    pairs = {(m.name, p) for m in manifests for p in m.spec.model.providers()}
+    for node in topology.spec.nodes:
+        if node.agent is None or node.model is None:
+            continue
+        manifest = by_name.get(agent_name(node.agent))
+        if manifest is not None:
+            resolved = manifest.spec.model.overridden(node.model)
+            pairs |= {(manifest.name, p) for p in resolved.providers()}
+    return pairs
+
+
+def _check_proxy_upstreams(
+    topology: GraphTopology,
+    manifests: Sequence[AgentManifest],
+    relayed: frozenset[str] | None,
+) -> None:
+    """배포가 쓰는 provider 가 프록시에 upstream 으로 있는지 — 동기 대조만 (조회는 선언 읽기 전에).
+
+    Raises:
+        AaestroError: VALIDATION/``VAL_002`` if a provider has no upstream on the proxy.
+    """
+    if relayed is None:
+        return
+    for agent, provider in sorted(_providers_of(topology, manifests)):
+        if provider not in relayed:
+            raise AaestroError(
+                category=ErrorCategory.VALIDATION,
+                code=ErrorCode.VAL_002,
+                message=f"model provider has no upstream on the egress proxy: {provider}",
+                details={"agent": agent, "provider": provider},
+            )
+
+
+def _proxy_error(
+    code: ErrorCode, message: str, details: dict[str, Any], *, retryable: bool = True
+) -> AaestroError:
+    return AaestroError(
+        category=ErrorCategory.NETWORK,
+        code=code,
+        message=message,
+        retryable=retryable,
+        details=details,
+    )
+
+
+def _malformed(details: dict[str, Any]) -> AaestroError:
+    # 모양이 틀린 답은 다시 물어도 같다 — 프록시 버전 · 배치 문제다
+    return _proxy_error(
+        ErrorCode.NET_001, "egress proxy provider list is malformed", details, retryable=False
+    )
 
 
 def _code(err: BaseException) -> str:

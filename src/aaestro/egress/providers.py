@@ -38,6 +38,10 @@ from aaestro.egress.redact import error_body, redact
 log = structlog.get_logger(__name__)
 
 RESOLVE_TIMEOUT_S = 10.0
+PROVIDERS_PATH = "/v1/providers"
+"""프록시가 실제로 중계하는 provider 목록 (#644).
+
+catch-all 보다 먼저 붙어야 ``v1`` provider 로 잡히지 않는다."""
 UPSTREAM_TIMEOUT_S = 600.0
 """모델 호출은 길다 — 스트리밍 응답이 끝날 때까지 기다린다."""
 
@@ -128,6 +132,11 @@ def create_provider_app(
     app = FastAPI(title="Aaestro egress — provider termination")
     for router in routers:
         app.include_router(router)
+
+    @app.get(PROVIDERS_PATH)
+    async def providers() -> dict[str, list[str]]:
+        # 무인증 — 키가 아니라 어떤 provider 를 중계하는지만 알린다. 배포가 기동 전에 묻는다 (#644)
+        return {"providers": sorted(upstreams)}
 
     @app.api_route("/{provider}/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
     async def forward(provider: str, path: str, request: Request) -> Response:
