@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import shutil
 import sqlite3
@@ -58,12 +59,9 @@ ENV PYTHONPATH=/app/{SOURCE_ROOT} \\
     AAESTRO_ROOT=/app
 """
 
-_USER_DIRECTIVE = re.compile(r"^\s*USER\s+(\S+)", re.IGNORECASE | re.MULTILINE)
-_COPY_DIRECTIVE = re.compile(r"^\s*(COPY|ADD)\s+(.+)$", re.IGNORECASE | re.MULTILINE)
 _FLAG = re.compile(r"^--\S+")
+_PARSER_DIRECTIVE = re.compile(r"^#\s*(\w+)\s*=", re.IGNORECASE)
 _REMOTE = re.compile(r"^(https?|git|ftp)://", re.IGNORECASE)
-_FROM_DIRECTIVE = re.compile(r"^\s*FROM\s+(\S+)", re.IGNORECASE | re.MULTILINE)
-_ROOT_USERS = frozenset({"root", "0", "0:0"})
 
 
 class BuildStatus(StrEnum):
@@ -114,17 +112,54 @@ def _invalid(message: str, **details: object) -> AaestroError:
     )
 
 
-def _line_at(text: str, offset: int) -> int:
-    """1-based line number of ``offset`` — 정규식이 줄을 가르는 기준 (`\\n`) 과 같다 (#412)."""
-    return text.count("\n", 0, offset) + 1
-
-
 def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _instructions(text: str) -> list[tuple[int, str, str]]:
+    """Dockerfile 을 (시작 줄 번호, 대문자 지시문, 나머지) 로 푼다 — 세 검사가 같은 해석을 쓴다.
+
+    `\\` 로 이어 쓴 줄은 합치고, 주석 · 빈 줄은 (이어 쓰는 중에도) 건너뛴다. 줄 번호는 1-based.
+    shortcut: 이스케이프 문자는 `\\` 만 안다 — `# escape=` 는 `check_dockerfile` 이 거절한다.
+    """
+    found: list[tuple[int, str, str]] = []
+    start = 0
+    parts: list[str] = []
+    for number, raw in enumerate(text.split("\n"), 1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if not parts:
+            start = number
+        if raw.rstrip().endswith("\\"):
+            parts.append(raw.rstrip()[:-1])
+            continue
+        parts.append(raw)
+        keyword, _, rest = " ".join(parts).strip().partition(" ")
+        found.append((start, keyword.upper(), rest.strip()))
+        parts = []
+    if parts:
+        keyword, _, rest = " ".join(parts).strip().partition(" ")
+        found.append((start, keyword.upper(), rest.strip()))
+    return found
+
+
+def _check_parser_directives(text: str) -> None:
+    """맨 위의 `# key=value` 줄 중 `escape` 는 거절한다.
+
+    이스케이프 문자를 바꾸면 이어 쓰기 해석이 갈려 이 검사를 비껴간 줄이 Docker 에서는
+    지시문이 된다. 해석기를 하나로 두려고 바꾸는 것 자체를 막는다.
+    """
+    for number, raw in enumerate(text.split("\n"), 1):
+        match = _PARSER_DIRECTIVE.match(raw.strip())
+        if match is None:
+            return
+        if match[1].lower() == "escape":
+            raise _invalid("Dockerfile must not change the escape character", line=number)
+
+
 def check_dockerfile(text: str) -> None:
-    """Validate a Dockerfile against the layout rules (#263).
+    """Validate a Dockerfile against the layout rules (#263, #690).
 
     빌드가 시작되고 나면 이미지가 절반 만들어진 채 실패한다 — 규약 위반은 **굽기 전에**
     잡는다.
@@ -132,27 +167,30 @@ def check_dockerfile(text: str) -> None:
     Raises:
         AaestroError: VALIDATION/``VAL_002`` on any rule violation.
     """
-    first_from = _FROM_DIRECTIVE.search(text)
+    _check_parser_directives(text)
+    instructions = _instructions(text)
+    first_from = next((i for i in instructions if i[1] == "FROM"), None)
     if first_from is None:
         raise _invalid("Dockerfile must declare a FROM")
-    if not first_from[1].startswith(BASE_IMAGE_PREFIX):
+    image = next((t for t in first_from[2].split() if not _FLAG.match(t)), "")
+    if not image.startswith(BASE_IMAGE_PREFIX):
         # agentd 가 base 에 들어 있다 — 다른 이미지에서 시작하면 Control API 가 없다
-        raise _invalid(
-            f"Dockerfile must start FROM {BASE_IMAGE_PREFIX}<tag>",
-            line=_line_at(text, first_from.start(1)),
-        )
-    users = list(_USER_DIRECTIVE.finditer(text))
-    last_user = users[-1] if users else None
-    if last_user is not None and last_user[1].strip().strip('"') in _ROOT_USERS:
+        raise _invalid(f"Dockerfile must start FROM {BASE_IMAGE_PREFIX}<tag>", line=first_from[0])
+    users = [i for i in instructions if i[1] == "USER"]
+    if users and _is_root(users[-1][2]):
         # 설치 동안 root 로 올라가는 것은 흔하다 — 되돌리지 않고 끝나는 것이 문제다
-        raise _invalid(
-            "Dockerfile must not end as root (02 Security)",
-            line=_line_at(text, last_user.start(1)),
-        )
-    _check_sources(text)
+        raise _invalid("Dockerfile must not end as root (02 Security)", line=users[-1][0])
+    _check_sources(instructions)
 
 
-def _check_sources(text: str) -> None:
+def _is_root(spec: str) -> bool:
+    """`user[:group]` 의 user 쪽이 root 인가 — group 만 0 인 `agent:0` 은 root 가 아니다."""
+    tokens = spec.split()
+    user = tokens[0].strip("\"'").split(":")[0] if tokens else ""
+    return user.lower() == "root" or (user.isdigit() and int(user) == 0)
+
+
+def _check_sources(instructions: list[tuple[int, str, str]]) -> None:
     """`COPY`/`ADD` 의 소스가 컨텍스트 안의 로컬 경로인지.
 
     컨텍스트 밖 경로는 Docker 자신도 막지만 **빌드 도중에** 막는다 — 이미지가 절반
@@ -163,22 +201,32 @@ def _check_sources(text: str) -> None:
     02 는 이미지를 배포 파이프라인이 굽고 버전을 고정하라고 규정하므로, 굽는 도중의
     임의 다운로드는 그 계약 밖이다.
     """
-    for match in _COPY_DIRECTIVE.finditer(text):
-        directive, rest = match[1], match[2]
-        line = _line_at(text, match.start(1))
-        parts = [token for token in rest.split() if not _FLAG.match(token)]
+    for line, directive, rest in instructions:
+        if directive not in ("COPY", "ADD"):
+            continue
+        tokens = rest.split()
+        while tokens and _FLAG.match(tokens[0]):
+            tokens.pop(0)
+        body = " ".join(tokens)
+        parsed = None
+        if body.startswith("["):
+            try:
+                parsed = json.loads(body)
+            except ValueError:
+                parsed = None  # Docker 도 JSON 이 아니면 셸 형식으로 읽는다
+        if isinstance(parsed, list):
+            tokens = [str(t) for t in parsed]
         # 마지막 토큰은 목적지다 — 소스만 본다
-        for source in parts[:-1]:
-            cleaned = source.strip().strip('"').strip("'")
+        for source in tokens[:-1]:
+            cleaned = source.strip().strip("[],").strip('"').strip("'")
             if _REMOTE.match(cleaned):
                 raise _invalid(
-                    f"{directive.upper()} must not fetch a remote source — "
-                    "pin it in the base image",
+                    f"{directive} must not fetch a remote source — pin it in the base image",
                     line=line,
                 )
             if cleaned.startswith("/") or PurePosixPath(cleaned).parts[:1] == ("..",):
                 raise _invalid(
-                    f"{directive.upper()} source must stay inside the build context",
+                    f"{directive} source must stay inside the build context",
                     line=line,
                 )
 

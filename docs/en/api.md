@@ -366,6 +366,12 @@ The skeleton copies those three into `/app` and puts `/app/src` on `PYTHONPATH`,
 - not end as `root` (going up to install and back down is fine);
 - `COPY`/`ADD` only from inside the context — no absolute paths, no `..`, no remote URLs.
 
+The check reads instructions, not lines: `\` continuations are joined, comments are skipped, keywords
+are case-insensitive, and the JSON form (`ADD ["src", "dst"]`) is read as such. `USER` counts as root
+when the user part of `user:group` is `root` or `0` (`root:0`, `0:1000`; `agent:0` is not root). A
+`# escape=` parser directive is refused, since it changes how continuations read. A refusal
+carries only the line the instruction starts on (`details.line`), never the value.
+
 What is refused before anything is built:
 
 - `404` (`NF_001`) — the agent is not declared.

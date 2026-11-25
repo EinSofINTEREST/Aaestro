@@ -124,6 +124,65 @@ def test_going_root_and_back_is_allowed():
     )
 
 
+# --- 지시문 해석 우회 (#690) ---------------------------------------------------------
+
+_BASE = "FROM aaestro/agent-base:0.1.0\n"
+
+
+@pytest.mark.parametrize(
+    ("text", "line"),
+    [
+        (_BASE + "ADD --chown=1000 \\\n    https://MARKER.example/x /app/x\n", 2),
+        (
+            _BASE + "RUN a\nADD --chown=1000 \\\n  # c\n\n  --chmod=644 \\\n  http://MARKER/x /x\n",
+            3,
+        ),
+        (_BASE + 'ADD ["https://MARKER.example/x", "/app/x"]\n', 2),
+        (_BASE + 'COPY --chown=1 ["git://MARKER/x", "/app/x"]\n', 2),
+        (_BASE + 'ADD ["\\u0068ttps://MARKER.example/x", "/app/x"]\n', 2),
+        (_BASE + 'COPY ["/MARKER", "/app/x"]\n', 2),
+        (_BASE + "add https://MARKER/x /x\n", 2),
+        (_BASE + "USER root:root\n", 2),
+        (_BASE + "USER root:0\n", 2),
+        (_BASE + "USER 0:root\n", 2),
+        (_BASE + "USER 0:1000\n", 2),
+        (_BASE + "USER ROOT\n", 2),
+        (_BASE + "USER \\\n  root\n", 2),
+        ("# escape=`\n" + _BASE, 1),
+        ("# syntax=x\n# Escape = `\n" + _BASE, 2),
+    ],
+)
+def test_instruction_bypasses_are_refused_with_the_start_line(text, line):
+    with pytest.raises(AaestroError) as exc_info:
+        check_dockerfile(text)
+
+    err = exc_info.value
+    assert err.code == ErrorCode.VAL_002
+    assert err.details == {"line": line}
+    assert "marker" not in (err.message + str(err.details)).lower()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        _BASE + "USER agent:0\n",
+        _BASE + "USER 1000:0\n",
+        _BASE + "COPY --chown=1000:1000 \\\n  src/ \\\n  /app/src/\n",
+        _BASE + 'COPY ["src/", "/app/src/"]\n',
+        _BASE + "# ADD https://x/y /z\nRUN echo hi # USER root\n",
+        "# syntax=docker/dockerfile:1\n" + _BASE,
+        _BASE + "# escape=`\nRUN x\n",
+    ],
+)
+def test_legitimate_forms_still_pass(text):
+    check_dockerfile(text)
+
+
+def test_the_shipped_material_dockerfiles_still_pass():
+    for path in Path("examples/materials").glob("*/Dockerfile"):
+        check_dockerfile(path.read_text(encoding="utf-8"))
+
+
 # --- 조립과 빌드 --------------------------------------------------------------------
 
 
