@@ -63,7 +63,10 @@ ENV PYTHONPATH=/app/{SOURCE_ROOT} \\
 _FLAG = re.compile(r"^--\S+")
 # 해석을 바꾸는 파서 지시문 모양 — 위치와 무관하게 거절한다 (BuildKit 의 관용성을 확인할 수 없다).
 # `check` 는 lint 동작만 바꾸므로 허용한다
-_REFUSED_DIRECTIVE = re.compile(r"^#\s*(escape|syntax)\s*=", re.IGNORECASE)
+# `//syntax=` 와 JSON 형태 `{"syntax": …}` 도 BuildKit 이 읽을 수 있다 (추정) — 같이 거절한다
+_REFUSED_DIRECTIVE = re.compile(
+    r"^(?:#|//)\s*(?:escape|syntax)\s*=|\"\s*(?:escape|syntax)\s*\"", re.IGNORECASE
+)
 _ASCII_SPACE = frozenset(" \t\n\v\f\r")
 # Docker 의 지시문 · 인자 구분과 이어 쓰기 (`\` 뒤 공백 허용) — `str.split()` 과 다르다
 _SEPARATOR = re.compile(r"[ \t\v\f\r]+")
@@ -181,7 +184,7 @@ def _check_lexical(text: str) -> None:
     for number, raw in enumerate(text.split("\n"), 1):
         if any(c.isspace() and c not in _ASCII_SPACE for c in raw):
             raise _invalid("Dockerfile must not contain non-ASCII whitespace", line=number)
-        if _REFUSED_DIRECTIVE.match(raw.strip(" \t\v\f\r")):
+        if _REFUSED_DIRECTIVE.search(raw.strip(" \t\v\f\r")):
             raise _invalid("Dockerfile must not use this parser directive", line=number)
 
 

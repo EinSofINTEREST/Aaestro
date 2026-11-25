@@ -375,7 +375,7 @@ case-insensitive, instructions and arguments are split on `[ \t\v\f\r]+` (a tab 
 UTF-8 BOM is dropped, and the JSON form (`ADD ["src", "dst"]`) is read as such. Notations whose reading
 could differ are refused rather than guessed (`VAL_002`, `details.line` only, never the value):
 
-- parser directives `# escape=` and `# syntax=` anywhere in the file (they change how the file is read;
+- parser directives `# escape=` and `# syntax=` (also the `//syntax=` and JSON `{"syntax": …}` shapes) anywhere in the file (they change how the file is read;
   `# check=` only tunes linting and is allowed);
 - whitespace outside ASCII (NBSP, NEL, U+2028, …) anywhere — Docker counts it as whitespace, this check
   does not;
