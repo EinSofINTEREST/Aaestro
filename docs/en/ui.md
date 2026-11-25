@@ -67,6 +67,7 @@ validation requires `min_delay_s > 0` and `max_delay_s >= min_delay_s`.
 **검증** sends the draft to `POST /v1/validate` and lists every finding with its check name
 and code. **저장** validates first and refuses to write if anything fails, so an invalid
 graph never reaches disk through the UI.
+Validation warnings appear in amber and do not block saving or deployment.
 
 **카탈로그에서 불러오기** loads an existing graph and bumps its patch version, because saving
 changed content under the same version is refused — the version is how a deployment stays

@@ -27,6 +27,7 @@ td input, td select { width: 100%; box-sizing: border-box; }
 button.danger { color: #b00020; }
 .findings li, .problems li { color: #b00020; padding: .2rem 0; }
 .findings li.ok { color: #0a7d32; }
+.findings li.warning { color: #b26a00; }
 .status-ready, .status-completed { color: #0a7d32; font-weight: 600; }
 .status-failed, .status-lost, .status-halted { color: #b00020; font-weight: 600; }
 #image-log { white-space: pre-wrap; }

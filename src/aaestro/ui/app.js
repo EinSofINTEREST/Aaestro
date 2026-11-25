@@ -291,9 +291,15 @@ function showGraph(doc) {
 
 function showFindings(selector, result) {
   const list = $(selector);
-  if (result.ok) { list.replaceChildren(el("li", { className: "ok", textContent: "검증 통과" })); return true; }
-  list.replaceChildren(...result.findings.map((f) => el("li", { textContent: `${f.check} [${f.code}] ${f.message}` })));
-  return false;
+  const findings = result.findings.map((f) => el("li", { textContent: `${f.check} [${f.code}] ${f.message}` }));
+  const warnings = (result.warnings || []).map((w) => el("li", {
+    className: "warning", textContent: `경고: ${w.check} [${w.code}] ${w.message}`,
+  }));
+  list.replaceChildren(...findings, ...warnings);
+  if (result.ok && !findings.length && !warnings.length) {
+    list.replaceChildren(el("li", { className: "ok", textContent: "검증 통과" }));
+  }
+  return result.ok;
 }
 
 async function validateGraph(doc) {
