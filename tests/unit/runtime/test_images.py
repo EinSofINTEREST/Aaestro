@@ -171,7 +171,10 @@ def test_instruction_bypasses_are_refused_with_the_start_line(text, line):
         _BASE + 'COPY ["src/", "/app/src/"]\n',
         _BASE + "# ADD https://x/y /z\nRUN echo hi # USER root\n",
         "# check=skip=JSONArgsRecommended\n" + _BASE,
-        _BASE + "# escape=`\nRUN x\n",
+        "FROM aaestro/agent-base:0.1.0@sha256:" + "a" * 64 + "\n",
+        "FROM aaestro/agent-base@sha256:" + "b" * 64 + "\n",
+        "ARG T=1\nFROM aaestro/agent-base:${T}@sha256:" + "c" * 64 + "\n",
+        _BASE.replace("\n", "\r\n") + "COPY src/ /app/src/\r\n",
     ],
 )
 def test_legitimate_forms_still_pass(text):
@@ -465,6 +468,39 @@ def test_the_sqlite_store_overwrites_an_earlier_result(tmp_path):
 
 
 # --- 값 없는 거절 (#412) -----------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("text", "line"),
+    [
+        ("FROM MARKER/image:1\r\nRUN a \\\r\n  b \\\r\nFROM aaestro/agent-base:0.1.0\r\n", 1),
+        (_BASE.replace("\n", "\r\n") + "USER root\r\nRUN a \\\r\n  b \\\r\nUSER 1000\r\n", 2),
+        ("FROM MARKER/image:1\nRUN a \\\n  b \\\r\nFROM aaestro/agent-base:0.1.0\n", 1),
+        (_BASE + "\u00a0USER root\n", 2),
+        (_BASE + "\u0085USER root\n", 2),
+        (_BASE + "\u2028USER root\n", 2),
+        (_BASE + "\u3000FROM MARKER/image:1\n", 2),
+        ("FROM MARKER/image:1\nRUN true \\\n\u00a0\nFROM aaestro/agent-base:0.1.0\n", 3),
+        (_BASE + "USER root\nRUN true \\\n\u00a0# c\nUSER 1000\n", 4),
+        (_BASE + "USER -0\n", 2),
+        (_BASE + "USER +0\n", 2),
+        (_BASE + "USER agent:-0\n", 2),
+        ("\n# syntax=MARKER/frontend:1\n" + _BASE, 2),
+        ("# check=skip=all\n# Syntax = MARKER/f:1\n" + _BASE, 2),
+        (_BASE + "# escape=`\nRUN x\n", 2),
+        (_BASE + "RUN true \\\n# syntax=MARKER\n  && true\n", 3),
+        ("FROM aaestro/agent-base:0.1.0@sha256:" + "a" * 63 + "\n", 1),
+        ("FROM aaestro/agent-base:0.1.0@sha256:" + "G" * 64 + "\n", 1),
+    ],
+)
+def test_second_round_bypasses_are_refused(text, line):
+    with pytest.raises(AaestroError) as exc_info:
+        check_dockerfile(text)
+
+    err = exc_info.value
+    assert err.code == ErrorCode.VAL_002
+    assert err.details == {"line": line}
+    assert "marker" not in (err.message + str(err.details)).lower()
 
 
 @pytest.mark.parametrize(

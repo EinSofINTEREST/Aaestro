@@ -375,14 +375,19 @@ case-insensitive, instructions and arguments are split on `[ \t\v\f\r]+` (a tab 
 UTF-8 BOM is dropped, and the JSON form (`ADD ["src", "dst"]`) is read as such. Notations whose reading
 could differ are refused rather than guessed (`VAL_002`, `details.line` only, never the value):
 
-- parser directives `# escape=` and `# syntax=` (they change how the file is read; `# check=` only
-  tunes linting and is allowed);
+- parser directives `# escape=` and `# syntax=` anywhere in the file (they change how the file is read;
+  `# check=` only tunes linting and is allowed);
+- whitespace outside ASCII (NBSP, NEL, U+2028, …) anywhere — Docker counts it as whitespace, this check
+  does not;
 - heredocs (`<<` in any instruction);
 - a `COPY`/`ADD` source that is not made of `[A-Za-z0-9._/*?-]` (so no quotes, `\`, `$`, `:` or `@` —
   URLs, `git@…`, `ssh://…`), or that normalizes to an absolute path or to `..`/`../…`;
-- a `USER` value that is not a plain `user[:group]` of `[A-Za-z0-9_.-]`, or whose user part is `root`/`0`
+- a `USER` value that is not a plain `user[:group]` of `[A-Za-z0-9_.-]` starting with a letter, digit or `_`, or whose user part is `root`/`0`
   (`root:0`, `0:1000`; `agent:0` is not root);
-- a final-image `FROM` that is not `aaestro/agent-base:<tag>` (the tag may be `${NAME}`).
+- a final-image `FROM` that is not `aaestro/agent-base:<tag>` (the tag may be `${NAME}`; a `@sha256:<64 hex>` digest pin is accepted, with or without a tag).
+
+In short: **notations whose reading could differ are refused, even when this over-refuses** (a `<<` inside
+a `RUN` string, a source path with a space, a `[ab]` glob).
 
 Only the last stage counts: it must reach the base directly or through earlier stage names (`AS name`),
 and its last `USER` (a stage inheriting from a named stage inherits its `USER`) is the one judged.

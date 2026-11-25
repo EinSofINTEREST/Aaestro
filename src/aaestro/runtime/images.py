@@ -61,19 +61,23 @@ ENV PYTHONPATH=/app/{SOURCE_ROOT} \\
 """
 
 _FLAG = re.compile(r"^--\S+")
-_PARSER_DIRECTIVE = re.compile(r"^#\s*(\w+)\s*=", re.IGNORECASE)
+# 해석을 바꾸는 파서 지시문 모양 — 위치와 무관하게 거절한다 (BuildKit 의 관용성을 확인할 수 없다).
+# `check` 는 lint 동작만 바꾸므로 허용한다
+_REFUSED_DIRECTIVE = re.compile(r"^#\s*(escape|syntax)\s*=", re.IGNORECASE)
+_ASCII_SPACE = frozenset(" \t\n\v\f\r")
 # Docker 의 지시문 · 인자 구분과 이어 쓰기 (`\` 뒤 공백 허용) — `str.split()` 과 다르다
 _SEPARATOR = re.compile(r"[ \t\v\f\r]+")
 _CONTINUATION = re.compile(r"\\[ \t]*$")
 # 해석이 갈릴 수 있는 표기 (따옴표 · `\` · `$` · `:` · `@`) 는 허용 목록 밖이다
 _SAFE_SOURCE = re.compile(r"[A-Za-z0-9._/*?-]+")
-_SAFE_USER = re.compile(r"[A-Za-z0-9_.-]+(:[A-Za-z0-9_.-]+)?")
+_SAFE_USER = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*(:[A-Za-z0-9_][A-Za-z0-9_.-]*)?")
 _QUOTING = frozenset("'\"\\$")
+_DIGEST = r"@sha256:[0-9a-f]{64}"
+_TAG = r"(?:[A-Za-z0-9_][A-Za-z0-9_.-]*|\$\{[A-Za-z_][A-Za-z0-9_]*\})"
+# 태그 자리의 `${NAME}` 과 다이제스트 고정 (태그 없이도) 만 허용 — 저장소 이름은 고정이다
 _BASE_IMAGE = re.compile(
-    re.escape(BASE_IMAGE_PREFIX) + r"(?:[A-Za-z0-9_][A-Za-z0-9_.-]*|\$\{[A-Za-z_][A-Za-z0-9_]*\})"
+    re.escape(BASE_IMAGE_PREFIX.removesuffix(":")) + rf"(?::{_TAG}(?:{_DIGEST})?|{_DIGEST})"
 )
-# 파서 지시문 중 문서 해석을 바꾸는 것 — `check` 는 lint 동작만 바꾸므로 허용한다
-_REFUSED_DIRECTIVES = frozenset({"escape", "syntax"})
 
 
 class BuildStatus(StrEnum):
@@ -144,6 +148,7 @@ def _instructions(text: str) -> list[tuple[int, str, str]]:
     start = 0
     buffer: str | None = None
     for number, raw in enumerate(text.split("\n"), 1):
+        raw = raw.rstrip("\r")  # CRLF — Docker 는 줄 끝을 먼저 떼고 이어 쓰기를 본다
         stripped = raw.strip(" \t\v\f\r")
         if not stripped or stripped.startswith("#"):
             continue
@@ -165,17 +170,18 @@ def _split_keyword(line: str) -> tuple[str, str]:
     return parts[0].upper(), parts[1] if len(parts) > 1 else ""
 
 
-def _check_parser_directives(text: str) -> None:
-    """맨 위의 `# key=value` 줄 중 `escape` · `syntax` 는 거절한다.
+def _check_lexical(text: str) -> None:
+    """줄 단위로 해석이 갈릴 수 있는 것을 거절한다 — 줄 번호는 그 줄이다.
 
-    `escape` 는 이어 쓰기 해석을 갈라 이 검사를 비껴간 줄이 Docker 에서는 지시문이 되게 하고,
-    `syntax` 는 BuildKit 프런트엔드 (임의 이미지) 로 Dockerfile 해석 자체를 바꾼다.
+    Docker 는 앞 공백 · 빈 줄 · 주석 판정에 유니코드 공백을 쓰지만 이 검사는 ASCII 공백만 안다 —
+    ASCII 밖의 공백 (NBSP · NEL · U+2028 등) 은 둘의 해석을 가르므로 어디에 있든 거절한다.
+    파서 지시문 `escape` 는 이어 쓰기 해석을, `syntax` 는 프런트엔드를 바꾼다.
+    shortcut: 폭 없는 서식 문자 (범주 Cf) 는 양쪽이 같은 일반 문자로 읽어 거절하지 않는다.
     """
     for number, raw in enumerate(text.split("\n"), 1):
-        match = _PARSER_DIRECTIVE.match(raw.strip())
-        if match is None:
-            return
-        if match[1].lower() in _REFUSED_DIRECTIVES:
+        if any(c.isspace() and c not in _ASCII_SPACE for c in raw):
+            raise _invalid("Dockerfile must not contain non-ASCII whitespace", line=number)
+        if _REFUSED_DIRECTIVE.match(raw.strip(" \t\v\f\r")):
             raise _invalid("Dockerfile must not use this parser directive", line=number)
 
 
@@ -190,7 +196,7 @@ def check_dockerfile(text: str) -> None:
         AaestroError: VALIDATION/``VAL_002`` on any rule violation.
     """
     text = text.removeprefix("\ufeff")  # Docker 는 첫 줄의 UTF-8 BOM 을 뗀 뒤 파서 지시문을 본다
-    _check_parser_directives(text)
+    _check_lexical(text)
     instructions = _instructions(text)
     for line, _, rest in instructions:
         if "<<" in rest:
