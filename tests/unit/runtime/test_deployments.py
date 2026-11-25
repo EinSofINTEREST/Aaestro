@@ -431,6 +431,34 @@ async def test_a_reused_sidecar_counts_the_memory_it_was_started_with(
     await second.launcher.stop_all()
 
 
+async def test_a_sidecar_lookup_failure_loses_only_its_deployment(workspace, docker, healthy):
+    """사이드카를 찾다 날 SDK 예외가 나도 그 배포만 lost — 뒤의 배포는 재부착된다 (#649 리뷰)."""
+    with_sidecar(workspace)
+    write(workspace / "agents" / "gamma" / "manifest.yaml", agent_doc("gamma"))
+    write(workspace / "graphs" / "other.yaml", graph_doc("other", ["gamma"]))
+    store = InMemoryDeploymentStore()
+    broken = await sidecar_manager(workspace, docker, store).deploy("two")
+    fine = await sidecar_manager(workspace, docker, store).deploy("other")
+
+    class Flaky(TrackingDocker):
+        def find(self, name: str) -> str | None:
+            if name == SIDECAR:
+                raise RuntimeError("daemon hiccup")
+            return super().find(name)
+
+    later = Flaky()
+    later.created, later.removed, later.started = docker.created, docker.removed, docker.started
+    second = sidecar_manager(workspace, later, store)
+
+    touched = {r.deployment_id: r for r in await second.reattach()}
+
+    assert touched[broken.deployment_id].status == DeploymentStatus.LOST
+    assert "mcp sidecars not restored: alpha" in (touched[broken.deployment_id].error or "")
+    assert touched[fine.deployment_id].status == DeploymentStatus.READY
+    assert sorted(second.launcher.launched) == [("gamma", 0)]
+    await second.launcher.stop_all()
+
+
 async def test_reattach_refuses_an_agent_whose_limits_cannot_be_read(workspace, docker, healthy):
     """한도를 읽지 못한 컨테이너는 선언으로 세지 않고 붙이지 않는다 (#649)."""
     quota_workspace(workspace)
