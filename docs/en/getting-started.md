@@ -121,6 +121,8 @@ module refs, ghost containers:
 aaestro check observed-state.yaml
 ```
 
+The state document accepts only the keys `runs`, `checkpoints`, `deployed_refs`, `resolvable_refs`, `running` and `known_agents`; an unknown key or a wrong-shaped value fails the check (`CFG_001`) instead of passing silently. Ids are strings (quote a value YAML would read as a number).
+
 ### 5. Run a graph
 
 `run` submits a mission graph and waits for it to reach END. Contracts are validated

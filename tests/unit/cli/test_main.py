@@ -309,12 +309,71 @@ def test_check_reports_orphans(tmp_path, capsys):
     assert "ghost_container" in output
 
 
+def test_check_reports_refs_and_agents_from_a_valid_document(tmp_path, capsys):
+    state = tmp_path / "state.yaml"
+    state.write_text(
+        yaml.safe_dump(
+            {
+                "deployed_refs": {"g": ["skillsets/a@1.0.0", "skillsets/b@1.0.0"]},
+                "resolvable_refs": ["skillsets/a@1.0.0"],
+                "running": ["ghost"],
+                "known_agents": ["lost"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert run_cli(["check", str(state)]) == EXIT_FAILED
+
+    output = capsys.readouterr().out
+    assert "dangling_module_ref: skillsets/b@1.0.0" in output
+    assert "skillsets/a@1.0.0" not in output
+    assert "ghost_container: ghost" in output
+    assert "missing_container: lost" in output
+
+
 def test_check_rejects_a_non_mapping_state(tmp_path, capsys):
     state = tmp_path / "state.yaml"
     state.write_text("- a\n- b\n", encoding="utf-8")
 
     assert run_cli(["check", str(state)]) == EXIT_FAILED
     assert "CFG_001" in capsys.readouterr().err
+
+
+def test_check_rejects_an_unknown_key_by_name_without_its_value(tmp_path, capsys):
+    state = tmp_path / "state.yaml"
+    state.write_text("run: [secret-value]\ncheckpoints: []\n", encoding="utf-8")
+
+    assert run_cli(["check", str(state)]) == EXIT_FAILED
+
+    err = capsys.readouterr().err
+    assert "CFG_001" in err
+    assert "run" in err
+    assert "secret-value" not in err
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        {"runs": "r1"},
+        {"deployed_refs": ["a"]},
+        {"deployed_refs": {"g": "ref"}},
+        {"running": [{"a": 1}]},
+    ],
+)
+def test_check_rejects_a_wrong_shaped_value(tmp_path, capsys, document):
+    state = tmp_path / "state.yaml"
+    state.write_text(yaml.safe_dump(document), encoding="utf-8")
+
+    assert run_cli(["check", str(state)]) == EXIT_FAILED
+    assert "CFG_001" in capsys.readouterr().err
+
+
+def test_check_rejects_an_empty_document(tmp_path, capsys):
+    state = tmp_path / "state.yaml"
+    state.write_text("", encoding="utf-8")
+
+    assert run_cli(["check", str(state)]) == EXIT_FAILED
 
 
 # --- 실제 저장소 ---------------------------------------------------------------

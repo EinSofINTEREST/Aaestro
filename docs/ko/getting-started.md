@@ -121,6 +121,8 @@ aaestro config dev                              # 환경별 해석된 설정
 aaestro check observed-state.yaml
 ```
 
+상태 문서는 `runs`, `checkpoints`, `deployed_refs`, `resolvable_refs`, `running`, `known_agents` 키만 받습니다. 모르는 키나 형태가 틀린 값은 조용히 통과하지 않고 점검이 실패합니다 (`CFG_001`). id 는 문자열입니다 (YAML 이 숫자로 읽을 값은 따옴표로 감쌉니다).
+
 ### 5. 그래프 실행
 
 `run` 은 mission 그래프를 제출하고 END 도달까지 기다립니다. 제출 전에 계약을
