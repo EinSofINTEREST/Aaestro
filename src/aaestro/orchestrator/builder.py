@@ -41,6 +41,7 @@ from aaestro.core.errors import (
 from aaestro.core.topology import (
     END,
     START,
+    EdgeSpec,
     GraphMode,
     GraphTopology,
     NodeSpec,
@@ -261,7 +262,7 @@ class GraphBuilder:
             # 조건부 edge 를 선언 순서대로 먼저 평가한다 — 무조건 edge 를 만나는
             # 즉시 반환하면 그 뒤에 선언된 조건이 영영 평가되지 않는다
             for edge, condition in conditions:
-                if condition is None or not condition(state):
+                if condition is None or not self._holds(edge, condition, state):
                     continue
                 if edge.max_iterations is not None:
                     self._check_iterations(state, edge.source, edge.max_iterations)
@@ -279,6 +280,17 @@ class GraphBuilder:
             )
 
         return route
+
+    def _holds(
+        self, edge: EdgeSpec, condition: Callable[[dict[str, Any]], bool], state: dict[str, Any]
+    ) -> bool:
+        """조건을 평가한다 — 평가 실패는 어느 edge 인지 싣는다 (식은 싣지 않는다, #412)."""
+        try:
+            return bool(condition(state))
+        except AaestroError as err:
+            if err.code == ErrorCode.GRAPH_003:
+                err.details.update({"from": edge.source, "to": edge.target})
+            raise
 
     def _check_iterations(self, state: dict[str, Any], node_id: str, limit: int) -> None:
         """cycle edge 의 반복 상한을 강제한다 (mission 무한 루프 방지)."""

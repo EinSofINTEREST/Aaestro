@@ -274,8 +274,12 @@ class SkillsetLoader:
                 raise AaestroError(
                     category=ErrorCategory.MODULE,
                     code=ErrorCode.MOD_003,
-                    message=f"invalid skill '{declaration.name}': {err}",
-                    details={"skillset": ref, "skill": declaration.name},
+                    message=f"invalid skill '{declaration.name}'",
+                    details={
+                        "skillset": ref,
+                        "skill": declaration.name,
+                        "error": type(err).__name__,
+                    },
                 ) from err
 
         # 선언된 이름이 계약이다 — 함수명이 달라도 선언 이름으로 노출한다

@@ -40,7 +40,8 @@ Four lists: agents, graphs, groups, and modules. Selecting an entry shows the pa
 declaration in full.
 
 Declarations that failed to parse appear in a separate list at the bottom with their file
-path and error code, rather than being silently missing. That distinction matters: an empty
+path, error code, and message — a schema violation also lists each offending `field: problem`
+(never the value), and an unreadable file shows where and why — rather than being silently missing. That distinction matters: an empty
 agent list means "none declared", while a problem entry means "this file needs fixing".
 
 ### 그래프 편집기 — wiring

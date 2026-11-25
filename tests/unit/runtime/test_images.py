@@ -313,3 +313,28 @@ def test_the_sqlite_store_overwrites_an_earlier_result(tmp_path):
 
     assert found.status == BuildStatus.BUILT
     assert found.error is None
+
+
+# --- 값 없는 거절 (#412) -----------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("text", "line"),
+    [
+        ("FROM MARKER-image:1\n", 1),
+        ("# FROM MARKER-comment\nFROM MARKER-image:1\n", 2),
+        ("FROM aaestro/agent-base:0.1.0\nRUN echo hi\nUSER root\n", 3),
+        ("FROM aaestro/agent-base:0.1.0\nUSER marker-user\nUSER root\n", 3),
+        ("FROM aaestro/agent-base:0.1.0\nRUN mkdir /root/x\nUSER 0\n", 3),
+        ("FROM aaestro/agent-base:0.1.0\nRUN echo \x0c\nUSER root\n", 3),
+        ("FROM aaestro/agent-base:0.1.0\nRUN x\nADD https://MARKER.example/x /x\n", 3),
+        ("FROM aaestro/agent-base:0.1.0\nCOPY a /a\nCOPY /MARKER-path /x\n", 3),
+    ],
+)
+def test_refusals_carry_the_exact_line_not_the_offending_fragment(text, line):
+    with pytest.raises(AaestroError) as exc_info:
+        check_dockerfile(text)
+
+    err = exc_info.value
+    assert "marker" not in (err.message + str(err.details)).lower()
+    assert err.details["line"] == line

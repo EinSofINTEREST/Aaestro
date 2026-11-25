@@ -379,3 +379,29 @@ async def test_mode_violation_wins_over_state_problems():
         await submitter().submit(topology, {})
 
     assert exc_info.value.code == "GRAPH_001"
+
+
+# --- 로그 필드 (#412) -----------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [(ErrorCode.GRAPH_003, "planner->researcher"), (ErrorCode.GRAPH_002, None)],
+)
+async def test_the_failure_log_names_the_edge_only_for_condition_failures(code, expected):
+    from structlog.testing import capture_logs
+
+    class Raising:
+        async def invoke(self, node, task):
+            raise AaestroError(
+                category=ErrorCategory.GRAPH,
+                code=code,
+                message="x",
+                details={"from": "planner", "to": "researcher"},
+            )
+
+    with capture_logs() as logs:
+        await submitter(Raising()).submit(make_mission(), {"query": "q"})
+
+    failed = next(entry for entry in logs if entry["event"] == "graph run failed")
+    assert failed.get("edge") == expected

@@ -114,6 +114,11 @@ def _invalid(message: str, **details: object) -> AaestroError:
     )
 
 
+def _line_at(text: str, offset: int) -> int:
+    """1-based line number of ``offset`` — 정규식이 줄을 가르는 기준 (`\\n`) 과 같다 (#412)."""
+    return text.count("\n", 0, offset) + 1
+
+
 def _now() -> str:
     return datetime.now(UTC).isoformat()
 
@@ -127,16 +132,23 @@ def check_dockerfile(text: str) -> None:
     Raises:
         AaestroError: VALIDATION/``VAL_002`` on any rule violation.
     """
-    froms = _FROM_DIRECTIVE.findall(text)
-    if not froms:
+    first_from = _FROM_DIRECTIVE.search(text)
+    if first_from is None:
         raise _invalid("Dockerfile must declare a FROM")
-    if not froms[0].startswith(BASE_IMAGE_PREFIX):
+    if not first_from[1].startswith(BASE_IMAGE_PREFIX):
         # agentd 가 base 에 들어 있다 — 다른 이미지에서 시작하면 Control API 가 없다
-        raise _invalid(f"Dockerfile must start FROM {BASE_IMAGE_PREFIX}<tag>", declared=froms[0])
-    users = _USER_DIRECTIVE.findall(text)
-    if users and users[-1].strip().strip('"') in _ROOT_USERS:
+        raise _invalid(
+            f"Dockerfile must start FROM {BASE_IMAGE_PREFIX}<tag>",
+            line=_line_at(text, first_from.start(1)),
+        )
+    users = list(_USER_DIRECTIVE.finditer(text))
+    last_user = users[-1] if users else None
+    if last_user is not None and last_user[1].strip().strip('"') in _ROOT_USERS:
         # 설치 동안 root 로 올라가는 것은 흔하다 — 되돌리지 않고 끝나는 것이 문제다
-        raise _invalid("Dockerfile must not end as root (02 Security)", declared=users[-1])
+        raise _invalid(
+            "Dockerfile must not end as root (02 Security)",
+            line=_line_at(text, last_user.start(1)),
+        )
     _check_sources(text)
 
 
@@ -151,7 +163,9 @@ def _check_sources(text: str) -> None:
     02 는 이미지를 배포 파이프라인이 굽고 버전을 고정하라고 규정하므로, 굽는 도중의
     임의 다운로드는 그 계약 밖이다.
     """
-    for directive, rest in _COPY_DIRECTIVE.findall(text):
+    for match in _COPY_DIRECTIVE.finditer(text):
+        directive, rest = match[1], match[2]
+        line = _line_at(text, match.start(1))
         parts = [token for token in rest.split() if not _FLAG.match(token)]
         # 마지막 토큰은 목적지다 — 소스만 본다
         for source in parts[:-1]:
@@ -160,12 +174,12 @@ def _check_sources(text: str) -> None:
                 raise _invalid(
                     f"{directive.upper()} must not fetch a remote source — "
                     "pin it in the base image",
-                    source=cleaned,
+                    line=line,
                 )
             if cleaned.startswith("/") or PurePosixPath(cleaned).parts[:1] == ("..",):
                 raise _invalid(
                     f"{directive.upper()} source must stay inside the build context",
-                    source=cleaned,
+                    line=line,
                 )
 
 

@@ -151,7 +151,7 @@ def test_unresolvable_key_raises_cfg_002():
 
     assert exc_info.value.category is ErrorCategory.CONFIG
     assert exc_info.value.code == "CFG_002"
-    assert exc_info.value.details["key"] == "MISSING"
+    assert "MISSING" not in exc_info.value.message + str(exc_info.value.details)
 
 
 def test_error_never_carries_the_secret_value():
@@ -213,7 +213,7 @@ def test_resolve_all_fails_on_the_first_unresolvable_key():
     with pytest.raises(AaestroError) as exc_info:
         secrets.resolve_all(("A", "MISSING"))
 
-    assert exc_info.value.details["key"] == "MISSING"
+    assert exc_info.value.details["index"] == 1
 
 
 def test_env_for_includes_only_declared_keys():
@@ -280,3 +280,30 @@ def test_for_agent_enforces_the_manifest_allowlist():
 def test_resolver_without_allowlist_is_unrestricted():
     """저수준 사용(테스트 등)에서는 allowlist 미지정이 제한 없음을 뜻한다."""
     assert ScopedSecrets(local={"ANY": "v"}).get("ANY") == "v"
+
+
+# --- 값 없는 실패 (#412) ----------------------------------------------------
+
+
+@pytest.mark.parametrize("declared", [True, False])
+def test_resolution_failure_names_a_position_not_the_key(declared):
+    """env 키 자리에 비밀 값을 적는 실수가 있다 — 실패가 그 문자열을 되풀이하지 않는다."""
+    marker = "sk-MARKER-0123456789"
+    allowlist = (marker,) if declared else ("OTHER",)
+    secrets = ScopedSecrets.for_agent(
+        member_manifest(allowlist=allowlist), groups={"research": make_group()}
+    )
+
+    with pytest.raises(AaestroError) as exc_info:
+        secrets.resolve_all((marker,))
+
+    err = exc_info.value
+    assert marker not in err.message
+    assert marker not in str(err.details)
+    assert marker not in str(err.payload())
+    assert err.details["index"] == 0
+    if declared:
+        assert "env_allowlist[0]" in err.message
+    else:
+        # 이 키는 allowlist 에 없다 — 그 위치라고 말하지 않는다
+        assert err.message == "secret key is not in the agent env_allowlist"

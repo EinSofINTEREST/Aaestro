@@ -262,6 +262,28 @@ async def test_a_declarative_condition_routes_like_the_function_it_replaces(
     assert runtime.invoked == expected
 
 
+async def test_a_condition_evaluation_failure_names_the_edge_not_the_expression():
+    """GRAPH_003 은 어느 edge 인지 싣는다 — 식은 싣지 않는다 (#412)."""
+    topology = make_mission(
+        nodes=conditional_topology().model_dump(by_alias=True)["spec"]["nodes"],
+        edges=[
+            {"from": "START", "to": "planner"},
+            {"from": "planner", "to": "researcher", "condition": "state.query > 3"},
+            {"from": "planner", "to": "END"},
+            {"from": "researcher", "to": "END"},
+        ],
+    )
+    runtime = FakeRuntime().script("planner", output={"needs_research": False})
+
+    with pytest.raises(AaestroError) as exc_info:
+        await build_graph(topology, runtime).ainvoke({"query": "q", "_run_id": "run-1"})
+
+    err = exc_info.value
+    assert err.code == ErrorCode.GRAPH_003
+    assert err.details["from"] == "planner"
+    assert err.details["to"] == "researcher"
+
+
 async def test_conditional_edge_follows_node_when_true():
     runtime = (
         FakeRuntime()

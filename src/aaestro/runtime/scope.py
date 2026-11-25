@@ -124,13 +124,15 @@ class ScopedSecrets:
             allowlist=frozenset(manifest.spec.runtime.env_allowlist),
         )
 
-    def resolve(self, key: str) -> ResolvedSecret:
+    def resolve(self, key: str, *, index: int | None = None) -> ResolvedSecret:
         """Resolve a single key through the scope chain.
 
         키를 local > group > global 순으로 해석합니다.
 
         Args:
             key: The environment key to resolve.
+            index: Position of the key in ``env_allowlist`` — 실패 메시지가 키 이름 대신
+                이 위치를 싣는다 (#386 · #412: env 키 자리에 비밀 값을 적는 실수가 드물지 않다).
 
         Returns:
             The resolved secret with its originating scope.
@@ -140,12 +142,14 @@ class ScopedSecrets:
         """
         # 선언되지 않은 키는 어떤 스코프에서도 해석하지 않는다 —
         # 그러지 않으면 에이전트가 allowlist 밖의 secret 을 읽을 수 있다
+        where = f": spec.runtime.env_allowlist[{index}]" if index is not None else ""
+        at = {"index": index} if index is not None else {}
         if self._allowlist is not None and key not in self._allowlist:
             raise AaestroError(
                 category=ErrorCategory.CONFIG,
                 code=ErrorCode.CFG_002,
-                message=f"secret key is not in the agent env_allowlist: {key}",
-                details={"key": key, "group": self._group_name or RESERVED_GLOBAL_GROUP},
+                message="secret key is not in the agent env_allowlist",
+                details={"group": self._group_name or RESERVED_GLOBAL_GROUP, **at},
             )
 
         if key in self._local:
@@ -162,11 +166,8 @@ class ScopedSecrets:
         raise AaestroError(
             category=ErrorCategory.CONFIG,
             code=ErrorCode.CFG_002,
-            message=f"secret key cannot be resolved in any scope: {key}",
-            details={
-                "key": key,
-                "group": self._group_name or RESERVED_GLOBAL_GROUP,
-            },
+            message=f"secret key cannot be resolved in any scope{where}",
+            details={"group": self._group_name or RESERVED_GLOBAL_GROUP, **at},
         )
 
     def resolve_all(self, keys: tuple[str, ...]) -> dict[str, ResolvedSecret]:
@@ -183,7 +184,7 @@ class ScopedSecrets:
         Raises:
             AaestroError: CONFIG/``CFG_002`` on the first key that resolves nowhere.
         """
-        return {key: self.resolve(key) for key in keys}
+        return {key: self.resolve(key, index=at) for at, key in enumerate(keys)}
 
     def env_for(self, keys: tuple[str, ...]) -> dict[str, str]:
         """Build the container environment mapping for declared keys.

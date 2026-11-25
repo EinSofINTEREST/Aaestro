@@ -48,6 +48,7 @@ class Fake:
         self.graphs = seed()
         self.puts, self.validates, self.log = [], [], []
         self.fail_get = 0
+        self.problems: list[dict] = []  # 카탈로그가 읽지 못한 선언 (#412)
         self.catalog_loads = 0
         self.validate_reply = None  # 지정하면 스키마 검증 뒤 이 본문으로 답한다 (경고 시나리오)
 
@@ -90,7 +91,7 @@ class Fake:
                 }
                 for n, d in self.graphs.items()
             ]
-            return ok({"items": items, "problems": []})
+            return ok({"items": items, "problems": self.problems})
         if path == "/v1/agents":
             items = [
                 {
@@ -149,8 +150,9 @@ def static(src, ctype):
 
 
 class Ui:
-    def __init__(self, browser):  # noqa: F811
+    def __init__(self, browser, problems=()):  # noqa: F811
         self.fake = Fake()
+        self.fake.problems = list(problems)
         self.context = browser.new_context()
         self.page = page = self.context.new_page()
         page.set_default_timeout(15_000)
@@ -711,3 +713,21 @@ def test_a_response_without_a_warnings_key_still_says_validation_passed(ui):
 
     assert text.startswith("저장됨"), ui.findings()
     assert ui.findings() == ["검증 통과"]
+
+
+def test_catalog_problems_show_the_field_and_why_but_no_value(browser):  # noqa: F811
+    """#412 — 읽지 못한 선언은 어느 파일이 왜인지, 어느 키가 왜인지를 보여 준다."""
+    problem = {
+        "path": "graphs/bad.yaml",
+        "code": "VAL_002",
+        "message": "invalid graph",
+        "errors": [{"field": "spec.mode", "problem": "input should be 'mission' or 'service'"}],
+        "reason": None,
+    }
+    ui = Ui(browser, problems=[problem])
+    try:
+        shown = ui.page.inner_text("#catalog-problems")
+    finally:
+        ui.close()
+    assert "graphs/bad.yaml: VAL_002 invalid graph" in shown
+    assert "spec.mode: input should be 'mission' or 'service'" in shown

@@ -532,7 +532,15 @@ class RunSubmitter:
             )
             final = await graph.ainvoke(payload, config=_thread_config(handle.run_id))
         except AaestroError as err:
-            bound.error("graph run failed", error_code=err.code, mode=str(topology.spec.mode))
+            # GRAPH_003 은 어느 edge 의 조건인지가 원인 추적의 전부다 (#412) — 값은 노드 id 다
+            edge = (
+                {"edge": f"{err.details['from']}->{err.details['to']}"}
+                if err.code == ErrorCode.GRAPH_003 and {"from", "to"} <= err.details.keys()
+                else {}
+            )
+            bound.error(
+                "graph run failed", error_code=err.code, mode=str(topology.spec.mode), **edge
+            )
             return RunResult(
                 run_id=handle.run_id,
                 graph=topology.metadata.name,

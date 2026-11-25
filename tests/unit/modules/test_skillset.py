@@ -411,3 +411,19 @@ def test_entrypoint_absolute_module_path_is_rejected_before_import(tmp_path):
 
     assert exc_info.value.code == "MOD_003"
     assert not marker.exists(), "루트 밖 코드가 import 됐다"
+
+
+def test_invalid_skill_signature_error_does_not_carry_the_original_message(tmp_path):
+    """원 예외 문자열 대신 예외 종류만 싣는다 (#412)."""
+    loader = _write_skillset(
+        tmp_path,
+        yaml_body=HEADER + "    - name: a\n      entrypoint: skills.mod:zz_marker\n",
+        modules={"mod": "def zz_marker(ctx, q: str) -> str:\n    return q\n"},
+    )
+
+    with pytest.raises(AaestroError) as exc_info:
+        loader.load("skillsets/custom@0.1.0")
+
+    err = exc_info.value
+    assert "zz_marker" not in err.message + str(err.details)
+    assert err.details["error"] == "ValueError"
