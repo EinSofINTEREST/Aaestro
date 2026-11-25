@@ -1284,14 +1284,19 @@ class DeploymentManager:
         ]
         assigned: dict[str, int] = dict(ports or {})
         if ports is None and self.launcher.ports is not None:
+            fresh: list[str] = []
             try:
                 for manifest in manifests:
                     if manifest.spec.a2a.enabled:
+                        if self.launcher.ports.held(manifest.name) is None:
+                            fresh.append(manifest.name)
                         assigned[manifest.name] = self.launcher.ports.allocate(manifest.name)
             except AaestroError:
-                # 범위가 말랐다 — 여기서 잡은 것은 여기서 돌려준다
-                for name in assigned:
-                    self.launcher.ports.release(name)
+                # 범위가 말랐다 — 여기서 새로 잡은 것만 돌려준다. 같은 키가 이미 쥐던 포트는
+                # 그 주인 (정리 중인 기동 · 넘겨받은 컨테이너) 의 것이다 (#686)
+                for name in fresh:
+                    if name in assigned:
+                        self.launcher.ports.release(name, port=assigned[name])
                 raise
 
         stewards = self._running_stewards()
@@ -1417,16 +1422,28 @@ class DeploymentManager:
                 holders.setdefault(name, set()).add(self._claimed[name])
         # launcher 만 아는 에이전트 — 같은 프로세스에서는 위 둘과 겹치지만, 기록 없이 launcher 에만
         # 띄운 경로 (테스트 · 레플리카 직접 기동) 에서 사이드카를 지키는 마지막 방어다
-        taken = [n for n in names if n in holders or self.launcher.replicas_of(n)]
+        # 엔진이 아직 정리 중인 기동도 막는다 — 같은 키의 포트를 다시 잡고, 정리가 끝나며 그 포트를
+        # 놓아 다른 에이전트가 받는다 (#686)
+        taken = [
+            n for n in names if n in holders or self.launcher.replicas_of(n) or self._settling(n)
+        ]
         if taken:
+            deployments = sorted({d for n in taken for d in holders.get(n, ())})
+            settling = [n for n in taken if self._settling(n)]
+            # 정리 중인 기동만 막았다면 해체할 배포가 없다 — 기다리면 풀린다 (#686)
+            message = (
+                "agents still being cleaned up from a cancelled start — retry once it finishes"
+                if settling and not deployments and not any(map(self.launcher.replicas_of, taken))
+                else "agents already run under another deployment — tear that one down first"
+            )
+            details: dict[str, Any] = {"agents": taken, "deployments": deployments}
+            if settling:
+                details["settling"] = settling
             raise AaestroError(
                 category=ErrorCategory.RUNTIME,
                 code=ErrorCode.RT_010,
-                message="agents already run under another deployment — tear that one down first",
-                details={
-                    "agents": taken,
-                    "deployments": sorted({d for n in taken for d in holders.get(n, ())}),
-                },
+                message=message,
+                details=details,
             )
         self._claimed.update(dict.fromkeys(names, deployment_id))
         return names
@@ -1644,14 +1661,11 @@ class DeploymentManager:
         if self.launcher.ports is None:
             return
         for agent, provision in provisions.items():
-            # 제거에 실패해 남은 레플리카 · 넘겨받은 컨테이너는 포트를 쥔다 — 놓으면 다른 에이전트가
-            # 같은 번호를 받는다. 넘겨받은 컨테이너의 포트는 그것을 지우는 쪽이 놓는다 (#676)
-            if (
-                provision.a2a_port is not None
-                and not self.launcher.replicas_of(agent)
-                and not self.launcher.orphans_of(agent)
-            ):
-                self.launcher.ports.release(agent)
+            # 제거에 실패해 남은 레플리카 · 넘겨받은 컨테이너 · 엔진이 아직 정리 중인 기동은 포트를
+            # 쥔다 — 놓으면 다른 에이전트가 같은 번호를 받는다. 그 포트는 그것을 지우는 쪽 · 정리가
+            # 끝나는 쪽이 놓는다 (#676 · #686)
+            if provision.a2a_port is not None:
+                self.launcher.release_if_unowned(agent, 0, provision.a2a_port)
 
     def _left_behind(self, names: Sequence[str]) -> list[str]:
         """정지 뒤에도 launcher 가 쥔 레플리카 · 컨테이너가 있는 이름 — 제거 실패 · 넘어진 정지.
@@ -1662,8 +1676,16 @@ class DeploymentManager:
         return [
             name
             for name in names
-            if self.launcher.replicas_of(name) or self.launcher.orphans_of(name)
+            if self.launcher.replicas_of(name)
+            or self.launcher.orphans_of(name)
+            or self._settling(name)
         ]
+
+    def _settling(self, name: str) -> bool:
+        """엔진이 아직 정리 중인 이 에이전트의 기동이 있는가 — 그 컨테이너는 생기거나 남을 수 있고
+        포트를 쥔다. 남은 것으로 세어 배포를 LOST 로 두고 같은 이름의 새 배포를 막는다 (#686).
+        배포는 레플리카 0 만 띄운다 (`_launch`)."""
+        return bool(self.launcher.engine.pending_cleanups(container_name(name, 0)))
 
     async def _wait_ready(self, launched: Sequence[LaunchedAgent]) -> None:
         deadline = self.clock() + self.ready_timeout_s

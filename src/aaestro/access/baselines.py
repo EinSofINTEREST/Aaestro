@@ -133,16 +133,29 @@ class MemoryBaseline:
     def _run_allows(
         self, agent: str, run_id: str, alias: str, mode: Mode | None, identity: Identity | None
     ) -> bool:
+        record = self.participation(agent, run_id, identity)
+        if record is None or alias not in record.memory_spaces:
+            return False
+        return mode is not Mode.RW or record.live
+
+    def participation(
+        self, agent: str, run_id: str, identity: Identity | None = None
+    ) -> RunParticipation | None:
+        """이 에이전트가 노드로 참여한 run 의 기록 — 참여자가 아니면 None (#609).
+
+        모르는 run · ``direct-`` run · 노드가 아닌 에이전트 · 다른 그래프로 배포된 신원은 참여자가
+        아니다. run space 판정과 Memory Service 의 run 조회가 이 한 규칙을 쓴다.
+        """
         if self.runs is None or run_id.startswith(DIRECT_RUN_PREFIX):
-            return False
+            return None
         record = self.runs.get(run_id)
-        if record is None or agent not in record.agents or alias not in record.memory_spaces:
-            return False
+        if record is None or agent not in record.agents:
+            return None
         if identity is not None and identity.graph != record.graph:
             # 같은 에이전트가 다른 그래프로도 배포돼 있으면 그 배포의 신원은 이 run 의 참여자가
             # 아니다
-            return False
-        return mode is not Mode.RW or record.live
+            return None
+        return record
 
     def declared_for(self, agent: str) -> list[tuple[str, Mode | None]]:
         """이 에이전트에게 선언이 주는 space 와 mode — 운영자 화면이 보여 주는 기본 권한.

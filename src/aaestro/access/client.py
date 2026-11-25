@@ -107,6 +107,7 @@ class AccessClient:
     _feed_alive: bool = field(default=False, init=False)
     _identities: dict[str, _Cached] = field(default_factory=dict, init=False)
     _decisions: dict[tuple[str, str, str, str], _Cached] = field(default_factory=dict, init=False)
+    _runs: dict[tuple[str, str], _Cached] = field(default_factory=dict, init=False)
 
     # --- 판정 ---------------------------------------------------------------
 
@@ -154,6 +155,26 @@ class AccessClient:
                 decision_source=source.value,
             )
         return verdict
+
+    async def run_participation(
+        self, credential: str, run_id: str
+    ) -> tuple[bool, dict[str, str], DecisionSource]:
+        """Whether the credential's identity is a node of a run, and that run's run-scope spaces.
+
+        run space 후보를 고르는 조회다 (#609) — 권한은 space 마다 ``decide`` 가 정한다.
+        캐시 · 무효화 · 장애 시 동작은 판정과 같다: 레지스트리에 닿지 않고 캐시도 없으면
+        참여자가 아니다 (후보 없음).
+        """
+
+        async def fetch() -> tuple[Any, int, float | None]:
+            body = await self._post("/v1/access/runs", {"credential": credential, "run_id": run_id})
+            spaces = {str(alias): str(ref) for alias, ref in dict(body["spaces"]).items()}
+            return (body["node"] is True, spaces), int(body["version"]), None
+
+        answer, source = await self._cached(self._runs, (_hash(credential), run_id), fetch)
+        if answer is None:
+            return False, {}, source
+        return answer[0], dict(answer[1]), source
 
     async def verify_ticket(self, ticket: str) -> Verdict:
         """Decide an inbound A2A call — the bearer is the callee's own identity (#281)."""
@@ -249,10 +270,11 @@ class AccessClient:
         self._drop_cache()
 
     def _drop_cache(self) -> None:
-        if not (self._identities or self._decisions):
+        if not (self._identities or self._decisions or self._runs):
             return
         self._identities.clear()
         self._decisions.clear()
+        self._runs.clear()
         if self.metrics is not None:
             self.metrics.counter("aaestro_access_cache_invalidations_total").labels(
                 component=self.component

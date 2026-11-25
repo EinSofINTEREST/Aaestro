@@ -494,7 +494,7 @@ reference graph. Per-agent tokens are never in a response.
 | `degraded` | the deployment is `ready`, but at least one replica is not right now (see `state` below) |
 | `failed` | a step failed; **everything this deployment started was stopped again** |
 | `stopped` | torn down through `DELETE` |
-| `lost` | after a restart, at least one container was gone |
+| `lost` | after a restart, at least one container was gone — or a container could not be removed, or a rolled-back start was still being cleaned up by the engine; tear it down again to finish |
 
 `degraded` is never stored. It is computed when the deployment is read, from the supervision
 state of its replicas, and turns back into `ready` by itself once they recover. Everything that
@@ -980,6 +980,24 @@ An enforcement point that must resolve a name before it can ask for a decision �
 Service turns an alias into a space id through the agent's declarations — first learns who is
 asking. An unknown or revoked identity is `200` with `"agent": null`, cacheable like a denial.
 
+### `POST /v1/access/runs` — enforcement point
+
+```json
+{"credential": "<the identity presented to the enforcement point>", "run_id": "run-1"}
+```
+
+```json
+{"agent": "planner", "node": true, "spaces": {"scratch": "memorysets/run-scratch@0.1.0"},
+ "version": 42}
+```
+
+Whether this identity is a node of the run, and the run-scope spaces of that run's snapshot taken
+at run start (#608) — the Memory Service builds its run-space candidates from this (#609). It is
+not a permission: each space is still decided by `POST /v1/access/decisions`, so a revoked run
+space stays refused. An unknown run, a `direct-` run, an agent that is not a node, an identity
+deployed for another graph and an unknown or revoked identity are all `200` with `"node": false`
+and empty `spaces`, cacheable like a denial. `run_id` follows the identifier rule (`VAL_002`).
+
 ### `GET /v1/access/changes?after=<version>&wait_s=<seconds>` — enforcement point or agent
 
 Long-poll. Answers `{"version": N}` as soon as the registry version moves past `after`, or when
@@ -1082,6 +1100,21 @@ In registry mode:
   Service refuses.
 - **While the registry is unreachable**, decisions already cached keep working and anything not
   yet decided is denied. A cached decision is still dropped at its `valid_until`.
+- **Run scope spaces are selected by the `X-Aaestro-Run` header** (#609) — on every route
+  (search, append, read, latest, spaces). The header is a selector, not a secret: the service asks
+  the registry (`POST /v1/access/runs`) whether the identity is a node of that run and which
+  run-scope aliases the run's start-time snapshot declares, offers those as `run:<run_id>:<alias>`,
+  and then decides each one like any other space — `rw` while the run is live, `ro` once it has
+  ended. A `direct-` run, an unknown run and a non-node get no run and no run space; while the
+  registry is unreachable with nothing cached, neither. Identity is checked first; a header that
+  is not an identifier (empty, longer than 128 characters, unprintable, surrounding whitespace) is
+  then `400` with `VAL_002` (`details` names the header and the reason, not the value). An entry's
+  `source.run_id` is the header's run only when the registry says the agent is a node of it —
+  whether or not the run declares run spaces, and also after the run has ended (having been a node
+  is the provenance; only writes to the run spaces stop); otherwise it is empty. A run space whose
+  entry in the registry's answer is malformed is left out (refused with `MEM_001`, logged as a
+  warning without the value). A token-mode Memory Service
+  ignores the header — it carries no run scope (below).
 
 The service follows the change feed while it runs. When the feed is lost but the registry still
 answers, cached decisions older than two seconds are asked again.
@@ -1508,6 +1541,14 @@ agent identity — otherwise the `401` of [Authentication](#authentication) befo
   start of that replica removes them. A container without the label (started before it existed) is
   not kept; a warning names it, and tearing the deployment down still removes it. A teardown that
   cannot remove such a container leaves the deployment `lost` instead of `stopped`.
+- **A cancelled start still being cleaned up holds its agent.** When a deploy fails or is cut
+  while a container is still being created, the engine finishes cleaning that start up in the
+  background; until then the container may still appear and its A2A port stays reserved. The
+  rolled-back deployment is recorded `lost` rather than `failed` and keeps holding its agents, so
+  deploying the same agent again is refused (`409`, `RT_010`; `details.settling` names the agents
+  still being cleaned up). Wait for the cleanup to finish, tear that deployment down (it becomes
+  `stopped`; a container the cleanup could not remove is removed by that teardown), then deploy
+  again. A teardown before the cleanup ends leaves it `lost`.
 
 ## CLI equivalents
 

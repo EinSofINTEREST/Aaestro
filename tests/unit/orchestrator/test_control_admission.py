@@ -72,6 +72,7 @@ AUDIENCES = [
     pytest.param("/v1/access/revocations", id="operator-access"),
     pytest.param("/v1/access/decisions", id="enforcer"),
     pytest.param("/v1/access/identities", id="enforcer-identity"),
+    pytest.param("/v1/access/runs", id="enforcer-runs"),
     pytest.param("/v1/access/grants", id="steward"),
     pytest.param("/v1/access/a2a/tickets", id="agent-ticket"),
     pytest.param("/v1/access/a2a/verify", id="agent-verify"),
@@ -412,6 +413,7 @@ def test_the_audience_paths_come_from_the_registered_routes(registry):
 
     assert audiences.enforcer == {
         "/v1/access/decisions",
+        "/v1/access/runs",
         "/v1/access/identities",
         "/v1/access/changes",
     }

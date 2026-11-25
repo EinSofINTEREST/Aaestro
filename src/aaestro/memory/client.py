@@ -31,6 +31,10 @@ if TYPE_CHECKING:
 MEMORY_TOKEN_ENV = "AAESTRO_MEMORY_TOKEN"  # noqa: S105 — env 키 이름이지 값이 아니다
 MEMORY_URL_ENV = "AAESTRO_MEMORY_URL"
 """agentd 가 서비스에 닿기 위해 받는 값 — secrets 와 같은 주입 경로다."""
+MEMORY_RUN_HEADER = "X-Aaestro-Run"
+"""요청이 속한 graph run — 비밀이 아니라 run space 를 고르는 선택자다 (#609).
+
+닿는지는 서비스가 레지스트리에 묻는다."""
 MEMORY_TOKENS_PATH_ENV = "AAESTRO_MEMORY_TOKENS_PATH"
 """memory 서비스가 에이전트 토큰을 내놓는 파일 — 오케스트레이터가 읽어 에이전트에 나눠 준다."""
 
@@ -188,6 +192,8 @@ class HttpMemoryAccess:
     timeout_s: float = DEFAULT_TIMEOUT_S
     agent: str | None = None
     """이 클라이언트를 쓰는 에이전트 — 에러의 ``agent`` 에 싣는다 (응답 본문의 것은 쓰지 않는다)."""
+    run_id: str | None = None
+    """이 클라이언트의 요청이 속한 graph run — 있으면 ``X-Aaestro-Run`` 헤더로 싣는다."""
     _owned: httpx.AsyncClient | None = field(default=None, init=False, repr=False)
 
     def _http(self) -> httpx.AsyncClient:
@@ -223,7 +229,10 @@ class HttpMemoryAccess:
                 method,
                 f"{self.base_url.rstrip('/')}{path}",
                 json=payload,
-                headers={"authorization": f"Bearer {self.token}"},
+                headers={
+                    "authorization": f"Bearer {self.token}",
+                    **({MEMORY_RUN_HEADER: self.run_id} if self.run_id is not None else {}),
+                },
             )
         except httpx.HTTPError as err:
             raise AaestroError(
@@ -353,6 +362,7 @@ class HttpMemoryAccess:
 
 __all__ = [
     "DEFAULT_TIMEOUT_S",
+    "MEMORY_RUN_HEADER",
     "MEMORY_TOKENS_PATH_ENV",
     "MEMORY_TOKEN_ENV",
     "MEMORY_URL_ENV",
