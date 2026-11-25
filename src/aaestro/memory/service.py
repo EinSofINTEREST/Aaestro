@@ -312,6 +312,13 @@ class MemoryService:
         for alias in aliases:
             self._record(token, alias, op=op, status=status, count_metric=status == "denied")
 
+    def record_malformed(self, token: AccessToken, *, op: str) -> None:
+        """본문 검증에서 거절된 요청의 감사 줄 — 신원은 확인됐지만 space 는 파싱하지 못했다.
+
+        별칭을 모르므로 ``memory_space`` 는 비우고 메트릭 라벨은 ``undeclared`` 다 (09 메트릭).
+        """
+        self._record(token, "", op=op, status="failed")
+
     @property
     def audit_log(self) -> tuple[dict[str, str], ...]:
         """기록된 접근 감사 로그."""

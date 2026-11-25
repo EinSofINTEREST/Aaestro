@@ -90,7 +90,7 @@ MAX_SEARCH_K = 200
 class SearchRequest(BaseModel):
     """검색 요청."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     query: str
     spaces: tuple[str, ...] | None = None
@@ -113,7 +113,7 @@ class AppendRequest(BaseModel):
 class ReadRequest(BaseModel):
     """space 훑기 요청."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     space: str
     limit: int = 100
@@ -123,7 +123,7 @@ class ReadRequest(BaseModel):
 class LatestRequest(BaseModel):
     """정정 체인의 최신 항목 요청."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     space: str
     entry_id: str
@@ -209,8 +209,15 @@ def create_app(
     app.router.route_class = AdmitFirstRoute
 
     @app.exception_handler(RequestValidationError)
-    async def _bad_body(_request: Request, err: RequestValidationError) -> JSONResponse:
-        """FastAPI 기본 422 는 받은 값을 응답에 되비춘다 — 필드와 사유만 남긴다 (#448)."""
+    async def _bad_body(request: Request, err: RequestValidationError) -> JSONResponse:
+        """FastAPI 기본 422 는 받은 값을 응답에 되비춘다 — 필드와 사유만 남긴다 (#448).
+
+        신원 확인은 본문 파싱보다 먼저라 여기 온 요청은 신원이 있다 — 검증 거절도 감사 줄 하나다
+        (09 Access Enforcement 6).
+        """
+        declared: AccessToken | None = getattr(request.state, "declared", None)
+        if declared is not None:
+            service.record_malformed(declared, op=request.url.path.rsplit("/", 1)[-1])
         problem = request_validation_error(err)
         return JSONResponse(
             status_code=status_for(problem), content=problem.payload().model_dump(mode="json")
