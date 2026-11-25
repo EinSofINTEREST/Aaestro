@@ -1482,10 +1482,11 @@ agent identity — otherwise the `401` of [Authentication](#authentication) befo
 - **A cancelled start still being cleaned up holds its agent.** When a deploy fails or is cut
   while a container is still being created, the engine finishes cleaning that start up in the
   background; until then the container may still appear and its A2A port stays reserved. The
-  rolled-back deployment is recorded `lost` rather than `failed`, and deploying the same agent again
-  is refused (`409`, `RT_010`, with `details.settling` naming the agents — retry once the cleanup
-  ends). Once the cleanup has finished, tearing the deployment down marks it `stopped`; a container
-  the cleanup could not remove is removed by that teardown.
+  rolled-back deployment is recorded `lost` rather than `failed` and keeps holding its agents, so
+  deploying the same agent again is refused (`409`, `RT_010`; `details.settling` names the agents
+  still being cleaned up). Wait for the cleanup to finish, tear that deployment down (it becomes
+  `stopped`; a container the cleanup could not remove is removed by that teardown), then deploy
+  again. A teardown before the cleanup ends leaves it `lost`.
 
 ## CLI equivalents
 
