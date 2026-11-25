@@ -753,6 +753,17 @@ def test_a_node_override_to_an_undeclared_provider_is_rejected():
     assert finding.details["node_id"] == "planner"
 
 
+def test_an_override_outside_the_provider_set_is_rejected_even_with_an_egress_declaration():
+    """runtime.egress 에 호스트가 있어도 provider 집합 밖 override 는 거절한다 (#629)."""
+    planner = agent("planner", runtime={"egress": ["openai-compat.invalid"]})
+    topology = make_topology(["planner"]).with_model_overrides({"planner": _override(OPENAI)})
+
+    [finding] = model_findings(run([topology], manifests={"planner": planner}))
+
+    assert finding.code == ErrorCode.VAL_002
+    assert finding.details["provider"] == "openai-compat"
+
+
 def test_a_node_override_to_a_declared_fallback_provider_passes():
     topology = make_topology(["planner"]).with_model_overrides({"planner": _override(OPENAI)})
     planner = with_fallback("planner", {"provider": "openai-compat", "name": "gpt-5-mini"})
