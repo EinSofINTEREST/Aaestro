@@ -211,6 +211,7 @@ RICH_CONFIG: dict[str, Any] = {
         "egress_proxy": {
             "connect_url": "http://egress:8080",
             "providers_url": "http://egress:8081",
+            "control_url": "http://127.0.0.1:18095",
             "container": "aaestro-egress",
             "providers": ["anthropic"],
         },
