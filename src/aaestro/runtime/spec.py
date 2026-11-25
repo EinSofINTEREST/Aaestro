@@ -39,6 +39,11 @@ HARDENED_INIT: Final = True
 A2A_PORT_ENV: Final = "AAESTRO_A2A_PORT"
 """할당된 A2A 포트를 컨테이너에 알리는 키 — agentd 가 이것으로 서버를 띄운다."""
 
+DEPLOYMENT_LABEL: Final = "aaestro.deployment"
+"""컨테이너를 세운 배포의 id — 재부착이 기록 없이 남은 컨테이너의 주인을 가른다 (#676)."""
+A2A_PORT_LABEL: Final = "aaestro.a2a_port"
+"""컨테이너가 쥔 A2A 포트 — 기록에 포트가 없어도 재부착이 할당기에 예약한다 (#676)."""
+
 A2A_HOST_ENV: Final = "AAESTRO_A2A_ADVERTISED_HOST"
 # 아래 셋은 agentd.a2a_server 의 계약과 같은 값이어야 한다 — runtime 이 agentd 를
 # import 하지 않도록 여기 다시 적고, 단위 테스트가 두 쪽의 드리프트를 막는다
@@ -169,6 +174,7 @@ def build_container_spec(
     mounts: Sequence[Mapping[str, Any]] = (),
     image: str | None = None,
     extra_networks: Sequence[str] = (),
+    deployment: str | None = None,
 ) -> ContainerSpec:
     """Derive a container spec from an agent manifest.
 
@@ -191,6 +197,7 @@ def build_container_spec(
             우선한다. 둘이 다르면 배포 검증이 먼저 거절한다.
         extra_networks: Networks joined before start — 이그레스 프록시 없는 배포에서 자기
             사이드카에 닿는 길 (#304). 공유·호스트 네트워크는 여기서도 거절한다.
+        deployment: The deployment that owns this container — `DEPLOYMENT_LABEL` 로 싣는다.
 
     Returns:
         The container specification.
@@ -221,7 +228,16 @@ def build_container_spec(
 
     ports = [PortBinding("control", DEFAULT_CONTROL_PORT)]
     resolved_env = dict(env or {})
+    labels = {
+        "aaestro.agent": manifest.name,
+        "aaestro.agent_version": manifest.metadata.version,
+        "aaestro.group": manifest.group,
+        "aaestro.replica": str(replica),
+    }
+    if deployment is not None:
+        labels[DEPLOYMENT_LABEL] = deployment
     if manifest.spec.a2a.enabled and a2a_port is not None:
+        labels[A2A_PORT_LABEL] = str(a2a_port)
         ports.append(PortBinding("a2a", a2a_port))
         # 포트를 **열기만** 하면 컨테이너 안에서 아무도 듣지 않는다 — 번호를
         # 알려줘야 agentd 가 그 자리에 서버를 띄운다 (#166 / 03 Rule 2)
@@ -257,12 +273,7 @@ def build_container_spec(
         security_opt=HARDENED_SECURITY_OPT,
         tmpfs=WRITABLE_TMPFS,
         volumes=volumes,
-        labels={
-            "aaestro.agent": manifest.name,
-            "aaestro.agent_version": manifest.metadata.version,
-            "aaestro.group": manifest.group,
-            "aaestro.replica": str(replica),
-        },
+        labels=labels,
         extra_networks=tuple(extra_networks),
     )
 

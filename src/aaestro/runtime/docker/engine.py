@@ -471,6 +471,10 @@ class DockerClient(Protocol):
         """라벨이 모두 맞는 컨테이너의 id — 멈춘 것도 포함한다 (정리할 것을 놓치지 않게)."""
         ...
 
+    def labels_of(self, container_id: str) -> dict[str, str]:
+        """컨테이너의 라벨 (`Config.Labels`) — 없는 컨테이너는 예외."""
+        ...
+
     def find(self, name: str) -> str | None:
         """이름으로 컨테이너 id 를 찾는다 — 없으면 None.
 

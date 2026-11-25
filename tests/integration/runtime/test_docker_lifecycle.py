@@ -240,6 +240,12 @@ class CliDockerClient:
         filters = [f"--filter=label={key}={value}" for key, value in labels.items()]
         return tuple(docker("ps", "-aq", "--no-trunc", *filters).split())
 
+    def labels_of(self, container_id: str) -> dict[str, str]:
+        labels: dict[str, str] = json.loads(
+            docker("inspect", "--format", "{{json .Config.Labels}}", container_id) or "{}"
+        )
+        return labels or {}
+
     def find(self, name: str) -> str | None:
         found = docker("inspect", "--format", "{{.Id}}", name, check=False)
         return found or None

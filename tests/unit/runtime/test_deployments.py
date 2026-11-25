@@ -33,7 +33,7 @@ from aaestro.runtime.deployments import (
     InMemoryDeploymentStore,
     SqliteDeploymentStore,
 )
-from aaestro.runtime.docker.engine import DockerEngine
+from aaestro.runtime.docker.engine import ContainerHandle, DockerEngine
 from aaestro.runtime.images import BuildRecord, BuildStatus
 from aaestro.runtime.launcher import AgentLauncher
 from aaestro.runtime.lifecycle import AgentState
@@ -1495,6 +1495,420 @@ async def test_a_lost_deployment_keeps_its_ports_until_the_containers_are_gone(
     assert done.status == DeploymentStatus.STOPPED
     assert set(ports.assigned) == {"gamma/0"}
     await first.launcher.stop_all()
+
+
+def plant(docker: TrackingDocker, workspace: Path, name: str, **spec_args) -> str:
+    """앞 프로세스가 남긴 컨테이너 — 기록 없이 Docker 에만 있다."""
+    from aaestro.core.manifest import AgentManifest
+    from aaestro.runtime.spec import build_container_spec
+
+    doc = yaml.safe_load((workspace / "agents" / name / "manifest.yaml").read_text("utf-8"))
+    manifest = AgentManifest.model_validate(doc)
+    return docker.create(**build_container_spec(manifest, **spec_args).to_docker_kwargs())
+
+
+def interrupted(store, status: str, deployment_id: str = "dep-cut") -> DeploymentRecord:
+    """레플리카 기록 없이 남은 배포 — 종료로 끊긴 기동 (STARTING) · 정리도 실패한 기동 (LOST)."""
+    record = DeploymentRecord(
+        deployment_id=deployment_id,
+        graph="wired",
+        version="1.0.0",
+        status=status,
+        declared=("alpha", "beta"),
+    )
+    store.upsert(record)
+    return record
+
+
+@pytest.mark.parametrize("status", [DeploymentStatus.STARTING, DeploymentStatus.LOST])
+async def test_reattach_keeps_the_leftovers_of_a_deployment_without_replicas(
+    workspace, docker, healthy, status
+):
+    """끊긴 기동의 남은 컨테이너는 launcher 가 쥔다 — quota · 포트에 세고 다음 정지가 지운다.
+
+    #676.
+    """
+    wired_workspace(workspace)
+    store = InMemoryDeploymentStore()
+    interrupted(store, status)
+    mine = plant(docker, workspace, "alpha", deployment="dep-cut", a2a_port=9105)
+    theirs = plant(docker, workspace, "beta", deployment="dep-other", a2a_port=9106)
+    manager = wired_manager(workspace, docker, store)
+    launcher = manager.launcher
+
+    await manager.reattach()
+
+    assert [h.container_id for h in launcher.orphans_of("alpha")] == [mine]
+    assert launcher.orphans_of("beta") == [], "다른 배포의 같은 이름 컨테이너를 넘겨받았다"
+    assert launcher.ports is not None
+    assert launcher.ports.assigned == {"alpha/0": 9105}
+    # quota 에 센다 — alpha 의 1 코어가 남아 있어 beta 를 더하면 호스트 한도를 넘는다
+    launcher.host_cpu_cores = 1.5
+    beta = manager.catalog.agent("beta")
+    with pytest.raises(AaestroError) as excinfo:
+        launcher.admit(beta)
+    assert excinfo.value.code == ErrorCode.RT_006
+
+    await launcher.stop("alpha")
+
+    assert mine in docker.removed
+    assert theirs not in docker.removed
+    assert launcher.orphans_of("alpha") == []
+    assert launcher.ports.assigned == {}, "지운 컨테이너의 포트를 놓지 않았다"
+    launcher.admit(beta)
+
+
+async def test_the_next_start_of_the_replica_removes_a_kept_leftover(workspace, docker, healthy):
+    """같은 자리의 다음 기동이 남은 컨테이너를 지운다 — 그 자리의 포트 예약은 놓지 않는다 (#676)."""
+    wired_workspace(workspace)
+    store = InMemoryDeploymentStore()
+    interrupted(store, DeploymentStatus.STARTING)
+    mine = plant(docker, workspace, "alpha", deployment="dep-cut", a2a_port=9105)
+    manager = wired_manager(workspace, docker, store)
+    await manager.reattach()
+    launcher = manager.launcher
+    assert launcher.ports is not None
+
+    await launcher.start(manager.catalog.agent("alpha"), a2a_port=9105, deployment="dep-next")
+
+    assert mine in docker.removed
+    assert launcher.orphans_of("alpha") == []
+    assert launcher.ports.assigned == {"alpha/0": 9105}, "다시 세운 자리의 포트를 놓았다"
+    await launcher.stop_all()
+
+
+async def test_reattach_does_not_keep_a_leftover_it_cannot_attribute(workspace, docker, healthy):
+    """배포 라벨이 없는 컨테이너 (라벨 도입 전) 는 넘겨받지 않고 WARN 으로 드러낸다 (#676)."""
+    wired_workspace(workspace)
+    store = InMemoryDeploymentStore()
+    interrupted(store, DeploymentStatus.STARTING)
+    plant(docker, workspace, "alpha", a2a_port=9105)
+    manager = wired_manager(workspace, docker, store)
+
+    with structlog.testing.capture_logs() as logs:
+        await manager.reattach()
+
+    assert manager.launcher.orphans_of("alpha") == []
+    assert manager.launcher.ports is not None
+    assert manager.launcher.ports.assigned == {}
+    assert any(e["event"].startswith("leftover container not kept") for e in logs)
+
+
+@pytest.mark.parametrize("failures", [1, 2])
+async def test_teardown_sees_the_leftovers_the_launcher_keeps(workspace, docker, healthy, failures):
+    """launcher 의 재제거가 실패하면 라벨 정리가 다시 지우고, 그것도 실패해야 LOST 다 (#676).
+
+    라벨 정리가 지운 컨테이너는 launcher 기록에서도 빠진다 — 남으면 지운 것을 계속 센다.
+    """
+    wired_workspace(workspace)
+    store = InMemoryDeploymentStore()
+    record = interrupted(store, DeploymentStatus.STARTING)
+    mine = plant(docker, workspace, "alpha", deployment="dep-cut", a2a_port=9105)
+    manager = wired_manager(workspace, docker, store)
+    await manager.reattach()
+    launcher = manager.launcher
+    assert launcher.ports is not None
+
+    docker._remove_failures = failures  # noqa: SLF001 — launcher 의 재제거부터 실패한다
+    done = await manager.teardown(record.deployment_id)
+
+    if failures == 1:  # 라벨 정리가 지웠다
+        assert done.status == DeploymentStatus.STOPPED
+        assert launcher.orphans_of("alpha") == [], "라벨 정리가 지운 컨테이너를 계속 센다"
+        assert launcher.ports.assigned == {}
+    else:  # 둘 다 실패했다 — STOPPED 로 적으면 다시 지울 길이 없다
+        assert done.status == DeploymentStatus.LOST
+        assert [h.container_id for h in launcher.orphans_of("alpha")] == [mine]
+        again = await manager.teardown(record.deployment_id)
+        assert again.status == DeploymentStatus.STOPPED
+        assert launcher.orphans_of("alpha") == []
+    assert mine in docker.removed
+
+
+async def test_teardown_leaves_another_deployments_container_of_the_same_name(
+    workspace, docker, healthy
+):
+    """해체의 라벨 정리는 이 배포의 것만 지운다 — 라벨 없는 옛 컨테이너는 이름으로 지운다 (#676)."""
+    wired_workspace(workspace)
+    manager = wired_manager(workspace, docker)
+    record = await manager.deploy("wired")
+    theirs = plant(docker, workspace, "alpha", deployment="dep-other", a2a_port=9107)
+    legacy = plant(docker, workspace, "beta", a2a_port=9108)
+
+    stopped = await manager.teardown(record.deployment_id)
+
+    assert stopped.status == DeploymentStatus.STOPPED, "남의 컨테이너를 이 배포의 잔여로 보았다"
+    assert theirs not in docker.removed, "다른 배포의 같은 이름 컨테이너를 지웠다"
+    assert legacy in docker.removed
+    assert all(a.container_id in docker.removed for a in record.agents)
+
+
+async def test_a_rolled_back_start_keeps_the_port_of_the_container_it_left(workspace, healthy):
+    """되감기가 지우지 못한 컨테이너의 포트는 그것이 지워질 때까지 예약된다 (#676)."""
+    wired_workspace(workspace)
+    docker = TrackingDocker(start_error=RuntimeError("daemon hiccup"), remove_failures=1)
+    manager = wired_manager(workspace, docker)
+    ports = manager.launcher.ports
+    assert ports is not None
+
+    with pytest.raises(AaestroError):
+        await manager.deploy("wired")
+
+    [record] = manager.deployments()
+    assert record.status == DeploymentStatus.LOST
+    assert manager.launcher.orphans_of("alpha")
+    held = ports.held("alpha")
+    assert held is not None, "남은 컨테이너의 포트를 놓았다"
+    docker._start_error = None  # noqa: SLF001
+    doc = agent_doc("gamma")
+    doc["spec"]["a2a"] = {"enabled": True}
+    write(workspace / "agents" / "gamma" / "manifest.yaml", doc)
+    write(workspace / "graphs" / "solo-gamma.yaml", graph_doc("solo-gamma", ["gamma"]))
+    fresh = await manager.deploy("solo-gamma")
+    assert fresh.agents[0].a2a_port != held
+
+    assert (await manager.teardown(record.deployment_id)).status == DeploymentStatus.STOPPED
+    assert ports.held("alpha") is None, "지운 컨테이너의 포트를 놓지 않았다"
+    await manager.launcher.stop_all()
+
+
+async def test_a_kept_leftover_counts_the_limits_it_was_started_with(workspace, docker, healthy):
+    """넘겨받은 컨테이너는 줄어든 선언이 아니라 만들 때의 한도로 센다 — #649 와 같다 (#676)."""
+    wired_workspace(workspace)
+    store = InMemoryDeploymentStore()
+    interrupted(store, DeploymentStatus.STARTING)
+    plant(docker, workspace, "alpha", deployment="dep-cut", a2a_port=9105)  # 1 코어로 떴다
+    doc = agent_doc("alpha")
+    doc["spec"]["a2a"] = {"enabled": True}
+    doc["spec"]["runtime"]["resources"] = {"cpu": "0.5", "memory": "256Mi"}
+    write(workspace / "agents" / "alpha" / "manifest.yaml", doc)
+    manager = wired_manager(workspace, docker, store)
+    await manager.reattach()
+    launcher = manager.launcher
+    assert launcher.orphans_of("alpha")
+
+    launcher.host_cpu_cores = 1.6  # 선언 0.5 + beta 1.0 이면 들어가고, 실제 1.0 + 1.0 이면 넘는다
+    with pytest.raises(AaestroError) as excinfo:
+        launcher.admit(manager.catalog.agent("beta"))
+    assert excinfo.value.code == ErrorCode.RT_006
+
+
+async def test_a_refused_start_after_clearing_a_leftover_frees_its_port(workspace, docker, healthy):
+    """남은 컨테이너를 지운 뒤 기동이 거절되면 그 자리의 포트 예약을 놓는다 (#676)."""
+    wired_workspace(workspace)
+    store = InMemoryDeploymentStore()
+    interrupted(store, DeploymentStatus.STARTING)
+    mine = plant(docker, workspace, "alpha", deployment="dep-cut", a2a_port=9105)
+    manager = wired_manager(workspace, docker, store)
+    await manager.reattach()
+    launcher = manager.launcher
+    assert launcher.ports is not None
+    launcher.host_cpu_cores = 0.5  # quota 가 기동을 거절한다
+
+    with pytest.raises(AaestroError) as excinfo:
+        await launcher.start(manager.catalog.agent("alpha"), a2a_port=9105)
+    assert excinfo.value.code == ErrorCode.RT_006
+
+    assert mine in docker.removed
+    assert launcher.ports.assigned == {}, "아무도 쥐지 않은 자리의 포트 예약이 샜다"
+
+
+@pytest.mark.parametrize("seen_by", ["label cleanup", "port release"])
+async def test_teardown_does_not_remove_a_container_whose_labels_cannot_be_read(
+    workspace, docker, healthy, monkeypatch, seen_by
+):
+    """주인을 가르지 못한 컨테이너는 남의 것일 수 있다 — 지우지 않고 LOST 로 남긴다 (#676)."""
+    wired_workspace(workspace)
+    store = InMemoryDeploymentStore()
+    first = wired_manager(workspace, docker, store)
+    record = await first.deploy("wired")
+    second = wired_manager(workspace, docker, store)
+    second.secrets_env = {}  # 다시 세울 수 없다 — launcher 밖에 남는 lost 배포
+    [lost] = await second.reattach()
+    assert lost.status == DeploymentStatus.LOST
+    alpha = next(a.container_id for a in record.agents if a.name == "alpha")
+    readable = docker.labels_of
+
+    def unreadable(container_id: str) -> dict[str, str]:
+        if container_id == alpha:
+            raise ConnectionError("daemon hiccup")
+        return readable(container_id)
+
+    monkeypatch.setattr(docker, "labels_of", unreadable)
+    if seen_by == "port release":  # 라벨 정리가 찾지 못해도 포트 해제가 남은 것으로 본다
+        listed = docker.labeled
+        monkeypatch.setattr(
+            docker,
+            "labeled",
+            lambda labels: () if labels.get("aaestro.agent") == "alpha" else listed(labels),
+        )
+
+    with structlog.testing.capture_logs() as logs:
+        unfinished = await second.teardown(record.deployment_id)
+
+    assert unfinished.status == DeploymentStatus.LOST
+    assert alpha not in docker.removed
+    assert any(e["event"].startswith("container labels could not be read") for e in logs)
+    monkeypatch.undo()
+    assert (await second.teardown(record.deployment_id)).status == DeploymentStatus.STOPPED
+    assert alpha in docker.removed
+    await first.launcher.stop_all()
+
+
+async def test_an_interrupted_teardown_stays_lost_while_a_leftover_cannot_be_attributed(
+    workspace, docker, healthy, monkeypatch
+):
+    """기록에 레플리카가 없으면 라벨 정리만 그 컨테이너를 본다 — 읽지 못했으면 STOPPED 가 아니다."""
+    wired_workspace(workspace)
+    store = InMemoryDeploymentStore()
+    record = interrupted(store, DeploymentStatus.STARTING)
+    mine = plant(docker, workspace, "alpha", deployment="dep-cut", a2a_port=9105)
+    manager = wired_manager(workspace, docker, store)
+
+    def unreadable(container_id: str) -> dict[str, str]:
+        raise ConnectionError("daemon hiccup")
+
+    monkeypatch.setattr(docker, "labels_of", unreadable)
+    await manager.reattach()
+    unfinished = await manager.teardown(record.deployment_id)
+
+    assert unfinished.status == DeploymentStatus.LOST
+    assert mine not in docker.removed
+    monkeypatch.undo()
+    assert (await manager.teardown(record.deployment_id)).status == DeploymentStatus.STOPPED
+    assert mine in docker.removed
+
+
+async def test_a_leftover_port_stays_while_another_holder_of_the_replica_remains(
+    workspace, docker, healthy
+):
+    """같은 자리를 쥔 것이 남아 있으면 하나가 지워져도 포트를 놓지 않는다 (#676)."""
+    wired_workspace(workspace)
+    store = InMemoryDeploymentStore()
+    interrupted(store, DeploymentStatus.STARTING)
+    one = plant(docker, workspace, "alpha", deployment="dep-cut", a2a_port=9105)
+    two = plant(docker, workspace, "alpha", deployment="dep-cut", a2a_port=9105)
+    manager = wired_manager(workspace, docker, store)
+    await manager.reattach()
+    launcher = manager.launcher
+    assert launcher.ports is not None
+
+    launcher.orphan_removed(one)
+    assert launcher.ports.assigned == {"alpha/0": 9105}, "남은 컨테이너가 쥔 포트를 놓았다"
+    launcher.orphan_removed(two)
+    assert launcher.ports.assigned == {}
+
+
+async def test_a_failed_replacement_keeps_the_port_the_restored_replica_holds(
+    workspace, docker, healthy
+):
+    """교체가 남은 컨테이너를 지운 뒤 실패해도 되돌린 레플리카의 포트는 예약된 채다 (#676)."""
+    wired_workspace(workspace)
+    manager = wired_manager(workspace, docker)
+    record = await manager.deploy("wired")
+    launcher = manager.launcher
+    assert launcher.ports is not None
+    launched = launcher.launched["alpha", 0]
+    port = launched.a2a_port
+    assert port is not None
+    leftover = plant(docker, workspace, "alpha", deployment=record.deployment_id, a2a_port=port)
+    await launcher.keep_orphan(
+        ContainerHandle(agent="alpha", container_id=leftover, image="x", control_port=0),
+        replica=0,
+        manifest=manager.catalog.agent("alpha"),
+        a2a_port=port,
+    )
+    launcher.host_cpu_cores = 0.1  # 교체 기동이 quota 로 거절된다
+    launched.lifecycle.transition(AgentState.UNHEALTHY)  # 교체는 Unhealthy 에서 다시 올라온다
+
+    with pytest.raises(AaestroError) as excinfo:
+        await launcher._replace(launched)  # noqa: SLF001
+    assert excinfo.value.code == ErrorCode.RT_006
+
+    assert leftover in docker.removed
+    assert launcher.launched["alpha", 0].a2a_port == port
+    assert launcher.ports.held("alpha") == port, "되돌린 레플리카의 포트를 놓았다"
+    launcher.host_cpu_cores = None
+    await launcher.stop_all()
+
+
+@pytest.mark.parametrize("reattached", [False, True])
+async def test_a_restarted_replica_carries_its_deployment_label(
+    workspace, docker, healthy, reattached
+):
+    """재시작이 다시 세운 컨테이너도 배포 라벨을 단다 — 재부착한 배포도 같다 (#676)."""
+    wired_workspace(workspace)
+    store = InMemoryDeploymentStore()
+    manager = wired_manager(workspace, docker, store)
+    record = await manager.deploy("wired")
+    first = manager
+    if reattached:
+        manager = wired_manager(workspace, docker, store)
+        await manager.reattach()
+    launcher = manager.launcher
+
+    launched = launcher.launched["alpha", 0]
+    launched.lifecycle.transition(AgentState.UNHEALTHY)  # 교체는 Unhealthy 에서 다시 올라온다
+    await launcher._replace(launched)  # noqa: SLF001
+
+    fresh = launcher.launched["alpha", 0].handle.container_id
+    assert docker.labels_of(fresh)["aaestro.deployment"] == record.deployment_id
+    await launcher.stop_all()
+    await first.launcher.stop_all()
+
+
+async def test_reattach_does_not_take_a_sidecar_for_a_leftover(workspace, docker, healthy):
+    """사이드카도 에이전트 라벨을 단다 — 사이드카 정리 몫이라 넘겨받지도 경고하지도 않는다."""
+    from aaestro.runtime.docker.engine import AGENT_LABEL
+    from aaestro.runtime.sidecars import ROLE_LABEL, SIDECAR_ROLE
+
+    wired_workspace(workspace)
+    store = InMemoryDeploymentStore()
+    interrupted(store, DeploymentStatus.STARTING)
+    docker.create(
+        name="aaestro-alpha-mcp-x", labels={AGENT_LABEL: "alpha", ROLE_LABEL: SIDECAR_ROLE}
+    )
+    manager = wired_manager(workspace, docker, store)
+
+    with structlog.testing.capture_logs() as logs:
+        await manager.reattach()
+
+    assert manager.launcher.orphans_of("alpha") == []
+    assert not [e for e in logs if e["event"].startswith("leftover container not kept")]
+
+
+@pytest.mark.parametrize("label", ["aaestro.replica", "aaestro.a2a_port"])
+async def test_reattach_survives_a_label_that_only_looks_numeric(workspace, docker, healthy, label):
+    """'²' 는 isdigit 이지만 int() 가 거절한다 — 재부착이 넘어지지 않고 WARN 으로 남긴다 (#676)."""
+    wired_workspace(workspace)
+    store = InMemoryDeploymentStore()
+    interrupted(store, DeploymentStatus.STARTING)
+    leftover = plant(docker, workspace, "alpha", deployment="dep-cut", a2a_port=9105)
+    docker.created[-1]["labels"][label] = "²"
+    manager = wired_manager(workspace, docker, store)
+
+    with structlog.testing.capture_logs() as logs:
+        await manager.reattach()
+
+    assert manager.launcher.ports is not None
+    assert manager.launcher.ports.assigned == {}
+    kept = [h.container_id for h in manager.launcher.orphans_of("alpha")]
+    assert kept == ([] if label == "aaestro.replica" else [leftover])
+    assert any(e["log_level"] == "warning" and "leftover" in e["event"] for e in logs)
+
+
+async def test_a_deployed_container_carries_its_deployment_and_port(workspace, docker, healthy):
+    """재부착이 기록 없이 주인과 포트를 가르는 근거 — 배포가 라벨로 싣는다 (#676)."""
+    wired_workspace(workspace)
+    manager = wired_manager(workspace, docker)
+
+    record = await manager.deploy("wired")
+
+    for agent in record.agents:
+        labels = docker.labels_of(agent.container_id)
+        assert labels["aaestro.deployment"] == record.deployment_id
+        assert labels["aaestro.a2a_port"] == str(agent.a2a_port)
+    await manager.launcher.stop_all()
 
 
 @pytest.mark.parametrize("squatter", ["other-agent", "same-replica"])

@@ -539,7 +539,10 @@ Stopping the control plane also waits for teardowns in progress before it exits 
 waits, without a limit, for every request still being served, a teardown included. If the
 process is killed before they finish, the deployment is not recorded as `stopped`: after the
 restart it is reattached or shown as `lost`, and tearing it down again removes what is left —
-containers are found by their agent label.
+containers are found by their agent label. A container whose `aaestro.deployment` label names
+another deployment is left alone; one without the label (started before it existed) is still
+removed by name. A container whose labels cannot be read is not removed either: the deployment
+stays `lost` and the next teardown looks again.
 
 ### Declared volumes
 
@@ -1461,7 +1464,14 @@ agent identity — otherwise the `401` of [Authentication](#authentication) befo
   become `lost` rather than being deleted quietly. Reattaching also reserves the recorded A2A ports,
   so a new deployment cannot be given a port a surviving container still holds; a `lost` deployment
   keeps them until its containers are actually removed (a recorded port already held by another
-  replica makes the deployment `lost`).
+  replica makes the deployment `lost`). A deployment interrupted while `starting`, or one left
+  `lost` with no recorded replicas (a failed start whose cleanup also failed), has no replicas to
+  pick up: its leftover containers are found by agent label and kept only when their
+  `aaestro.deployment` label names that deployment. They count toward the quota, their A2A port
+  (label `aaestro.a2a_port`) is reserved, and the next stop of the agent (a teardown) or the next
+  start of that replica removes them. A container without the label (started before it existed) is
+  not kept; a warning names it, and tearing the deployment down still removes it. A teardown that
+  cannot remove such a container leaves the deployment `lost` instead of `stopped`.
 
 ## CLI equivalents
 

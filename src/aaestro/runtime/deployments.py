@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import secrets
 import sqlite3
@@ -39,12 +40,14 @@ from aaestro.runtime.images import image_tag
 from aaestro.runtime.launcher import LaunchedAgent, MemoryEndpoint
 from aaestro.runtime.lifecycle import AgentState
 from aaestro.runtime.scope import ScopedSecrets
-from aaestro.runtime.sidecars import McpSidecars, sidecars_of
+from aaestro.runtime.sidecars import ROLE_LABEL, SIDECAR_ROLE, McpSidecars, sidecars_of
 from aaestro.runtime.spec import (
     A2A_EDGES_ENV,
     A2A_PEERS_ENV,
+    A2A_PORT_LABEL,
     A2A_SECRET_ENV,
     DEFAULT_CONTROL_PORT,
+    DEPLOYMENT_LABEL,
     WRITABLE_TMPFS,
     build_container_spec,
     container_name,
@@ -627,7 +630,9 @@ class DeploymentManager:
             for manifest in manifests:
                 # 사이드카부터 선다 — 반쯤 선 사이드카도 되감기가 치우도록 먼저 적는다
                 attempted.append(manifest.name)
-                launched.append(await self._launch(manifest, provisions[manifest.name]))
+                launched.append(
+                    await self._launch(manifest, provisions[manifest.name], deployment_id)
+                )
             await self._wait_ready(launched)
         except BaseException as err:
             await self._rollback(launched)
@@ -743,8 +748,8 @@ class DeploymentManager:
             # 정지가 넘어진 이름은 launcher 가 아직 감시하므로 라벨로 지우지 않는다
             for name in names:
                 if name not in broken:
-                    await self._remove_orphans(name)
-                    if await self._release_ports_of(record, name):
+                    unread = await self._remove_orphans(name, record.deployment_id)
+                    if await self._release_ports_of(record, name) or unread:
                         survivors.append(name)
             # 해체를 요청한 이상 신원은 죽인다 — 정지 하나가 실패했다고 모든 신원이 살아 남으면
             # 운영자가 끝냈다고 믿는 배포가 강제 지점을 계속 통과한다
@@ -766,9 +771,13 @@ class DeploymentManager:
         self._bind_log(stopped).info("deployment stopped", agents=len(record.agents))
         return stopped
 
-    async def _remove_orphans(self, agent: str) -> None:
-        """이 에이전트 라벨이 붙은 남은 컨테이너 전부를 지운다 — launcher 의 핸들 없이.
+    async def _remove_orphans(self, agent: str, deployment_id: str) -> bool:
+        """이 배포의 남은 컨테이너를 에이전트 라벨로 찾아 지운다 — launcher 의 핸들 없이.
 
+        다른 배포의 라벨을 단 컨테이너는 건드리지 않는다 (#676). 배포 라벨이 없는 컨테이너
+        (라벨 도입 전에 뜬 것) 는 이전처럼 이름으로 지운다 — 같은 이름을 쥔 다른 배포의 옛
+        컨테이너도 지울 수 있다. 라벨을 읽지 못한 컨테이너는 남의 것일 수 있어 지우지 않고 True 를
+        돌려준다 — 해체가 LOST 로 남아 다음 해체가 다시 본다. 목록 조회 실패도 True 다.
         조회 실패는 신원 회수와 남은 이름의 정리를 막지 않는다 — `McpSidecars.stop` 과 같은 규칙.
         정지·제거 실패는 `engine.stop` 이 스스로 삼키고 기록한다.
         """
@@ -777,12 +786,23 @@ class DeploymentManager:
             found = await asyncio.to_thread(engine.client.labeled, {AGENT_LABEL: agent})
         except Exception as err:  # noqa: BLE001 — 찾지 못해도 해체는 끝까지 간다; 로그로 드러낸다
             log.warning("orphan containers could not be listed", agent=agent, exc_info=err)
-            return
+            return True  # 남았을 수 있다 — 라벨을 읽지 못한 것과 같이 LOST 로 남긴다
+        unread = False
         for container_id in found:
+            mine = await self._mine(container_id, deployment_id, agent=agent)
+            if mine is None:
+                unread = True
+            if not mine:
+                continue
             handle = ContainerHandle(
                 agent=agent, container_id=container_id, image="unknown", control_port=0
             )
-            await engine.stop(handle)
+            # launcher 가 넘겨받은 컨테이너였으면 그 기록도 푼다 — 남으면 지운 것을 계속 센다 (#676)
+            if await engine.stop(
+                handle, on_removed=functools.partial(self.launcher.orphan_removed, container_id)
+            ):
+                self.launcher.orphan_removed(container_id)
+        return unread
 
     async def reattach(self) -> Sequence[DeploymentRecord]:
         """After a restart, find the containers we left running and pick them back up.
@@ -802,6 +822,11 @@ class DeploymentManager:
             if record.status == DeploymentStatus.STARTING:
                 # 기동 도중 죽은 배포다 — 붙일 기록(신원 포함)이 없으니 발급된 신원만 남는다
                 self._revoke_orphaned_identities(record)
+            if record.status == DeploymentStatus.STARTING or (
+                record.status == DeploymentStatus.LOST and not record.agents
+            ):
+                # 기록에 레플리카가 없다 — 남은 컨테이너는 이름 · 라벨로만 찾는다 (#676)
+                await self._keep_leftovers(record)
             if record.status != DeploymentStatus.READY:
                 continue
             try:
@@ -859,6 +884,108 @@ class DeploymentManager:
                 touched.append(self._refresh(record))
         return touched
 
+    async def _mine(self, container_id: str, deployment_id: str, *, agent: str) -> bool | None:
+        """이 배포의 컨테이너인가 — 배포 라벨이 없으면 True, 라벨을 읽지 못하면 None (#676).
+
+        None 은 남의 것일 수도 있다는 뜻이다 — 호출자는 지우지도, 사라졌다고 보지도 않는다.
+        """
+        try:
+            labels = await asyncio.to_thread(self.launcher.engine.client.labels_of, container_id)
+        except Exception as err:  # noqa: BLE001 — 가르지 못하면 지우지 않는다; 로그로 드러낸다
+            log.warning(
+                "container labels could not be read; left for the next teardown",
+                agent=agent,
+                container_id=container_id[:12],
+                image="unknown",
+                error=type(err).__name__,
+            )
+            return None
+        owner = labels.get(DEPLOYMENT_LABEL)
+        return owner is None or owner == deployment_id
+
+    async def _keep_leftovers(self, record: DeploymentRecord) -> None:
+        """레플리카 기록 없이 남은 이 배포의 컨테이너를 launcher 에 넘긴다 (#676).
+
+        종료로 끊긴 기동 (STARTING) 과 기동 · 정리 실패가 겹친 배포 (``agents=()`` 인 LOST) 가
+        대상이다. 이 배포의 것인지는 `DEPLOYMENT_LABEL` 로 가른다 — 같은 이름을 다른 배포가 쥘 수
+        있어 이름만으로 넘겨받지 않는다. 가르지 못하거나 quota 에 셀 선언이 없으면 넘겨받지 않고
+        WARN 한다 (해체의 라벨 정리는 그대로 지운다). 쥔 A2A 포트는 라벨로 읽어 예약한다.
+        """
+        bound = self._bind_log(record)
+        engine = self.launcher.engine
+        try:
+            manifests = {m.name: m for m in self._agents_of(self.catalog.graph(record.graph))}
+        except AaestroError:
+            manifests = {}
+        for name in record.declared:
+            try:
+                found = await asyncio.to_thread(engine.client.labeled, {AGENT_LABEL: name})
+            except Exception as err:  # noqa: BLE001 — 찾지 못해도 재부착은 계속; 로그로 드러낸다
+                bound.warning("leftover containers could not be listed", agent=name, exc_info=err)
+                continue
+            for container_id in found:
+                try:
+                    labels = await asyncio.to_thread(engine.client.labels_of, container_id)
+                except Exception as err:  # noqa: BLE001 — 가르지 못하면 넘겨받지 않는다
+                    labels, reason = {}, type(err).__name__
+                else:
+                    reason = "no deployment label"
+                owner = labels.get(DEPLOYMENT_LABEL)
+                if owner is not None and owner != record.deployment_id:
+                    continue  # 다른 배포의 컨테이너다
+                if labels.get(ROLE_LABEL) == SIDECAR_ROLE:
+                    continue  # 사이드카는 `sidecars.stop` 이 정리한다
+                manifest = manifests.get(name)
+                replica = _label_int(labels.get("aaestro.replica"))
+                if owner is None or manifest is None or replica is None:
+                    bound.warning(
+                        "leftover container not kept; owner or declaration unknown",
+                        agent=name,
+                        container_id=container_id[:12],
+                        image="unknown",
+                        reason=reason if owner is None else "declaration or replica unknown",
+                    )
+                    continue
+                port = self._reserve_leftover_port(record, name, replica, labels, manifest)
+                await self.launcher.keep_orphan(
+                    ContainerHandle(
+                        agent=name, container_id=container_id, image="unknown", control_port=0
+                    ),
+                    replica=replica,
+                    manifest=manifest,
+                    a2a_port=port,
+                )
+
+    def _reserve_leftover_port(
+        self,
+        record: DeploymentRecord,
+        name: str,
+        replica: int,
+        labels: Mapping[str, str],
+        manifest: AgentManifest,
+    ) -> int | None:
+        """남은 컨테이너가 쥔 A2A 포트를 예약한다 — 예약한 포트 또는 None (#676)."""
+        ports = self.launcher.ports
+        label = _label_int(labels.get(A2A_PORT_LABEL))
+        if ports is None or not manifest.spec.a2a.enabled:
+            return None
+        if label is None:
+            self._bind_log(record).warning(
+                "a2a port of a leftover container unknown; not reserved", agent=name
+            )
+            return None
+        try:
+            ports.reserve(name, label, replica=replica)
+        except AaestroError as err:
+            self._bind_log(record).error(
+                "a2a port of a live container is held by another replica",
+                agent=name,
+                port=label,
+                error_code=err.code,
+            )
+            return None
+        return label
+
     async def _reserve_ports(self, record: DeploymentRecord) -> str | None:
         """떠 있는 컨테이너가 쥔 A2A 포트를 그 레플리카 몫으로 잡는다 — 충돌한 이름 또는 None.
 
@@ -911,7 +1038,12 @@ class DeploymentManager:
             except Exception:  # noqa: BLE001 — 사라졌는지 확인하지 못하면 놓지 않는다
                 survived = True
                 continue
-            if found is not None:
+            # 같은 이름의 다른 배포 컨테이너는 이 배포의 것이 남은 것이 아니다. 라벨을 읽지 못하면
+            # 이 배포의 것이 남았을 수 있다고 본다 (#676)
+            mine = (
+                None if found is None else await self._mine(found, record.deployment_id, agent=name)
+            )
+            if found is not None and mine is not False:
                 survived = True
             elif ports is not None and agent.a2a_port is not None:
                 ports.release(name, replica=agent.replica, port=agent.a2a_port)
@@ -1424,6 +1556,7 @@ class DeploymentManager:
                 "mounts": provisions[m.name].mounts,
                 "image": deployed.get(m.name) or provisions[m.name].image,
                 "networks": self.sidecars.agent_networks(m),
+                "deployment": record.deployment_id,
             }
             for m in manifests
         }
@@ -1486,7 +1619,9 @@ class DeploymentManager:
             return MemoryEndpoint(url=self.memory_url, token=token)
         return None
 
-    async def _launch(self, manifest: AgentManifest, provision: Provision) -> LaunchedAgent:
+    async def _launch(
+        self, manifest: AgentManifest, provision: Provision, deployment_id: str
+    ) -> LaunchedAgent:
         env = self._env_for(manifest, provision)
         sidecars = self.sidecars
         # quota 에 걸리는 기동은 사이드카도 세우지 않는다 — launcher.start 가 직전에 다시 본다
@@ -1501,6 +1636,7 @@ class DeploymentManager:
             a2a_port=provision.a2a_port,
             image=provision.image,
             networks=sidecars.agent_networks(manifest),
+            deployment=deployment_id,
         )
 
     def _release_ports(self, provisions: Mapping[str, Provision]) -> None:
@@ -1508,13 +1644,26 @@ class DeploymentManager:
         if self.launcher.ports is None:
             return
         for agent, provision in provisions.items():
-            # 제거에 실패해 남은 레플리카는 포트를 쥔다 — 놓으면 다른 에이전트가 같은 번호를 받는다
-            if provision.a2a_port is not None and not self.launcher.replicas_of(agent):
+            # 제거에 실패해 남은 레플리카 · 넘겨받은 컨테이너는 포트를 쥔다 — 놓으면 다른 에이전트가
+            # 같은 번호를 받는다. 넘겨받은 컨테이너의 포트는 그것을 지우는 쪽이 놓는다 (#676)
+            if (
+                provision.a2a_port is not None
+                and not self.launcher.replicas_of(agent)
+                and not self.launcher.orphans_of(agent)
+            ):
                 self.launcher.ports.release(agent)
 
     def _left_behind(self, names: Sequence[str]) -> list[str]:
-        """정지 뒤에도 launcher 가 쥔 레플리카가 있는 이름 — 제거 실패 · 넘어진 정지 (#623)."""
-        return [name for name in names if self.launcher.replicas_of(name)]
+        """정지 뒤에도 launcher 가 쥔 레플리카 · 컨테이너가 있는 이름 — 제거 실패 · 넘어진 정지.
+
+        넘겨받은 컨테이너 (#654) 도 센다 — 재제거가 실패했는데 STOPPED 로 적으면 다시 지울 길이
+        없다 (#676).
+        """
+        return [
+            name
+            for name in names
+            if self.launcher.replicas_of(name) or self.launcher.orphans_of(name)
+        ]
 
     async def _wait_ready(self, launched: Sequence[LaunchedAgent]) -> None:
         deadline = self.clock() + self.ready_timeout_s
@@ -1547,6 +1696,11 @@ class DeploymentManager:
 
     def _bind_log(self, record: DeploymentRecord) -> Any:
         return log.bind(deployment_id=record.deployment_id, graph=record.graph)
+
+
+def _label_int(value: str | None) -> int | None:
+    """라벨 값의 음이 아닌 정수 — ASCII 숫자만. `'²'` 는 isdigit 이지만 int() 가 거절한다 (#676)."""
+    return int(value) if value is not None and value.isascii() and value.isdecimal() else None
 
 
 def _deployed(launched: LaunchedAgent, token: str, access_credential: str = "") -> DeployedAgent:
