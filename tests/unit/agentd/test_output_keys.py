@@ -316,7 +316,7 @@ async def test_both_paths_agree_without_declared_keys():
 
 async def test_the_failure_does_not_carry_the_model_output():
     """모델 출력은 신뢰하지 않는 데이터다 — 에러에는 길이만 남는다 (#412)."""
-    marker = "MARKER-" + "x" * 400
+    marker = "x" * 400 + "-MARKER"  # 꼬리에 둔다 — 옛 details 의 꼬리 300자에 실리면 잡힌다
     result = await run_with(marker, ("plan",))
 
     assert result.error.code == ErrorCode.LLM_004
