@@ -725,6 +725,7 @@ class DeploymentManager:
         # `_remove_orphans` 가 컨테이너를 지워, 재시작이 그 자리에 다시 세운다 (#623)
         failures: list[Exception] = []
         broken: set[str] = set()
+        survivors: list[str] = []  # 라벨로 지우려다 남은 컨테이너가 있는 이름 (#671)
         try:
             for name in names:
                 try:
@@ -743,12 +744,14 @@ class DeploymentManager:
             for name in names:
                 if name not in broken:
                     await self._remove_orphans(name)
+                    if await self._release_ports_of(record, name):
+                        survivors.append(name)
             # 해체를 요청한 이상 신원은 죽인다 — 정지 하나가 실패했다고 모든 신원이 살아 남으면
             # 운영자가 끝냈다고 믿는 배포가 강제 지점을 계속 통과한다
             self._revoke_identities(record.deployment_id)
         # 제거에 실패하거나 정지가 넘어진 레플리카는 launcher 에 남는다 — STOPPED 로 적으면
         # teardown 이 바로 반환해 다시 지울 길이 없다. 예외를 올리기 **전에** LOST 로 남긴다
-        left = self._left_behind(names)
+        left = [*self._left_behind(names), *survivors]
         touched: list[DeploymentRecord] = []
         if left:
             self._mark_lost(record, f"agent containers not removed: {', '.join(left)}", touched)
@@ -789,6 +792,13 @@ class DeploymentManager:
         """
         touched: list[DeploymentRecord] = []
         for record in self.store.list():
+            if record.status in (DeploymentStatus.READY, DeploymentStatus.LOST):
+                # 붙기 전에 쥔다 — lost 로 두는 어떤 경로든 컨테이너는 남아 포트를 쥔다 (#671)
+                conflict = await self._reserve_ports(record)
+                if conflict is not None and record.status == DeploymentStatus.READY:
+                    self._mark_lost(record, f"a2a port already held: {conflict}", touched)
+                    self._revoke_orphaned_identities(record)
+                    continue
             if record.status == DeploymentStatus.STARTING:
                 # 기동 도중 죽은 배포다 — 붙일 기록(신원 포함)이 없으니 발급된 신원만 남는다
                 self._revoke_orphaned_identities(record)
@@ -848,6 +858,64 @@ class DeploymentManager:
             else:
                 touched.append(self._refresh(record))
         return touched
+
+    async def _reserve_ports(self, record: DeploymentRecord) -> str | None:
+        """떠 있는 컨테이너가 쥔 A2A 포트를 그 레플리카 몫으로 잡는다 — 충돌한 이름 또는 None.
+
+        새 프로세스의 할당기는 비어 있어 잡지 않으면 새 배포가 같은 번호를 받는다 (#671). 컨테이너가
+        없으면 쥔 것이 없으니 잡지 않는다 — 조회가 실패하면 쥐고 있다고 본다 (닫는 쪽).
+        """
+        ports = self.launcher.ports
+        if ports is None:
+            return None
+        conflict: str | None = None
+        for agent in record.agents:
+            if agent.a2a_port is None:
+                continue
+            try:
+                found = await asyncio.to_thread(
+                    self.launcher.engine.client.find, container_name(agent.name, agent.replica)
+                )
+            except Exception:  # noqa: BLE001 — 확인하지 못하면 컨테이너가 있다고 보고 포트를 쥔다
+                found = "unknown"
+            if found is None:
+                continue
+            try:
+                ports.reserve(agent.name, agent.a2a_port, replica=agent.replica)
+            except AaestroError as err:
+                self._bind_log(record).error(
+                    "a2a port of a live container is held by another replica",
+                    agent=agent.name,
+                    port=agent.a2a_port,
+                    error_code=err.code,
+                )
+                conflict = conflict or agent.name
+        return conflict
+
+    async def _release_ports_of(self, record: DeploymentRecord, name: str) -> bool:
+        """라벨로 지운 컨테이너의 포트를 놓는다 — 실제로 사라진 레플리카만 (#671).
+
+        launcher 가 쥔 레플리카는 launcher 의 정지가 놓는다. 제거에 실패해 남았으면 예약도 남고,
+        True 를 돌려줘 해체가 끝나지 않았음을 알린다 (다시 해체하면 같은 컨테이너를 다시 지운다).
+        """
+        ports = self.launcher.ports
+        survived = False
+        held = {launched.replica for launched in self.launcher.replicas_of(name)}
+        for agent in record.agents:
+            if agent.name != name or agent.replica in held:
+                continue
+            try:
+                found = await asyncio.to_thread(
+                    self.launcher.engine.client.find, container_name(name, agent.replica)
+                )
+            except Exception:  # noqa: BLE001 — 사라졌는지 확인하지 못하면 놓지 않는다
+                survived = True
+                continue
+            if found is not None:
+                survived = True
+            elif ports is not None and agent.a2a_port is not None:
+                ports.release(name, replica=agent.replica, port=agent.a2a_port)
+        return survived
 
     async def _isolated(
         self,

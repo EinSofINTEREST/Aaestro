@@ -147,3 +147,50 @@ async def test_two_a2a_agents_do_not_share_a_port():
     await agents.start(manifest("researcher"))
 
     assert a2a_ports(client.created[0]) != a2a_ports(client.created[1])
+
+
+def test_reserve_holds_a_port_for_one_replica_and_refuses_a_second_holder():
+    allocator = A2APortAllocator(port_range=(9100, 9102))
+
+    allocator.reserve("alpha", 9100)
+    allocator.reserve("alpha", 9100)  # 같은 레플리카를 다시 잡는 것은 무해하다
+
+    assert allocator.allocate("alpha") == 9100
+    assert allocator.allocate("beta") == 9101
+    with pytest.raises(AaestroError) as caught:
+        allocator.reserve("gamma", 9100)
+    assert caught.value.code == ErrorCode.RT_001
+
+
+def test_reserve_keeps_an_out_of_range_port_and_release_gives_it_back():
+    allocator = A2APortAllocator(port_range=(9100, 9101))
+
+    allocator.reserve("alpha", 9500)
+    assert allocator.allocate("beta") == 9100
+    with pytest.raises(AaestroError):
+        allocator.reserve("gamma", 9500)
+
+    allocator.release("alpha")
+    allocator.reserve("gamma", 9500)
+
+
+def test_reserve_refuses_to_move_a_replica_to_another_port():
+    allocator = A2APortAllocator(port_range=(9100, 9102))
+    assert allocator.allocate("alpha") == 9100
+
+    with pytest.raises(AaestroError) as caught:
+        allocator.reserve("alpha", 9101)
+
+    assert caught.value.code == ErrorCode.RT_001
+    assert allocator.assigned == {"alpha/0": 9100}, "기존 예약이 덮였다"
+
+
+def test_release_with_a_port_only_frees_a_matching_reservation():
+    allocator = A2APortAllocator(port_range=(9100, 9102))
+    assert allocator.allocate("alpha") == 9100
+
+    allocator.release("alpha", port=9101)
+    assert allocator.assigned == {"alpha/0": 9100}
+
+    allocator.release("alpha", port=9100)
+    assert allocator.assigned == {}

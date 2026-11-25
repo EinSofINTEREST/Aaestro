@@ -87,13 +87,48 @@ class A2APortAllocator:
             },
         )
 
-    def release(self, agent: str, *, replica: int = 0) -> None:
+    def reserve(self, agent: str, port: int, *, replica: int = 0) -> None:
+        """Claim a port that a container this process did not start already holds.
+
+        재부착한 컨테이너가 쥔 포트를 이 레플리카 몫으로 잡습니다. 같은 레플리카를 다시 잡는 것은
+        무해하고, 다른 레플리카가 쥔 포트이거나 이 레플리카가 다른 포트를
+        쥐고 있으면 거절합니다. 범위 밖 포트도
+        집합에는 넣습니다 — `allocate` 는 범위 안에서만 고르니 겹치지 않고, 해제도 대칭입니다.
+
+        Raises:
+            AaestroError: RUNTIME/``RT_001`` on a port conflict or a different held port.
+        """
+        key = _key(agent, replica)
+        mine = self.assigned.get(key)
+        if mine is not None and mine != port:
+            raise AaestroError(
+                category=ErrorCategory.RUNTIME,
+                code=ErrorCode.RT_001,
+                message="a2a replica already holds another port",
+                agent=agent,
+                details={"port": port, "held": mine, "replica": replica},
+            )
+        holder = next((k for k, held in self.assigned.items() if held == port and k != key), None)
+        if holder is not None:
+            raise AaestroError(
+                category=ErrorCategory.RUNTIME,
+                code=ErrorCode.RT_001,
+                message="a2a port already held by another replica",
+                agent=agent,
+                details={"port": port, "replica": replica},
+            )
+        self.assigned[key] = port
+
+    def release(self, agent: str, *, replica: int = 0, port: int | None = None) -> None:
         """Return one replica's port to the range.
 
         레플리카의 포트를 범위로 돌려줍니다. 미할당 레플리카에 대해서는
         아무 일도 하지 않습니다 — 정지 경로가 할당 여부를 따로 기억하지
-        않아도 되게 합니다.
+        않아도 되게 합니다. ``port`` 를 주면 그 레플리카가 **그 포트를** 쥘 때만 놓습니다 —
+        다른 포트의 예약은 남의 것이라 건드리지 않습니다.
         """
+        if port is not None and self.assigned.get(_key(agent, replica)) != port:
+            return
         self.assigned.pop(_key(agent, replica), None)
 
 
