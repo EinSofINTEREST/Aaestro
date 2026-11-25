@@ -251,7 +251,13 @@ def build_a2a_app(
         agent_card=card,
     )
     # 이 포트에는 카드와 JSON-RPC 만 연다 — FastAPI 의 문서 라우트는 자격 없이 닿는 창구다
-    app = FastAPI(lifespan=_following(verifier), docs_url=None, redoc_url=None, openapi_url=None)
+    app = FastAPI(
+        lifespan=_following(verifier),
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+        redirect_slashes=False,
+    )
     # 조립 결과를 드러낸다 — 어느 검사가 물렸는지는 진단과 테스트가 봐야 할 사실이다
     app.state.guard = guard
     app.state.task_store = handler.task_store

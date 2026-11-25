@@ -1249,6 +1249,12 @@ and nothing is cached is `503` (`ACC_002`); a missing or unknown identity is `40
 `401` on the provider listener. A malformed setting refuses to start (`CFG_001`), and so does the proxy
 when its registry feed or either listener ends — run it under a restart policy.
 
+The provider listener checks the caller before routing: a request with no identity gets the same `401`
+whatever the path, method or trailing slash, and the docs routes (`/docs`, `/redoc`, `/openapi.json`)
+are closed. Only `GET /v1/providers` is open. The identity is decided before the endpoint allow-list, so
+a blocked endpoint is also `503` (`ACC_002`) while the registry is unreachable, and a forged identity
+gets the same `401` on allowed and blocked endpoints.
+
 **Private addresses.** The proxy sits on the external network, so it can reach what agents cannot —
 cloud metadata addresses, services on the host. A destination that resolves to a private, loopback,
 link-local or shared (CGNAT) address is refused unless it is listed in

@@ -593,6 +593,9 @@ async def test_the_proxys_own_refusals_carry_its_error_code_header():
         denied = await call(client)
         registry.down = True
         undecided = await call(client)
+        # 신원 판정이 엔드포인트 검사보다 먼저 (#495) — 막힌 엔드포인트 403 은 허용 판정 뒤에만 난다
+        registry.down = False
+        registry.allowed.add("api.anthropic.com")
         endpoint = await client.post(
             "/anthropic/v1/files", headers={"x-api-key": "cred-researcher"}
         )
@@ -663,3 +666,71 @@ async def test_the_provider_list_is_routed_before_the_provider_catch_all():
 
     assert response.status_code == 200
     assert response.json() == {"providers": ["anthropic", "openai-compat"]}
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("POST", "/anthropic/v1/messages"),  # 허용 엔드포인트
+        ("POST", "/anthropic/v1/files"),  # 막힌 엔드포인트
+        ("DELETE", "/anthropic/v1/messages"),  # 틀린 메서드
+        ("POST", "/nope/v1/messages"),  # 모르는 provider
+        ("POST", "/anthropic/v1/messages/"),  # 슬래시
+        ("GET", "/docs"),
+        ("GET", "/redoc"),
+        ("GET", "/openapi.json"),
+        ("GET", "/v1/providers/"),
+    ],
+)
+async def test_a_caller_without_identity_gets_the_same_401_on_every_path(method, path):
+    """자격 없는 호출자는 응답 차이로 허용 엔드포인트 · 경로 표를 열거하지 못한다 (#495)."""
+    registry = Registry()
+    provider = Provider()
+    async with app_for(registry, provider) as client:
+        response = await client.request(method, path)
+
+    assert response.status_code == 401 and provider.seen == []
+    assert response.json()["error"]["message"] == "agent identity required"
+    assert EGRESS_ERROR_CODE_HEADER not in response.headers
+
+
+@pytest.mark.parametrize("path", ["/anthropic/v1/messages", "/anthropic/v1/files"])
+async def test_a_forged_identity_gets_the_same_response_on_allowed_and_blocked_endpoints(path):
+    """허용 엔드포인트는 401, 막힌 엔드포인트는 403 이면 응답 차이로 허용 목록이 열거된다 (#495)."""
+    async with app_for(Registry(), Provider()) as client:
+        allowed = await client.post("/anthropic/v1/messages", headers={"x-api-key": "forged"})
+        probed = await client.post(path, headers={"x-api-key": "forged"})
+
+    assert (probed.status_code, probed.content, dict(probed.headers)) == (
+        allowed.status_code,
+        allowed.content,
+        dict(allowed.headers),
+    )
+    assert probed.status_code == 401
+
+
+@pytest.mark.parametrize("path", ["/docs", "/redoc", "/openapi.json"])
+async def test_the_docs_routes_are_closed_even_for_a_valid_identity(path):
+    """자격 없는 요청은 미들웨어가 먼저 401 이라 docs 닫기가 가려진다 — 유효한 자격으로 본다."""
+    async with app_for(Registry(), Provider()) as client:
+        response = await client.get(path, headers={"x-api-key": "cred-researcher"})
+
+    assert response.status_code == 404
+
+
+async def test_the_provider_list_stays_open_without_identity():
+    async with app_for(Registry(), Provider()) as client:
+        response = await client.get("/v1/providers")
+
+    assert response.status_code == 200
+
+
+async def test_the_mcp_path_takes_only_a_bearer_but_the_model_path_also_takes_x_api_key():
+    """원격 MCP 종단은 Bearer 만 읽는다 — 미들웨어가 경로별로 같은 규칙을 쓴다 (#495)."""
+    async with app_for(Registry(), Provider()) as client:
+        mcp = await client.post("/mcp/srv", headers={"x-api-key": "cred-researcher"})
+        model = await client.post("/openai/v1/chat", headers={"x-api-key": "cred-researcher"})
+
+    # 미들웨어의 거절 모양 (error.type) 이어야 라우팅 전에 막힌 것이다
+    assert mcp.status_code == 401 and mcp.json()["error"]["type"] == "permission_error"
+    assert model.status_code == 404  # 자격은 통과해 provider 조회까지 갔다

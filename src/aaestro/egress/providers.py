@@ -25,6 +25,7 @@ from starlette.background import BackgroundTask
 
 from aaestro.access.client import DecisionSource
 from aaestro.access.model import ResourceKind
+from aaestro.core.errors import AaestroError, ErrorCategory
 from aaestro.egress.connect import (
     UNKNOWN_IDENTITY,
     Decider,
@@ -33,7 +34,9 @@ from aaestro.egress.connect import (
     is_public,
     resolve,
 )
+from aaestro.egress.mcp import MCP_PREFIX
 from aaestro.egress.redact import error_body, redact
+from aaestro.http_auth import AdmitBeforeRouting
 
 log = structlog.get_logger(__name__)
 
@@ -129,7 +132,21 @@ def create_provider_app(
     # 모든 에이전트의 호출이 이 클라이언트 하나를 지난다 — 쿠키를 기억하면 한 에이전트의 호출에
     # upstream 이 심은 세션이 다른 에이전트의 다음 호출에 실린다
     client.cookies = _forgetful_jar()
-    app = FastAPI(title="Aaestro egress — provider termination")
+    # 문서 경로 · 슬래시 리다이렉트를 닫고 자격 확인을 라우팅 앞에 둔다 — 자격 없는 호출자가
+    # 응답 차이 (404 · 403 · 307) 로 허용 엔드포인트를 열거하지 못하게 (#462, #495)
+    app = FastAPI(
+        title="Aaestro egress — provider termination",
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+        redirect_slashes=False,
+    )
+    app.add_middleware(
+        AdmitBeforeRouting,
+        admit=_require_credential,
+        render_error=_unauthenticated,
+        open_routes=frozenset({("GET", PROVIDERS_PATH)}),
+    )
     for router in routers:
         app.include_router(router)
 
@@ -143,24 +160,27 @@ def create_provider_app(
         upstream = upstreams.get(provider)
         if upstream is None:
             return _error(404, "unknown provider")
-        # 판정한 경로를 그대로 보낸다 — 맞춰 본 것과 보내는 것이 다르면 여는 범위를 알 수 없다
-        endpoint = path.strip("/")
-        if (request.method.upper(), endpoint) not in upstream.endpoints:
-            log.warning(
-                "provider endpoint not allowed",
-                agent="",
-                resource=ResourceKind.EGRESS.value,
-                target=f"{upstream.logical_host}/{path}",
-                error_code="ACC_001",
-            )
-            return _error(403, "provider endpoint not allowed through the proxy", code="ACC_001")
+        # 신원 판정이 엔드포인트 검사보다 먼저다 — 통하지 않는 자격은 어느 엔드포인트에서나
+        # 같은 401 이라, 응답 차이로 허용 엔드포인트를 열거하지 못한다 (#495)
         credential = _credential(request)
-        if not credential:
+        if not credential:  # 미들웨어 없이 라우터를 쓰는 경우의 다층 방어
             return _error(401, "agent identity required")
         verdict = await access.decide(credential, ResourceKind.EGRESS, upstream.logical_host)
         refusal = _refusal(verdict, upstream.logical_host, mode)
         if refusal is not None:
             return refusal
+
+        # 판정한 경로를 그대로 보낸다 — 맞춰 본 것과 보내는 것이 다르면 여는 범위를 알 수 없다
+        endpoint = path.strip("/")
+        if (request.method.upper(), endpoint) not in upstream.endpoints:
+            log.warning(
+                "provider endpoint not allowed",
+                agent=verdict.agent or "",
+                resource=ResourceKind.EGRESS.value,
+                target=f"{upstream.logical_host}/{path}",
+                error_code="ACC_001",
+            )
+            return _error(403, "provider endpoint not allowed through the proxy", code="ACC_001")
 
         headers = {
             name: value
@@ -282,12 +302,26 @@ def _key_value(upstream: Upstream) -> str:
     return f"{upstream.key_scheme} {upstream.api_key}"
 
 
-def _credential(request: Request) -> str:
-    key = request.headers.get("x-api-key", "").strip()
+def _credential(request: Request, *, bearer_only: bool = False) -> str:
+    key = "" if bearer_only else request.headers.get("x-api-key", "").strip()
     if key:
         return key
     scheme, _, token = request.headers.get("authorization", "").partition(" ")
     return token.strip() if scheme.lower() == "bearer" else ""
+
+
+def _require_credential(request: Request) -> None:
+    # 원격 MCP 종단은 Bearer 만 받는다 (`mcp.py` `_bearer`) — 같은 규칙을 경로별로 적용한다
+    on_mcp = request.url.path == MCP_PREFIX or request.url.path.startswith(f"{MCP_PREFIX}/")
+    if not _credential(request, bearer_only=on_mcp):
+        raise AaestroError(
+            category=ErrorCategory.FORBIDDEN, code="ACC_001", message="agent identity required"
+        )
+
+
+def _unauthenticated(err: AaestroError) -> Response:
+    # 같은 앱의 다른 무자격 거절과 같은 모양 — 코드 없는 401
+    return _error(401, err.message)
 
 
 def _error(status: int, message: str, *, code: str | None = None) -> JSONResponse:

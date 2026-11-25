@@ -377,3 +377,15 @@ async def test_lifespan_closes_the_verifier_even_when_cancelled_from_outside():
 
     assert closed == [True]
     assert all(task.done() and task.cancelled() for task in watchers)
+
+
+@pytest.mark.parametrize("path", ["/.well-known/agent-card.json/", "/docs", "/openapi.json"])
+async def test_the_assembled_server_does_not_redirect_or_serve_docs(path, injected):
+    """슬래시 리다이렉트 (307) 는 자격 없는 호출자에게 정식 경로를 알려 준다 (#495)."""
+    import httpx
+
+    app = build_a2a_app(manifest("researcher"), invoke)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://agent.test"
+    ) as http:
+        assert (await http.get(path)).status_code == 404
