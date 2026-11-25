@@ -535,6 +535,8 @@ GOOD_HARDENING = {
     "User": "1000:1000",
     "SecurityOpt": ["no-new-privileges:true"],  # 에이전트 기본 스펙이 싣는 HARDENED_SECURITY_OPT
     "PidsLimit": 256,
+    "NanoCpus": 1_000_000_000,
+    "Memory": 1024**3,
     # 에이전트 기본 스펙의 tmpfs 두 경로 — `--tmpfs` 는 `Mounts` 에 보이지 않는다
     "Mounts": [],
     "Tmpfs": {"/tmp": "mode=1777", "/workspace": "mode=1777"},  # noqa: S108 — 컨테이너 안 경로다
@@ -1040,6 +1042,8 @@ def inspect_shape(kwargs):
         "User": kwargs["user"],
         "SecurityOpt": kwargs.get("security_opt"),
         "PidsLimit": kwargs["pids_limit"],
+        "NanoCpus": kwargs.get("nano_cpus", 1_000_000_000),
+        "Memory": kwargs.get("mem_limit", 1024**3),
         "MaskedPaths": DEFAULT_MASKED_PATHS,
         "ReadonlyPaths": DEFAULT_READONLY_PATHS,
         **inspect_mounts(kwargs),

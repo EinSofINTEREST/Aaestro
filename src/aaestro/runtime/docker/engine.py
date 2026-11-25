@@ -12,7 +12,7 @@ import json
 import posixpath
 import re
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, TypeGuard, runtime_checkable
 
 import structlog
 
@@ -86,6 +86,24 @@ DEVICE_FIELDS = {
 }
 """`HostConfig` 의 디바이스 필드 → 그것을 거는 생성 인자 이름."""
 DEFAULT_DEVICE_PERMISSIONS = "rwm"
+LIMIT_FIELDS = ("NanoCpus", "Memory")
+"""`HostConfig` 의 CPU · 메모리 한도 — runtime 이 세우는 컨테이너는 늘 건다 (02 Resources)."""
+
+
+def limits_of(found: Mapping[str, Any]) -> tuple[int, int] | None:
+    """`hardening_of` 값의 (NanoCpus, Memory) — 둘 다 양의 int 가 아니면 None (한도 없음).
+
+    없음 · 0 · 음수는 무제한이고, bool 은 int 의 하위형이라 따로 거른다. 경화 대조와 quota 가
+    같은 판정을 쓴다 — 대조를 통과한 값만 센다 (#649).
+    """
+    nano_cpus, memory = (found.get(field) for field in LIMIT_FIELDS)
+    if _limited(nano_cpus) and _limited(memory):
+        return nano_cpus, memory
+    return None
+
+
+def _limited(value: object) -> TypeGuard[int]:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
 
 
 def security_opt_map(options: Iterable[str] | None) -> dict[str, str | None]:
@@ -320,6 +338,9 @@ def hardening_gaps(found: Mapping[str, Any], expected: Mapping[str, Any]) -> lis
     # 0 · None · 음수는 무제한이다 — 기대값과 같아야 fork bomb 방어가 남아 있다
     if "pids_limit" in expected and found.get("PidsLimit") != expected["pids_limit"]:
         wrong.append("PidsLimit")
+    # 한도 없는 컨테이너는 quota 가 셀 수 없고 호스트를 다 쓸 수 있다 — 값이 선언과 같은지는 보지
+    # 않는다: 선언을 줄인 재부착은 정상이고, 그 차이는 quota 가 실제 한도로 센다 (#649)
+    wrong.extend(field for field in LIMIT_FIELDS if not _limited(found.get(field)))
     if found.get("Privileged"):
         wrong.append("Privileged")
     if found.get("CapAdd"):
@@ -1011,4 +1032,5 @@ __all__ = [
     "DockerEngine",
     "agent_of",
     "control_port_of",
+    "limits_of",
 ]

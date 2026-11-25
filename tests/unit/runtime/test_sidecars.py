@@ -241,6 +241,29 @@ async def test_reattach_replaces_a_sidecar_that_runs_without_init():
     assert first in docker.removed
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("NanoCpus", None), ("NanoCpus", 0), ("Memory", None), ("Memory", -1), ("Memory", True)],
+)
+async def test_reattach_replaces_a_sidecar_without_resource_limits(field, value):
+    """한도가 없거나 (키 누락 · 0 이하 · int 아님) 무제한인 사이드카는 재사용하지 않는다 (#649)."""
+    docker = FakeDockerClient()
+    sidecars = McpSidecars(docker)
+    manifest = with_servers(SEARCH)
+    await sidecars.start(manifest, {})
+    first = docker.find("aaestro-researcher--mcp-search")
+    found = docker.hardening_of(first)
+    if value is None:
+        found.pop(field)
+    else:
+        found[field] = value
+    docker.hardening_by_id[first] = found
+
+    await sidecars.start(manifest, {}, reuse=True)
+
+    assert first in docker.removed
+
+
 async def test_a_sidecar_that_fails_to_start_is_removed_and_reported():
     docker = FakeDockerClient(start_error=RuntimeError("boom"))
 

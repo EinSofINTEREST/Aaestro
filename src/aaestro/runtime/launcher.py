@@ -17,9 +17,10 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from aaestro.core.errors import NETWORK_RETRY, AaestroError, ErrorCategory, ErrorCode
+from aaestro.core.manifest import ResourceSpec, sidecar_host
 from aaestro.memory.client import MEMORY_TOKEN_ENV, MEMORY_URL_ENV
 from aaestro.runtime.control import ControlClient
-from aaestro.runtime.docker.engine import DEFAULT_DRAIN_TIMEOUT_S, ContainerHandle
+from aaestro.runtime.docker.engine import DEFAULT_DRAIN_TIMEOUT_S, ContainerHandle, limits_of
 from aaestro.runtime.docker.errors import previous_not_removed
 from aaestro.runtime.health import DEFAULT_STARTUP_GRACE_S
 from aaestro.runtime.lifecycle import AgentLifecycle, AgentState
@@ -169,6 +170,10 @@ class AgentLauncher:
     host_memory_bytes: int | None = None
     """기동 시 재검증의 호스트 메모리 한도 — None 이면 보지 않는다."""
     launched: dict[tuple[str, int], LaunchedAgent] = field(default_factory=dict)
+    sidecars_held: dict[str, ResourceTotals] = field(default_factory=dict)
+    """재부착 때 읽은 에이전트별 사이드카 몫 (서버마다 선언과 실제 한도 중 큰 쪽의 합, #649).
+    사이드카는 레플리카가 아니라 에이전트에 붙고 레플리카 교체 (`_replace`) 로 다시 서지 않는다 —
+    그래서 레플리카 수명과 떼어 두고, 그 에이전트의 레플리카가 모두 정지로 사라질 때 지운다."""
     _admitted: dict[tuple[str, int], AgentManifest] = field(default_factory=dict, init=False)
     """quota 를 통과했지만 아직 `launched` 에 오르지 않은 기동 — 동시 기동이 서로를 세게 한다."""
     _settling: dict[asyncio.Task[None], list[AgentManifest]] = field(
@@ -332,8 +337,7 @@ class AgentLauncher:
                 if agent in self._forget_deferred:
                     self._forget_deferred.discard(agent)
                     if not self.replicas_of(agent):
-                        self.issuer.forget(agent)
-                        self._cursors.pop(agent, None)
+                        self._forget(agent)
 
     def _settle(self, manifest: AgentManifest, *, replica: int) -> None:
         """실패 · 취소된 기동의 정리가 엔진에 넘어갔으면 끝날 때까지 quota 자리를 옮겨 쥔다.
@@ -365,7 +369,9 @@ class AgentLauncher:
         (제거에 실패한 Stopped 포함) 와 quota 를 통과해 기동 중인 레플리카, 취소돼 엔진이 아직
         정리 중인 기동 (#648), 그리고 이번 것.
         제거된 컨테이너 (`stopped`) 는 자원을 쥐지 않는다. 재부착한 컨테이너는 선언과 실제
-        한도 (`held`) 중 큰 쪽으로 센다. 떠 있는 것만 있으면 배포 검증의 `demand_of` 와 같은 값이다.
+        한도 (`held`) 중 큰 쪽으로 센다 — 재사용한 사이드카도 서버마다 그렇고, 레플리카 교체를
+        넘어 센다 (`sidecars_held`, #649). 떠 있는 것만 있으면 배포 검증의 `demand_of` 와 같은
+        값이다.
         그룹 quota 는 부를 때마다 `groups` 로 지금의 선언을 찾는다 (01 Group Rules 4).
 
         Raises:
@@ -402,6 +408,8 @@ class AgentLauncher:
             each = [held.spec.runtime.resources for held in helds]
             # 사이드카 몫은 직접 센다 — 합계에서 빼면 부동소수 오차로 딱 맞는 quota 를 넘긴다
             sidecars = [sidecar_demand(held) for held in helds]
+            if name in self.sidecars_held:
+                sidecars.append(self.sidecars_held[name])
             demand = ResourceTotals(
                 cpu_cores=max(r.cpu_cores for r in each) * len(owned)
                 + max(s.cpu_cores for s in sidecars),
@@ -823,7 +831,11 @@ class AgentLauncher:
             return False
         if not state.get("Running"):
             return False
-        held = await self._held_by(container_id, agent)
+        held = await self._held_by(container_id, agent, image)
+        manifest = (restart_args or {}).get("manifest")
+        sidecars = None if manifest is None else await self._read_sidecars_held(agent, manifest)
+        if held is None or (manifest is not None and sidecars is None):
+            return False
 
         handle = ContainerHandle(
             agent=agent,
@@ -851,6 +863,8 @@ class AgentLauncher:
             held=held,
         )
         self.launched[agent, replica] = launched
+        if sidecars is not None:
+            self.sidecars_held[agent] = sidecars
         # 이미 Ready 였던 기록만 붙인다 — control plane 재시작이 떠 있던 에이전트에게 기동 유예를
         # 다시 주면, 그 사이의 고장이 임계만큼 늦게 드러난다 (#297 리뷰)
         self._watch(launched, ready_once=True)
@@ -863,22 +877,70 @@ class AgentLauncher:
         )
         return True
 
-    async def _held_by(self, container_id: str, agent: str) -> tuple[float, int] | None:
-        """컨테이너에 걸린 CPU · 메모리 한도 — 읽지 못하면 None (선언으로 센다)."""
+    async def _held_by(self, container_id: str, agent: str, image: str) -> tuple[float, int] | None:
+        """컨테이너에 걸린 (CPU 코어, 메모리 바이트) 한도 — 읽지 못했거나 한도가 없으면 None.
+
+        None 은 "붙이지 않는다" 다 (#649): 선언으로 세면 실제 한도가 quota 밖에 남는다.
+        """
         try:
             found = await asyncio.to_thread(self.engine.client.hardening_of, container_id)
-        except Exception as err:  # noqa: BLE001 — 한도를 못 읽어도 붙는다; quota 는 선언으로 센다
-            log.warning(
-                "agent container limits not inspected",
+        except Exception as err:  # noqa: BLE001 — 확인하지 못한 한도는 붙이지 않는 쪽으로 닫는다
+            log.error(
+                "container limits not confirmed",
                 agent=agent,
                 container_id=container_id[:12],
+                image=image,
                 error=type(err).__name__,
             )
             return None
-        nano_cpus, memory = found.get("NanoCpus"), found.get("Memory")
-        if not isinstance(nano_cpus, int) or not isinstance(memory, int):
+        limits = limits_of(found)
+        if limits is None:
+            log.error(
+                "container has no resource limits",
+                agent=agent,
+                container_id=container_id[:12],
+                image=image,
+            )
             return None
-        return nano_cpus / NANO_CPUS_PER_CORE, memory
+        return limits[0] / NANO_CPUS_PER_CORE, limits[1]
+
+    async def _read_sidecars_held(
+        self, agent: str, manifest: AgentManifest
+    ) -> ResourceTotals | None:
+        """재부착한 사이드카 몫 — 서버마다 max(지금 선언, 실제 한도) 의 합. 확인하지 못하면 None.
+
+        재사용한 사이드카는 줄어든 선언이 아니라 만들 때의 한도를 쥔다 (#649).
+        """
+        total = ResourceTotals()
+        for server in manifest.spec.mcp.servers:
+            if server.sidecar is None:
+                continue
+            declared = server.sidecar.resources or ResourceSpec()
+            try:
+                container_id = await asyncio.to_thread(
+                    self.engine.client.find, sidecar_host(agent, server.name)
+                )
+            except Exception:  # noqa: BLE001 — 찾지 못한 사이드카는 아래에서 붙이지 않는 쪽으로 닫는다
+                container_id = None
+            image = server.sidecar.image
+            held = None if container_id is None else await self._held_by(container_id, agent, image)
+            if held is None:
+                found = {} if container_id is None else {"container_id": container_id[:12]}
+                log.error(
+                    "mcp sidecar limits not confirmed",
+                    agent=agent,
+                    mcp_server=server.name,
+                    image=image,
+                    **found,
+                )
+                return None
+            total = total.plus(
+                ResourceTotals(
+                    cpu_cores=max(declared.cpu_cores, held[0]),
+                    memory_bytes=max(declared.memory_bytes, held[1]),
+                )
+            )
+        return total
 
     def replicas_of(self, agent: str) -> list[LaunchedAgent]:
         """이 에이전트의 기동된 레플리카 — replica 순서로."""
@@ -988,8 +1050,17 @@ class AgentLauncher:
             if self._starting.get(agent):
                 self._forget_deferred.add(agent)  # 끝나는 기동이 마저 판단한다
             else:
-                self.issuer.forget(agent)
-                self._cursors.pop(agent, None)
+                self._forget(agent)
+
+    def _forget(self, agent: str) -> None:
+        """레플리카가 하나도 남지 않은 에이전트의 토큰 · 라우팅 커서 · 재부착 사이드카 몫을 버린다.
+
+        몫도 토큰과 같은 때 버린다: 기동 중인 레플리카가 있으면 사이드카가 살아 있으니 그 기동이
+        끝날 때까지 남긴다 (#649).
+        """
+        self.issuer.forget(agent)
+        self._cursors.pop(agent, None)
+        self.sidecars_held.pop(agent, None)
 
     async def _drain(self, launched: LaunchedAgent) -> None:
         """02 Lifecycle 4 — 진행 중 태스크가 끝나길 기다린 뒤에 정지한다.

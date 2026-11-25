@@ -244,7 +244,13 @@ class McpSidecars:
         if runtime := await asyncio.to_thread(self.client.default_runtime):
             kwargs["runtime"] = runtime
         image = kwargs["image"]
-        existing = await asyncio.to_thread(self.client.find, kwargs["name"])
+        try:
+            existing = await asyncio.to_thread(self.client.find, kwargs["name"])
+        except Exception as err:
+            # 날 SDK 예외가 새면 재부착 루프가 멈춘다 — 그 배포만 사이드카 실패로 lost 가 된다
+            raise start_failed(
+                agent, image, mcp_server=server.name, reason=type(err).__name__
+            ) from err
         if existing is not None:
             if reuse and await self._sound(agent, existing, network, kwargs):
                 return
