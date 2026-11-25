@@ -938,3 +938,30 @@ async def test_a_sidecar_share_is_dropped_when_the_pending_start_fails():
 
     assert agents.launched == {}
     assert "echo" not in agents.sidecars_held
+
+
+async def test_a_released_replica_keeps_its_container_and_quota_until_the_next_stop():
+    """lost 배포의 레플리카는 Stopped 로 남아 quota 를 쥐고, 다음 정지가 지운다 (#659)."""
+    client = FakeDockerClient()
+    agents, _ = quota_launcher(client, max_agents=1)
+    launched = await agents.start(grouped())
+
+    await agents.release("worker", replica=0)
+
+    assert agents.launched[("worker", 0)] is launched
+    assert launched.lifecycle.state is AgentState.STOPPED
+    assert not client.removed, "놓은 컨테이너가 지워졌다"
+    assert ("worker", 0) not in agents._monitors
+    with pytest.raises(AaestroError) as routed:
+        agents.route("worker")
+    assert routed.value.code == ErrorCode.RT_009
+    with pytest.raises(AaestroError) as excinfo:
+        await agents.start(grouped("other"))
+    assert excinfo.value.code == ErrorCode.RT_006, "놓은 컨테이너의 자리가 풀렸다"
+
+    await agents.stop_all()
+
+    assert client.removed, "정지가 놓은 컨테이너를 지우지 않았다"
+    assert agents.launched == {}
+    await agents.start(grouped("other"))
+    await agents.stop_all()

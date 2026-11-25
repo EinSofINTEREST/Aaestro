@@ -1286,3 +1286,52 @@ async def test_a_start_that_registers_cancels_the_deferred_token_release():
 
     assert agents.replicas_of("echo") == [survivor]
     assert agents.issuer.known("echo") == token, "되돌아온 레플리카의 토큰을 버렸다"
+
+
+async def test_release_leaves_no_restart_the_watch_scheduled_while_it_was_cancelling():
+    """재시작을 끊는 동안 감시가 새 재시작을 걸 수 있다 — 감시를 끈 뒤 한 번 더 끊는다 (#659)."""
+    waits = HangingSleep()
+    agents = launcher(FakeDockerClient(), waits)
+    launched, _ = await start_sick(agents)
+    await until(lambda: bool(waits.waits))
+    first = agents._restarts[("echo", 0)]
+
+    # 첫 재시작이 끊기는 사이 감시가 한 번 더 Unhealthy 를 보고하게 한다
+    original = agents._cancel_restart
+
+    async def cancel_then_report(key: tuple[str, int]) -> None:
+        await original(key)
+        if agents._monitors.get(key) is not None and not reported:
+            reported.append(True)
+            agents._schedule_restart(launched)
+
+    reported: list[bool] = []
+    agents._cancel_restart = cancel_then_report  # type: ignore[method-assign]
+    await agents.release("echo", replica=0)
+    await spin(50)
+
+    assert reported, "경합이 재현되지 않았다"
+    assert first.done()
+    assert not [t for t in agents._restarts.values() if not t.done()]
+    assert launched.lifecycle.state is AgentState.STOPPED
+    await agents.stop_all()
+
+
+async def test_release_during_a_replacement_cancels_it_and_keeps_the_original_stopped():
+    """교체가 레플리카를 목록에서 뺀 틈의 `release` 도 재시작을 끊는다 (#659)."""
+    client = GatedDockerClient()
+    agents = launcher(client, Recorder(), health_interval_s=None)
+    launched = await agents.start(manifest())
+    await hold_a_replacement(agents, client, launched)
+    replacing = agents._restarts[("echo", 0)]
+
+    await stop_while_held(client, agents.release("echo", replica=0))
+    await spin(20)
+
+    assert replacing.done(), "재시작이 끊기지 않았다"
+    assert agents.launched == {("echo", 0): launched}, "원래 레플리카가 목록에 돌아오지 않았다"
+    assert launched.lifecycle.state is AgentState.STOPPED
+    assert not agents._restarts
+    # 취소된 교체가 만든 컨테이너는 정리되고, 놓은 원래 컨테이너는 그대로다 (#648)
+    assert SECOND_CONTAINER in client.removed, "교체가 만든 컨테이너가 남았다"
+    await agents.stop_all()
