@@ -160,6 +160,7 @@ def _start(metrics: Metrics) -> None:
         materials=_material_store(orchestrator),
         providers=_proxy_providers(config),
         state_artifacts=orchestrator.state_artifact_root is not None,
+        **_host_limits(config),
     )
     if deployments is not None:
         # manager 는 검증에 author 를 쓴다 — 서로를 가리키므로 여기서 잇는다
@@ -224,6 +225,7 @@ def _deployment_manager(
         ports=A2APortAllocator(port_range=config.protocols.a2a.port_range),
         health_interval_s=config.runtime.health_check.interval_s,
         startup_grace_s=config.runtime.health_check.startup_grace_s,
+        **_host_limits(config),
     )
     tokens_path = os.environ.get(MEMORY_TOKENS_PATH_ENV)
     memory_tokens: dict[str, str] = {}
@@ -236,6 +238,7 @@ def _deployment_manager(
             a2a_port_range=config.protocols.a2a.port_range,
             providers=_proxy_providers(config),
             state_artifacts=orchestrator.state_artifact_root is not None,
+            **_host_limits(config),
         ),
         launcher=launcher,
         store=SqliteDeploymentStore(path=orchestrator.deployment_store),
@@ -245,6 +248,14 @@ def _deployment_manager(
         memory_tokens=memory_tokens,
         ready_timeout_s=orchestrator.deployment_ready_timeout_s,
     )
+
+
+def _host_limits(config: Any) -> dict[str, Any]:
+    """호스트 총량 상한 — 배포 검증 (Author) 과 기동 재검증 (launcher) 이 같은 값을 쓴다 (#646)."""
+    limits = config.runtime.host_limits
+    if limits is None:
+        return {"host_cpu_cores": None, "host_memory_bytes": None}
+    return {"host_cpu_cores": limits.cpu_cores, "host_memory_bytes": limits.memory_bytes}
 
 
 def _proxy_providers(config: Any) -> frozenset[str] | None:

@@ -57,6 +57,8 @@ def validate_root(
     providers: frozenset[str] | None = None,
     state_artifacts: bool = False,
     catalog: Catalog | None = None,
+    host_cpu_cores: float | None = None,
+    host_memory_bytes: int | None = None,
 ) -> ValidationReport:
     """Validate topologies against the repository's declarations.
 
@@ -72,6 +74,9 @@ def validate_root(
         providers=providers,
         # state 압축(summarize)의 원문 저장소가 있는지 — 없으면 그런 그래프는 거절된다 (#371)
         state_artifacts=state_artifacts,
+        # 호스트 총량 상한 — 서버와 같은 설정을 읽어 "로컬은 통과, 배포는 거절" 을 막는다 (#646)
+        host_cpu_cores=host_cpu_cores,
+        host_memory_bytes=host_memory_bytes,
     )
     return author.validate(graphs=topologies, with_saved_graphs=False)
 
@@ -176,6 +181,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         providers=args.providers,
         state_artifacts=state_artifact_root_for(args) is not None,
         catalog=catalog,
+        **host_limits_for(args),
     )
 
     # 경고는 실패가 아니다 — 판정(status · 종료 코드)을 바꾸지 않고, 있을 때만 싣는다
@@ -244,6 +250,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
         providers=args.providers,
         state_artifacts=state_artifact_root_for(args) is not None,
         catalog=catalog,
+        **host_limits_for(args),
     )
     ok = report.ok and not graphs.problems
 
@@ -379,6 +386,23 @@ def state_artifact_root_for(args: argparse.Namespace) -> str | None:
     return root
 
 
+def host_limits_for(args: argparse.Namespace) -> dict[str, Any]:
+    """The host ceiling from ``runtime.host_limits``, as `validate_root` keywords.
+
+    설정의 호스트 총량 상한 — control plane 과 같은 키다 (#646). 설정 디렉토리가 없으면
+    설정이 없는 것이라 비운다 (`state_artifact_root_for` 와 같은 규칙).
+    """
+    if not Path(getattr(args, "config_dir", DEFAULT_CONFIG_DIR)).is_dir():
+        return {}
+    limits = load_config(
+        resolve_environment(getattr(args, "environment", None)),
+        config_dir=getattr(args, "config_dir", DEFAULT_CONFIG_DIR),
+    ).runtime.host_limits
+    if limits is None:
+        return {}
+    return {"host_cpu_cores": limits.cpu_cores, "host_memory_bytes": limits.memory_bytes}
+
+
 def run_manager_for(args: argparse.Namespace) -> Any:
     """Build the run manager, recording to the configured store when there is one.
 
@@ -435,6 +459,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         providers=args.providers,
         state_artifacts=state_artifact_root is not None,
         catalog=catalog,
+        **host_limits_for(args),
     )
     if not report.ok:
         # 검증에 실패한 그래프를 굴리면 노드 실행 중에야 실패한다

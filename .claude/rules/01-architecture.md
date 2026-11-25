@@ -793,7 +793,7 @@ observability:
 5. `connections` 의 caller/callee 가 모두 그래프 노드인가
 6. Mode 별 토폴로지 규칙 충족 (mission: END 도달 / service: idle 정책 선언)
 7. A2A 포트 충돌이 없는가
-8. 그룹별 리소스 합계가 quota 이내인가, 전체 합계가 호스트 한도 내인가 (초과 시 경고/거부)
+8. 그룹별 리소스 합계가 quota 이내인가, 전체 합계가 호스트 한도 내인가 (`runtime.host_limits` 를 설정했을 때, 초과 시 경고/거부)
 9. 결정 모델 선언이 닫혀 있는가 — manifest·memoryset·그래프가 참조하는 decisionset ref 와
    질문이 해석되고, 그 질문을 쓰는 에이전트가 `spec.decision.provider` 를 선언했으며, provider 가
    decisionset 의 `locale` 을 지원하는가. 그래프 decision 노드의 `output_map` 이 `decision.` 키만

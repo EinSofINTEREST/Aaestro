@@ -523,3 +523,22 @@ def test_state_artifact_root_is_read_from_file_and_environment(tmp_path):
 
     assert from_file.orchestrator.state_artifact_root == "/var/lib/aaestro/state"
     assert overridden.orchestrator.state_artifact_root == "/mnt/state"
+
+
+def test_host_limits_default_to_unset_and_parse_when_given():
+    assert RuntimeConfig().host_limits is None
+    limits = RuntimeConfig.model_validate(
+        {"host_limits": {"cpu": "8.0", "memory": "16Gi"}}
+    ).host_limits
+    assert (limits.cpu_cores, limits.memory_bytes) == (8.0, 16 * 1024**3)
+    only_cpu = RuntimeConfig.model_validate({"host_limits": {"cpu": "2"}}).host_limits
+    assert (only_cpu.cpu_cores, only_cpu.memory_bytes) == (2.0, None)
+
+
+@pytest.mark.parametrize(
+    "limits",
+    [{"cpu": "0"}, {"cpu": "-1"}, {"cpu": "abc"}, {"memory": "0Gi"}, {"memory": "16G"}, {"x": "1"}],
+)
+def test_invalid_host_limits_are_rejected(limits):
+    with pytest.raises(ValidationError):
+        RuntimeConfig.model_validate({"host_limits": limits})

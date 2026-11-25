@@ -7,6 +7,7 @@ Manifest 는 에이전트의 유일한 계약 소스이며, 코드에 하드코�
 
 from __future__ import annotations
 
+import math
 import posixpath
 import re
 from enum import StrEnum
@@ -94,6 +95,25 @@ _SHELL_BASENAMES = frozenset(
 _RESOURCE_MEMORY_PATTERN = re.compile(r"^\d+(?:Ki|Mi|Gi|Ti)$")
 
 _BYTE_UNITS = {"Ki": 1024, "Mi": 1024**2, "Gi": 1024**3, "Ti": 1024**4}
+
+
+MAX_RESOURCE_BYTES = 2**63
+"""메모리 표기의 상한 — 이보다 큰 값은 오타이거나 한도를 없애려는 값이다."""
+
+
+def _bounded_cpu(value: str) -> str:
+    """형식을 통과한 cpu 중 float 로 무한이 되는 값 (400 자리) 을 거절한다 — 값은 싣지 않는다."""
+    if not math.isfinite(float(value)):
+        raise ValueError("cpu is too large")
+    return value
+
+
+def _bounded_memory(value: str) -> str:
+    """형식을 통과한 memory 중 상한을 넘는 값을 거절한다 — 값은 싣지 않는다."""
+    # int() 의 자릿수 상한 (4300) 을 넘는 입력은 ValueError 로 같은 거절이 된다
+    if len(value) > 40 or parse_bytes(value) > MAX_RESOURCE_BYTES:
+        raise ValueError("memory is too large")
+    return value
 
 
 def parse_bytes(value: str) -> int:
@@ -659,7 +679,7 @@ class ResourceSpec(BaseModel):
         """CPU 는 코어 수 문자열 (예: ``"1.0"``)."""
         if not _RESOURCE_CPU_PATTERN.fullmatch(value):
             raise ValueError("cpu must be a decimal core count string, e.g. '1.0'")
-        return value
+        return _bounded_cpu(value)
 
     @field_validator("memory")
     @classmethod
@@ -667,7 +687,7 @@ class ResourceSpec(BaseModel):
         """Memory 는 Ki/Mi/Gi/Ti 접미사 (예: ``"1Gi"``)."""
         if not _RESOURCE_MEMORY_PATTERN.fullmatch(value):
             raise ValueError("memory must be an integer with Ki/Mi/Gi/Ti suffix, e.g. '1Gi'")
-        return value
+        return _bounded_memory(value)
 
     @property
     def cpu_cores(self) -> float:
@@ -698,7 +718,7 @@ class ArtifactSpec(BaseModel):
         """quota 는 Ki/Mi/Gi/Ti 접미사 — resources.memory 와 같은 표기."""
         if value is not None and not _RESOURCE_MEMORY_PATTERN.fullmatch(value):
             raise ValueError("quota must be an integer with Ki/Mi/Gi/Ti suffix, e.g. '50Gi'")
-        return value
+        return None if value is None else _bounded_memory(value)
 
     @property
     def quota_bytes(self) -> int | None:
@@ -974,7 +994,7 @@ class GroupQuotas(BaseModel):
         """quota 오타를 집계 시점이 아니라 배포 검증에서 잡는다."""
         if value is not None and not _RESOURCE_CPU_PATTERN.fullmatch(value):
             raise ValueError("cpu must be a decimal core count string, e.g. '8.0'")
-        return value
+        return None if value is None else _bounded_cpu(value)
 
     @field_validator("memory")
     @classmethod
@@ -982,7 +1002,7 @@ class GroupQuotas(BaseModel):
         """quota 오타를 집계 시점이 아니라 배포 검증에서 잡는다."""
         if value is not None and not _RESOURCE_MEMORY_PATTERN.fullmatch(value):
             raise ValueError("memory must be an integer with Ki/Mi/Gi/Ti suffix, e.g. '16Gi'")
-        return value
+        return None if value is None else _bounded_memory(value)
 
     @property
     def cpu_cores(self) -> float | None:

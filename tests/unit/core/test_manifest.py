@@ -1030,3 +1030,28 @@ def test_memory_alias_accepts_what_the_decision_point_reads():
 def test_pattern_validated_fields_reject_a_trailing_newline(model, payload):
     with pytest.raises(ValidationError):
         model.model_validate(payload)
+
+
+HUGE_CPU = "9" * 400  # float() 가 inf 로 바꾸는 값 — 한도가 사라진다 (#646)
+HUGE_MEMORY = "9" * 400 + "Gi"
+
+
+def test_resource_notations_that_turn_infinite_or_absurd_are_rejected_everywhere():
+    """공용 검증 한 곳 — ResourceSpec · GroupQuotas · ArtifactSpec · host_limits 가 같은 답이다."""
+    from aaestro.config import HostLimits
+    from aaestro.core.manifest import ArtifactSpec, GroupQuotas, ResourceSpec
+
+    for build in (
+        lambda: ResourceSpec(cpu=HUGE_CPU),
+        lambda: ResourceSpec(memory=HUGE_MEMORY),
+        lambda: GroupQuotas(cpu=HUGE_CPU),
+        lambda: GroupQuotas(memory=HUGE_MEMORY),
+        lambda: ArtifactSpec(quota=HUGE_MEMORY),
+        lambda: HostLimits(cpu=HUGE_CPU),
+        lambda: HostLimits(memory=HUGE_MEMORY),
+    ):
+        with pytest.raises(ValidationError) as excinfo:
+            build()
+        assert "999" not in str(excinfo.value.errors()[0]["msg"]), "거절 사유에 값이 실렸다"
+    # 경계: 상한 안의 값은 그대로 받는다
+    assert ResourceSpec(cpu="64", memory="1024Ti").memory_bytes == 1024**4 * 1024

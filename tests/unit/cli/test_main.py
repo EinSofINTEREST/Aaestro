@@ -970,3 +970,46 @@ def test_run_resolves_models_from_the_configured_roots(workspace, tmp_path, monk
 
     # fallback 은 옮긴 루트의 manifest 에만 있다 — 기본 배치를 읽으면 비어 나온다
     assert [f.name for f in seen[0].fallbacks] == ["claude-haiku-4-5"]
+
+
+@pytest.mark.parametrize("limits", ["cpu: '0.1'", "memory: 1Ki"], ids=["cpu-only", "memory-only"])
+@pytest.mark.parametrize("command", ["deploy", "validate"])
+def test_local_validation_applies_the_configured_host_limits(workspace, tmp_path, command, limits):
+    """로컬 검증이 서버보다 느슨하면 "로컬은 통과, 배포는 거절" 이 된다 (#646)."""
+    import subprocess
+    import sys
+
+    from tests.fixtures.subprocesses import run_process
+
+    graph = str(workspace / "graphs" / "solo-graph.yaml")
+    configured = _config_dir(tmp_path, f"runtime:\n  host_limits: {{{limits}}}\n")
+    environment = {k: v for k, v in os.environ.items() if not k.startswith("AAESTRO_")}
+    (tmp_path / "elsewhere").mkdir()
+
+    def run(*extra: str) -> subprocess.CompletedProcess[str]:
+        return run_process(
+            [sys.executable, "-m", "aaestro.cli", "--root", str(workspace), command]
+            + ([graph] if command == "deploy" else [])
+            + list(extra),
+            env=environment,
+            cwd=tmp_path / "elsewhere",
+        )
+
+    without = run()
+    limited = run("--config-dir", configured)
+
+    assert without.returncode == EXIT_OK, without.stdout + without.stderr
+    assert limited.returncode == EXIT_FAILED, limited.stdout + limited.stderr
+    assert "quotas: host" in limited.stdout
+
+
+def test_run_applies_the_configured_host_limits_too(workspace, tmp_path):
+    from aaestro.cli.main import cmd_run
+
+    graph = str(workspace / "graphs" / "solo-graph.yaml")
+    configured = _config_dir(tmp_path, "runtime:\n  host_limits: {cpu: '0.1'}\n")
+    args = build_parser().parse_args(
+        ["--root", str(workspace), "run", graph, "--config-dir", configured]
+    )
+
+    assert cmd_run(args) == EXIT_FAILED

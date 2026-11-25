@@ -1114,6 +1114,7 @@ Turn it on in the control plane:
 
 ```yaml
 runtime:
+  host_limits: {cpu: "8.0", memory: 16Gi}   # optional — host-wide ceiling for all agents together; unset means no host check
   egress_proxy:
     connect_url: http://aaestro-egress:8080
     providers_url: http://aaestro-egress:8081
