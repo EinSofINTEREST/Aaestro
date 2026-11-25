@@ -122,6 +122,8 @@ class Author:
             모델 provider 는 알려진 논리 호스트인지만 본다.
         state_artifacts: Whether a state-compaction artifact store is configured (#371).
             없으면 `summarize` 압축을 선언한 그래프가 검증에서 거절된다.
+        host_cpu_cores: Host CPU ceiling (#646). None 이면 호스트 합계를 검사하지 않는다.
+        host_memory_bytes: Host memory ceiling (#646).
     """
 
     catalog: Catalog
@@ -130,6 +132,8 @@ class Author:
     materials: MaterialStore | None = None
     providers: frozenset[str] | None = None
     state_artifacts: bool = False
+    host_cpu_cores: float | None = None
+    host_memory_bytes: int | None = None
 
     # --- 검증 ----------------------------------------------------------------
 
@@ -183,6 +187,8 @@ class Author:
             a2a_port_range=self.a2a_port_range,
             providers=self.providers,
             state_artifacts=self.state_artifacts,
+            host_cpu_cores=self.host_cpu_cores,
+            host_memory_bytes=self.host_memory_bytes,
         )
         # 저장된 그래프의 문제는 저장된 그래프를 검증할 때만 — 그래프 하나를 지목한
         # CLI 검증이 무관한 깨진 그래프 때문에 실패하면 docstring 과 어긋난다.

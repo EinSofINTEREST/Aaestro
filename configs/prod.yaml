@@ -6,6 +6,7 @@ runtime:
   default_resources:
     cpu: "1.0"
     memory: 1Gi
+  # host_limits: {cpu: "8.0", memory: 16Gi}   # 선택 — 호스트 합계 상한 (#646), 없으면 검사하지 않는다
   health_check:
     interval_s: 10          # agentd /health 폴링 주기
     timeout_s: 3

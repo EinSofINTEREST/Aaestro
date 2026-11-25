@@ -823,3 +823,91 @@ def test_the_deployment_managers_own_author_gets_the_proxy_providers(tmp_path, m
     )
 
     assert manager.author.providers == frozenset({"anthropic", "openai-compat"})
+
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+def _deployments_with_host_limits(tmp_path, monkeypatch, limits):
+    """`_deployment_manager` 를 호스트 한도 설정과 함께 부른다 (#646)."""
+    from aaestro.catalog import Catalog
+    from aaestro.config import AaestroConfig, OrchestratorConfig
+
+    monkeypatch.setattr(entrypoint, "agent_engine", lambda runtime, client: None)
+    config = AaestroConfig.model_validate({"runtime": {"host_limits": limits} if limits else {}})
+    orchestrator = OrchestratorConfig(deployment_store=str(tmp_path / "deployments.db"))
+    manager = entrypoint._deployment_manager(  # noqa: SLF001 — 조립 함수를 직접 본다
+        config, Catalog.under(REPO_ROOT), store_root=tmp_path, orchestrator=orchestrator
+    )
+    return config, manager
+
+
+def _quota_codes(author) -> list:
+    report = author.validate()
+    return [f.code for f in report.findings if f.check == "quotas"]
+
+
+def test_host_limits_reach_the_deployment_managers_author_and_the_launcher(tmp_path, monkeypatch):
+    """배포 검증 (Author) 과 기동 재검증 (launcher) 둘 다 같은 한도로 RT_006 을 낸다 (#646)."""
+    import yaml as _yaml
+
+    from aaestro.core.manifest import AgentManifest
+
+    _, manager = _deployments_with_host_limits(tmp_path, monkeypatch, {"cpu": "0.1"})
+    assert _quota_codes(manager.author) == [ErrorCode.RT_006]
+    echo = AgentManifest.model_validate(
+        _yaml.safe_load((REPO_ROOT / "agents" / "echo" / "manifest.yaml").read_text("utf-8"))
+    )
+    with pytest.raises(AaestroError) as excinfo:
+        manager.launcher.admit(echo)
+    assert excinfo.value.code == ErrorCode.RT_006
+
+
+def test_without_host_limits_nothing_is_checked_against_the_host(tmp_path, monkeypatch):
+    import yaml as _yaml
+
+    from aaestro.core.manifest import AgentManifest
+
+    _, manager = _deployments_with_host_limits(tmp_path, monkeypatch, None)
+    assert ErrorCode.RT_006 not in _quota_codes(manager.author)
+    echo = AgentManifest.model_validate(
+        _yaml.safe_load((REPO_ROOT / "agents" / "echo" / "manifest.yaml").read_text("utf-8"))
+    )
+    manager.launcher.admit(echo)
+
+
+def test_host_limits_reach_the_served_author(tmp_path, monkeypatch):
+    """진입점의 첫 번째 Author — 저장 · 검증 표면이 쓰는 것 (#646)."""
+    write_config(tmp_path, {"run_store": str(tmp_path / "runs.db"), "control_port": 18999})
+    cfg = tmp_path / "local.yaml"
+    doc = yaml.safe_load(cfg.read_text("utf-8"))
+    doc["runtime"] = {"host_limits": {"cpu": "0.1", "memory": "1Gi"}}
+    cfg.write_text(yaml.safe_dump(doc), encoding="utf-8")
+    monkeypatch.setenv("AAESTRO_ENV", "local")
+    monkeypatch.setenv("AAESTRO_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("AAESTRO_REPO_ROOT", str(REPO_ROOT))
+    monkeypatch.setattr(entrypoint, "_setup_observability", lambda: None)
+    captured: dict = {}
+    monkeypatch.setattr(
+        entrypoint, "create_app", lambda store, **kw: captured.update(kw) or object()
+    )
+    monkeypatch.setattr(entrypoint.uvicorn, "run", lambda app, **_kw: None)
+
+    entrypoint.main()
+
+    assert _quota_codes(captured["author"]) == [ErrorCode.RT_006]
+
+
+def test_a_memory_only_host_limit_reaches_the_author_and_the_launcher(tmp_path, monkeypatch):
+    import yaml as _yaml
+
+    from aaestro.core.manifest import AgentManifest
+
+    _, manager = _deployments_with_host_limits(tmp_path, monkeypatch, {"memory": "1Ki"})
+    assert _quota_codes(manager.author) == [ErrorCode.RT_006]
+    echo = AgentManifest.model_validate(
+        _yaml.safe_load((REPO_ROOT / "agents" / "echo" / "manifest.yaml").read_text("utf-8"))
+    )
+    with pytest.raises(AaestroError) as excinfo:
+        manager.launcher.admit(echo)
+    assert excinfo.value.code == ErrorCode.RT_006

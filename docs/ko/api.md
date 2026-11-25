@@ -1051,6 +1051,7 @@ control plane 에서 켠다:
 
 ```yaml
 runtime:
+  host_limits: {cpu: "8.0", memory: 16Gi}   # 선택 — 모든 에이전트 합계의 호스트 상한. 없으면 호스트 합계를 검사하지 않는다
   egress_proxy:
     connect_url: http://aaestro-egress:8080
     providers_url: http://aaestro-egress:8081

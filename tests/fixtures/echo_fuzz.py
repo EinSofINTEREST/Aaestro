@@ -208,6 +208,7 @@ RICH_CONFIG: dict[str, Any] = {
             "unhealthy_threshold": 3,
             "startup_grace_s": 45,
         },
+        "host_limits": {"cpu": "8.0", "memory": "16Gi"},
         "egress_proxy": {
             "connect_url": "http://egress:8080",
             "providers_url": "http://egress:8081",

@@ -21,7 +21,7 @@ from aaestro.core.errors import (
     raise_detached,
     repeated_positions,
 )
-from aaestro.core.manifest import split_url
+from aaestro.core.manifest import ResourceSpec, split_url
 from aaestro.core.yamlio import YamlReadError, load_yaml_file
 
 if TYPE_CHECKING:
@@ -70,6 +70,37 @@ class ResourceDefaults(BaseModel):
 
     cpu: str = "1.0"
     memory: str = "1Gi"
+
+
+class HostLimits(BaseModel):
+    """Host-wide CPU / memory ceiling for all agents together.
+
+    호스트 총량 상한 — 선언한 쪽만 검사한다 (`docker info` 에서 읽지 않는다, #646).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    cpu: str | None = None
+    memory: str | None = None
+
+    @model_validator(mode="after")
+    def _positive(self) -> HostLimits:
+        """형식은 ResourceSpec 의 검증을 그대로 쓰고, 0 은 모든 배포를 막으므로 거절한다."""
+        if self.cpu is not None and ResourceSpec(cpu=self.cpu).cpu_cores <= 0:
+            raise ValueError("runtime.host_limits.cpu must be positive")
+        if self.memory is not None and ResourceSpec(memory=self.memory).memory_bytes <= 0:
+            raise ValueError("runtime.host_limits.memory must be positive")
+        return self
+
+    @property
+    def cpu_cores(self) -> float | None:
+        """호스트 코어 수 상한."""
+        return None if self.cpu is None else ResourceSpec(cpu=self.cpu).cpu_cores
+
+    @property
+    def memory_bytes(self) -> int | None:
+        """호스트 메모리 바이트 상한."""
+        return None if self.memory is None else ResourceSpec(memory=self.memory).memory_bytes
 
 
 class HealthCheckConfig(BaseModel):
@@ -173,6 +204,8 @@ class RuntimeConfig(BaseModel):
     agent_base_image: str = "aaestro/agent-base:0.1.0"
     default_resources: ResourceDefaults = Field(default_factory=ResourceDefaults)
     health_check: HealthCheckConfig = Field(default_factory=HealthCheckConfig)
+    host_limits: HostLimits | None = None
+    """호스트 CPU · 메모리 총량 상한 (#646). 없으면 호스트 합계를 검사하지 않는다."""
     egress_proxy: EgressProxyConfig | None = None
     """이그레스 프록시 (#293). 없으면 에이전트는 기존대로 직접 나가고 모델 키를 env 로 받는다."""
     agent_env: dict[str, str] = Field(default_factory=dict)
@@ -633,6 +666,7 @@ __all__ = [
     "ProtocolsConfig",
     "RegistryConfig",
     "RegistryRoots",
+    "HostLimits",
     "ResourceDefaults",
     "RuntimeConfig",
     "ServiceDefaults",
