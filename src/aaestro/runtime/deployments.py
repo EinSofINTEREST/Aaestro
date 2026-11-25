@@ -810,10 +810,20 @@ class DeploymentManager:
                 self._mark_lost(record, f"mcp sidecars not restored: {', '.join(unready)}", touched)
                 continue
             missing = []
+            adopted: list[DeployedAgent] = []
             for agent in record.agents:
                 # 이름으로 찾는다 — launcher 의 재시작이 컨테이너를 갈아 끼우면
                 # id 와 control 포트가 바뀌지만 이름은 같은 자리를 가리킨다
-                live = await self._live(agent)
+                try:
+                    live = await self._live(agent)
+                except Exception as err:  # noqa: BLE001 — 조회 실패는 이 배포만 lost 로; 뒤의 배포는 계속 붙는다
+                    self._bind_log(record).warning(
+                        "container lookup failed during reattach",
+                        agent=agent.name,
+                        error=type(err).__name__,
+                    )
+                    missing.append(f"{agent.name} (lookup {type(err).__name__})")
+                    continue
                 if live is None or not await self.launcher.adopt(
                     agent.name,
                     replica=agent.replica,
@@ -826,8 +836,15 @@ class DeploymentManager:
                     restart_args=restart_args[agent.name],
                 ):
                     missing.append(agent.name)
+                else:
+                    adopted.append(agent)
             if missing:
+                # 이미 붙인 레플리카도 놓는다 — 신원 없는 컨테이너가 감시 · 라우팅에 남지 않게
+                for agent in adopted:
+                    await self.launcher.release(agent.name, replica=agent.replica)
                 self._mark_lost(record, f"containers missing: {', '.join(missing)}", touched)
+                # 붙지 못한 배포의 신원이 남지 않게 — 경화 불일치 lost 와 같다
+                self._revoke_orphaned_identities(record)
             else:
                 touched.append(self._refresh(record))
         return touched
@@ -907,10 +924,7 @@ class DeploymentManager:
         )
         if container_id is None:
             return None
-        try:
-            host, port = await engine.control_address(container_id, DEFAULT_CONTROL_PORT)
-        except Exception:  # noqa: BLE001 — 주소가 없으면 붙을 수 없는 컨테이너다
-            return None
+        host, port = await engine.control_address(container_id, DEFAULT_CONTROL_PORT)
         return container_id, host, port
 
     async def _resume_sidecars(self, restart_args: Mapping[str, Mapping[str, Any]]) -> list[str]:

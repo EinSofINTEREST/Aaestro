@@ -277,8 +277,8 @@ async def test_a_lost_deployment_stays_lost_with_computed_replica_states(workspa
         observed = second.observe(second.get(record.deployment_id))
         assert observed.status == DeploymentStatus.LOST
         by_name = dict(zip((a.name for a in record.agents), observed.replicas, strict=True))
-        # 붙은 beta 는 계산되고, 붙지 못한 alpha 는 쥔 레플리카가 없다 — 모른다가 아니다
-        assert by_name == {"alpha": ReplicaState.ABSENT, "beta": ReplicaState.STARTING}
+        # lost 배포의 레플리카는 붙었던 beta 도 놓였다 (#659) — 쥔 레플리카가 없다, 모른다가 아니다
+        assert by_name == {"alpha": ReplicaState.ABSENT, "beta": ReplicaState.ABSENT}
     finally:
         gates["health"].set()
         await second.launcher.stop_all()

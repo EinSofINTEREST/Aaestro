@@ -1002,11 +1002,7 @@ class AgentLauncher:
             targets = [] if found is None else [found]
         for launched in targets:
             key = (agent, launched.replica)
-            await self._unwatch(launched)
-            # 감시를 끈 **뒤에** 다시 끊는다: 앞 레플리카를 정지하는 동안 이 레플리카의 감시가
-            # 새 재시작을 걸었을 수 있다. 그 재시작이 이미 교체를 끝냈으면 목록의 것이 새 컨테이너다
-            await self._cancel_restart(key)
-            launched = self.launched.get(key, launched)
+            launched = await self._quiesce(launched)
             # 02 Lifecycle 5 — 정지 전에 새 태스크 수락을 멈춘다.
             # STARTING 에서 바로 멈추는 경우도 있어 Draining 을 강요하지 않는다
             if launched.lifecycle.state is AgentState.READY:
@@ -1051,6 +1047,38 @@ class AgentLauncher:
                 self._forget_deferred.add(agent)  # 끝나는 기동이 마저 판단한다
             else:
                 self._forget(agent)
+
+    async def release(self, agent: str, *, replica: int) -> None:
+        """붙였던 레플리카를 Stopped 로 남긴다 — 감시 · 재시작 · 라우팅에서만 빼고 컨테이너는 둔다.
+
+        재부착한 배포가 lost 가 되면 신원 없는 레플리카가 재시작 · 라우팅되지 않게 한다. 컨테이너는
+        지우지 않으니 목록에 남겨 `admit` 이 계속 세고 (제거에 실패한 정지와 같은 표현, #623),
+        운영자의 다음 `stop` 이 지운다. 토큰 · 사이드카 몫 · 포트도 그때까지 쥔다.
+        """
+        key = (agent, replica)
+        launched = self.launched.get(key)
+        if launched is None:
+            return
+        await self._cancel_restart(key)
+        launched = await self._quiesce(launched)
+        if launched.lifecycle.state is not AgentState.STOPPED:
+            launched.lifecycle.transition(AgentState.STOPPED)
+        if self.metrics is not None:
+            # 감시가 멈춰 값이 갱신되지 않으니 0 으로 고정한다 — 1 이 남으면 healthy 로 보인다
+            self.metrics.gauge("aaestro_agent_health").labels(
+                agent=agent, replica=str(replica)
+            ).set(0)
+
+    async def _quiesce(self, launched: LaunchedAgent) -> LaunchedAgent:
+        """감시를 끈 **뒤에** 재시작을 다시 끊고, 목록의 현재 레플리카를 돌려준다.
+
+        감시를 끄는 동안 이 레플리카의 감시가 새 재시작을 걸었을 수 있다. 그 재시작이 이미 교체를
+        끝냈으면 목록의 것이 새 컨테이너다.
+        """
+        key = (launched.agent, launched.replica)
+        await self._unwatch(launched)
+        await self._cancel_restart(key)
+        return self.launched.get(key, launched)
 
     def _forget(self, agent: str) -> None:
         """레플리카가 하나도 남지 않은 에이전트의 토큰 · 라우팅 커서 · 재부착 사이드카 몫을 버린다.

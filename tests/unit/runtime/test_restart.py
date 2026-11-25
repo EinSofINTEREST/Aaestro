@@ -1286,3 +1286,32 @@ async def test_a_start_that_registers_cancels_the_deferred_token_release():
 
     assert agents.replicas_of("echo") == [survivor]
     assert agents.issuer.known("echo") == token, "되돌아온 레플리카의 토큰을 버렸다"
+
+
+async def test_release_leaves_no_restart_the_watch_scheduled_while_it_was_cancelling():
+    """재시작을 끊는 동안 감시가 새 재시작을 걸 수 있다 — 감시를 끈 뒤 한 번 더 끊는다 (#659)."""
+    waits = HangingSleep()
+    agents = launcher(FakeDockerClient(), waits)
+    launched, _ = await start_sick(agents)
+    await until(lambda: bool(waits.waits))
+    first = agents._restarts[("echo", 0)]
+
+    # 첫 재시작이 끊기는 사이 감시가 한 번 더 Unhealthy 를 보고하게 한다
+    original = agents._cancel_restart
+
+    async def cancel_then_report(key: tuple[str, int]) -> None:
+        await original(key)
+        if agents._monitors.get(key) is not None and not reported:
+            reported.append(True)
+            agents._schedule_restart(launched)
+
+    reported: list[bool] = []
+    agents._cancel_restart = cancel_then_report  # type: ignore[method-assign]
+    await agents.release("echo", replica=0)
+    await spin(50)
+
+    assert reported, "경합이 재현되지 않았다"
+    assert first.done()
+    assert not [t for t in agents._restarts.values() if not t.done()]
+    assert launched.lifecycle.state is AgentState.STOPPED
+    await agents.stop_all()

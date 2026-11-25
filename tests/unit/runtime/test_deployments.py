@@ -802,9 +802,10 @@ async def test_missing_containers_mark_the_deployment_lost(workspace, docker, he
 
     assert touched[0].status == DeploymentStatus.LOST
     assert "alpha" in (touched[0].error or "")
-    # 붙은 쪽(beta)은 그대로 감시한다 — 그 컨테이너가 아직 선언으로 돌고 있으므로
-    # 선언도 계속 보호한다 (리뷰: LOST 를 in_use 에서 빼면 덮어쓸 수 있다)
+    # 붙었던 쪽(beta)은 Stopped 로 남는다 — 신원 없는 레플리카를 감시 · 라우팅하지 않지만 컨테이너는
+    # 남으니 quota 가 센다 (#659). 선언도 계속 보호한다 (LOST 를 in_use 에서 빼면 덮어쓸 수 있다)
     assert list(second.launcher.launched) == [("beta", 0)]
+    assert second.launcher.launched["beta", 0].lifecycle.state is AgentState.STOPPED
     assert second.in_use("agent", "beta") and second.in_use("agent", "alpha")
     assert second.in_use("graph", "two")
 
@@ -2932,3 +2933,118 @@ async def test_an_explicit_identity_answer_is_read(manager):
 
     assert record.status == DeploymentStatus.READY
     await manager.launcher.stop_all()
+
+
+async def reattach_two_deployments(workspace, first_docker, later, tamper):
+    """two · other 배포를 띄우고 `later` 로 재부착한다 — 돌려주는 것은 아래 반환값 순서"""
+    catalog = Catalog.under(workspace)
+    store = InMemoryDeploymentStore()
+
+    def manager_with(client) -> DeploymentManager:
+        return DeploymentManager(
+            catalog=catalog,
+            author=Author(catalog=catalog),
+            store=store,
+            secrets_env={"ANTHROPIC_API_KEY": "k"},
+            launcher=AgentLauncher(
+                engine=DockerEngine(client=client), health_interval_s=10.0, health_sleep=Tick()
+            ),
+            ready_poll_s=0.0,
+            sleep=NoSleep(),
+        )
+
+    first = manager_with(first_docker)
+    registry = with_access(first)
+    broken = await first.deploy("two")
+    await first.launcher.stop_all()
+    write(workspace / "agents" / "gamma" / "manifest.yaml", agent_doc("gamma"))
+    write(workspace / "graphs" / "other.yaml", graph_doc("other", ["gamma"]))
+    healthy_manager = manager_with(first_docker)
+    healthy_manager.access = registry
+    fine = await healthy_manager.deploy("other")
+    later.created = list(first_docker.created)
+    second = manager_with(later)
+    second.access = registry
+    tamper(second)
+    touched = {r.deployment_id: r for r in await second.reattach()}
+    return broken, fine, registry, touched, second
+
+
+async def test_a_container_lookup_failure_loses_only_its_deployment(workspace, healthy):
+    """재부착의 컨테이너 조회가 SDK 예외로 실패해도 그 배포만 lost + 신원 회수 (#659)."""
+    first_docker = TrackingDocker()
+
+    class Flaky(TrackingDocker):
+        calls = 0
+
+        def find(self, name: str) -> str | None:
+            if name == "aaestro-alpha-0":
+                Flaky.calls += 1
+                if Flaky.calls == 2:  # 첫 호출은 격리 대조, 둘째가 `_live`
+                    raise RuntimeError("daemon hiccup")
+            return super().find(name)
+
+    with structlog.testing.capture_logs() as logs:
+        broken, fine, registry, touched, second = await reattach_two_deployments(
+            workspace, first_docker, Flaky(), lambda manager: None
+        )
+
+    assert touched[broken.deployment_id].status == DeploymentStatus.LOST
+    assert "lookup RuntimeError" in (touched[broken.deployment_id].error or "")
+    with pytest.raises(AaestroError):
+        registry.identify(broken.agents[0].access_credential)
+    assert touched[fine.deployment_id].status == DeploymentStatus.READY
+    # 이미 붙은 beta 는 Stopped 로 놓인다 — 감시 · 라우팅에서 빠지고 컨테이너는 남는다
+    assert sorted(second.launcher.launched) == [("beta", 0), ("gamma", 0)]
+    assert second.launcher.launched["beta", 0].lifecycle.state is AgentState.STOPPED
+    warned = [e for e in logs if e["event"] == "container lookup failed during reattach"]
+    assert [(e["agent"], e["error"], e["log_level"]) for e in warned] == [
+        ("alpha", "RuntimeError", "warning")
+    ]
+    await second.launcher.stop_all()
+
+
+async def test_a_deployment_that_could_not_be_adopted_is_lost_and_revoked(workspace, healthy):
+    """adopt 가 거절한 배포는 lost 가 되고 신원도 회수된다 (#659)."""
+
+    def refuse_beta(manager: DeploymentManager) -> None:
+        adopt = manager.launcher.adopt
+
+        async def selective(agent: str, **kwargs):
+            return False if agent == "beta" else await adopt(agent, **kwargs)
+
+        manager.launcher.adopt = selective
+
+    broken, fine, registry, touched, second = await reattach_two_deployments(
+        workspace, TrackingDocker(), TrackingDocker(), refuse_beta
+    )
+
+    assert touched[broken.deployment_id].status == DeploymentStatus.LOST
+    assert "containers missing: beta" in (touched[broken.deployment_id].error or "")
+    with pytest.raises(AaestroError):
+        registry.identify(broken.agents[0].access_credential)
+    assert touched[fine.deployment_id].status == DeploymentStatus.READY
+    # 붙었던 alpha 는 Stopped 로 남고 컨테이너는 지워지지 않는다 — 운영자가 보고 해체한다
+    assert sorted(second.launcher.launched) == [("alpha", 0), ("gamma", 0)]
+    assert second.launcher.launched["alpha", 0].lifecycle.state is AgentState.STOPPED
+    assert second.launcher.engine.client.find("aaestro-alpha-0") is not None
+    await second.launcher.stop_all()
+
+
+async def test_a_control_address_failure_loses_only_its_deployment(workspace, healthy):
+    """control 주소 조회 예외도 조회 실패와 같은 길 — 삼켜 None 이 되지 않는다 (#659)."""
+
+    class NoPort(TrackingDocker):
+        def port_of(self, container_id: str, container_port: int) -> int:
+            if container_id == self.find("aaestro-alpha-0"):
+                raise RuntimeError("inspect failed")
+            return super().port_of(container_id, container_port)
+
+    broken, fine, registry, touched, second = await reattach_two_deployments(
+        workspace, TrackingDocker(), NoPort(), lambda manager: None
+    )
+
+    assert touched[broken.deployment_id].status == DeploymentStatus.LOST
+    assert "alpha (lookup RuntimeError)" in (touched[broken.deployment_id].error or "")
+    assert touched[fine.deployment_id].status == DeploymentStatus.READY
+    await second.launcher.stop_all()
