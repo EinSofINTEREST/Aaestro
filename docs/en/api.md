@@ -1038,6 +1038,10 @@ In registry mode:
   route answers the same `401` with `MEM_001`, whatever the body contains. The only route open
   without identity is `GET /v1/health` (liveness only); the API documentation paths are not served.
   Unknown routes and methods (`404` / `405`) are answered before identity, in the typed error shape.
+- **Request bodies reject unknown keys** (`400` with `VAL_002`; the received value is not echoed). A typo in a
+  narrowing field such as `spaces` or `kinds` is refused, not silently widened. **Deploy order:** start the
+  Memory Service before (or together with) the agents — a newer agentd may send a field an older Memory
+  Service refuses.
 - **While the registry is unreachable**, decisions already cached keep working and anything not
   yet decided is denied. A cached decision is still dropped at its `valid_until`.
 

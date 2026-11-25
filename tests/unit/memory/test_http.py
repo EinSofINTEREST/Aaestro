@@ -739,3 +739,58 @@ async def test_slash_variants_of_routes_are_not_redirected_but_refused_as_unrout
     finally:
         await client.aclose()
         store.close()
+
+
+# --- 모르는 키 거절 (#669) ----------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("path", "body"),
+    [
+        ("/v1/search", {"query": "q", "space": ["zzmarker"]}),
+        ("/v1/read", {"space": "longterm", "kind": ["zzmarker"]}),
+        ("/v1/latest", {"space": "longterm", "entry_id": "e", "extra": "zzmarker"}),
+    ],
+)
+async def test_http_request_bodies_reject_unknown_keys_as_val_002(served, path, body):
+    access, *_ = served
+    response = await access.client.post(
+        f"{BASE_URL}{path}", headers={"authorization": f"Bearer {access.token}"}, json=body
+    )
+
+    assert response.status_code == 400, response.text
+    assert response.json()["code"] == "VAL_002"
+    # 받은 값이 응답에 실리지 않아야 한다
+    assert "zzmarker" not in response.text
+
+
+@pytest.mark.parametrize(
+    ("op", "body"),
+    [
+        ("search", {"query": "q", "zz": 1}),
+        ("read", {"space": "longterm", "zz": 1}),
+        ("latest", {"space": "longterm", "entry_id": "e", "zz": 1}),
+        ("append", {"space": "longterm", "entry": {"kind": "fact", "content": "c"}, "zz": 1}),
+    ],
+)
+async def test_malformed_body_leaves_one_failed_audit_line(served, op, body):
+    from prometheus_client import CollectorRegistry
+
+    from aaestro.observability.metrics import Metrics
+
+    access, service, *_ = served
+    metrics = Metrics(registry=CollectorRegistry())
+    object.__setattr__(service, "metrics", metrics)
+    before = len(service.audit_log)
+
+    response = await access.client.post(
+        f"{BASE_URL}/v1/{op}", headers={"authorization": f"Bearer {access.token}"}, json=body
+    )
+
+    assert response.status_code == 400
+    added = service.audit_log[before:]
+    assert [(e["op"], e["status"], e["memory_space"]) for e in added] == [(op, "failed", "")]
+    counted = metrics.registry.get_sample_value(
+        "aaestro_memory_operations_total", {"space": "undeclared", "op": op, "status": "failed"}
+    )
+    assert counted == 1.0

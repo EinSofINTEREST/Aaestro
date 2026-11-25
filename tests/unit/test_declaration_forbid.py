@@ -55,6 +55,10 @@ SKIPPED_MODULES = {
     "aaestro.orchestrator.__main__",
 }
 
+# 재개가 checkpoint 값 (예약 채널 `_run_id` 등 포함 — submit.py `_resume_point`) 을
+# start_service 의 검증에 다시 넣는다 — forbid 면 service 재개가 GRAPH_003 으로 깨진다 (#669)
+_STATE_RESUME = "그래프 state — 재개 경로가 예약 채널을 싣는다"
+
 NOT_FORBIDDEN = {
     # 프로세스 간 전송 · 응답 모델 — 양쪽 버전이 다를 수 있어 새 필드에 내성이 필요하다
     "Acknowledgement": "agentd 응답",
@@ -87,15 +91,11 @@ NOT_FORBIDDEN = {
     "LoadedSkillset": "로더 산출물",
     "ParsedModuleRef": "ref 문자열을 파싱한 내부 값",
     "ModulePath": "레지스트리가 만든 내부 값",
-    # 미결 — 이슈 #404 로 분리됨. 결정이 나면 forbid 를 켜고 여기서 뺀다
-    "LatestRequest": "미결 (#404): Memory Service 요청 본문",
-    "ReadRequest": "미결 (#404): Memory Service 요청 본문",
-    "SearchRequest": "미결 (#404): Memory Service 요청 본문",
-    "DraftReviewState": "미결 (#404): 그래프 state 스키마",
-    "FeedMonitorState": "미결 (#404): 그래프 state 스키마",
-    "MaintenanceState": "미결 (#404): 그래프 state 스키마",
-    "PermissionsState": "미결 (#404): 그래프 state 스키마",
-    "ResearchState": "미결 (#404): 그래프 state 스키마",
+    "DraftReviewState": _STATE_RESUME,
+    "FeedMonitorState": _STATE_RESUME,
+    "MaintenanceState": _STATE_RESUME,
+    "PermissionsState": _STATE_RESUME,
+    "ResearchState": _STATE_RESUME,
 }
 """forbid 가 아니어도 되는 모델 — 이유가 없으면 여기 넣지 않는다.
 
