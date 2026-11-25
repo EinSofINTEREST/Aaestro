@@ -268,6 +268,13 @@ class FakeDockerClient:
                 found.append(container_id)
         return tuple(found)
 
+    def labels_of(self, container_id: str) -> dict[str, str]:
+        """만들 때 받은 라벨 — 없는 id 는 실 daemon 처럼 예외다."""
+        for index, kwargs in enumerate(self.created, start=1):
+            if container_id == f"container-{index:04d}" + "0" * 20:
+                return dict(kwargs.get("labels") or {})
+        raise LookupError(container_id)
+
     def find(self, name: str) -> str | None:
         """이름이 같은 **살아 있는** 컨테이너의 id — 지워진 것은 없는 것이다."""
         for index, kwargs in enumerate(self.created, start=1):

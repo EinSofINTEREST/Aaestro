@@ -284,10 +284,10 @@ async def test_a_deployment_interrupted_while_starting_holds_its_agents(planes):
     await manager.launcher.stop_all()
 
 
-def interrupted_record() -> DeploymentRecord:
+def interrupted_record(deployment_id: str = "dep-interrupted") -> DeploymentRecord:
     """기동 도중 죽은 배포 — agents 가 비었고 선언된 이름만 있다."""
     return DeploymentRecord(
-        deployment_id="dep-interrupted",
+        deployment_id=deployment_id,
         graph="solo",
         version="1.0.0",
         status=DeploymentStatus.STARTING,
@@ -314,24 +314,25 @@ async def test_teardown_of_an_interrupted_deployment_removes_its_orphan_containe
     """기동 도중 죽은 배포는 agents 가 비어 있다 — 선언된 이름으로 남은 컨테이너를 치운다."""
     make, fake = planes
     first = make(InMemoryDeploymentStore())
-    await first.deploy("solo")
+    # 컨테이너는 그 배포의 라벨을 단다 — 끊긴 기록도 같은 id 다 (#676)
+    deployment_id = (await first.deploy("solo")).deployment_id
     agent_container = fake.find(container_name("alpha", 0))
     assert agent_container is not None
     orphans = set(fake.labeled({AGENT_LABEL: "alpha"}))
     assert agent_container in orphans
     # 새 control plane — launcher 는 이 컨테이너를 모르고, 기록은 STARTING 에 agents 가 비었다
     store = InMemoryDeploymentStore()
-    store.upsert(interrupted_record())
+    store.upsert(interrupted_record(deployment_id))
     manager = make(store)
     revoked = track_revocations(manager)
 
-    assert (await manager.teardown("dep-interrupted")).status == DeploymentStatus.STOPPED
+    assert (await manager.teardown(deployment_id)).status == DeploymentStatus.STOPPED
 
     assert agent_container in fake.removed
     assert orphans <= set(fake.removed)
     assert fake.labeled({AGENT_LABEL: "alpha"}) == ()
     assert fake.find(SIDECAR) is None and SIDECAR_NET in fake.removed_networks
-    assert revoked == ["dep-interrupted"]
+    assert revoked == [deployment_id]
     assert "alpha" not in manager._claimed  # noqa: SLF001
     await first.launcher.stop_all()
 
@@ -362,7 +363,10 @@ async def test_teardown_of_a_lost_deployment_removes_containers_the_launcher_nev
 
 
 async def test_teardown_survives_a_failing_orphan_lookup(planes, monkeypatch):
-    """조회 실패가 신원 회수와 STOPPED 기록을 막으면 해체한 배포가 READY 로 남는다."""
+    """조회 실패가 신원 회수를 막으면 해체한 배포가 강제 지점을 계속 통과한다.
+
+    남았는지 모르는 컨테이너가 있어 기록은 LOST 다 — 다음 해체가 다시 찾는다 (#676).
+    """
     make, fake = planes
     store = InMemoryDeploymentStore()
     store.upsert(interrupted_record())
@@ -377,9 +381,11 @@ async def test_teardown_survives_a_failing_orphan_lookup(planes, monkeypatch):
     with structlog.testing.capture_logs() as logs:
         record = await manager.teardown("dep-interrupted")
 
-    assert record.status == DeploymentStatus.STOPPED
+    assert record.status == DeploymentStatus.LOST
     assert revoked == ["dep-interrupted"]
     assert any(e["event"] == "orphan containers could not be listed" for e in logs)
+    monkeypatch.undo()
+    assert (await manager.teardown("dep-interrupted")).status == DeploymentStatus.STOPPED
 
 
 async def test_an_overlap_with_a_reattached_deployment_is_refused(planes):

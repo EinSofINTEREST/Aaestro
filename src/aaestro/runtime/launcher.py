@@ -105,6 +105,10 @@ class _Orphan:
     handle: ContainerHandle
     replica: int
     manifests: tuple[AgentManifest, ...]
+    a2a_port: int | None = None
+    """이 자리가 쥔 포트 — 컨테이너가 지워질 때, 그 자리를 쥔 다른 것이 없으면 놓는다 (#676)."""
+    held: tuple[float, int] | None = None
+    """재부착 때 읽은 실제 (CPU 코어, 메모리 바이트) 한도 — 선언보다 큰 만큼 더 센다 (#649)."""
 
 
 async def cancel_and_wait(task: asyncio.Task[Any]) -> None:
@@ -222,6 +226,7 @@ class AgentLauncher:
         mounts: Sequence[Mapping[str, Any]] = (),
         image: str | None = None,
         networks: Sequence[str] = (),
+        deployment: str | None = None,
     ) -> LaunchedAgent:
         """Start one agent with its token injected and wired.
 
@@ -241,6 +246,8 @@ class AgentLauncher:
                 다시 세운다 — 빠뜨리면 재시작한 컨테이너만 base 이미지로 돈다.
             networks: 더 붙을 네트워크 — 이그레스 프록시 없는 배포의 사이드카 네트워크 (#304).
                 재시작에도 같은 것을 다시 건다.
+            deployment: 이 컨테이너를 세우는 배포의 id — 라벨로 실려 재부착이 남은 컨테이너의
+                주인을 가른다 (#676). 재시작에도 같은 것을 다시 건다.
             lifecycle: 이어붙일 상태. **재시작은 반드시 넘겨야 한다** — 새로
                 만들면 `RestartPolicy` 의 창(window)이 리셋되어 crash-loop
                 상한(02 Rule 6)이 영원히 걸리지 않는다.
@@ -255,9 +262,19 @@ class AgentLauncher:
                 or the host past the quota — 컨테이너를 만들기 전에 거부합니다.
         """
         agent = manifest.name
+        # 재시작 교체는 lifecycle 을 넘긴다 — 실패하면 `_replace` 가 원래 레플리카를 같은 포트로
+        # 되돌리므로 그 포트는 이 기동이 놓을 것이 아니다 (#676)
+        replacing = lifecycle is not None
         # 같은 이름의 컨테이너가 남아 있으면 생성이 이름 충돌로 넘어진다 — 먼저 다시 지운다 (#654).
         # 아래 검사 · 등록보다 앞이라 그 사이에 await 가 끼지 않는다
-        await self._remove_orphans(agent, replica=replica)
+        # 포트는 놓지 않는다 — 이 자리를 다시 세우는 기동이라 호출자가 같은 레플리카 몫으로 잡았다.
+        # 기동이 실패하면 아래 finally 가 그 자리를 쥔 것이 없을 때 놓는다 (#676)
+        cleared = [
+            o.a2a_port
+            for o in self._orphans.values()
+            if o.handle.agent == agent and o.replica == replica and o.a2a_port is not None
+        ]
+        await self._remove_orphans(agent, replica=replica, release_ports=False)
         # 같은 **레플리카**를 두 번 띄우면 첫 핸들을 덮어 컨테이너가 미아가 된다.
         # 다른 레플리카는 별개의 컨테이너이므로 허용한다 (01 Scalability)
         # 기동 중인 같은 레플리카도 — 덮어쓰면 첫 기동의 quota 예약이 사라진다
@@ -294,6 +311,7 @@ class AgentLauncher:
                 mounts=mounts,
                 image=image,
                 extra_networks=networks,
+                deployment=deployment,
             )
 
             # 02 Lifecycle — 이미지는 배포 파이프라인이 굽는다 (Rule 1). runtime 이
@@ -327,6 +345,7 @@ class AgentLauncher:
                     "mounts": mounts,
                     "image": image,
                     "networks": networks,
+                    "deployment": deployment,
                 },
                 a2a_port=a2a_port,
             )
@@ -347,6 +366,9 @@ class AgentLauncher:
             reserved = self._admitted.pop((agent, replica), None)
             if reserved is not None and not started:
                 self._settle(reserved, replica=replica)
+            if not started and not replacing:
+                for port in cleared:
+                    self._release_if_unowned(agent, replica, port)
             self._starting[agent] -= 1
             if not self._starting[agent]:
                 del self._starting[agent]
@@ -402,9 +424,14 @@ class AgentLauncher:
                 container_id=handle.short_id,
                 image=handle.image,
             )
-            self._orphans[handle.container_id] = _Orphan(handle, replica, (*manifests, *settling))
+            port = None if self.ports is None else self.ports.held(handle.agent, replica=replica)
+            self._orphans[handle.container_id] = _Orphan(
+                handle, replica, (*manifests, *settling), port
+            )
 
-    async def _remove_orphans(self, agent: str, *, replica: int | None) -> None:
+    async def _remove_orphans(
+        self, agent: str, *, replica: int | None, release_ports: bool = True
+    ) -> None:
         """넘겨받은 컨테이너를 다시 지운다 — 지워지면 quota 자리를 푼다 (#654).
 
         실패하면 그대로 남아 다음 정지 · 기동이 또 지운다. 이미 없는 컨테이너는 제거 성공이다.
@@ -415,10 +442,59 @@ class AgentLauncher:
 
             def removed(container_id: str = container_id) -> None:
                 # 기다리던 쪽이 끊겨도 보낸 제거가 끝나면 푼다 (#648 의 on_removed 와 같은 결)
-                self._orphans.pop(container_id, None)
+                self.orphan_removed(container_id, release_port=release_ports)
 
             if await self.engine.stop(orphan.handle, on_removed=removed):
                 removed()
+
+    async def keep_orphan(
+        self,
+        handle: ContainerHandle,
+        *,
+        replica: int,
+        manifest: AgentManifest,
+        a2a_port: int | None = None,
+    ) -> None:
+        """Take over a container a previous process left behind (#676).
+
+        재부착이 찾은, 기록에 레플리카가 없는 배포의 남은 컨테이너를 넘겨받는다 — 기동이 남긴 것
+        (`_own_orphans`) 과 같이 quota 에 세고, 그 에이전트의 다음 정지 · 그 레플리카의 다음 기동이
+        지운다. ``a2a_port`` 는 호출자가 이미 예약한 것이고 지워질 때 놓는다.
+
+        실제 한도를 읽어 선언보다 크면 그만큼 더 센다 (#649). 읽지 못하면 선언으로 센다 — 넘겨받지
+        않으면 아예 세지 않게 된다 (`_held_by` 가 ERROR 를 남긴다).
+        """
+        held = await self._held_by(handle.container_id, handle.agent, handle.image)
+        log.warning(
+            "agent container left by an interrupted deployment; kept for removal",
+            agent=handle.agent,
+            container_id=handle.short_id,
+            image=handle.image,
+        )
+        self._orphans[handle.container_id] = _Orphan(handle, replica, (manifest,), a2a_port, held)
+
+    def orphan_removed(self, container_id: str, *, release_port: bool = True) -> None:
+        """넘겨받은 컨테이너가 지워졌다 — 자리를 풀고 재부착이 예약한 포트를 놓는다.
+
+        launcher 밖의 제거 (해체의 라벨 정리) 도 이것으로 알린다 — 기록이 남으면 지워진
+        컨테이너를 계속 센다 (#676). 모르는 id 는 아무 일도 없다.
+        """
+        orphan = self._orphans.pop(container_id, None)
+        if orphan is not None and orphan.a2a_port is not None and release_port:
+            self._release_if_unowned(orphan.handle.agent, orphan.replica, orphan.a2a_port)
+
+    def _release_if_unowned(self, agent: str, replica: int, port: int) -> None:
+        """그 자리를 쥔 레플리카 · 기동 · 넘겨받은 컨테이너가 없을 때만 포트를 놓는다 (#676)."""
+        key = (agent, replica)
+        if self.ports is None or key in self.launched or key in self._admitted:
+            return
+        if any((o.handle.agent, o.replica) == key for o in self._orphans.values()):
+            return
+        self.ports.release(agent, replica=replica, port=port)
+
+    def orphans_of(self, agent: str) -> list[ContainerHandle]:
+        """이 에이전트의 넘겨받은 컨테이너 중 아직 지워지지 않은 것."""
+        return [o.handle for o in self._orphans.values() if o.handle.agent == agent]
 
     def admit(self, manifest: AgentManifest, *, replica: int = 0) -> None:
         """Check that one more replica fits the group and host quota.
@@ -461,6 +537,11 @@ class AgentLauncher:
             slots.setdefault(helds[0].name, []).append(helds)
         for orphan in self._orphans.values():
             slots.setdefault(orphan.handle.agent, []).append(list(orphan.manifests))
+            if orphan.held is not None:
+                name = orphan.handle.agent
+                excess[name] = excess.get(name, ResourceTotals()).plus(
+                    _excess(orphan.held, orphan.manifests[0])
+                )
 
         host = ResourceTotals()
         members = ResourceTotals()

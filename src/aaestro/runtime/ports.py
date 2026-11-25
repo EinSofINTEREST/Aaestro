@@ -119,6 +119,10 @@ class A2APortAllocator:
             )
         self.assigned[key] = port
 
+    def held(self, agent: str, *, replica: int = 0) -> int | None:
+        """이 레플리카가 지금 쥔 포트 — 없으면 None."""
+        return self.assigned.get(_key(agent, replica))
+
     def release(self, agent: str, *, replica: int = 0, port: int | None = None) -> None:
         """Return one replica's port to the range.
 

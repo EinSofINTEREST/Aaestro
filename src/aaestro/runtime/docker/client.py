@@ -288,6 +288,11 @@ class SdkDockerClient:
         filters = {"label": [f"{key}={value}" for key, value in labels.items()]}
         return tuple(c.id for c in self._sdk.containers.list(all=True, filters=filters))
 
+    def labels_of(self, container_id: str) -> dict[str, str]:
+        container = self._sdk.containers.get(container_id)
+        container.reload()
+        return dict(container.attrs["Config"].get("Labels") or {})
+
     def find(self, name: str) -> str | None:
         try:
             container_id: str = self._sdk.containers.get(name).id
