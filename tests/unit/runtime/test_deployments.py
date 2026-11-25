@@ -1434,7 +1434,9 @@ async def test_reattach_without_the_secrets_marks_the_deployment_lost(workspace,
     touched = await second.reattach()
 
     assert [r.status for r in touched] == [DeploymentStatus.LOST]
-    assert "ANTHROPIC_API_KEY" in (touched[0].error or "")
+    # 키 이름이 아니라 위치를 싣는다 (#412)
+    assert "env_allowlist[0]" in (touched[0].error or "")
+    assert "ANTHROPIC_API_KEY" not in (touched[0].error or "")
     assert second.launcher.launched == {}
 
 

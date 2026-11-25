@@ -45,13 +45,13 @@ def storage_error(message: str, **details: Any) -> AaestroError:
     )
 
 
-def invalid_key(key: str, reason: str) -> AaestroError:
-    """받아들일 수 없는 key — 저장 전에 막는다."""
+def invalid_key(reason: str) -> AaestroError:
+    """받아들일 수 없는 key — 저장 전에 막는다. 받은 값은 싣지 않는다 (#412)."""
     return AaestroError(
         category=ErrorCategory.VALIDATION,
         code=ErrorCode.VAL_002,
         message=f"invalid artifact key: {reason}",
-        details={"key": key},
+        details={"reason": reason},
     )
 
 
@@ -86,7 +86,7 @@ def parse_ref(raw: str) -> ArtifactRef:
     """
     match = _REF_PATTERN.fullmatch(raw)
     if match is None:
-        raise invalid_key(raw, "reference must be artifact://scope/key")
+        raise invalid_key("reference must be artifact://scope/key")
     # 참조 안의 key 도 같은 검사를 통과해야 한다 — 읽기 경로로 탈출당하면
     # 쓰기를 막은 의미가 없다
     return ArtifactRef(scope=match["scope"], key=validate_key(match["key"]))
@@ -109,26 +109,26 @@ def validate_key(key: str, *, for_write: bool = False) -> str:
         AaestroError: VALIDATION/``VAL_002`` for traversal or malformed keys.
     """
     if not key:
-        raise invalid_key(key, "key must not be empty")
+        raise invalid_key("key must not be empty")
     segments = key.split("/")
     if ".." in segments:
         # `../` 한 조각이면 루트 밖 어디든 쓸 수 있다
-        raise invalid_key(key, "key must not traverse upwards")
+        raise invalid_key("key must not traverse upwards")
     if "" in segments:
         # `a//b` 는 `a/b` 와 같은 파일이 된다 — 두 key 가 조용히 충돌한다
-        raise invalid_key(key, "key must not contain empty segments")
+        raise invalid_key("key must not contain empty segments")
     if "." in segments:
-        raise invalid_key(key, "key must not contain '.' segments")
+        raise invalid_key("key must not contain '.' segments")
     if any(segment.startswith(TEMP_PREFIX) for segment in segments):
         # 쓰는 중인 임시 파일을 읽거나 덮지 못하게 한다
-        raise invalid_key(key, "key segments must not look like temporary files")
+        raise invalid_key("key segments must not look like temporary files")
     if for_write and any(segment.startswith(".") for segment in segments):
         # 점으로 시작하는 이름은 임시 파일 몫이다 — 새로 쓰는 key 는 쓰지 않는다
-        raise invalid_key(key, "key segments must not start with '.'")
+        raise invalid_key("key segments must not start with '.'")
     if key.startswith("/"):
-        raise invalid_key(key, "key must be relative")
+        raise invalid_key("key must be relative")
     if not _SAFE_KEY.fullmatch(key):
-        raise invalid_key(key, "key has characters outside [A-Za-z0-9._/-]")
+        raise invalid_key("key has characters outside [A-Za-z0-9._/-]")
     return key
 
 
@@ -245,7 +245,7 @@ class FilesystemArtifactStore:
         resolved = inside(self.root / self.scope, self.root / self.scope / key)
         if resolved is None:
             # 검증을 통과해도 심볼릭 링크로 벗어날 수 있다 — 마지막 방어선
-            raise invalid_key(key, "key resolves outside the store root")
+            raise invalid_key("key resolves outside the store root")
         return resolved
 
     def stored_keys(self) -> Iterable[str]:

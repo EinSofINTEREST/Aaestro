@@ -69,6 +69,8 @@ metadata: {name: research-pipeline, version: 1.0.0}
 spec:
   mode: mission                 # mission(달성형) | service(상주형)
   goal: 질의를 받아 리서치 보고서를 완성한다
+  state:
+    schema: aaestro.graphs.schemas:ResearchState
   nodes:
     - {id: planner, agent: agents/planner@0.1.0}
     - {id: researcher, agent: agents/researcher@0.1.0}
@@ -88,7 +90,7 @@ spec:
 # groups/research.yaml
 apiVersion: aaestro/v1
 kind: Group
-metadata: {name: research}
+metadata: {name: research, version: 0.1.0}
 spec:
   quotas: {cpu: "8.0", memory: 16Gi, max_agents: 10}
   secrets: [SEARCH_API_KEY]

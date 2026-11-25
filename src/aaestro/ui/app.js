@@ -10,6 +10,10 @@ const el = (tag, props = {}, children = []) => {
   return node;
 };
 
+// 카탈로그 problem — 어느 파일이 왜 읽히지 않았는지, 스키마 위반이면 어느 키가 왜인지 (#412). 값은 서버가 싣지 않는다
+const problemItem = (p) => el("li", { textContent: `${p.path}: ${p.code} ${p.message}${p.reason ? ` (${p.reason})` : ""}` },
+  (p.errors || []).length ? [el("ul", {}, p.errors.map((e) => el("li", { textContent: `${e.field}: ${e.problem}` })))] : []);
+
 let api = createClient({ token: sessionStorage.getItem("aaestro.token") });
 const status = (text, failed = false) => {
   const line = $("#status");
@@ -71,7 +75,7 @@ async function loadCatalog() {
   fill("#catalog-modules", modules, (m) => `${m.type}/${m.name} @ ${m.versions.join(", ")}`, (m) => Promise.resolve(m));
 
   const problems = [...agents.problems, ...graphs.problems, ...groups.problems, ...skillsets.problems, ...promptsets.problems, ...memorysets.problems];
-  $("#catalog-problems").replaceChildren(...problems.map((p) => el("li", { textContent: `${p.path}: ${p.code} ${p.message}` })));
+  $("#catalog-problems").replaceChildren(...problems.map(problemItem));
 
   fillSelect("#access-agent", agents.items.map((a) => [a.name, a.name]));
   fillSelect("#deploy-graph", graphs.items.map((g) => [g.name, `${g.name}@${g.version}`]));

@@ -242,3 +242,23 @@ async def test_a_failing_fdopen_closes_the_descriptor(store, monkeypatch):
         await store.put("k", b"x")
 
     assert len(closed) == 1
+
+
+# --- 값 없는 거절 (#412) ---------------------------------------------------------
+
+
+@pytest.mark.parametrize("bad", ["ok.txt\nMARKER", "../MARKER", "MARKER/\x1b[2J", "a//MARKER"])
+def test_a_refused_key_is_not_echoed(bad):
+    with pytest.raises(AaestroError) as exc_info:
+        validate_key(bad)
+
+    err = exc_info.value
+    assert "MARKER" not in err.message + str(err.payload())
+    assert "reason" in err.details
+
+
+def test_a_refused_reference_is_not_echoed():
+    with pytest.raises(AaestroError) as exc_info:
+        parse_ref("artifact://scope/key\nMARKER")
+
+    assert "MARKER" not in str(exc_info.value.payload())

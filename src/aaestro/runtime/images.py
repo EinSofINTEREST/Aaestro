@@ -114,6 +114,11 @@ def _invalid(message: str, **details: object) -> AaestroError:
     )
 
 
+def _line_of(text: str, fragment: str) -> int:
+    """1-based line of the first line holding ``fragment`` — 줄 조각 대신 위치를 싣는다 (#412)."""
+    return next((n for n, line in enumerate(text.splitlines(), 1) if fragment in line), 0)
+
+
 def _now() -> str:
     return datetime.now(UTC).isoformat()
 
@@ -132,11 +137,15 @@ def check_dockerfile(text: str) -> None:
         raise _invalid("Dockerfile must declare a FROM")
     if not froms[0].startswith(BASE_IMAGE_PREFIX):
         # agentd 가 base 에 들어 있다 — 다른 이미지에서 시작하면 Control API 가 없다
-        raise _invalid(f"Dockerfile must start FROM {BASE_IMAGE_PREFIX}<tag>", declared=froms[0])
+        raise _invalid(
+            f"Dockerfile must start FROM {BASE_IMAGE_PREFIX}<tag>", line=_line_of(text, froms[0])
+        )
     users = _USER_DIRECTIVE.findall(text)
     if users and users[-1].strip().strip('"') in _ROOT_USERS:
         # 설치 동안 root 로 올라가는 것은 흔하다 — 되돌리지 않고 끝나는 것이 문제다
-        raise _invalid("Dockerfile must not end as root (02 Security)", declared=users[-1])
+        raise _invalid(
+            "Dockerfile must not end as root (02 Security)", line=_line_of(text, users[-1])
+        )
     _check_sources(text)
 
 
@@ -160,12 +169,12 @@ def _check_sources(text: str) -> None:
                 raise _invalid(
                     f"{directive.upper()} must not fetch a remote source — "
                     "pin it in the base image",
-                    source=cleaned,
+                    line=_line_of(text, source),
                 )
             if cleaned.startswith("/") or PurePosixPath(cleaned).parts[:1] == ("..",):
                 raise _invalid(
                     f"{directive.upper()} source must stay inside the build context",
-                    source=cleaned,
+                    line=_line_of(text, source),
                 )
 
 

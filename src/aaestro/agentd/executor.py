@@ -649,13 +649,13 @@ class Executor:
         )
 
     def _output_error(self, message: str, content: str, keys: Sequence[str]) -> AaestroError:
-        """출력 계약 위반 — 응답 꼬리를 남겨 promptset 드리프트를 추적한다."""
+        """출력 계약 위반 — 모델 출력은 싣지 않고 길이만 남긴다 (#412)."""
         return AaestroError(
             category=ErrorCategory.MODEL,
             code=ErrorCode.LLM_004,
             message=message,
             agent=self._agent,
-            details={"declared": ",".join(keys), "content": content[-300:]},
+            details={"declared": ",".join(keys), "content_chars": len(content)},
         )
 
     async def _opening(self, task: TaskRequest, binding: ModuleBinding) -> UserTurn:

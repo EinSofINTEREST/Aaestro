@@ -313,3 +313,24 @@ def test_the_sqlite_store_overwrites_an_earlier_result(tmp_path):
 
     assert found.status == BuildStatus.BUILT
     assert found.error is None
+
+
+# --- 값 없는 거절 (#412) -----------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "FROM MARKER-image:1\n",
+        "FROM aaestro/agent-base:0.1.0\nUSER marker-user\nUSER root\n",
+        "FROM aaestro/agent-base:0.1.0\nADD https://MARKER.example/x /x\n",
+        "FROM aaestro/agent-base:0.1.0\nCOPY /MARKER-path /x\n",
+    ],
+)
+def test_refusals_carry_a_line_not_the_offending_fragment(text):
+    with pytest.raises(AaestroError) as exc_info:
+        check_dockerfile(text)
+
+    err = exc_info.value
+    assert "marker" not in (err.message + str(err.details)).lower()
+    assert err.details["line"] >= 1
