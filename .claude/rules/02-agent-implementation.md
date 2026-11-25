@@ -354,7 +354,7 @@ Runtime layer →  env_allowlist 각 키를 local > group > global 순으로 해
 3. **Ready**: health check 주기 실행 (기본 10s 간격, 3회 연속 실패 시 Unhealthy)
 4. **Drain**: 새 태스크 수락 중지 → 진행 중 태스크 완료 대기 (기본 30s) → 종료
 5. **Stop**: SIGTERM → 30s grace → SIGKILL. `shutdown()` 에서 MCP/A2A 세션 정리
-   제거에 실패한 레플리카는 Stopped 로 목록에 남아 A2A 포트 · 토큰을 쥐고 라우팅에서 빠진다 — 다음 정지가 같은 handle 로 다시 지운다 (#623)
+   제거에 실패한 레플리카는 Stopped 로 목록에 남아 A2A 포트 · 토큰을 쥐고 라우팅에서 빠진다 — 다음 정지가 같은 handle 로 다시 지운다 (#623). 취소된 기동의 정리가 제거에 실패한 컨테이너도 같다 — 엔진이 launcher 에 넘기고, launcher 가 quota 에 센 채 그 에이전트의 다음 정지 · 그 레플리카의 다음 기동이 다시 지운다 (#654)
 6. **Restart Policy**: Unhealthy 시 exponential backoff 재시작 (1s → 2s → 4s... max 60s),
    10분 내 5회 초과 시 Failed 로 전환하고 알림. 재기동(컨테이너 기동) 자체가 일시 장애
    (`retryable`) 로 실패하면 한 번의 재시작으로 세고 다음 backoff 로 다시 시도한다 — 그 동안

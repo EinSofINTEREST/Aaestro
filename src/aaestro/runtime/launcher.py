@@ -94,6 +94,19 @@ class LaunchedAgent:
         await self.client.aclose()
 
 
+@dataclass(frozen=True)
+class _Orphan:
+    """취소 · 실패한 기동이 지우지 못한 컨테이너 — 다시 지워질 때까지 quota 에 센다 (#654).
+
+    `LaunchedAgent` 가 아니다: 클라이언트 · lifecycle 이 없고 라우팅 · 감시 대상이 아니다.
+    선언은 그 자리일 수 있는 것 전부다 (`_settling` 과 같다 — 과다 계산은 허용, 과소는 아니다).
+    """
+
+    handle: ContainerHandle
+    replica: int
+    manifests: tuple[AgentManifest, ...]
+
+
 async def cancel_and_wait(task: asyncio.Task[Any]) -> None:
     """Cancel a task and wait for it, re-raising a cancellation aimed at the waiter.
 
@@ -181,6 +194,9 @@ class AgentLauncher:
     )
     """취소된 기동 중 엔진이 정리를 넘겨받은 것 (정리 태스크 → 선언) — 그 컨테이너가 아직 생기거나
     남아 있을 수 있어 정리가 끝날 때까지 quota 에 센다 (#648). 태스크는 엔진이 쥔다."""
+    _orphans: dict[str, _Orphan] = field(default_factory=dict, init=False)
+    """취소 · 실패한 기동이 지우지 못한 컨테이너 (container_id → 자리) — 엔진에게서 넘겨받아
+    quota 에 세고, 그 에이전트의 다음 정지 · 그 레플리카의 다음 기동이 다시 지운다 (#654)."""
     _cursors: dict[str, int] = field(default_factory=dict, init=False)
     _starting: dict[str, int] = field(default_factory=dict, init=False)
     _forget_deferred: set[str] = field(default_factory=set, init=False)
@@ -239,6 +255,9 @@ class AgentLauncher:
                 or the host past the quota — 컨테이너를 만들기 전에 거부합니다.
         """
         agent = manifest.name
+        # 같은 이름의 컨테이너가 남아 있으면 생성이 이름 충돌로 넘어진다 — 먼저 다시 지운다 (#654).
+        # 아래 검사 · 등록보다 앞이라 그 사이에 await 가 끼지 않는다
+        await self._remove_orphans(agent, replica=replica)
         # 같은 **레플리카**를 두 번 띄우면 첫 핸들을 덮어 컨테이너가 미아가 된다.
         # 다른 레플리카는 별개의 컨테이너이므로 허용한다 (01 Scalability)
         # 기동 중인 같은 레플리카도 — 덮어쓰면 첫 기동의 quota 예약이 사라진다
@@ -348,16 +367,58 @@ class AgentLauncher:
         계산은 하지 않는다.
         """
 
+        name = container_name(manifest.name, replica)
+
         def settled(done: asyncio.Task[None]) -> None:
-            for held in self._settling.pop(done, []):
+            helds = self._settling.pop(done, [])
+            # 정리가 제거에 실패했으면 그 컨테이너를 이 자리의 선언으로 넘겨받는다 (#654)
+            self._own_orphans(name, replica=replica, manifests=helds)
+            for held in helds:
                 self._settle(held, replica=replica)
 
-        for cleanup in self.engine.pending_cleanups(container_name(manifest.name, replica)):
+        # 그 자리에서 끝난 정리의 제거 실패 — 엔진이 넘겨준다 (#654)
+        self._own_orphans(name, replica=replica, manifests=[manifest])
+        for cleanup in self.engine.pending_cleanups(name):
             if cleanup not in self._settling:
                 self._settling[cleanup] = []
                 cleanup.add_done_callback(settled)
             if manifest not in self._settling[cleanup]:
                 self._settling[cleanup].append(manifest)
+
+    def _own_orphans(self, name: str, *, replica: int, manifests: Sequence[AgentManifest]) -> None:
+        """엔진이 지우지 못한 이 이름의 컨테이너를 넘겨받는다 — 소유자는 launcher 하나다 (#654).
+
+        엔진은 그 컨테이너를 만든 기동의 선언을 모른다 — 정리 완료 콜백보다 다른 기동의 실패
+        처리가 먼저 돌면 여기로 작은 선언이 온다. 그래서 이 에이전트의 정리 중인 선언을 전부
+        붙인다 (과다 계산은 허용, 과소 계산은 하지 않는다).
+        """
+        for handle in self.engine.take_orphans(name):
+            settling = [
+                h for helds in self._settling.values() for h in helds if h.name == handle.agent
+            ]
+            log.warning(
+                "agent start left a container behind; kept for a retry",
+                agent=handle.agent,
+                container_id=handle.short_id,
+                image=handle.image,
+            )
+            self._orphans[handle.container_id] = _Orphan(handle, replica, (*manifests, *settling))
+
+    async def _remove_orphans(self, agent: str, *, replica: int | None) -> None:
+        """넘겨받은 컨테이너를 다시 지운다 — 지워지면 quota 자리를 푼다 (#654).
+
+        실패하면 그대로 남아 다음 정지 · 기동이 또 지운다. 이미 없는 컨테이너는 제거 성공이다.
+        """
+        for container_id, orphan in list(self._orphans.items()):
+            if orphan.handle.agent != agent or replica not in (None, orphan.replica):
+                continue
+
+            def removed(container_id: str = container_id) -> None:
+                # 기다리던 쪽이 끊겨도 보낸 제거가 끝나면 푼다 (#648 의 on_removed 와 같은 결)
+                self._orphans.pop(container_id, None)
+
+            if await self.engine.stop(orphan.handle, on_removed=removed):
+                removed()
 
     def admit(self, manifest: AgentManifest, *, replica: int = 0) -> None:
         """Check that one more replica fits the group and host quota.
@@ -367,7 +428,7 @@ class AgentLauncher:
 
         배포 검증은 선언을 세고, 여기는 실제를 센다 (#474): 컨테이너가 남아 있는 레플리카
         (제거에 실패한 Stopped 포함) 와 quota 를 통과해 기동 중인 레플리카, 취소돼 엔진이 아직
-        정리 중인 기동 (#648), 그리고 이번 것.
+        정리 중인 기동 (#648), 취소된 기동의 제거에 실패해 남은 컨테이너 (#654), 그리고 이번 것.
         제거된 컨테이너 (`stopped`) 는 자원을 쥐지 않는다. 재부착한 컨테이너는 선언과 실제
         한도 (`held`) 중 큰 쪽으로 센다 — 재사용한 사이드카도 서버마다 그렇고, 레플리카 교체를
         넘어 센다 (`sidecars_held`, #649). 떠 있는 것만 있으면 배포 검증의 `demand_of` 와 같은
@@ -398,6 +459,8 @@ class AgentLauncher:
             slots.setdefault(name, []).append([held])
         for helds in self._settling.values():
             slots.setdefault(helds[0].name, []).append(helds)
+        for orphan in self._orphans.values():
+            slots.setdefault(orphan.handle.agent, []).append(list(orphan.manifests))
 
         host = ResourceTotals()
         members = ResourceTotals()
@@ -1040,6 +1103,8 @@ class AgentLauncher:
                     gauge.labels(agent=agent, replica=str(launched.replica)).set(0)
             if self.ports is not None and launched.stopped:
                 self.ports.release(agent, replica=launched.replica)
+        # 끊긴 재시작의 교체 기동이 남긴 것까지 — 위의 재시작 취소 뒤라야 보인다 (#654)
+        await self._remove_orphans(agent, replica=replica)
 
         # 토큰은 에이전트 단위다 — 레플리카가 남아 있거나 기동 중이면 아직 버리지 않는다
         if not self.replicas_of(agent):
@@ -1119,6 +1184,7 @@ class AgentLauncher:
         # 교체는 기동을 기다리는 동안 레플리카를 목록에서 잠시 뺀다 — 목록만 보면 그 틈의
         # 에이전트를 놓쳐, 정지가 끝난 뒤 재시작이 컨테이너를 다시 세운다 (#482)
         names = [name for name, _ in self.launched] + [name for name, _ in self._restarts]
+        names += [orphan.handle.agent for orphan in self._orphans.values()]
         for agent in dict.fromkeys(names):
             try:
                 await self.stop(agent)
@@ -1129,6 +1195,17 @@ class AgentLauncher:
                 log.error("agent stop failed", agent=agent, exc_info=err)
         # 취소된 기동이 넘긴 컨테이너 정리 — 종료가 끝까지 기다리거나 끊는다 (07 Async 5)
         await self.engine.settle_cleanups()
+        # 기다리는 사이 정리가 제거에 실패해 넘어온 것까지 한 번 더 지운다 — 종료 뒤에는 지울 주체가
+        # 없다. 또 실패한 것은 다음 기동의 재부착 몫이다 (#654)
+        for agent in dict.fromkeys(orphan.handle.agent for orphan in self._orphans.values()):
+            await self._remove_orphans(agent, replica=None)
+        for orphan in self._orphans.values():
+            log.warning(
+                "agent container not removed at shutdown; container may remain",
+                agent=orphan.handle.agent,
+                container_id=orphan.handle.short_id,
+                image=orphan.handle.image,
+            )
 
         if failures:
             raise AaestroError(
