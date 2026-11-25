@@ -1453,7 +1453,10 @@ agent identity — otherwise the `401` of [Authentication](#authentication) befo
   In-place patching of a running deployment is not supported.
 - **Restarts reattach.** On startup the control plane matches its records against Docker and
   picks the containers back up, health monitoring included. Records whose containers are gone
-  become `lost` rather than being deleted quietly.
+  become `lost` rather than being deleted quietly. Reattaching also reserves the recorded A2A ports,
+  so a new deployment cannot be given a port a surviving container still holds; a `lost` deployment
+  keeps them until its containers are actually removed (a recorded port already held by another
+  replica makes the deployment `lost`).
 
 ## CLI equivalents
 

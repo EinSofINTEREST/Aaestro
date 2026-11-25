@@ -1438,6 +1438,125 @@ async def test_reattach_without_the_secrets_marks_the_deployment_lost(workspace,
     assert second.launcher.launched == {}
 
 
+async def test_reattach_reserves_the_a2a_ports_the_containers_hold(workspace, docker, healthy):
+    """재부착한 레플리카의 포트는 새 할당기에도 그 레플리카 몫이다 — 새 배포가 못 받는다 (#671)."""
+    wired_workspace(workspace)
+    store = InMemoryDeploymentStore()
+    first = wired_manager(workspace, docker, store)
+    record = await first.deploy("wired")
+    recorded = {a.name: a.a2a_port for a in record.agents}
+    second = wired_manager(workspace, docker, store)
+
+    await second.reattach()
+
+    ports = second.launcher.ports
+    assert ports is not None
+    assert ports.assigned == {"alpha/0": recorded["alpha"], "beta/0": recorded["beta"]}
+    assert ports.allocate("alpha") == recorded["alpha"], "같은 레플리카는 같은 포트다"
+    # 실제 배포 경로 — 재부착한 컨테이너의 포트를 새 배포가 받지 않는다
+    doc = agent_doc("gamma")
+    doc["spec"]["a2a"] = {"enabled": True}
+    write(workspace / "agents" / "gamma" / "manifest.yaml", doc)
+    write(workspace / "graphs" / "solo-gamma.yaml", graph_doc("solo-gamma", ["gamma"]))
+    fresh = await second.deploy("solo-gamma")
+    assert fresh.agents[0].a2a_port not in recorded.values()
+    await second.launcher.stop_all()
+    await first.launcher.stop_all()
+
+
+async def test_a_lost_deployment_keeps_its_ports_until_the_containers_are_gone(
+    workspace, docker, healthy
+):
+    """lost 로 둔 배포의 컨테이너도 포트를 쥔다 — 제거에 성공할 때까지 예약이 남는다 (#671)."""
+    wired_workspace(workspace)
+    store = InMemoryDeploymentStore()
+    first = wired_manager(workspace, docker, store)
+    record = await first.deploy("wired")
+    held = {a.a2a_port for a in record.agents}
+    second = wired_manager(workspace, docker, store)
+    second.secrets_env = {}  # 다시 세울 수 없다 — 붙지 않고 lost, 컨테이너는 남는다
+
+    [lost] = await second.reattach()
+
+    assert lost.status == DeploymentStatus.LOST
+    assert second.launcher.launched == {}
+    ports = second.launcher.ports
+    assert ports is not None
+    assert set(ports.assigned.values()) == held
+    assert ports.allocate("gamma") not in held
+
+    docker._remove_failures = 1  # noqa: SLF001 — 첫 제거만 실패한다
+    unfinished = await second.teardown(record.deployment_id)
+    assert unfinished.status == DeploymentStatus.LOST, "남은 컨테이너가 있는데 STOPPED 로 적었다"
+    assert len(ports.assigned) == 2, "제거에 실패한 컨테이너의 포트는 gamma 와 남은 하나다"
+    assert held & set(ports.assigned.values()), "남은 컨테이너의 예약이 사라졌다"
+
+    done = await second.teardown(record.deployment_id)
+    assert done.status == DeploymentStatus.STOPPED
+    assert set(ports.assigned) == {"gamma/0"}
+    await first.launcher.stop_all()
+
+
+@pytest.mark.parametrize("squatter", ["other-agent", "same-replica"])
+async def test_reattach_marks_a_deployment_lost_when_its_port_is_held_by_another(
+    workspace, docker, healthy, squatter
+):
+    """다른 레플리카가 이미 쥔 포트는 조용히 겹쳐 주지 않는다 — 그 배포는 lost (#671)."""
+    wired_workspace(workspace)
+    store = InMemoryDeploymentStore()
+    first = wired_manager(workspace, docker, store)
+    record = await first.deploy("wired")
+    alpha_port = next(a.a2a_port for a in record.agents if a.name == "alpha")
+    second = wired_manager(workspace, docker, store)
+    assert second.launcher.ports is not None
+    if squatter == "other-agent":
+        second.launcher.ports.reserve("intruder", alpha_port)
+    else:  # 같은 레플리카가 다른 포트를 이미 쥐고 있다
+        second.launcher.ports.reserve("alpha", alpha_port + 5)
+
+    [lost] = await second.reattach()
+
+    assert lost.status == DeploymentStatus.LOST
+    assert "alpha" in (lost.error or "")
+    assert second.launcher.launched == {}
+    squat = {"intruder/0": alpha_port} if squatter == "other-agent" else {"alpha/0": alpha_port + 5}
+    assert squat.items() <= second.launcher.ports.assigned.items(), "기존 예약이 덮였다"
+    # 해체가 이 배포가 잡지 않은 예약을 놓지 않는다
+    await second.teardown(record.deployment_id)
+    assert squat.items() <= second.launcher.ports.assigned.items(), "남의 예약을 놓았다"
+    await first.launcher.stop_all()
+
+
+async def test_a_portless_replica_that_survives_removal_keeps_the_teardown_open(
+    manager, docker, healthy
+):
+    """포트 없는 레플리카도 제거에 실패하면 STOPPED 로 닫지 않는다 — 다시 해체하면 다시 지운다."""
+    record = await manager.deploy("two")
+    alpha_id = manager.launcher.launched[("alpha", 0)].handle.container_id
+    second = DeploymentManager(
+        catalog=manager.catalog,
+        author=manager.author,
+        store=manager.store,
+        secrets_env={},  # 붙지 않고 lost — launcher 는 이 컨테이너를 모른다
+        launcher=AgentLauncher(
+            engine=DockerEngine(client=docker), health_interval_s=10.0, health_sleep=Tick()
+        ),
+        ready_poll_s=0.0,
+        sleep=NoSleep(),
+    )
+    await second.reattach()
+    assert all(a.a2a_port is None for a in record.agents)
+
+    docker._remove_failures = 1  # noqa: SLF001 — 라벨 제거 하나만 실패한다
+    unfinished = await second.teardown(record.deployment_id)
+    assert unfinished.status == DeploymentStatus.LOST
+
+    done = await second.teardown(record.deployment_id)
+    assert done.status == DeploymentStatus.STOPPED
+    assert alpha_id in docker.removed
+    await manager.launcher.stop_all()
+
+
 async def test_the_sqlite_store_keeps_the_a2a_secret(tmp_path, workspace, docker, healthy):
     wired_workspace(workspace)
     store = SqliteDeploymentStore(path=tmp_path / "deployments.db")
