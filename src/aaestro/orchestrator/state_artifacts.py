@@ -13,10 +13,17 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
+
+import structlog
 
 from aaestro.artifacts.store import FilesystemArtifactStore, parse_ref
 from aaestro.core.errors import AaestroError
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterable
+
+log = structlog.get_logger()
 
 STATE_ARTIFACT_SCOPE: Final = "orchestrator--state"
 """원문 저장소의 네임스페이스.
@@ -29,7 +36,9 @@ STATE_ARTIFACT_SETTING: Final = "orchestrator.state_artifact_root"
 """원문 저장소 경로를 주는 설정 키 — 거절 메시지가 이 이름을 말한다."""
 
 ARTIFACT_KEY_PREFIX: Final = "state-compaction"
+_KEY_ROOT: Final = f"{ARTIFACT_KEY_PREFIX}/"
 
+_SECONDS_PER_DAY: Final = 86400
 _PRIVATE_DIR_MODE: Final = 0o700
 _PRIVATE_FILE_MODE: Final = 0o600
 
@@ -49,9 +58,14 @@ def _slug(value: str) -> str:
     return f"{readable}.{digest}"
 
 
+def run_key_prefix(graph: str, run_id: str) -> str:
+    """한 run 의 원문이 모두 쓰는 key 접두 — 정리가 진행 중 run 을 가려내는 기준이다."""
+    return f"{ARTIFACT_KEY_PREFIX}/{_slug(graph)}/{_slug(run_id)}/"
+
+
 def field_key_prefix(graph: str, run_id: str, field: str) -> str:
     """한 run 의 한 필드가 쓰는 key 접두 — 그래프가 달라지면 같은 run id 여도 겹치지 않는다."""
-    return "/".join((ARTIFACT_KEY_PREFIX, _slug(graph), _slug(run_id), _slug(field)))
+    return f"{run_key_prefix(graph, run_id)}{_slug(field)}"
 
 
 def artifact_key(graph: str, run_id: str, field: str, boundary: str) -> str:
@@ -140,9 +154,80 @@ class PrivateArtifactStore:
         """참조로 원문을 읽는다."""
         return await self.inner.get(ref)
 
+    async def entries(self) -> list[tuple[str, float]]:
+        """저장된 (key, 수정 시각 epoch 초) — 오래된 순."""
+        return await self.inner.stored_entries()
+
+    async def modified_at(self, key: str) -> float | None:
+        """key 하나의 현재 수정 시각 — 없거나 일반 파일이 아니면 None."""
+        return await self.inner.modified_at(key)
+
+    async def delete(self, key: str) -> None:
+        """key 하나를 지운다 (없으면 그냥 끝난다)."""
+        await self.inner.delete(key)
+
     def stored_keys(self) -> list[str]:
         """저장된 key 목록 — 운영 점검용."""
         return list(self.inner.stored_keys())
+
+
+@dataclass(frozen=True)
+class PruneResult:
+    """What one prune pass did — counts only, never key names."""
+
+    deleted: int = 0
+    skipped_live: int = 0
+    skipped_young: int = 0
+    failed: int = 0
+
+
+async def prune_originals(
+    store: PrivateArtifactStore,
+    *,
+    retention_days: int,
+    now: float,
+    read_live_runs: Callable[[], Iterable[tuple[str, str]]],
+) -> PruneResult:
+    """Delete originals older than the retention period, except those of live runs.
+
+    보존 기간이 지난 원문만 지운다. ``live_runs`` ((graph, run_id)) 의 원문은 기간과 무관하게
+    남긴다 — 진행 중인 run 이 접은 원문은 아직 쓰일 수 있다. 개별 삭제가 실패해도 나머지는 계속한다.
+    """
+
+    def prefixes() -> tuple[str, ...]:
+        return tuple(run_key_prefix(graph, run_id) for graph, run_id in read_live_runs())
+
+    live_prefixes = prefixes()
+    cutoff = now - retention_days * _SECONDS_PER_DAY
+    deleted = skipped_live = skipped_young = failed = 0
+    entries = await store.entries()
+    # 목록을 읽는 사이 시작된 run 도 보호한다 — 두 번 읽은 결과를 합친다
+    live_prefixes += prefixes()
+    for key, modified in entries:
+        if not key.startswith(_KEY_ROOT):
+            continue  # 원문 key 모양이 아닌 파일은 이 정리의 몫이 아니다
+        if key.startswith(live_prefixes):
+            skipped_live += 1
+        elif modified > cutoff:
+            skipped_young += 1
+        else:
+            try:
+                # 목록 뒤에 같은 key 가 다시 쓰였다면 새 원문이다 — 지우지 않는다.
+                # shortcut: 잠금이 없어 두 번째 run 조회 뒤 시작된 재개와 modified_at 뒤의 재작성은
+                # 못 막는다, 운영은 cron 시각을 피하고 필요하면 잠금을 올린다
+                current = await store.modified_at(key)
+                if current is None:
+                    continue
+                if current != modified or current > cutoff:
+                    skipped_young += 1
+                    continue
+                await store.delete(key)
+            except AaestroError as err:
+                failed += 1
+                log.warning("state original could not be deleted", error_code=err.code)
+            else:
+                deleted += 1
+    return PruneResult(deleted, skipped_live, skipped_young, failed)
 
 
 def state_artifact_store(root: str | Path | None) -> PrivateArtifactStore | None:
@@ -162,10 +247,13 @@ __all__ = [
     "STATE_ARTIFACT_SCOPE",
     "STATE_ARTIFACT_SETTING",
     "PrivateArtifactStore",
+    "PruneResult",
     "artifact_key",
     "decode_originals",
     "encode_originals",
     "field_key_prefix",
     "is_own_reference",
+    "prune_originals",
+    "run_key_prefix",
     "state_artifact_store",
 ]

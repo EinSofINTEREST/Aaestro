@@ -551,8 +551,10 @@ spec:
   수 없는 이름이라 같은 루트를 쓰더라도 겹치지 않고, 디렉토리는 `0700`, 파일은 `0600` 으로
   만든다. 에이전트는 이 원문을 읽지 못하고, state 의 `artifact_ref` 는 운영자와 오케스트레이터가
   따라가는 참조다. 설정이 없으면 `summarize` 를 선언한 그래프는 배포 검증과
-  run 시작에서 거절된다 (`GRAPH_001`, 메시지가 설정 키를 말한다). **한계**: 이 파일들을 지우는
-  것이 없다 — run 보존 기간에 맞춰 운영자가 정리한다 (자동 정리는 미구현).
+  run 시작에서 거절된다 (`GRAPH_001`, 메시지가 설정 키를 말한다). **정리**: 자동 정리는 없다 — 운영자가
+  `aaestro state-artifacts-prune` 을 (cron 등으로) 돌려 `orchestrator.state_artifact_retention_days`
+  (기본 30) 가 지난 원문을 지운다. 진행 중 (running · draining) run 의 원문은 남기고, run 저장소
+  (`orchestrator.run_store`) 를 읽지 못하면 아무것도 지우지 않고 실패한다. orchestrator 가 그 run 을 재개 · 압축하는 중에는 실행하지 않는다 (cron 시각을 피한다).
 - **요약 호출**: 오케스트레이터가 `compactor` 에이전트를 runtime 으로 한 번 부르고, 템플릿은
   이름으로 고른다 (태스크의 `node_id` 로 보낸다). 에이전트는 같은 그래프의 노드 에이전트여야
   한다 — 배포는 노드 에이전트만 띄운다. 템플릿 계약은 고정이다: 변수 `items` (array, 유일한

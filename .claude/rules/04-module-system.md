@@ -671,7 +671,7 @@ spec:
    artifact 스코프 (local / group / global, 01) 가 **아니다** — 이름부터 에이전트 · 그룹 이름
    규칙이 받지 않는 모양이라 같은 루트를 써도 겹치지 않는다. 에이전트는 이 원문에 닿지 못하고,
    `artifact_ref` 는 운영자와 오케스트레이터가 따라가는 참조다. 설정이 없으면 `summarize` 그래프는 배포 검증과 run 시작 양쪽에서 거절한다
-   (`GRAPH_001`). 자동 정리는 없다 — run 보존 기간에 맞춰 운영자가 정리한다
+   (`GRAPH_001`). 자동 정리는 없다 — 운영자가 `aaestro state-artifacts-prune` 을 (cron 등으로) 돌려 `orchestrator.state_artifact_retention_days` (기본 30) 가 지난 원문을 지운다. 진행 중 (running · draining) run 의 원문은 남기고, run 저장소를 읽지 못하면 아무것도 지우지 않고 실패한다. orchestrator 가 그 run 을 재개 · 압축하는 중에는 실행하지 않는다 (cron 시각을 피한다)
 6. **요약 호출의 계약**: 요약 에이전트는 runtime 으로 한 번 부른다 — `TaskRequest.node_id` 는
    `template` 이름이다 (agentd 가 `node_id` 로 템플릿을 고른다). 에이전트는 이 그래프의 노드
    에이전트여야 한다 (배포는 노드 에이전트만 띄운다). 템플릿은 변수 `items` (array, 유일한 필수

@@ -601,8 +601,12 @@ spec:
   root — and it is created `0700` with `0600` files. Agents cannot read these originals; the
   `artifact_ref` in the state is a reference for operators and the orchestrator. Without the setting, a graph that
   declares `summarize` is rejected at deploy validation and again when a run starts
-  (`GRAPH_001`; the message names the setting). **Limitation**: nothing deletes these files —
-  clear them on the same schedule as run retention.
+  (`GRAPH_001`; the message names the setting). **Cleanup**: nothing prunes these automatically —
+  run `aaestro state-artifacts-prune` (e.g. from cron) to delete originals older than
+  `orchestrator.state_artifact_retention_days` (default 30). Originals of live (running or
+  draining) runs are kept, and if the run store (`orchestrator.run_store`) cannot be read nothing
+  is deleted and the command fails. Do not run it while the orchestrator is resuming or compacting
+  those runs (avoid the cron time).
 - **The summary call**: the orchestrator calls the `compactor` agent once through the runtime,
   selecting the template by name (it is sent as the task's `node_id`). The agent must be the
   agent of a node in the same graph — deployment starts node agents only. The template

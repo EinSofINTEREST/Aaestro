@@ -1013,3 +1013,89 @@ def test_run_applies_the_configured_host_limits_too(workspace, tmp_path):
     )
 
     assert cmd_run(args) == EXIT_FAILED
+
+
+# --- state-artifacts-prune (#665) ---------------------------------------------------
+
+
+def _prune_setup(tmp_path: Path, *, with_run_store: bool = True):
+    from aaestro.artifacts import FilesystemArtifactStore
+    from aaestro.orchestrator.state_artifacts import STATE_ARTIFACT_SCOPE, artifact_key
+
+    root = tmp_path / "originals"
+    old = artifact_key("g", "r-old", "notes", "b1")
+    live = artifact_key("g", "r-live", "notes", "b1")
+    for key in (old, live):
+        path = root / STATE_ARTIFACT_SCOPE / key
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"x")
+        os.utime(path, (1.0, 1.0))  # 1970 — 어떤 보존 기간보다 오래됐다
+    store = FilesystemArtifactStore(root=root, scope=STATE_ARTIFACT_SCOPE)
+    runs = tmp_path / "runs.db"
+    body = f"orchestrator:\n  state_artifact_root: {root}\n"
+    if with_run_store:
+        body += f"  run_store: {runs}\n"
+        from aaestro.orchestrator.runstore import RunRecord, SqliteRunStore
+
+        run_store = SqliteRunStore(path=str(runs))
+        run_store.upsert(RunRecord(run_id="r-live", graph="g", mode="service", status="running"))
+        run_store.upsert(RunRecord(run_id="r-old", graph="g", mode="service", status="completed"))
+    return _config_dir(tmp_path, body), store, old, live
+
+
+def test_prune_deletes_old_originals_and_spares_live_runs(tmp_path, capsys):
+    config_dir, store, old, live = _prune_setup(tmp_path)
+
+    code = main(["--json", "state-artifacts-prune", "--config-dir", config_dir])
+
+    assert code == EXIT_OK
+    assert '"deleted": 1' in capsys.readouterr().out
+    assert list(store.stored_keys()) == [live]
+
+
+def test_prune_refuses_to_delete_without_a_readable_run_store(tmp_path, capsys):
+    config_dir, store, old, live = _prune_setup(tmp_path, with_run_store=False)
+
+    code = main(["state-artifacts-prune", "--config-dir", config_dir])
+
+    assert code == EXIT_FAILED
+    assert "orchestrator.run_store" in capsys.readouterr().err
+    assert sorted(store.stored_keys()) == sorted([old, live])
+
+
+def test_prune_without_a_state_artifact_root_does_nothing(tmp_path, capsys):
+    config_dir = _config_dir(tmp_path, "orchestrator:\n  max_service_runs: 5\n")
+
+    assert main(["state-artifacts-prune", "--config-dir", config_dir]) == EXIT_OK
+    assert "nothing to do" in capsys.readouterr().out
+
+
+def test_prune_protects_every_generation_of_a_resumed_live_run(tmp_path):
+    from aaestro.orchestrator.runstore import RunRecord, SqliteRunStore
+    from aaestro.orchestrator.state_artifacts import artifact_key
+
+    config_dir, store, old, live = _prune_setup(tmp_path)
+    # 원문은 최초 run id 로 놓이고, 진행 중인 것은 재개된 id 다
+    root_key = artifact_key("g", "r-root", "notes", "b1")
+    path = store.root / store.scope / root_key
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"x")
+    os.utime(path, (1.0, 1.0))
+    SqliteRunStore(path=str(tmp_path / "runs.db")).upsert(
+        RunRecord(run_id="r-root:resumed", graph="g", mode="service", status="running")
+    )
+
+    assert main(["state-artifacts-prune", "--config-dir", config_dir]) == EXIT_OK
+
+    assert root_key in list(store.stored_keys())
+
+
+def test_prune_does_not_create_a_missing_run_store(tmp_path, capsys):
+    config_dir, store, old, live = _prune_setup(tmp_path)
+    (tmp_path / "runs.db").unlink()
+
+    code = main(["state-artifacts-prune", "--config-dir", config_dir])
+
+    assert code == EXIT_FAILED
+    assert not (tmp_path / "runs.db").exists()
+    assert sorted(store.stored_keys()) == sorted([old, live])

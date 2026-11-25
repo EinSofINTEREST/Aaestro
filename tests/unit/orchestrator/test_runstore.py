@@ -544,3 +544,13 @@ def test_a_corrupted_row_reads_as_stor_003(tmp_path, read):
 
     assert caught.value.code == ErrorCode.STOR_003
     assert isinstance(caught.value.__cause__, ValueError)
+
+
+def test_read_only_store_does_not_create_a_missing_file(tmp_path):
+    from aaestro.orchestrator.runstore import SqliteRunStore
+
+    missing = tmp_path / "runs.db"
+    with pytest.raises(AaestroError):
+        SqliteRunStore(path=missing, read_only=True)
+
+    assert not missing.exists()

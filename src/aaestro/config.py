@@ -296,7 +296,10 @@ class OrchestratorConfig(BaseModel):
     """그래프 state 압축 (`summarize`) 이 접은 원문을 두는 디렉토리 (#371). 오케스트레이터
     전용 저장소다 — 에이전트의 artifact 스코프 (local/group/global) 와 별개이고 에이전트는
     여기에 닿지 못한다. 없으면 `summarize` 를 선언한 그래프는 배포 검증과 run 시작에서
-    거절된다. 자동 정리는 없다 — run 보존 기간에 맞춰 운영자가 비운다."""
+    거절된다. 자동 정리는 없다 — 운영자가 `aaestro state-artifacts-prune` 으로 비운다."""
+    state_artifact_retention_days: int = Field(default=30, gt=0)
+    """`aaestro state-artifacts-prune` 이 원문을 남겨 두는 기간 (일, #665). 진행 중인 run 의
+    원문은 이 기간과 무관하게 지우지 않는다."""
     max_concurrent_runs: int = Field(default=10, gt=0)
     max_service_runs: int = Field(default=5, gt=0)
     node_timeout_s: float = Field(default=300.0, gt=0)
