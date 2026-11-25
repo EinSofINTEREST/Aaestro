@@ -1081,7 +1081,10 @@ In registry mode:
   is not an identifier (empty, longer than 128 characters, unprintable, surrounding whitespace) is
   then `400` with `VAL_002` (`details` names the header and the reason, not the value). An entry's
   `source.run_id` is the header's run only when the registry says the agent is a node of it —
-  whether or not the run declares run spaces; otherwise it is empty. A token-mode Memory Service
+  whether or not the run declares run spaces, and also after the run has ended (having been a node
+  is the provenance; only writes to the run spaces stop); otherwise it is empty. A run space whose
+  entry in the registry's answer is malformed is left out (refused with `MEM_001`, logged as a
+  warning without the value). A token-mode Memory Service
   ignores the header — it carries no run scope (below).
 
 The service follows the change feed while it runs. When the feed is lost but the registry still

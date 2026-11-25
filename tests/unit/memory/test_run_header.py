@@ -15,7 +15,7 @@ import httpx
 import pytest
 
 from aaestro.access.baselines import MemoryBaseline
-from aaestro.access.client import AccessClient
+from aaestro.access.client import AccessClient, DecisionSource
 from aaestro.access.model import ResourceKind
 from aaestro.access.registry import AccessRegistry
 from aaestro.access.store import InMemoryAccessStore
@@ -211,6 +211,22 @@ async def test_an_unknown_credential_has_no_run(stack):
     node, spaces, _ = await stack.client.run_participation("made-up", RUN)
 
     assert (node, spaces) == (False, {})
+
+
+async def test_a_malformed_run_space_from_the_registry_closes_to_refusal(stack, monkeypatch):
+    """레지스트리 답의 ref 모양이 틀리면 그 별칭만 후보에서 빠진다 — 500 이 아니라 MEM_001."""
+    stack.start()
+    await stack.settled()
+
+    async def broken(credential: str, run_id: str):
+        return True, {"scratch": "not a module ref"}, DecisionSource.FRESH
+
+    monkeypatch.setattr(stack.client, "run_participation", broken)
+    planner = stack.agent("planner")
+
+    assert (await refused(planner.append("scratch", **fact()))).code == ErrorCode.MEM_001
+    stored = await planner.append("longterm", **fact())
+    assert stored.source.run_id == RUN, "출처의 run 은 노드 답대로 남는다"
 
 
 # --- 완료 조건 2 — 끝난 run 은 읽기 전용 --------------------------------------------

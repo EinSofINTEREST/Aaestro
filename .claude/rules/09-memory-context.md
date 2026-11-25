@@ -90,7 +90,8 @@ class MemoryEntry(BaseModel):
    기억으로 위조된다. `source.run_id` 도 **토큰이 아는 run** 이다: run 에 속한 토큰
    (`issue_token(run_id=…)`, run space 가 있는 토큰) 이면 서비스가 그 run 으로 채우고, 호출자가 실은
    값은 그 run 과 같을 때만 받는다. 다른 run 이거나, run 을 모르는 토큰 (direct 태스크 · 에이전트 단위
-   토큰) 이 run 을 실으면 `VAL_002` (값은 싣지 않는다). `task_id` · `node_id` 는 호출자 문맥이고 식별자
+   토큰) 이 run 을 실으면 `VAL_002` (값은 싣지 않는다). 끝난 run 의 노드도 출처 run 을 남긴다 (노드였다는 사실이 출처다 —
+   run space 의 쓰기만 끝난 뒤 막힌다). `task_id` · `node_id` 는 호출자 문맥이고 식별자
    형식 (문자열 · 비어 있지 않음 · 128자 이하 · 출력 가능한 문자만 · 앞뒤 공백 없음,
    [03](03-protocol-integration.md) A2A Client Rules 8, `core/identifiers.py`) 을 지나야 한다 — 어기면 `VAL_002`
 5. **id 와 시각은 서비스가 발급한다** (#456): append 요청은 내용 (`kind` · `content` · `tags` ·

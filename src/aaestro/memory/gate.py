@@ -14,11 +14,12 @@ Memory Service 의 입구. 두 가지가 있다:
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Protocol
 
 import structlog
+from pydantic import ValidationError
 
 from aaestro.access.client import DecisionSource
 from aaestro.access.model import Mode, ResourceKind
@@ -105,12 +106,7 @@ class RegistryGate:
             # 정한다 (09 Entry Rules 4)
             node, spaces, _ = await self.client.run_participation(presented, run_id)
             if node:
-                run_spaces = MemorySpec(
-                    spaces=tuple(
-                        MemorySpaceRef.model_validate({"ref": ref, "as": a})
-                        for a, ref in spaces.items()
-                    )
-                )
+                run_spaces = _run_spec(agent, spaces)
             else:
                 run_id = None
         # space 별 판정이 없는 접근 (미선언 별칭) 의 출처는 신원 확인의 출처다
@@ -159,6 +155,28 @@ class RegistryGate:
             run_id=run_id,
             run_spaces=run_spaces,
         )
+
+
+def _run_spec(agent: str, spaces: Mapping[str, str]) -> MemorySpec:
+    """레지스트리 답의 run space 를 선언 모양으로 — 모양이 틀린 별칭은 후보에서 뺀다.
+
+    거부 쪽으로 닫는다: 뺀 별칭은 미선언과 같이 ``MEM_001`` 이다. 답의 값은 로그에 싣지 않는다.
+    """
+    kept: list[MemorySpaceRef] = []
+    for alias, ref in spaces.items():
+        try:
+            kept.append(MemorySpaceRef.model_validate({"ref": ref, "as": alias}))
+        except ValidationError:
+            continue
+    if len(kept) < len(spaces):
+        log.warning(
+            "run spaces from the registry are malformed, leaving them out",
+            agent=agent,
+            resource=ResourceKind.MEMORY.value,
+            target="run",
+            skipped=len(spaces) - len(kept),
+        )
+    return MemorySpec(spaces=tuple(kept))
 
 
 def _addressed_by_id(alias: str) -> MemorySpace | None:
