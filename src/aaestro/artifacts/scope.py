@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING
@@ -73,6 +74,12 @@ class ScopedArtifacts:
     stores: Mapping[ArtifactScope, FilesystemArtifactStore]
     quotas: Mapping[ArtifactScope, int] = field(default_factory=dict)
     writable: frozenset[ArtifactScope] = frozenset({ArtifactScope.LOCAL, ArtifactScope.GROUP})
+    _write_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, repr=False)
+    """quota 검사부터 쓰기 완료까지를 묶는 락 — 이 객체가 소유한다.
+
+    쓰기가 스레드로 넘어가면 동시에 온 두 저장이 둘 다 같은 사용량을 보고 검사를 통과해
+    상한을 넘는다. 보호 대상은 스코프별 사용량 (디스크) 이고, 쓰기는 직렬화된다.
+    """
     """쓰기가 허용된 스코프.
 
     09 의 memory ACL 과 같은 규약이다: **group 은 멤버 rw, global 은 기본
@@ -107,8 +114,9 @@ class ScopedArtifacts:
             # global 에 아무나 쓰면 전사 공용 산출물이 오염된다 (09 와 같은 규약)
             raise denied(str(scope), "scope is read-only for this agent")
 
-        self._check_quota(scope, store, len(data))
-        return await store.put(key, data)
+        async with self._write_lock:
+            await self._check_quota(scope, store, len(data))
+            return await store.put(key, data)
 
     async def get(self, ref: str) -> bytes:
         """Read from whichever declared scope owns the reference.
@@ -134,12 +142,14 @@ class ScopedArtifacts:
 
         raise denied(parsed.scope, "scope was not declared for this agent", ref=ref)
 
-    def _check_quota(self, scope: ArtifactScope, store: FilesystemArtifactStore, size: int) -> None:
+    async def _check_quota(
+        self, scope: ArtifactScope, store: FilesystemArtifactStore, size: int
+    ) -> None:
         """이 저장이 상한을 넘는지 — 넘으면 쓰기 전에 막는다."""
         limit = self.quotas.get(scope)
         if limit is None:
             return
-        used = store.used_bytes()
+        used = await asyncio.to_thread(store.used_bytes)
         if used + size > limit:
             raise over_quota(str(scope), used=used, limit=limit, incoming=size)
 

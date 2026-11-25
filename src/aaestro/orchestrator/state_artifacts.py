@@ -7,6 +7,7 @@ state 압축이 접은 원문의 저장소. **오케스트레이터 전용** 이
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import re
@@ -41,7 +42,11 @@ _DIGEST_LENGTH: Final = 16
 def _slug(value: str) -> str:
     """artifact key 조각 — 허용 문자 밖은 바꾸고 길이를 자른 뒤, 겹치지 않게 해시를 붙인다."""
     digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:_DIGEST_LENGTH]
-    return f"{_UNSAFE_KEY_CHARS.sub('-', value)[:_SLUG_MAX_CHARS]}.{digest}"
+    readable = _UNSAFE_KEY_CHARS.sub("-", value)[:_SLUG_MAX_CHARS]
+    # 점으로 시작하는 조각은 `validate_key` 가 거절한다 — 해시가 겹침을 막는다
+    if not readable or readable.startswith("."):
+        readable = "-" + readable[1:]
+    return f"{readable}.{digest}"
 
 
 def field_key_prefix(graph: str, run_id: str, field: str) -> str:
@@ -120,12 +125,16 @@ class PrivateArtifactStore:
         원문을 저장하고 참조를 돌려줍니다 — 저장소 구현의 오류는 그대로 전파합니다.
         """
         namespace = self._namespace()
+        await asyncio.to_thread(self._prepare_namespace, namespace)
+        ref = await self.inner.put(key, data)
+        await asyncio.to_thread((namespace / key).chmod, _PRIVATE_FILE_MODE)
+        return ref
+
+    @staticmethod
+    def _prepare_namespace(namespace: Path) -> None:
         namespace.mkdir(mode=_PRIVATE_DIR_MODE, parents=True, exist_ok=True)
         # 이미 있던 디렉토리는 mkdir 의 mode 를 따르지 않는다 — 매번 맞춘다
         namespace.chmod(_PRIVATE_DIR_MODE)
-        ref = await self.inner.put(key, data)
-        (namespace / key).chmod(_PRIVATE_FILE_MODE)
-        return ref
 
     async def get(self, ref: str) -> bytes:
         """참조로 원문을 읽는다."""

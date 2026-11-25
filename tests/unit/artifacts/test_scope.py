@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from aaestro.artifacts.scope import ArtifactScope, ScopedArtifacts
@@ -167,3 +169,16 @@ def test_no_quota_declared_means_unlimited():
     from aaestro.core.manifest import ArtifactSpec
 
     assert ArtifactSpec().quota_bytes is None
+
+
+async def test_concurrent_writes_cannot_both_pass_the_quota_check(tmp_path):
+    """쓰기가 스레드로 넘어가도 검사와 쓰기가 한 덩어리여야 상한을 넘지 않는다."""
+    access = scoped(tmp_path, quotas={ArtifactScope.LOCAL: 100})
+
+    results = await asyncio.gather(
+        access.put("a", b"x" * 80), access.put("b", b"y" * 80), return_exceptions=True
+    )
+
+    failed = [r for r in results if isinstance(r, AaestroError)]
+    assert len(failed) == 1
+    assert failed[0].code == ErrorCode.ART_002

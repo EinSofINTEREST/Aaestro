@@ -1154,3 +1154,15 @@ async def test_a_reentered_node_that_writes_the_compacted_field_wins(drafter_wri
     assert runtime.drafter_notes[1] == [f"r1:{NOTE}"]
     # 그 뒤의 reviewer 는 압축 결과가 아니라 drafter 가 쓴 값을 본다
     assert runtime.reviewer_notes[1] == expected
+
+
+@pytest.mark.parametrize("bad", ["", ".x", "."])
+@pytest.mark.parametrize("slot", ["graph", "run_id", "field", "boundary"])
+def test_artifact_key_pieces_never_start_with_a_dot(slot, bad):
+    from aaestro.artifacts.store import validate_key
+
+    parts = {"graph": "g", "run_id": "r", "field": "f", "boundary": "b"} | {slot: bad}
+
+    key = artifact_key(parts["graph"], parts["run_id"], parts["field"], parts["boundary"])
+
+    assert validate_key(key) == key
