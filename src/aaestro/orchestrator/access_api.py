@@ -18,10 +18,11 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated, Any, ClassVar
 
 from fastapi import APIRouter, Body, FastAPI, HTTPException, Query, Request, status
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from aaestro.access.model import Mode, ResourceKind, Rule, mode_problem
 from aaestro.core.errors import AaestroError, ErrorCode
+from aaestro.core.identifiers import identifier_problem
 from aaestro.http_auth import admit_first, presented_token, require_token
 from aaestro.orchestrator.bodies import parsed, then_guard
 
@@ -84,6 +85,21 @@ class IdentityRequest(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     credential: str = Field(min_length=1, max_length=512)
+
+
+class RunRequest(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    credential: str = Field(min_length=1, max_length=512)
+    run_id: str
+
+    @field_validator("run_id")
+    @classmethod
+    def _identifier(cls, value: str) -> str:
+        problem = identifier_problem(value)
+        if problem is not None:
+            raise ValueError(str(problem))
+        return value
 
 
 class DecisionRequest(_Request):
@@ -204,6 +220,27 @@ def mount_access(
             "decided_by": decision.decided_by,
             "version": decision.version,
             "valid_until": decision.valid_until,
+        }
+
+    @enforcer.post("/v1/access/runs")
+    async def run_participation(body: Annotated[Any, Body()]) -> dict[str, Any]:
+        """자격 + run → 그 run 의 노드인가, 그 run 스냅샷의 run scope 별칭 (#609).
+
+        Memory Service 가 run space 후보를 조립한다 — 권한은 space 마다 판정이 정한다. 모르는 자격 ·
+        참여자가 아닌 run 도 에러가 아니라 빈 답이다 — 판정과 같은 이유로 캐시할 수 있어야 한다.
+        """
+        asked = parsed(body, RunRequest)
+        try:
+            view = registry.run_participation(asked.credential, asked.run_id)
+        except AaestroError as err:
+            if err.code != ErrorCode.ACC_001:
+                raise
+            return {"agent": None, "node": False, "spaces": {}, "version": registry.version()}
+        return {
+            "agent": view.agent,
+            "node": view.node,
+            "spaces": view.spaces,
+            "version": view.version,
         }
 
     @enforcer.post("/v1/access/identities")

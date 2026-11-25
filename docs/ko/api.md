@@ -899,6 +899,23 @@ run scope 대상 (`run:<run_id>:<alias>`, #608) 은 선언 파일이 아니라 r
 에이전트의 선언으로 별칭을 space id 로 바꾼다. 모르거나 폐기된 신원은 `200` 에 `"agent": null` 이며,
 거부와 똑같이 캐시할 수 있다.
 
+### `POST /v1/access/runs` — 강제 지점
+
+```json
+{"credential": "<강제 지점에 제시된 신원>", "run_id": "run-1"}
+```
+
+```json
+{"agent": "planner", "node": true, "spaces": {"scratch": "memorysets/run-scratch@0.1.0"},
+ "version": 42}
+```
+
+이 신원이 그 run 의 노드인지와, run 시작 때 남긴 스냅샷 (#608) 의 run scope space 를 답한다 — Memory
+Service 가 이것으로 run space 후보를 만든다 (#609). 권한이 아니다: space 마다 여전히
+`POST /v1/access/decisions` 로 판정하므로 회수된 run space 는 계속 거부된다. 모르는 run · `direct-` run ·
+노드가 아닌 에이전트 · 다른 그래프로 배포된 신원 · 모르거나 폐기된 신원은 모두 `200` 에 `"node": false`
+와 빈 `spaces` 이며, 거부와 똑같이 캐시할 수 있다. `run_id` 는 식별자 규칙을 따른다 (`VAL_002`).
+
 ### `GET /v1/access/changes?after=<version>&wait_s=<seconds>` — 강제 지점 또는 에이전트
 
 긴 폴링. 레지스트리 버전이 `after` 를 넘는 즉시, 또는 `wait_s`(최대 30)가 지나면
@@ -995,6 +1012,18 @@ Memory Service 는 환경에 아래 둘이 **모두** 있으면 **레지스트�
   먼저 (또는 같이) 올린다 — 새 agentd 가 보내는 필드를 옛 Memory Service 가 거절한다.
 - **레지스트리에 닿지 않는 동안** 이미 캐시된 판정은 계속 동작하고, 아직 판정하지 않은 것은
   거부된다. 캐시된 판정도 `valid_until` 이 지나면 버린다.
+- **run scope space 는 `X-Aaestro-Run` 헤더로 고른다** (#609) — 모든 라우트 (search · append · read ·
+  latest · spaces) 가 같다. 헤더는 비밀이 아니라 선택자다: 서비스는 레지스트리 (`POST /v1/access/runs`)
+  에 이 신원이 그 run 의 노드인지와 run 시작 시점 스냅샷이 선언한 run scope 별칭을 묻고, 그 별칭을
+  `run:<run_id>:<alias>` 로 후보에 넣은 뒤 다른 space 와 같이 하나씩 판정한다 — run 이 진행 중이면 `rw`,
+  끝났으면 `ro` 다. `direct-` run · 모르는 run · 노드가 아닌 에이전트에게는 run 도 run space 도 없고,
+  레지스트리에 닿지 않으면서 캐시도 없을 때도 같다. 신원을 먼저 보고, 식별자가 아닌 헤더 (비어 있음 ·
+  128자 초과 · 출력 불가 문자 · 앞뒤 공백) 는 그 뒤에 `400` + `VAL_002` 다 (`details` 에는 헤더 이름과
+  사유만, 값은 싣지 않는다). 항목의 `source.run_id` 는 레지스트리가 그 run 의 노드라고 답할 때만 — run
+  space 선언 여부와 무관하게, run 이 끝난 뒤에도 (노드였다는 사실이 출처다 — 끝나면 run space 쓰기만
+  막힌다) — 헤더의 run 이고, 아니면 비어 있다. 레지스트리 답에서 모양이 틀린 run space 는 후보에서
+  빠진다 (`MEM_001` 로 거부, 값 없이 경고 로그). 토큰 모드 Memory Service 는 헤더를
+  무시한다 — run scope 를 싣지 않는다 (아래).
 
 서비스는 도는 동안 변경 알림을 따라간다. 알림이 끊겼지만 레지스트리가 답하는 동안에는 2초가 지난
 캐시 판정을 다시 묻는다.

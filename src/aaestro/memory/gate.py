@@ -14,16 +14,22 @@ Memory Service 의 입구. 두 가지가 있다:
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Protocol
 
 import structlog
+from pydantic import ValidationError
 
 from aaestro.access.client import DecisionSource
 from aaestro.access.model import Mode, ResourceKind
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
-from aaestro.core.manifest import RESERVED_GLOBAL_GROUP, MemoryMode
+from aaestro.core.manifest import (
+    RESERVED_GLOBAL_GROUP,
+    MemoryMode,
+    MemorySpaceRef,
+    MemorySpec,
+)
 from aaestro.memory.service import AccessToken, MemorySpace
 from aaestro.memory.tokens import issue_token
 
@@ -41,8 +47,12 @@ def unauthorized(reason: str) -> AaestroError:
 
 
 class Gate(Protocol):
-    async def admit(self, presented: str | None) -> AccessToken:
-        """The caller and the spaces its declarations name — ``MEM_001`` if unknown."""
+    async def admit(self, presented: str | None, run_id: str | None = None) -> AccessToken:
+        """The caller and the spaces its declarations name — ``MEM_001`` if unknown.
+
+        ``run_id`` 는 요청 헤더가 고른 run 이다 (#609) — 비밀이 아니라 선택자다. 그 run 에 닿는지는
+        입구가 정한다.
+        """
         ...
 
     async def narrow(
@@ -58,7 +68,10 @@ class TokenGate:
 
     tokens: TokenRegistry
 
-    async def admit(self, presented: str | None) -> AccessToken:
+    async def admit(self, presented: str | None, run_id: str | None = None) -> AccessToken:
+        # run 은 무시한다: 토큰 모드는 run scope 를 선언한 그래프가 있으면 뜨지 않으므로
+        # (09 Access Enforcement 8) 헤더가 열 run space 가 없다. 거절하면 run space 없는 그래프의
+        # 태스크까지 실패한다
         return self.tokens.resolve(presented)
 
     async def narrow(
@@ -79,15 +92,25 @@ class RegistryGate:
     client: AccessClient
     catalog: Catalog
 
-    async def admit(self, presented: str | None) -> AccessToken:
+    async def admit(self, presented: str | None, run_id: str | None = None) -> AccessToken:
         if not presented:
             raise unauthorized("memory token is required")
         agent, source = await self.client.identify(presented)
         if agent is None:
             # 모르는 신원, 폐기된 신원, 판정 불가 모두 — 무엇이 없는지 알려주지 않는다
             raise unauthorized("memory token is not recognised")
+        run_spaces: MemorySpec | None = None
+        if run_id is not None:
+            # 후보는 레지스트리의 run 스냅샷이다 (#468 결정 a) — 노드가 아니면 (direct- ·
+            # 모르는 run · 다른 그래프의 신원 포함) run 도 후보도 없다. 출처의 run 도 이 답이
+            # 정한다 (09 Entry Rules 4)
+            node, spaces, _ = await self.client.run_participation(presented, run_id)
+            if node:
+                run_spaces = _run_spec(agent, spaces)
+            else:
+                run_id = None
         # space 별 판정이 없는 접근 (미선언 별칭) 의 출처는 신원 확인의 출처다
-        return replace(self._declared(agent), decision_source=source.value)
+        return replace(self._declared(agent, run_id, run_spaces), decision_source=source.value)
 
     async def narrow(
         self, presented: str, token: AccessToken, aliases: Sequence[str], *, write: bool
@@ -116,7 +139,9 @@ class RegistryGate:
             )
         return replace(token, spaces=tuple(allowed), refusals=tuple(refusals))
 
-    def _declared(self, agent: str) -> AccessToken:
+    def _declared(
+        self, agent: str, run_id: str | None = None, run_spaces: MemorySpec | None = None
+    ) -> AccessToken:
         try:
             manifest = self.catalog.agent(agent)
         except AaestroError as err:
@@ -127,7 +152,31 @@ class RegistryGate:
             manifest,
             group=groups.get(manifest.metadata.group or ""),
             global_spaces=global_group.spec.memory if global_group else None,
+            run_id=run_id,
+            run_spaces=run_spaces,
         )
+
+
+def _run_spec(agent: str, spaces: Mapping[str, str]) -> MemorySpec:
+    """레지스트리 답의 run space 를 선언 모양으로 — 모양이 틀린 별칭은 후보에서 뺀다.
+
+    거부 쪽으로 닫는다: 뺀 별칭은 미선언과 같이 ``MEM_001`` 이다. 답의 값은 로그에 싣지 않는다.
+    """
+    kept: list[MemorySpaceRef] = []
+    for alias, ref in spaces.items():
+        try:
+            kept.append(MemorySpaceRef.model_validate({"ref": ref, "as": alias}))
+        except ValidationError:
+            continue
+    if len(kept) < len(spaces):
+        log.warning(
+            "run spaces from the registry are malformed, leaving them out",
+            agent=agent,
+            resource=ResourceKind.MEMORY.value,
+            target="run",
+            skipped=len(spaces) - len(kept),
+        )
+    return MemorySpec(spaces=tuple(kept))
 
 
 def _addressed_by_id(alias: str) -> MemorySpace | None:

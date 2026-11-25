@@ -951,6 +951,24 @@ An enforcement point that must resolve a name before it can ask for a decision �
 Service turns an alias into a space id through the agent's declarations — first learns who is
 asking. An unknown or revoked identity is `200` with `"agent": null`, cacheable like a denial.
 
+### `POST /v1/access/runs` — enforcement point
+
+```json
+{"credential": "<the identity presented to the enforcement point>", "run_id": "run-1"}
+```
+
+```json
+{"agent": "planner", "node": true, "spaces": {"scratch": "memorysets/run-scratch@0.1.0"},
+ "version": 42}
+```
+
+Whether this identity is a node of the run, and the run-scope spaces of that run's snapshot taken
+at run start (#608) — the Memory Service builds its run-space candidates from this (#609). It is
+not a permission: each space is still decided by `POST /v1/access/decisions`, so a revoked run
+space stays refused. An unknown run, a `direct-` run, an agent that is not a node, an identity
+deployed for another graph and an unknown or revoked identity are all `200` with `"node": false`
+and empty `spaces`, cacheable like a denial. `run_id` follows the identifier rule (`VAL_002`).
+
 ### `GET /v1/access/changes?after=<version>&wait_s=<seconds>` — enforcement point or agent
 
 Long-poll. Answers `{"version": N}` as soon as the registry version moves past `after`, or when
@@ -1053,6 +1071,21 @@ In registry mode:
   Service refuses.
 - **While the registry is unreachable**, decisions already cached keep working and anything not
   yet decided is denied. A cached decision is still dropped at its `valid_until`.
+- **Run scope spaces are selected by the `X-Aaestro-Run` header** (#609) — on every route
+  (search, append, read, latest, spaces). The header is a selector, not a secret: the service asks
+  the registry (`POST /v1/access/runs`) whether the identity is a node of that run and which
+  run-scope aliases the run's start-time snapshot declares, offers those as `run:<run_id>:<alias>`,
+  and then decides each one like any other space — `rw` while the run is live, `ro` once it has
+  ended. A `direct-` run, an unknown run and a non-node get no run and no run space; while the
+  registry is unreachable with nothing cached, neither. Identity is checked first; a header that
+  is not an identifier (empty, longer than 128 characters, unprintable, surrounding whitespace) is
+  then `400` with `VAL_002` (`details` names the header and the reason, not the value). An entry's
+  `source.run_id` is the header's run only when the registry says the agent is a node of it —
+  whether or not the run declares run spaces, and also after the run has ended (having been a node
+  is the provenance; only writes to the run spaces stop); otherwise it is empty. A run space whose
+  entry in the registry's answer is malformed is left out (refused with `MEM_001`, logged as a
+  warning without the value). A token-mode Memory Service
+  ignores the header — it carries no run scope (below).
 
 The service follows the change feed while it runs. When the feed is lost but the registry still
 answers, cached decisions older than two seconds are asked again.

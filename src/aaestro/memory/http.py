@@ -24,9 +24,10 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.core.identifiers import identifier_problem
 from aaestro.core.manifest import MemoryMode
 from aaestro.http_errors import request_validation_error, status_for
-from aaestro.memory.client import MEMORY_TOKEN_ENV, MEMORY_URL_ENV
+from aaestro.memory.client import MEMORY_RUN_HEADER, MEMORY_TOKEN_ENV, MEMORY_URL_ENV
 from aaestro.memory.entry import MemoryDraft
 from aaestro.memory.gate import Gate, TokenGate, unauthorized
 from aaestro.modules.memoryset import ChunkSpec, MemoryKind
@@ -129,6 +130,10 @@ class LatestRequest(BaseModel):
     entry_id: str
 
 
+RECORDED_OPS = frozenset({"append", "read", "latest", "search"})
+"""감사 · 메트릭을 남기는 경로의 끝 조각 — 09 의 ``op`` 어휘 (``recall`` 은 경로가 아니다)."""
+
+
 def _bearer(request: Request) -> str | None:
     """Authorization 헤더의 Bearer 토큰 — 없거나 형식이 다르면 None."""
     header = request.headers.get("authorization", "")
@@ -199,7 +204,23 @@ def create_app(
 
             async def admit_then_run(request: Request) -> Response:
                 presented = _bearer(request)
-                declared = await entrance.admit(presented)
+                run_id = request.headers.get(MEMORY_RUN_HEADER)
+                problem = identifier_problem(run_id) if run_id is not None else None
+                # 신원이 먼저다 — 헤더가 틀려도 신원이 없으면 같은 MEM_001 (09 Access Enforcement 7)
+                declared = await entrance.admit(presented, None if problem else run_id)
+                if problem is not None:
+                    op = request.url.path.rsplit("/", 1)[-1]
+                    # 연산 어휘 (09 메트릭 op) 밖의 경로 (``GET /v1/spaces``) 는 원래 감사 ·
+                    # 메트릭을 남기지 않는다 — 거절도 같다
+                    if op in RECORDED_OPS:
+                        service.record_malformed(declared, op=op)
+                    raise AaestroError(
+                        category=ErrorCategory.VALIDATION,
+                        code=ErrorCode.VAL_002,
+                        message="run header is not a valid identifier",
+                        agent=declared.agent,
+                        details={"field": MEMORY_RUN_HEADER, "reason": str(problem)},
+                    )
                 request.state.presented = presented
                 request.state.declared = declared
                 return await parse_and_run(request)

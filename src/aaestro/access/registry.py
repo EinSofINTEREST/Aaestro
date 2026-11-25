@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import structlog
 
+from aaestro.access.baselines import MemoryBaseline
 from aaestro.access.model import (
     DECLARATION,
     OPERATOR,
@@ -82,6 +83,17 @@ class RunLiveness(Protocol):
     def liveness(self) -> Hashable:
         """run 의 시작 · 종료마다 바뀌는 값 — 바뀌면 run space 판정 캐시를 버린다 (#608)."""
         ...
+
+
+@dataclass(frozen=True)
+class RunView:
+    """What the registry says about one identity in one run — ``run_participation`` 의 답."""
+
+    agent: str
+    node: bool
+    spaces: dict[str, str]
+    """run 스냅샷의 run scope 별칭 → memoryset ref — 노드가 아니면 비어 있다."""
+    version: int
 
 
 DECLARATIONS_POLL_S = 2.0
@@ -288,6 +300,31 @@ class AccessRegistry:
         if grant is not None:
             return answer(Outcome.ALLOW, grant.decided_by)
         return answer(Outcome.DENY, DEFAULT_OUTCOME_SOURCE)
+
+    def run_participation(self, credential: str, run_id: str) -> RunView:
+        """Whether this identity is a node of a run, and that run's run-scope spaces (#609).
+
+        Memory Service 가 run space 후보를 조립하는 근거다 — run 시작 시점의 스냅샷 (#608) 그대로.
+        후보일 뿐 권한이 아니다: space 마다의 판정은 여전히 ``decide`` 가 한다 (회수 포함).
+        참여자가 아니면 (모르는 run · ``direct-`` run · 노드 아님 · 다른 그래프의 신원) 빈 답이다.
+
+        Raises:
+            AaestroError: FORBIDDEN/``ACC_001`` if the credential is unknown or revoked.
+        """
+        identity = self.identity_of(credential)
+        self._sync_declarations()
+        version = self.store.version()
+        baseline = self.baselines.get(ResourceKind.MEMORY)
+        record = (
+            baseline.participation(identity.agent, run_id, identity)
+            if isinstance(baseline, MemoryBaseline)
+            else None
+        )
+        if record is None:
+            return RunView(identity.agent, node=False, spaces={}, version=version)
+        return RunView(
+            identity.agent, node=True, spaces=dict(record.memory_spaces), version=version
+        )
 
     # --- A2A 호출 표 ------------------------------------------------------------
 
@@ -721,5 +758,6 @@ __all__ = [
     "AccessRegistry",
     "Baseline",
     "RunLiveness",
+    "RunView",
     "credential_hash",
 ]
