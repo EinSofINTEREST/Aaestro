@@ -144,6 +144,8 @@ def unroutable_problem(err: StarletteHTTPException) -> AaestroError | None:
         message = "method not allowed"
     elif err.status_code == HTTPStatus.BAD_REQUEST and err.detail == FRAMEWORK_BODY_PARSE_DETAIL:
         message = "request body could not be read"
+    elif err.status_code == HTTPStatus.REQUEST_ENTITY_TOO_LARGE:
+        message = "request body too large"
     else:
         return None
     return AaestroError(category=ErrorCategory.VALIDATION, code=ErrorCode.VAL_002, message=message)

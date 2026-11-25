@@ -23,7 +23,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from aaestro.access.model import Mode, ResourceKind, Rule, mode_problem
 from aaestro.core.errors import AaestroError, ErrorCode
 from aaestro.http_auth import admit_first, presented_token, require_token
-from aaestro.orchestrator.bodies import parsed
+from aaestro.orchestrator.bodies import parsed, then_guard
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -132,10 +132,10 @@ def mount_access(
 
     # 에이전트 신원인지만 먼저 본다 — 표의 주인인지는 본문이 필요하므로 레지스트리가 라우트 안에서
     # 다시 판정한다
-    agents = APIRouter(route_class=admit_first(_live_agent(registry)))
+    agents = APIRouter(route_class=admit_first(then_guard(_live_agent(registry))))
     # 부여는 권한 에이전트만 — 본문을 읽기 전에 좁힌다. 작업 에이전트는 깨진 본문으로도 ACC_003 과
     # 거절 기록 (WARN · 메트릭) 을 피하지 못한다 (#462)
-    stewards_only = APIRouter(route_class=admit_first(_permission_agent(registry)))
+    stewards_only = APIRouter(route_class=admit_first(then_guard(_permission_agent(registry))))
 
     @agents.post("/v1/access/a2a/tickets", status_code=status.HTTP_201_CREATED)
     async def ticket(request: Request, body: Annotated[Any, Body()]) -> dict[str, Any]:
@@ -174,7 +174,9 @@ def mount_access(
         return rule_view(rule)
 
     enforcer = APIRouter(
-        route_class=admit_first(require_token(enforcer_token, realm="access enforcer token"))
+        route_class=admit_first(
+            then_guard(require_token(enforcer_token, realm="access enforcer token"))
+        )
     )
 
     @enforcer.post("/v1/access/decisions")

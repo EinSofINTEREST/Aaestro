@@ -149,3 +149,16 @@ def test_a_rejected_path_is_reported_bounded_and_printable():
 
     assert long_info.value.details["path"] == "/" + "k" * 63 + "…"
     assert control_info.value.details["path"] == "/bad?[31mpath?"
+
+
+def test_path_at_the_length_limit_passes_and_one_more_is_refused():
+    from aaestro.materials import MAX_PATH_CHARS, check_path
+
+    at = "src/" + "a" * (MAX_PATH_CHARS - 4)
+    assert check_path(at) == at
+
+    with pytest.raises(AaestroError) as err:
+        check_path(at + "a")
+
+    assert err.value.code == ErrorCode.VAL_002
+    assert len(err.value.details["path"]) <= 65  # 63자 + 줄임표

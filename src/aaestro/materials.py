@@ -32,6 +32,9 @@ SOURCE_ROOT = "src"
 MAX_FILE_BYTES = 256 * 1024
 """파일 하나의 상한 — 재료는 소스이지 아티팩트가 아니다. 큰 것은 이미지에 굽거나 볼륨으로."""
 
+MAX_PATH_CHARS = 4096
+"""경로 길이 상한 — Linux PATH_MAX. 요청 본문 상한이 재료 업로드의 최대치를 계산하는 근거다."""
+
 MAX_FILES = 200
 """한 에이전트의 파일 수 상한 — 스토어가 아티팩트 저장소로 흘러가는 것을 막는다."""
 
@@ -103,6 +106,11 @@ def check_path(path: str) -> str:
     Raises:
         AaestroError: VALIDATION/``VAL_002`` for anything outside the layout.
     """
+    if len(path) > MAX_PATH_CHARS:
+        # path 는 _invalid 가 64자로 줄여 싣는다 (#386) — 4 KiB 넘는 문자열이 그대로 실리지 않는다
+        raise _invalid(
+            "material path is too long", path=path, chars=len(path), limit=MAX_PATH_CHARS
+        )
     if not path or path != path.strip():
         raise _invalid("material path must not be empty or padded", path=path)
     if path.startswith("/") or ":" in path or "\\" in path:
@@ -267,6 +275,7 @@ __all__ = [
     "DOCKERFILE",
     "MAX_FILES",
     "MAX_FILE_BYTES",
+    "MAX_PATH_CHARS",
     "SOURCE_ROOT",
     "InMemoryMaterialStore",
     "MaterialStore",
