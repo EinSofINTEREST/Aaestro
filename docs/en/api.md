@@ -465,7 +465,7 @@ reference graph. Per-agent tokens are never in a response.
 | `degraded` | the deployment is `ready`, but at least one replica is not right now (see `state` below) |
 | `failed` | a step failed; **everything this deployment started was stopped again** |
 | `stopped` | torn down through `DELETE` |
-| `lost` | after a restart, at least one container was gone |
+| `lost` | after a restart, at least one container was gone — or a container could not be removed, or a rolled-back start was still being cleaned up by the engine; tear it down again to finish |
 
 `degraded` is never stored. It is computed when the deployment is read, from the supervision
 state of its replicas, and turns back into `ready` by itself once they recover. Everything that
@@ -1512,6 +1512,14 @@ agent identity — otherwise the `401` of [Authentication](#authentication) befo
   start of that replica removes them. A container without the label (started before it existed) is
   not kept; a warning names it, and tearing the deployment down still removes it. A teardown that
   cannot remove such a container leaves the deployment `lost` instead of `stopped`.
+- **A cancelled start still being cleaned up holds its agent.** When a deploy fails or is cut
+  while a container is still being created, the engine finishes cleaning that start up in the
+  background; until then the container may still appear and its A2A port stays reserved. The
+  rolled-back deployment is recorded `lost` rather than `failed` and keeps holding its agents, so
+  deploying the same agent again is refused (`409`, `RT_010`; `details.settling` names the agents
+  still being cleaned up). Wait for the cleanup to finish, tear that deployment down (it becomes
+  `stopped`; a container the cleanup could not remove is removed by that teardown), then deploy
+  again. A teardown before the cleanup ends leaves it `lost`.
 
 ## CLI equivalents
 

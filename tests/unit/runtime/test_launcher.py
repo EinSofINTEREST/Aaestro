@@ -19,6 +19,8 @@ from aaestro.core.manifest import AgentManifest, GroupManifest
 from aaestro.runtime.docker.engine import DockerEngine
 from aaestro.runtime.launcher import AgentLauncher
 from aaestro.runtime.lifecycle import AgentState
+from aaestro.runtime.ports import A2APortAllocator
+from aaestro.runtime.spec import container_name
 from tests.fixtures.fake_docker import FakeDockerClient
 from tests.fixtures.waiting import until
 
@@ -1170,3 +1172,36 @@ async def test_stop_all_retries_an_orphan_its_settling_left_behind():
 
     assert not agents._orphans, "종료 중에 생긴 남은 컨테이너를 다시 지우지 않았다"
     assert client.removed == ["container-0001" + "0" * 20]
+
+
+@pytest.mark.parametrize("removal_fails", [False, True])
+async def test_stop_keeps_the_port_while_a_cut_replacement_is_still_settling(removal_fails):
+    """해체의 정지가 끊은 교체 기동을 엔진이 아직 정리 중이면 포트를 놓지 않는다 — 정리가 지우면
+    그때 놓고, 지우지 못하면 넘겨받은 컨테이너가 쥔다 (#686)."""
+    client = HeldClient()  # 처음 기동은 붙잡지 않는다
+    agents = held_launcher(client)
+    agents.ports = A2APortAllocator(port_range=(9100, 9110))
+    worker = grouped()
+    port = 9105  # 배포가 provision 에서 잡아 넘기는 포트
+    agents.ports.reserve(worker.name, port)
+    launched = await agents.start(worker, a2a_port=port)
+    client.steps = {"create"}
+    replacing = asyncio.create_task(agents._replace(launched))  # noqa: SLF001
+    try:
+        await until(lambda: len(client.held) >= 1)
+        replacing.cancel()
+        await until(replacing.done, timeout_s=1.0)
+        assert agents.engine.pending_cleanups(container_name(worker.name, 0))
+        await agents.stop(worker.name)
+        assert agents.ports.held(worker.name) == port, "정리 중인 교체 기동의 포트를 정지가 놓았다"
+        client._remove_failures = int(removal_fails)  # noqa: SLF001
+    finally:
+        client.release()
+    await agents.engine.settle_cleanups()
+
+    if removal_fails:
+        assert agents.orphans_of(worker.name)
+        assert agents.ports.held(worker.name) == port, "지우지 못한 컨테이너의 포트를 놓았다"
+        await agents.stop(worker.name)
+    assert agents.ports.held(worker.name) is None
+    assert not agents.orphans_of(worker.name)
