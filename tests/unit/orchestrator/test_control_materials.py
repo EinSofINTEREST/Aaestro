@@ -11,7 +11,8 @@ import yaml
 from aaestro.authoring import Author
 from aaestro.catalog import Catalog
 from aaestro.core.errors import ErrorCode
-from aaestro.materials import InMemoryMaterialStore
+from aaestro.materials import MAX_FILE_BYTES, MAX_FILES, InMemoryMaterialStore
+from aaestro.orchestrator.bodies import DEFAULT_BODY_LIMIT
 from aaestro.orchestrator.control import create_app
 from aaestro.orchestrator.runstore import InMemoryRunStore
 
@@ -153,3 +154,46 @@ async def test_an_empty_files_map_is_stored_and_locks_the_version(api):
     assert empty.status_code == 200
     assert then.status_code == 400
     assert then.json()["error"]["code"] == ErrorCode.MOD_002
+
+
+async def test_the_largest_legal_upload_fits_the_body_cap(api):
+    """파일 수 상한 × 파일 크기 상한 — 본문 상한이 합법 업로드를 413 으로 막지 않는다 (#667)."""
+    files = {"Dockerfile": "x" * MAX_FILE_BYTES}
+    files.update({f"src/f{i}.py": "x" * MAX_FILE_BYTES for i in range(MAX_FILES - 1)})
+
+    response = await api.put("/v1/agents/custom/materials", json={"files": files})
+
+    assert response.status_code == 200
+
+
+async def test_escaped_control_characters_fit_the_body_cap(api):
+    """``\\u0000`` 만으로 된 파일은 JSON 에서 6 배로 부푼다 — 합법 업로드는 그래도 통과한다."""
+    files = {f"src/f{i}.py": "\x00" * MAX_FILE_BYTES for i in range(4)}
+
+    response = await api.put("/v1/agents/custom/materials", json={"files": files})
+
+    assert response.status_code == 200
+
+
+@pytest.mark.parametrize("path", ["/v1/agents/materials", "/v1/graphs/materials"])
+async def test_the_materials_cap_does_not_reach_look_alike_paths(api, path):
+    """이름이 materials 인 에이전트 · 그래프 경로는 일반 1 MiB 상한을 쓴다."""
+    body = b'{"x": "' + b"a" * (DEFAULT_BODY_LIMIT + 1) + b'"}'
+
+    response = await api.put(path, content=body, headers={"content-type": "application/json"})
+
+    assert response.status_code == 413
+
+
+async def test_the_materials_cap_follows_the_route_under_a_root_path(workspace):
+    """``root_path`` 접두사가 붙어도 재료 상한을 쓴다 — 경로 문자열이 아니라 라우트로 가른다."""
+    author = Author(catalog=Catalog.under(workspace), materials=InMemoryMaterialStore())
+    app = create_app(InMemoryRunStore(), catalog=Catalog.under(workspace), author=author)
+    big = "x" * (DEFAULT_BODY_LIMIT + 1024)
+    transport = httpx.ASGITransport(app=app, root_path="/cp")
+    async with httpx.AsyncClient(transport=transport, base_url="http://cp") as client:
+        response = await client.put(
+            "/cp/v1/agents/custom/materials", json={"files": {"src/a.py": big}}
+        )
+
+    assert response.status_code != 413

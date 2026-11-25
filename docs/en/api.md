@@ -102,6 +102,11 @@ Status codes follow one rule — **who can fix it**:
 | `500` | the server has to fix it | `RT_001`, `GRAPH_002`, `STOR_003` |
 | `503` | not now, but worth retrying | anything with `retryable: true` |
 
+A JSON request body that repeats an object key (at any depth) is `400` `VAL_002`, with the
+`key` in `details` — never the value. A body over 1 MiB (the
+materials upload has its own cap that holds worst-case JSON escaping — see the materials route below) is `413`
+`VAL_002`; it is refused before parsing; reading stops as soon as a chunk takes the body past the limit.
+
 `details` carries the specifics you need to act: which field failed, which version was
 expected, which agent is already deployed.
 
@@ -318,7 +323,7 @@ The response has the same shape as `GET`, with `updated_at` stamped. The rules:
 
 - **Paths** are `Dockerfile` or under `src/`, relative, posix-style, and already normalised
   (`src/./a.py` and `src//a.py` are refused, as is anything with `..`). At most 200 files,
-  each at most 256 KiB of text. Violations are `400` (`VAL_002`) with the offending `path`
+  each at most 256 KiB of text, and each path at most 4096 characters. A request body over 1 MiB is refused with `413` (`VAL_002`) before parsing, except this upload, whose cap is file-count × (6 × file-size + 12 × path-length) plus 1 MiB of structure, which holds the worst-case JSON escaping (6 bytes per content byte, 12 per path character). Violations are `400` (`VAL_002`) with the offending `path`
   in `details`.
 - **A version's materials are immutable.** Different content under the same version is `400`
   (`MOD_002`); identical content is idempotent. Bump the agent's version, save the agent,

@@ -38,6 +38,7 @@ from aaestro.http_auth import (
 from aaestro.http_errors import request_validation_error, status_for, unroutable_problem
 from aaestro.materials import Materials
 from aaestro.orchestrator.bodies import parsed as _parsed
+from aaestro.orchestrator.bodies import then_guard
 from aaestro.runtime.images import BuildRecord, image_tag
 from aaestro.ui import UI_ROOT
 
@@ -196,7 +197,9 @@ def create_app(
     )
     # 읽기도 보호한다 — 카탈로그에는 env_allowlist 같은 운영 정보가 있다. 토큰은 본문을 읽기
     # 전에 본다 — `Depends` 는 본문 파싱보다 늦어 깨진 본문이 인증보다 먼저 거절된다 (#462)
-    api = APIRouter(route_class=admit_first(require_token(token, realm="control plane token")))
+    api = APIRouter(
+        route_class=admit_first(then_guard(require_token(token, realm="control plane token")))
+    )
 
     @app.get(HEALTH_PATH)
     async def health() -> dict[str, str]:
