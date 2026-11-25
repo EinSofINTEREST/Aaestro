@@ -76,9 +76,12 @@ def test_too_many_files_are_refused():
     assert exc_info.value.code == ErrorCode.VAL_002
 
 
-def test_an_empty_set_is_allowed():
-    """재료가 없다는 것을 명시적으로 적을 수 있어야 한다."""
-    assert check_files({}) == {}
+def test_an_empty_set_is_refused():
+    """빈 묶음은 버전을 잠그므로 저장 전에 거절한다."""
+    with pytest.raises(AaestroError) as exc_info:
+        check_files({})
+    assert exc_info.value.code == ErrorCode.VAL_002
+    assert exc_info.value.details == {}
 
 
 def test_non_text_content_is_refused():

@@ -614,7 +614,7 @@ def test_materials_for_an_unknown_agent_are_not_found(author_with_materials):
 def test_without_a_store_the_surface_is_refused(author):
     """재료 표면을 열지 않은 조립에서 조용히 성공하면 빌드가 빈 재료로 돈다."""
     with pytest.raises(AaestroError) as exc_info:
-        author.save_materials("alpha", {})
+        author.save_materials("alpha", {"src/agent.py": "x"})
 
     assert exc_info.value.code == ErrorCode.CFG_001
 
