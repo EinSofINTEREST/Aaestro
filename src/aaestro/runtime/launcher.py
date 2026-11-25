@@ -368,7 +368,7 @@ class AgentLauncher:
                 self._settle(reserved, replica=replica)
             if not started and not replacing:
                 for port in cleared:
-                    self._release_if_unowned(agent, replica, port)
+                    self.release_if_unowned(agent, replica, port)
             self._starting[agent] -= 1
             if not self._starting[agent]:
                 del self._starting[agent]
@@ -397,6 +397,10 @@ class AgentLauncher:
             self._own_orphans(name, replica=replica, manifests=helds)
             for held in helds:
                 self._settle(held, replica=replica)
+            # 정리가 끝났다 — 그동안 남겨 둔 포트를 이제 쥔 것이 없으면 놓는다 (#686)
+            port = None if self.ports is None else self.ports.held(manifest.name, replica=replica)
+            if port is not None:
+                self.release_if_unowned(manifest.name, replica, port)
 
         # 그 자리에서 끝난 정리의 제거 실패 — 엔진이 넘겨준다 (#654)
         self._own_orphans(name, replica=replica, manifests=[manifest])
@@ -481,12 +485,19 @@ class AgentLauncher:
         """
         orphan = self._orphans.pop(container_id, None)
         if orphan is not None and orphan.a2a_port is not None and release_port:
-            self._release_if_unowned(orphan.handle.agent, orphan.replica, orphan.a2a_port)
+            self.release_if_unowned(orphan.handle.agent, orphan.replica, orphan.a2a_port)
 
-    def _release_if_unowned(self, agent: str, replica: int, port: int) -> None:
-        """그 자리를 쥔 레플리카 · 기동 · 넘겨받은 컨테이너가 없을 때만 포트를 놓는다 (#676)."""
+    def release_if_unowned(self, agent: str, replica: int, port: int) -> None:
+        """Release a replica's A2A port unless something still holds that slot.
+
+        그 자리를 쥔 레플리카 · 기동 · 넘겨받은 컨테이너 · 엔진이 아직 정리 중인 기동이 없을 때만
+        포트를 놓는다 (#676). 정리 중인 기동은 제거에 실패하면 그 포트를 쥔 채 남으므로, 정리가
+        끝날 때 (`_settle`) 다시 본다 (#686).
+        """
         key = (agent, replica)
         if self.ports is None or key in self.launched or key in self._admitted:
+            return
+        if self.engine.pending_cleanups(container_name(agent, replica)):
             return
         if any((o.handle.agent, o.replica) == key for o in self._orphans.values()):
             return

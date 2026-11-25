@@ -1644,14 +1644,11 @@ class DeploymentManager:
         if self.launcher.ports is None:
             return
         for agent, provision in provisions.items():
-            # 제거에 실패해 남은 레플리카 · 넘겨받은 컨테이너는 포트를 쥔다 — 놓으면 다른 에이전트가
-            # 같은 번호를 받는다. 넘겨받은 컨테이너의 포트는 그것을 지우는 쪽이 놓는다 (#676)
-            if (
-                provision.a2a_port is not None
-                and not self.launcher.replicas_of(agent)
-                and not self.launcher.orphans_of(agent)
-            ):
-                self.launcher.ports.release(agent)
+            # 제거에 실패해 남은 레플리카 · 넘겨받은 컨테이너 · 엔진이 아직 정리 중인 기동은 포트를
+            # 쥔다 — 놓으면 다른 에이전트가 같은 번호를 받는다. 그 포트는 그것을 지우는 쪽 · 정리가
+            # 끝나는 쪽이 놓는다 (#676 · #686)
+            if provision.a2a_port is not None:
+                self.launcher.release_if_unowned(agent, 0, provision.a2a_port)
 
     def _left_behind(self, names: Sequence[str]) -> list[str]:
         """정지 뒤에도 launcher 가 쥔 레플리카 · 컨테이너가 있는 이름 — 제거 실패 · 넘어진 정지.

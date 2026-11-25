@@ -43,9 +43,11 @@ from aaestro.runtime.spec import (
     A2A_PEERS_ENV,
     A2A_SECRET_ENV,
     DEFAULT_BASE_IMAGE,
+    container_name,
 )
 from tests.fixtures.fake_docker import FakeDockerClient
 from tests.fixtures.waiting import until
+from tests.unit.runtime.test_launcher import HeldClient
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -1670,6 +1672,41 @@ async def test_a_rolled_back_start_keeps_the_port_of_the_container_it_left(works
     assert (await manager.teardown(record.deployment_id)).status == DeploymentStatus.STOPPED
     assert ports.held("alpha") is None, "지운 컨테이너의 포트를 놓지 않았다"
     await manager.launcher.stop_all()
+
+
+@pytest.mark.parametrize("removal_fails", [False, True])
+async def test_a_rolled_back_start_still_settling_keeps_its_port_until_the_cleanup_ends(
+    workspace, healthy, removal_fails
+):
+    """엔진이 아직 정리 중인 기동의 포트는 되감기가 놓지 않는다 — 정리가 지우면 그때 놓고,
+    지우지 못하면 넘겨받은 컨테이너가 쥔다 (#686)."""
+    wired_workspace(workspace)
+    docker = HeldClient("create")
+    manager = wired_manager(workspace, docker)  # type: ignore[arg-type]
+    manager.launcher.engine.cancel_wait_s = 0.01  # 취소된 기동의 정리를 엔진이 넘겨받게 한다
+    ports = manager.launcher.ports
+    assert ports is not None
+    deploying = asyncio.create_task(manager.deploy("wired"))
+    try:
+        await until(lambda: len(docker.held) >= 1)  # alpha 의 생성이 붙잡혔다
+        deploying.cancel()
+        await until(deploying.done, timeout_s=1.0)
+        assert manager.launcher.engine.pending_cleanups(container_name("alpha", 0))
+        held = ports.held("alpha")
+        assert held is not None, "정리 중인 기동의 포트를 되감기가 놓았다"
+        docker._remove_failures = int(removal_fails)  # noqa: SLF001
+    finally:
+        docker.release()
+    await manager.launcher.engine.settle_cleanups()
+
+    if removal_fails:
+        assert manager.launcher.orphans_of("alpha")
+        assert ports.held("alpha") == held, "지우지 못한 컨테이너의 포트를 놓았다"
+    else:
+        assert docker.removed
+        assert ports.held("alpha") is None, "정리가 끝났는데 포트를 놓지 않았다"
+    await manager.launcher.stop_all()
+    assert ports.held("alpha") is None
 
 
 async def test_a_kept_leftover_counts_the_limits_it_was_started_with(workspace, docker, healthy):
