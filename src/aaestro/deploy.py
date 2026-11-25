@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 from pydantic import ValidationError
 
-from aaestro.access.baselines import PROVIDER_HOSTS, EgressBaseline
+from aaestro.access.baselines import PROVIDER_HOSTS
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode, field_problems
 from aaestro.core.manifest import RESERVED_GLOBAL_GROUP, agent_name, agent_ref_parts
 from aaestro.core.topology import GraphMode, validate_topology
@@ -899,26 +899,22 @@ class DeployValidator:
                     )
                 )
                 continue
-            # 이그레스 baseline 은 manifest 에서만 도출된다 — manifest 밖 provider 로 바꾸면
-            # 배포는 되지만 프록시가 그 호출을 거부해 run 에서 조용히 실패한다
-            declared = EgressBaseline.declared(manifest)
-            # manifest 가 선언한 provider 는 manifest 검사가 이미 봤다 — 같은 문제를 두 번 내지 않게
+            # manifest 가 선언한 provider 는 manifest 검사가 이미 봤다 — 중복 보고 방지.
+            # 집합 밖 provider 는 runtime.egress 에 호스트가 있어도 거절한다 (이그레스 판정 기본값은
+            # manifest provider 집합에서 도출되고 배포 요청도 같은 경로다)
             for provider in sorted(resolved.providers() - manifest.spec.model.providers()):
-                problem = self._provider_problem(provider)
-                if problem is None and PROVIDER_HOSTS[provider] not in declared:
-                    problem = (
-                        "node model override uses a provider the agent manifest "
-                        f"does not declare: {provider}"
+                problem = self._provider_problem(provider) or (
+                    "node model override uses a provider the agent manifest "
+                    f"does not declare: {provider}"
+                )
+                findings.append(
+                    Finding(
+                        check="model_providers",
+                        code=ErrorCode.VAL_002,
+                        message=problem,
+                        details={**details, "provider": provider},
                     )
-                if problem is not None:
-                    findings.append(
-                        Finding(
-                            check="model_providers",
-                            code=ErrorCode.VAL_002,
-                            message=problem,
-                            details={**details, "provider": provider},
-                        )
-                    )
+                )
         return findings
 
 

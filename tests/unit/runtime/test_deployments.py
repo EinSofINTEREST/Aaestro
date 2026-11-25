@@ -2718,9 +2718,11 @@ async def test_the_control_url_is_where_the_control_plane_asks(manager):
 async def test_a_deployment_override_provider_is_checked_against_the_proxy(
     manager, docker, workspace
 ):
-    """manifest 밖이지만 egress 로 선언된 provider 로의 override — 배포 검증은 통과한다."""
+    """manifest 가 fallback 으로 선언한 provider 로의 override — 검증은 통과하고 프록시가 거른다."""
     alpha = agent_doc("alpha")
-    alpha["spec"]["runtime"]["egress"] = ["openai-compat.invalid"]
+    alpha["spec"]["model"]["fallbacks"] = [
+        {"provider": "openai-compat", "name": "gpt-5-mini", "on": ["server_error"]}
+    ]
     write(workspace / "agents" / "alpha" / "manifest.yaml", alpha)
     proxied(manager, proxy_answering("anthropic"))
     override = ModelOverride(provider="openai-compat", name="gpt-5")
