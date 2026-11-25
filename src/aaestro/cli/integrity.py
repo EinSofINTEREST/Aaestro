@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import structlog
+from pydantic import BaseModel, ConfigDict, Field
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -27,6 +28,23 @@ class Discrepancy:
     kind: str
     subject: str
     detail: str
+
+
+class ObservedState(BaseModel):
+    """The state document `aaestro check` reads.
+
+    관측 상태 문서의 모양. 모르는 키와 틀린 형태를 거절한다 — `.get()` 으로 읽으면 오타 키
+    (`run`) 가 "불일치 없음" 으로 조용히 통과한다.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    runs: list[str] = Field(default_factory=list)
+    checkpoints: list[str] = Field(default_factory=list)
+    deployed_refs: dict[str, list[str]] = Field(default_factory=dict)
+    resolvable_refs: list[str] = Field(default_factory=list)
+    running: list[str] = Field(default_factory=list)
+    known_agents: list[str] = Field(default_factory=list)
 
 
 def orphan_checkpoints(runs: Iterable[str], checkpoints: Iterable[str]) -> tuple[Discrepancy, ...]:

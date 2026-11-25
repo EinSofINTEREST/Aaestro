@@ -21,12 +21,25 @@ from aaestro.authoring import Author
 from aaestro.catalog import MODULE_TYPES, Catalog, Problem, load_yaml, parse_declaration
 from aaestro.cli.control import CONTROL_TOKEN_ENV, DEFAULT_CONTROL_URL
 from aaestro.cli.integrity import (
+    ObservedState,
     dangling_module_refs,
     ghost_containers,
     orphan_checkpoints,
 )
-from aaestro.config import DEFAULT_CONFIG_DIR, ENVIRONMENT_ENV, load_config, resolve_environment
-from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
+from aaestro.config import (
+    DEFAULT_CONFIG_DIR,
+    ENVIRONMENT_ENV,
+    config_error,
+    load_config,
+    resolve_environment,
+)
+from aaestro.core.errors import (
+    AaestroError,
+    ErrorCategory,
+    ErrorCode,
+    field_problems,
+    raise_detached,
+)
 from aaestro.core.topology import GraphTopology
 from aaestro.deploy import ValidationReport
 from aaestro.observability.logging import configure
@@ -321,12 +334,17 @@ def cmd_check(args: argparse.Namespace) -> int:
     기록과 실체의 불일치를 보고합니다. 입력은 운영 도구가 수집한 상태를
     받습니다 — CLI 가 저장소나 Docker 에 직접 붙지 않습니다.
     """
-    state = load_yaml(Path(args.state))
+    document = load_yaml(Path(args.state))
+    try:
+        state = ObservedState.model_validate(document)
+    except ValidationError as err:
+        # 값은 비밀일 수 있어 필드 경로와 사유만 싣는다 (field_problems)
+        raise_detached(config_error("invalid state document", errors=field_problems(err)))
 
     found = [
-        *orphan_checkpoints(state.get("runs", []), state.get("checkpoints", [])),
-        *dangling_module_refs(state.get("deployed_refs", {}), state.get("resolvable_refs", [])),
-        *ghost_containers(state.get("running", []), state.get("known_agents", [])),
+        *orphan_checkpoints(state.runs, state.checkpoints),
+        *dangling_module_refs(state.deployed_refs, state.resolvable_refs),
+        *ghost_containers(state.running, state.known_agents),
     ]
 
     emit(
