@@ -1882,6 +1882,7 @@ async def test_with_an_egress_proxy_agents_get_no_model_key_and_go_out_through_t
         connect_url="http://aaestro-egress:8080", providers_url="http://aaestro-egress:8081"
     )
     manager.agent_env = {"ANTHROPIC_BASE_URL": "https://api.anthropic.com"}
+    manager.proxy_transport = proxy_answering("anthropic")
 
     record = await manager.deploy("two")
 
@@ -2056,6 +2057,7 @@ def behind_the_proxy(manager: DeploymentManager) -> None:
         connect_url="http://aaestro-egress:8080", providers_url="http://aaestro-egress:8081"
     )
     manager.sidecar_proxy = ProxyAttachment(container="aaestro-egress-1", alias="aaestro-egress")
+    manager.proxy_transport = proxy_answering("anthropic")
 
 
 def created(docker: FakeDockerClient, name: str) -> dict:
@@ -2354,3 +2356,304 @@ async def test_a_rollback_that_leaves_a_replica_keeps_its_port_and_can_be_torn_d
 
     assert stopped.status == DeploymentStatus.STOPPED
     assert not manager.launcher.replicas_of("alpha")
+
+
+# --- 프록시에 실제 upstream 이 있는가 (#644) --------------------------------------------
+
+
+def proxy_answering(*providers: str, seen: list[str] | None = None) -> httpx.MockTransport:
+    """프록시의 provider 목록 대역 — 묻는 URL 을 ``seen`` 에 남긴다."""
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if seen is not None:
+            seen.append(str(request.url))
+        return httpx.Response(200, json={"providers": sorted(providers)})
+
+    return proxy_failing(handle)
+
+
+def on_the_wire(response: httpx.Response) -> httpx.Response:
+    """실제 전송처럼 본문을 흐름으로 — ``content=`` 응답은 이미 읽혀 ``aiter_raw`` 가 안 된다.
+
+    압축 본문 대역은 ``stream=`` 으로 만든다 — ``content=`` 는 만들면서 풀어 버린다.
+    """
+    if not response.is_stream_consumed:
+        return response
+    return httpx.Response(
+        response.status_code, headers=response.headers, stream=httpx.ByteStream(response.content)
+    )
+
+
+def proxy_failing(fail) -> httpx.MockTransport:
+    def handle(request: httpx.Request) -> httpx.Response:
+        return on_the_wire(fail(request))
+
+    return httpx.MockTransport(handle)
+
+
+def proxied(manager: DeploymentManager, transport: httpx.AsyncBaseTransport) -> None:
+    from aaestro.runtime.deployments import EgressEndpoints
+
+    with_access(manager)
+    manager.egress = EgressEndpoints(
+        connect_url="http://aaestro-egress:8080", providers_url="http://aaestro-egress:8081/"
+    )
+    manager.proxy_transport = transport
+
+
+async def test_a_provider_without_a_proxy_upstream_launches_nothing(manager, docker):
+    """설정 목록에는 있어도 프록시에 키가 없으면 모든 모델 호출이 404 다 — 기동 전에 거절."""
+    proxied(manager, proxy_answering("openai-compat"))
+
+    with pytest.raises(AaestroError) as caught:
+        await manager.deploy("two")
+
+    err = caught.value
+    assert (err.category, err.code) == (ErrorCategory.VALIDATION, ErrorCode.VAL_002)
+    assert err.details == {"agent": "alpha", "provider": "anthropic"}
+    assert "no upstream on the egress proxy" in err.message
+    assert docker.created == [] and manager.deployments() == []
+
+
+async def test_providers_the_proxy_relays_deploy_and_are_asked_once_per_deploy(manager, docker):
+    seen: list[str] = []
+    proxied(manager, proxy_answering("anthropic", seen=seen))
+
+    record = await manager.deploy("two")
+
+    assert record.status == DeploymentStatus.READY
+    assert seen == ["http://aaestro-egress:8081/v1/providers"]
+    await manager.launcher.stop_all()
+
+
+async def test_the_control_url_is_where_the_control_plane_asks(manager):
+    """에이전트 네트워크 alias 는 호스트의 control plane 이 풀지 못한다 — control_url 로 묻는다."""
+    from dataclasses import replace
+
+    seen: list[str] = []
+    proxied(manager, proxy_answering("anthropic", seen=seen))
+    manager.egress = replace(manager.egress, control_url="http://127.0.0.1:18082")
+
+    await manager.deploy("two")
+
+    assert seen == ["http://127.0.0.1:18082/v1/providers"]
+    await manager.launcher.stop_all()
+
+
+async def test_a_deployment_override_provider_is_checked_against_the_proxy(
+    manager, docker, workspace
+):
+    """manifest 밖이지만 egress 로 선언된 provider 로의 override — 배포 검증은 통과한다."""
+    alpha = agent_doc("alpha")
+    alpha["spec"]["runtime"]["egress"] = ["openai-compat.invalid"]
+    write(workspace / "agents" / "alpha" / "manifest.yaml", alpha)
+    proxied(manager, proxy_answering("anthropic"))
+    override = ModelOverride(provider="openai-compat", name="gpt-5")
+
+    with pytest.raises(AaestroError) as caught:
+        await manager.deploy("two", model_overrides={"n0": override})
+
+    assert caught.value.code == ErrorCode.VAL_002
+    assert caught.value.details == {"agent": "alpha", "provider": "openai-compat"}
+    assert docker.created == []
+
+
+def refused(request: httpx.Request) -> httpx.Response:
+    raise httpx.ConnectError("refused", request=request)
+
+
+def timed_out(request: httpx.Request) -> httpx.Response:
+    raise httpx.ReadTimeout("slow", request=request)
+
+
+@pytest.mark.parametrize(
+    ("fail", "code", "retryable"),
+    [
+        (refused, ErrorCode.NET_001, True),
+        (timed_out, ErrorCode.NET_002, True),
+        (lambda r: httpx.Response(503), ErrorCode.NET_001, True),
+        # 이 엔드포인트가 없는 옛 프록시 — catch-all 의 ``unknown provider``
+        (
+            lambda r: httpx.Response(404, json={"error": "unknown provider"}),
+            ErrorCode.NET_001,
+            False,
+        ),
+        (lambda r: httpx.Response(200, text="not json"), ErrorCode.NET_001, False),
+        (lambda r: httpx.Response(200, json={"providers": "anthropic"}), ErrorCode.NET_001, False),
+        (lambda r: httpx.Response(200, json=["anthropic"]), ErrorCode.NET_001, False),
+        # 압축이 깨진 본문 — 다시 물어도 같다 (httpx.DecodingError)
+        (
+            lambda r: httpx.Response(
+                200,
+                headers={"content-encoding": "gzip"},
+                stream=httpx.ByteStream(b"not gzip at all"),
+            ),
+            ErrorCode.NET_001,
+            False,
+        ),
+        # 64 KiB 안쪽이지만 json 의 재귀 한도를 넘는 중첩 — RecursionError
+        (lambda r: httpx.Response(200, content=b"[" * 50_000), ErrorCode.NET_001, False),
+    ],
+    ids=[
+        "refused",
+        "timeout",
+        "5xx",
+        "404",
+        "not-json",
+        "not-a-list",
+        "not-an-object",
+        "bad-gzip",
+        "deep-nesting",
+    ],  # fmt: skip
+)
+async def test_a_proxy_that_cannot_answer_refuses_the_deployment(
+    manager, docker, fail, code, retryable
+):
+    """설정 목록으로 물러나지 않는다 — 모르면 띄우지 않는다."""
+    proxied(manager, proxy_failing(fail))
+
+    with pytest.raises(AaestroError) as caught:
+        await manager.deploy("two")
+
+    err = caught.value
+    assert (err.category, err.code, err.retryable) == (ErrorCategory.NETWORK, code, retryable)
+    assert docker.created == [] and manager.deployments() == []
+
+
+async def test_without_an_egress_proxy_the_proxy_is_not_asked(manager):
+    def never(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("프록시가 없는데 물었다")
+
+    manager.proxy_transport = proxy_failing(never)
+
+    record = await manager.deploy("two")
+
+    assert record.status == DeploymentStatus.READY
+    await manager.launcher.stop_all()
+
+
+async def test_a_proxy_answer_over_the_size_cap_is_not_read_to_the_end(
+    manager, docker, monkeypatch
+):
+    """프록시 응답은 control plane 밖의 입력이다 — 상한을 넘으면 거기서 멈추고 거절한다."""
+    import aaestro.runtime.deployments as deployments
+
+    monkeypatch.setattr(deployments, "PROXY_ANSWER_MAX_BYTES", 16)
+    read: list[int] = []
+
+    async def endless() -> AsyncIterator[bytes]:
+        for _ in range(1000):
+            read.append(1)
+            yield b'{"providers": ["anthropic"]}'
+
+    proxied(manager, proxy_failing(lambda r: httpx.Response(200, content=endless())))
+
+    with pytest.raises(AaestroError) as caught:
+        await manager.deploy("two")
+
+    err = caught.value
+    assert (err.code, err.retryable) == (ErrorCode.NET_001, False)
+    assert len(read) == 1, "상한을 넘은 뒤에도 읽었다"
+    assert docker.created == []
+
+
+async def test_a_proxy_answer_that_never_finishes_hits_the_total_deadline(
+    manager, docker, monkeypatch
+):
+    """조각마다의 timeout 이 아니라 총 마감이다 — 첫 조각 뒤 멈춘 본문도 끝난다."""
+    import aaestro.runtime.deployments as deployments
+
+    monkeypatch.setattr(deployments, "PROXY_QUERY_TIMEOUT_S", 0.01)
+
+    async def stalls() -> AsyncIterator[bytes]:
+        yield b'{"providers": '
+        await asyncio.Event().wait()  # 대역 전송은 읽기 timeout 을 걸지 않는다 — 총 마감만 끊는다
+        yield b"[]}"
+
+    proxied(manager, proxy_failing(lambda r: httpx.Response(200, content=stalls())))
+
+    with pytest.raises(AaestroError) as caught:
+        await manager.deploy("two")
+
+    err = caught.value
+    assert (err.category, err.code, err.retryable) == (
+        ErrorCategory.NETWORK,
+        ErrorCode.NET_002,
+        True,
+    )
+    assert docker.created == []
+
+
+async def test_the_proxy_is_asked_before_the_declarations_are_read(manager, docker, workspace):
+    """묻는 사이 바뀐 선언이 검증을 비켜 가지 못한다 — 조회가 선언 읽기 · 검증보다 먼저다.
+
+    조회가 선언을 읽은 뒤 (점유 직전) 에 있으면 배포는 옛 선언 (anthropic) 으로 통과하고
+    바뀐 선언 (프록시에 없는 openai-compat) 이 컨테이너에 마운트된다.
+    """
+
+    def answer_while_the_manifest_changes(request: httpx.Request) -> httpx.Response:
+        alpha = agent_doc("alpha")
+        alpha["spec"]["model"] = {"provider": "openai-compat", "name": "gpt-5"}
+        write(workspace / "agents" / "alpha" / "manifest.yaml", alpha)
+        return httpx.Response(200, json={"providers": ["anthropic"]})
+
+    proxied(manager, proxy_failing(answer_while_the_manifest_changes))
+
+    with pytest.raises(AaestroError) as caught:
+        await manager.deploy("two")
+
+    assert caught.value.code == ErrorCode.VAL_002
+    assert caught.value.details == {"agent": "alpha", "provider": "openai-compat"}
+    assert docker.created == []
+
+
+async def test_a_compressed_proxy_answer_is_refused_before_it_is_inflated(
+    manager, docker, monkeypatch
+):
+    """압축을 풀면 작은 조각 하나가 상한 검사 전에 부풀어 오른다 — 풀지 않고 거절한다."""
+    import gzip
+
+    import aaestro.runtime.deployments as deployments
+
+    monkeypatch.setattr(deployments, "PROXY_ANSWER_MAX_BYTES", 4096)
+    bomb = gzip.compress(b'{"providers": ["anthropic"], "pad": "' + b"a" * 1_000_000 + b'"}')
+    assert len(bomb) < 4096, "압축 상태로는 상한 아래여야 시험이 된다"
+    read: list[int] = []
+
+    async def compressed() -> AsyncIterator[bytes]:
+        read.append(1)
+        yield bomb
+
+    proxied(
+        manager,
+        proxy_failing(
+            lambda r: httpx.Response(
+                200, headers={"content-encoding": "gzip"}, content=compressed()
+            )
+        ),
+    )
+
+    with pytest.raises(AaestroError) as caught:
+        await manager.deploy("two")
+
+    err = caught.value
+    assert (err.code, err.retryable) == (ErrorCode.NET_001, False)
+    assert err.details["content_encoding"] == "not identity"
+    assert read == [], "압축 본문을 읽었다"
+    assert docker.created == []
+
+
+async def test_an_explicit_identity_answer_is_read(manager):
+    proxied(
+        manager,
+        proxy_failing(
+            lambda r: httpx.Response(
+                200, headers={"content-encoding": "identity"}, json={"providers": ["anthropic"]}
+            )
+        ),
+    )
+
+    record = await manager.deploy("two")
+
+    assert record.status == DeploymentStatus.READY
+    await manager.launcher.stop_all()

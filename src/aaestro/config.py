@@ -109,6 +109,11 @@ class EgressProxyConfig(BaseModel):
     """CONNECT 창구 — ``http://egress:8080``."""
     providers_url: str = Field(min_length=1)
     """provider 종단 창구 — ``http://egress:8081``."""
+    control_url: str | None = None
+    """control plane 이 보는 프록시 provider 창구 (#644). 비우면 ``providers_url``.
+
+    배포가 기동 전에 ``GET /v1/providers`` 를 묻는 주소다 — control plane 이 에이전트 네트워크 밖
+    (호스트) 에 있으면 ``providers_url`` 의 이름이 풀리지 않는다."""
     container: str | None = Field(default=None, pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_.-]*$")
     """프록시 컨테이너 이름 — MCP 사이드카를 쓰려면 필요하다 (#304). runtime 이 에이전트마다의
     사이드카 네트워크에 이 컨테이너를 붙여, 사이드카에 닿는 것이 프록시뿐이게 한다."""
@@ -132,7 +137,10 @@ class EgressProxyConfig(BaseModel):
         for name, value in (
             ("connect_url", self.connect_url),
             ("providers_url", self.providers_url),
+            ("control_url", self.control_url),
         ):
+            if value is None:
+                continue
             parts = split_url(value)
             try:
                 port = parts.port if parts is not None else None

@@ -37,6 +37,7 @@ from tests.e2e.test_egress import (
     ENFORCER_TOKEN,
     PROXY,
     PROXY_KEY,
+    PROXY_PROVIDER_PORT,
     RESEARCHER,
     agents_network,
     build_proxy_image,
@@ -122,6 +123,7 @@ def plane(stack, tmp_path) -> Iterator[dict[str, Any]]:
     config["runtime"]["egress_proxy"] = {
         "connect_url": "http://aaestro-egress:8080",
         "providers_url": "http://aaestro-egress:8081",
+        "control_url": f"http://127.0.0.1:{PROXY_PROVIDER_PORT}",
         # 배포 검증이 이 목록과 선언을 대조한다 — 빠지면 VAL_002 로 배포가 거절된다
         "providers": ["anthropic", "openai-compat"],
     }

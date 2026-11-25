@@ -465,6 +465,9 @@ primary 와 같은 fallback 은 거절됩니다.
 - `400` (`VAL_001`) — 그래프가 검증을 통과하지 못했다. 아무것도 기동하지 않았다. `model_providers`
   검사도 여기에 해당한다: 모르는 provider, `runtime.egress_proxy.providers` 에 없는 provider,
   manifest 의 provider 집합을 벗어나는 override — 사유는 `details.findings` 에 실린다.
+- `400` (`VAL_002`) — 배포가 쓰는 provider 가 지금 이그레스 프록시에 upstream 이 없다 (`details.agent`,
+  `details.provider`). `503` / `500` (`NET_001`, `NET_002`) — 프록시가 중계하는 provider 를 답하지 못했다.
+  아무것도 기동하지 않았다. [이그레스 강제](#이그레스-강제) 참조.
 - `400` (`VAL_002`) — 빌드 재료가 있는 에이전트가 빌드 태그(`aaestro/agent-<name>:<version>`)
   와 다른 `runtime.image` 를 선언했다. 두 곳이 다른 이미지를 가리키면 무엇이 도는지 알 수 없다.
 - `400` (`VAL_002`) — `model_overrides` 가 그래프에 없는 노드를 가리키거나 override 본문이 잘못됐다
@@ -1051,11 +1054,26 @@ runtime:
   egress_proxy:
     connect_url: http://aaestro-egress:8080
     providers_url: http://aaestro-egress:8081
+    control_url: http://127.0.0.1:18095   # 선택 — control plane 이 provider 창구에 닿는 주소 (기본값: providers_url)
     container: aaestro-egress   # MCP 사이드카를 쓸 때만 필요 — 아래 참조
     providers: [anthropic]      # 프록시가 종단하는 provider — upstream 을 설정했으면 openai-compat 을 더한다 (기본값 [anthropic])
 ```
 
 배포 검증은 `providers` 에 없는 모델 provider(primary·fallback)를 거절한다 (`400 VAL_001`, finding `model_providers`).
+이 목록은 선언일 뿐 프록시가 provider 마다 키를 쥐었다는 증거가 아니다. 그래서 배포마다 프록시에도 묻는다:
+`control_url` (없으면 `providers_url`) 의 `GET /v1/providers` 가 `{"providers": [...]}` — 지금 upstream (키) 이 있는 provider 를 정렬해 —
+로 답한다. 신원이 필요 없고 키는 싣지 않는다. 배포가 쓰는 provider (primary · fallback · 노드 `model` · 배포
+`model_overrides`) 가 그 답에 없으면 컨테이너를 띄우기 전에 거절한다 (`400 VAL_002`, `details.agent` ·
+`details.provider`). 프록시가 답하지 못해도 거절한다 — 선언 목록으로 물러나지 않는다: 연결 거부
+`503 NET_001` 과 timeout `503 NET_002` (둘 다 retryable — 조회 전체에 5초 마감이 있다), `5xx` 는 `503 NET_001`
+(retryable), 그 밖의 상태나 모양이 틀리거나 64 KiB 를 넘거나 압축된 본문 (control plane 은 `identity` 를
+청하고 받은 바이트 그대로 세므로 응답을 풀지 않는다) 은 `500 NET_001` (retryable 아님 —
+이 엔드포인트가 없는 프록시는 `404` 로 답한다). 프록시에는 그래프와 선언을 읽기 전에 묻으므로, 프록시에 닿지
+않으면 없는 그래프도 이렇게 거절된다.
+그러므로 control plane 도 프록시의 provider 창구에 닿아야 한다 — `control_url` (없으면 `providers_url`).
+`providers_url` 은 에이전트 네트워크에서 에이전트가 쓰는 주소라, 그 네트워크 밖 (호스트) 의 control plane 은
+이름을 풀지 못한다. 그럴 때는 `control_url` 에 control plane 이 닿는 주소 (예: loopback 에 publish 한 창구) 를
+둔다. 에이전트에는 `control_url` 이 전달되지 않는다.
 
 그러면 배포가 에이전트마다 `HTTPS_PROXY`(자기 신원을 자격으로), 프록시를 가리키는 `ANTHROPIC_BASE_URL`
 과 `OPENAI_COMPAT_BASE_URL`, 그리고 `ANTHROPIC_API_KEY` / `OPENAI_COMPAT_API_KEY` 자리에 신원을 넣는다 —

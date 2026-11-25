@@ -408,6 +408,9 @@ def test_an_agent_facing_registry_url_is_accepted(url):
         {"connect_url": "http://agent:secret@egress:8080"},
         {"providers_url": "http://egress:8081/anthropic"},
         {"providers_url": "egress:8081"},
+        {"control_url": "http://egress:8081/anthropic"},
+        {"control_url": "http://127.0.0.1"},
+        {"control_url": ""},
     ],
 )
 def test_egress_proxy_urls_are_bare_http_addresses(field):
@@ -447,6 +450,16 @@ def test_the_egress_proxy_container_is_optional():
     base = {"connect_url": "http://egress:8080", "providers_url": "http://egress:8081"}
     assert EgressProxyConfig(**base).container is None
     assert EgressProxyConfig(**base, container="aaestro-egress-1").container == "aaestro-egress-1"
+
+
+def test_the_egress_proxy_control_url_is_optional():
+    """control plane 이 프록시를 보는 주소 (#644) — 비우면 배포가 providers_url 로 묻는다."""
+    from aaestro.config import EgressProxyConfig
+
+    base = {"connect_url": "http://egress:8080", "providers_url": "http://egress:8081"}
+    assert EgressProxyConfig(**base).control_url is None
+    url = "http://127.0.0.1:18082"
+    assert EgressProxyConfig(**base, control_url=url).control_url == url
 
 
 # --- 프록시가 종단하는 provider (#358) ---------------------------------------------

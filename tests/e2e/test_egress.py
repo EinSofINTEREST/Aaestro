@@ -54,6 +54,10 @@ pytestmark = [pytest.mark.e2e, requires_docker]
 
 ENFORCER_TOKEN = "e2e-enforcer-token"  # noqa: S105 — test_memory_access 의 Memory Service 와 같은 값
 PROXY = "aaestro-e2e-egress"
+PROXY_PROVIDER_PORT = 18095
+"""프록시 provider 창구를 연 호스트 loopback 포트 — control plane 이 배포 전에 묻는다 (#644).
+
+에이전트 네트워크 alias (``aaestro-egress``) 는 호스트에서 풀리지 않는다 (``control_url``)."""
 PROXY_KEY = "e2e-proxy-held-key"
 TARGET = "fake-provider:8000"
 UNDECLARED = f"{MEMORY_ALIAS}:8090"
@@ -258,6 +262,7 @@ def start_proxy(
     docker(
         "run", "-d", "--name", PROXY,
         "--network", NETWORK,
+        "-p", f"127.0.0.1:{PROXY_PROVIDER_PORT}:8081",
         "--add-host", "host.docker.internal:host-gateway",
         "--read-only", "--user", "1000:1000", "--cap-drop", "ALL",
         "--security-opt", "no-new-privileges:true",
@@ -341,6 +346,7 @@ def plane(stack, tmp_path) -> Iterator[dict[str, Any]]:
     config["runtime"]["egress_proxy"] = {
         "connect_url": "http://aaestro-egress:8080",
         "providers_url": "http://aaestro-egress:8081",
+        "control_url": f"http://127.0.0.1:{PROXY_PROVIDER_PORT}",
         # 사이드카 네트워크에 붙일 프록시 컨테이너 (#304)
         "container": PROXY,
     }
