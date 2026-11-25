@@ -1053,6 +1053,16 @@ In registry mode:
   Service refuses.
 - **While the registry is unreachable**, decisions already cached keep working and anything not
   yet decided is denied. A cached decision is still dropped at its `valid_until`.
+- **Run scope spaces are selected by the `X-Aaestro-Run` header** (#609) — on every route
+  (search, append, read, latest, spaces). The header is a selector, not a secret: the service
+  offers each run-scope alias declared by a graph in the catalog as `run:<run_id>:<alias>` and asks
+  the registry for it like any other space, so only a node of that run reaches it — `rw` while the
+  run is live, `ro` once it has ended. A `direct-` run has no run space. Identity is checked first;
+  a header that is not an identifier (empty, longer than 128 characters, unprintable, surrounding
+  whitespace) is then `400` with `VAL_002` (`details` names the header and the reason, not the
+  value). An entry's `source.run_id` is the header's run only when the registry admits the agent to
+  that run; otherwise it is empty. A token-mode Memory Service ignores the header — it carries no
+  run scope (below). An alias removed from the graph file after the run started is not offered.
 
 The service follows the change feed while it runs. When the feed is lost but the registry still
 answers, cached decisions older than two seconds are asked again.

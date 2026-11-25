@@ -117,7 +117,8 @@ def _refuse_run_scope(catalog: Catalog, root: Path) -> None:
 
     토큰은 run 없이 발급돼 run space 가 토큰에 실리지 않는다 — 그대로 뜨면 그래프가 선언한
     space 가 조용히 빠지고 에이전트는 호출 시점에야 MEM_001 을 만난다. run 단위 판정은
-    레지스트리 모드에서만 성립한다 (09 Access Enforcement). 배포 여부는 이 프로세스가 알 수
+    레지스트리 모드에서만 성립한다 (09 Access Enforcement) — 토큰 모드는 요청의 ``X-Aaestro-Run``
+    헤더도 무시한다 (``TokenGate``). 배포 여부는 이 프로세스가 알 수
     없으므로 카탈로그의 그래프를 기준으로 한다: 선언만 있어도 배포될 수 있다.
     읽지 못한 그래프도 거부한다 — 그 안에 run scope 선언이 없다는 것을 증명할 수 없다.
     기동 때 한 번만 본다: 뜬 뒤에 저장된 그래프는 이 검사가 모른다 (배포 검증의 몫).

@@ -34,8 +34,9 @@
 
 1. **run scope**: run 종료 후 read-only 전환 — 시간이 지났다는 이유로 지우지 않는다 (기억에
    TIMEOUT 은 없다 — 지울 기억은 메모리 정리 판정과 운영자 조작이 정한다). Service run 은 iteration 이 이어지는 동안 계속 누적 + compaction 적용.
-   > **구현 상태**: 레지스트리는 run space 를 판정한다 (#608, Access Enforcement 9). Memory Service 와
-   > agentd 가 run id 를 싣는 경로는 아직이다 (#609 · #610).
+   > **구현 상태**: 레지스트리는 run space 를 판정하고 (#608, Access Enforcement 9), Memory Service 는
+   > 요청 헤더 `X-Aaestro-Run` 의 run 으로 run space 를 조립해 그 판정을 묻는다 (#609). agentd 가 헤더를
+   > 싣는 경로는 아직이다 (#610).
    Cross-group 배선 그래프에서도 run 참여 노드 전원이 접근 (run 이 곧 경계)
 2. **local scope**: 컨테이너 재시작/재배포/그룹 이동과 무관하게 유지 — 에이전트 이름 기준.
    에이전트 버전 교체 시에도 승계 (기억은 이름에, 계약은 버전에)
@@ -307,9 +308,12 @@ Agent 컨테이너 (agentd) ──HTTP──▶ Memory Service (강제 지점) �
 7. **신원 확인이 본문 파싱보다 먼저다**: 토큰이 없거나 통하지 않으면 본문이 어떻든 같은 `MEM_001` (401) 이다 —
    검증 거절의 필드 경로가 인증 전에 나가지 않는다. space 별 판정은 본문의 space 목록이 필요하므로 그 뒤에 온다.
    무인증은 `GET /v1/health` (liveness 만) 뿐이고 API 문서 경로는 열지 않는다. 없는 라우트 · 메서드(404 · 405)는
-   라우트 매칭에서 나므로 인증보다 먼저이며 typed 로 답한다 — 드러나는 것은 라우트 존재뿐이다
+   라우트 매칭에서 나므로 인증보다 먼저이며 typed 로 답한다 — 드러나는 것은 라우트 존재뿐이다.
+   run 을 고르는 헤더 `X-Aaestro-Run` (#609) 도 이 단계에서 읽는다 — 식별자 규칙 (`core/identifiers.py`) 에
+   어긋나면 신원 확인 **뒤에** `VAL_002` 다 (값은 싣지 않는다)
 8. **run scope 는 레지스트리 모드 전용이다**: 토큰 모드 (레지스트리 없는 고정 토큰) 의 토큰은 run
-   없이 발급돼 run space 가 실리지 않는다. 토큰 모드 Memory Service 는 카탈로그의 그래프가
+   없이 발급돼 run space 가 실리지 않는다. 요청의 `X-Aaestro-Run` 헤더는 무시한다 (형식만 거른다) — 기동 검사가
+   run space 선언을 막았으므로 열 것이 없고, 거절하면 run space 없는 그래프의 태스크까지 실패한다. 토큰 모드 Memory Service 는 카탈로그의 그래프가
    `spec.memory.spaces` 를 선언했으면 기동 시 `CFG_001` 로 실패한다 — space 를 조용히 빼고 뜨지
    않는다. 읽지 못한 그래프 선언도 같이 거부한다 — 그 안에 run scope 선언이 없다는 것을 증명할 수
    없다. 에러 `details` 에는 그래프 이름 · space 별칭과 읽지 못한 선언의 저장소 기준 상대 위치만

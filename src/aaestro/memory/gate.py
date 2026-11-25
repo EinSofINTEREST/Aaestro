@@ -23,9 +23,15 @@ import structlog
 from aaestro.access.client import DecisionSource
 from aaestro.access.model import Mode, ResourceKind
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
-from aaestro.core.manifest import RESERVED_GLOBAL_GROUP, MemoryMode
+from aaestro.core.manifest import (
+    RESERVED_GLOBAL_GROUP,
+    MemoryMode,
+    MemorySpaceRef,
+    MemorySpec,
+)
 from aaestro.memory.service import AccessToken, MemorySpace
 from aaestro.memory.tokens import issue_token
+from aaestro.modules.memoryset import MemoryScope
 
 if TYPE_CHECKING:
     from aaestro.access.client import AccessClient
@@ -41,8 +47,12 @@ def unauthorized(reason: str) -> AaestroError:
 
 
 class Gate(Protocol):
-    async def admit(self, presented: str | None) -> AccessToken:
-        """The caller and the spaces its declarations name — ``MEM_001`` if unknown."""
+    async def admit(self, presented: str | None, run_id: str | None = None) -> AccessToken:
+        """The caller and the spaces its declarations name — ``MEM_001`` if unknown.
+
+        ``run_id`` 는 요청 헤더가 고른 run 이다 (#609) — 비밀이 아니라 선택자다. 그 run 에 닿는지는
+        입구가 정한다.
+        """
         ...
 
     async def narrow(
@@ -58,7 +68,10 @@ class TokenGate:
 
     tokens: TokenRegistry
 
-    async def admit(self, presented: str | None) -> AccessToken:
+    async def admit(self, presented: str | None, run_id: str | None = None) -> AccessToken:
+        # run 은 무시한다: 토큰 모드는 run scope 를 선언한 그래프가 있으면 뜨지 않으므로
+        # (09 Access Enforcement 8) 헤더가 열 run space 가 없다. 거절하면 run space 없는 그래프의
+        # 태스크까지 실패한다
         return self.tokens.resolve(presented)
 
     async def narrow(
@@ -79,15 +92,19 @@ class RegistryGate:
     client: AccessClient
     catalog: Catalog
 
-    async def admit(self, presented: str | None) -> AccessToken:
+    async def admit(self, presented: str | None, run_id: str | None = None) -> AccessToken:
         if not presented:
             raise unauthorized("memory token is required")
         agent, source = await self.client.identify(presented)
         if agent is None:
             # 모르는 신원, 폐기된 신원, 판정 불가 모두 — 무엇이 없는지 알려주지 않는다
             raise unauthorized("memory token is not recognised")
+        from aaestro.access.baselines import DIRECT_RUN_PREFIX
+
+        if run_id is not None and run_id.startswith(DIRECT_RUN_PREFIX):
+            run_id = None  # direct 태스크에는 run space 가 없다 (09 Scope Rules 5)
         # space 별 판정이 없는 접근 (미선언 별칭) 의 출처는 신원 확인의 출처다
-        return replace(self._declared(agent), decision_source=source.value)
+        return replace(self._declared(agent, run_id), decision_source=source.value)
 
     async def narrow(
         self, presented: str, token: AccessToken, aliases: Sequence[str], *, write: bool
@@ -114,9 +131,31 @@ class RegistryGate:
                     decision_source=verdict.source.value,
                 )
             )
-        return replace(token, spaces=tuple(allowed), refusals=tuple(refusals))
+        # 기억의 출처 run 은 헤더의 주장이 아니라 레지스트리가 참여를 인정한 run 이다
+        # (09 Entry Rules 4) — 출처는 쓰기에만 실리므로 확인도 쓰기에서만 한다
+        confirmed = any(s.scope is MemoryScope.RUN for s in allowed)
+        if token.run_id is not None and write and not confirmed:
+            confirmed = await self._participates(presented, token)
+        return replace(
+            token,
+            spaces=tuple(allowed),
+            refusals=tuple(refusals),
+            run_id=token.run_id if confirmed else None,
+        )
 
-    def _declared(self, agent: str) -> AccessToken:
+    async def _participates(self, presented: str, token: AccessToken) -> bool:
+        """이 신원이 토큰의 run 에 참여하는가 — 그 run 의 space 하나라도 읽을 수 있으면."""
+        for space in token.spaces:
+            if space.scope is not MemoryScope.RUN:
+                continue
+            verdict = await self.client.decide(
+                presented, ResourceKind.MEMORY, space.space_id, Mode.RO
+            )
+            if verdict.allowed:
+                return True
+        return False
+
+    def _declared(self, agent: str, run_id: str | None = None) -> AccessToken:
         try:
             manifest = self.catalog.agent(agent)
         except AaestroError as err:
@@ -127,7 +166,24 @@ class RegistryGate:
             manifest,
             group=groups.get(manifest.metadata.group or ""),
             global_spaces=global_group.spec.memory if global_group else None,
+            run_id=run_id,
+            run_spaces=self._run_candidates() if run_id is not None else None,
         )
+
+    def _run_candidates(self) -> MemorySpec:
+        """run space 후보 — 카탈로그의 그래프가 선언한 run scope 별칭 전부.
+
+        후보일 뿐 권한이 아니다: 이 run 의 시작 시점 스냅샷에 그 별칭이 있고 이 신원이 노드인지는
+        ``narrow`` 가 space 마다 레지스트리에 묻는다 (#608). 후보를 선언으로 묶어 두는 것은 호출자가
+        고른 별칭마다 판정 캐시가 늘지 않게 하기 위해서다.
+        shortcut: run 시작 뒤 그래프 파일에서 지운 별칭은 후보에 없어 닿지 못한다 — 레지스트리가
+        run 스냅샷의 별칭을 알려 주는 창구가 생기면 그것으로 바꾼다.
+        """
+        aliases: dict[str, MemorySpaceRef] = {}
+        for graph in self.catalog.graphs().items.values():
+            for space in graph.spec.memory.spaces:
+                aliases.setdefault(space.alias, space)
+        return MemorySpec(spaces=tuple(aliases.values()))
 
 
 def _addressed_by_id(alias: str) -> MemorySpace | None:
@@ -136,7 +192,6 @@ def _addressed_by_id(alias: str) -> MemorySpace | None:
     해석만 넓힌다: 허용 여부는 여전히 요청마다 레지스트리가 판정한다. 선언도 부여도 없으면 거부.
     """
     from aaestro.access.baselines import SPACE_ID
-    from aaestro.modules.memoryset import MemoryScope
 
     matched = SPACE_ID.fullmatch(alias)
     if matched is None:
