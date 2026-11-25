@@ -1315,3 +1315,23 @@ async def test_release_leaves_no_restart_the_watch_scheduled_while_it_was_cancel
     assert not [t for t in agents._restarts.values() if not t.done()]
     assert launched.lifecycle.state is AgentState.STOPPED
     await agents.stop_all()
+
+
+async def test_release_during_a_replacement_cancels_it_and_keeps_the_original_stopped():
+    """교체가 레플리카를 목록에서 뺀 틈의 `release` 도 재시작을 끊는다 (#659)."""
+    client = GatedDockerClient()
+    agents = launcher(client, Recorder(), health_interval_s=None)
+    launched = await agents.start(manifest())
+    await hold_a_replacement(agents, client, launched)
+    replacing = agents._restarts[("echo", 0)]
+
+    await stop_while_held(client, agents.release("echo", replica=0))
+    await spin(20)
+
+    assert replacing.done(), "재시작이 끊기지 않았다"
+    assert agents.launched == {("echo", 0): launched}, "원래 레플리카가 목록에 돌아오지 않았다"
+    assert launched.lifecycle.state is AgentState.STOPPED
+    assert not agents._restarts
+    # 취소된 교체가 만든 컨테이너는 정리되고, 놓은 원래 컨테이너는 그대로다 (#648)
+    assert SECOND_CONTAINER in client.removed, "교체가 만든 컨테이너가 남았다"
+    await agents.stop_all()

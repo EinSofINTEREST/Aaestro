@@ -1056,10 +1056,12 @@ class AgentLauncher:
         운영자의 다음 `stop` 이 지운다. 토큰 · 사이드카 몫 · 포트도 그때까지 쥔다.
         """
         key = (agent, replica)
+        # 조회 **전에** 끊는다: 교체가 `start` 를 기다리는 동안은 레플리카가 목록에 없다. 끊으면
+        # `_replace` 의 finally 가 원래 레플리카를 되돌려 놓는다 (`stop` 과 같은 순서)
+        await self._cancel_restart(key)
         launched = self.launched.get(key)
         if launched is None:
             return
-        await self._cancel_restart(key)
         launched = await self._quiesce(launched)
         if launched.lifecycle.state is not AgentState.STOPPED:
             launched.lifecycle.transition(AgentState.STOPPED)
