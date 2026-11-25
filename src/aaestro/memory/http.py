@@ -130,6 +130,10 @@ class LatestRequest(BaseModel):
     entry_id: str
 
 
+RECORDED_OPS = frozenset({"append", "read", "latest", "search"})
+"""감사 · 메트릭을 남기는 경로의 끝 조각 — 09 의 ``op`` 어휘 (``recall`` 은 경로가 아니다)."""
+
+
 def _bearer(request: Request) -> str | None:
     """Authorization 헤더의 Bearer 토큰 — 없거나 형식이 다르면 None."""
     header = request.headers.get("authorization", "")
@@ -205,7 +209,11 @@ def create_app(
                 # 신원이 먼저다 — 헤더가 틀려도 신원이 없으면 같은 MEM_001 (09 Access Enforcement 7)
                 declared = await entrance.admit(presented, None if problem else run_id)
                 if problem is not None:
-                    service.record_malformed(declared, op=request.url.path.rsplit("/", 1)[-1])
+                    op = request.url.path.rsplit("/", 1)[-1]
+                    # 연산 어휘 (09 메트릭 op) 밖의 경로 (``GET /v1/spaces``) 는 원래 감사 ·
+                    # 메트릭을 남기지 않는다 — 거절도 같다
+                    if op in RECORDED_OPS:
+                        service.record_malformed(declared, op=op)
                     raise AaestroError(
                         category=ErrorCategory.VALIDATION,
                         code=ErrorCode.VAL_002,

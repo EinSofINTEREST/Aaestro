@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import shutil
 from pathlib import Path
 
 import httpx
@@ -38,8 +39,8 @@ RUN = "run-1"
 
 
 class Stack:
-    def __init__(self) -> None:
-        catalog = Catalog.under(REPO_ROOT)
+    def __init__(self, root: Path = REPO_ROOT) -> None:
+        catalog = Catalog.under(root)
         self.runs = InMemoryRunStore()
         self.manager = RunManager(store=self.runs)
         self.registry = AccessRegistry(
@@ -76,7 +77,7 @@ class Stack:
             recheck_s=0.05,
         )
         config = load_config("dev", config_dir=REPO_ROOT / "configs", environ={})
-        self.memory = build_deployment(config, root=REPO_ROOT, access=self.client)
+        self.memory = build_deployment(config, root=root, access=self.client)
         self.http = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=self.memory.app), base_url="http://memory"
         )
@@ -95,9 +96,9 @@ class Stack:
         await until(lambda: self.client._version == self.registry.version())  # noqa: SLF001
 
 
-@pytest.fixture
-async def stack():
-    found = Stack()
+@contextlib.asynccontextmanager
+async def watched(root: Path = REPO_ROOT):
+    found = Stack(root)
     watching = asyncio.create_task(found.client.watch())
     try:
         yield found
@@ -106,6 +107,12 @@ async def stack():
         with contextlib.suppress(asyncio.CancelledError):
             await watching
         await found.client.aclose()
+
+
+@pytest.fixture
+async def stack():
+    async with watched() as found:
+        yield found
 
 
 def fact(content: str = "run 안의 관찰") -> dict:
@@ -141,6 +148,69 @@ async def test_without_the_header_the_run_space_is_not_declared(stack):
     error = await refused(stack.agent("planner", run_id=None).append("scratch", **fact()))
 
     assert error.code == ErrorCode.MEM_001
+
+
+async def test_latest_reaches_a_live_runs_space(stack):
+    stack.start()
+    await stack.settled()
+    planner = stack.agent("planner")
+    stored = await planner.append("scratch", **fact())
+
+    found = await planner.latest("scratch", stored.entry_id)
+
+    assert found is not None and found.entry_id == stored.entry_id
+
+
+async def test_a_revoked_run_space_is_refused_while_local_spaces_still_search(stack):
+    stack.start()
+    planner = stack.agent("planner")
+    stack.registry.revoke("planner", ResourceKind.MEMORY, f"run:{RUN}:scratch", reason="incident")
+    await stack.settled()
+
+    error = await refused(planner.search("관찰", spaces=["scratch", "longterm"]))
+    assert error.code == ErrorCode.MEM_001
+    assert error.details["memory_space"] == "scratch"
+    await planner.search("관찰", spaces=["longterm"])
+    await planner.search("관찰")  # 지정하지 않으면 회수된 run space 만 건너뛴다
+    assert {s["alias"] for s in await planner.spaces()} >= {"longterm"}
+    assert "scratch" not in {s["alias"] for s in await planner.spaces()}
+
+
+async def test_another_graphs_run_alias_does_not_shadow_a_group_space(tmp_path):
+    """후보는 이 run 의 스냅샷뿐이다 — 무관한 그래프가 같은 이름의 run 별칭을 선언해도 그룹 space 가
+    가려지지 않는다 (run > group 우선순위는 이 run 이 실제로 선언한 별칭에만 적용된다)."""
+    for name in ("agents", "graphs", "groups", "modules"):
+        shutil.copytree(REPO_ROOT / name, tmp_path / name, symlinks=True)
+    other = (REPO_ROOT / "graphs" / "feed-monitor.yaml").read_text(encoding="utf-8")
+    (tmp_path / "graphs" / "other.yaml").write_text(
+        other.replace("name: feed-monitor", "name: other").replace("as: scratch", "as: knowledge"),
+        encoding="utf-8",
+    )
+    async with watched(tmp_path) as stack:
+        stack.start()
+        await stack.settled()
+
+        await stack.agent("planner").read("knowledge")
+
+
+async def test_a_node_of_a_run_without_run_spaces_keeps_the_run_as_provenance(stack):
+    stack.manager.acquire(make_mission(), run_id="run-2")  # run space 를 선언하지 않은 그래프
+    await stack.settled()
+
+    node = await stack.agent("planner", run_id="run-2").append("longterm", **fact())
+    outsider = await stack.agent("writer", run_id="run-2").append("longterm", **fact())
+
+    assert node.source.run_id == "run-2"
+    assert outsider.source.run_id is None
+
+
+async def test_an_unknown_credential_has_no_run(stack):
+    stack.start()
+    await stack.settled()
+
+    node, spaces, _ = await stack.client.run_participation("made-up", RUN)
+
+    assert (node, spaces) == (False, {})
 
 
 # --- 완료 조건 2 — 끝난 run 은 읽기 전용 --------------------------------------------
@@ -278,14 +348,13 @@ async def test_token_mode_ignores_a_valid_header_and_still_checks_its_form():
     from aaestro.memory.store import SqliteMemoryStore
 
     store = SqliteMemoryStore()
+    service = MemoryService(store=store)
     tokens = TokenRegistry()
     secret = tokens.issue(
         build_token(agent="researcher", group=None, local=[("longterm", "researcher")])
     )
     indexer = IndexRegistry()
-    app = create_app(
-        MemoryService(store=store), Recall(indexes=indexer.indexes, store=store), tokens
-    )
+    app = create_app(service, Recall(indexes=indexer.indexes, store=store), tokens)
     http = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://memory")
     try:
         stored = await HttpMemoryAccess(
@@ -299,5 +368,16 @@ async def test_token_mode_ignores_a_valid_header_and_still_checks_its_form():
             ).read("longterm")
         )
         assert error.code == ErrorCode.VAL_002
+        assert service.audit_log[-1]["op"] == "read"
+        assert service.audit_log[-1]["status"] == "failed"
+
+        # 연산이 아닌 경로 (spaces) 는 원래 감사 줄을 남기지 않는다 — 09 op 어휘 밖의 값 금지
+        before = len(service.audit_log)
+        response = await http.get(
+            "/v1/spaces",
+            headers={"authorization": f"Bearer {secret}", MEMORY_RUN_HEADER: ""},
+        )
+        assert response.status_code == 400
+        assert len(service.audit_log) == before
     finally:
         store.close()

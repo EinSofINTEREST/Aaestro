@@ -206,6 +206,35 @@ async def test_a_mode_that_does_not_fit_the_kind_is_rejected(api, registry, path
     assert not registry.rules("worker")
 
 
+async def test_an_enforcer_asks_about_a_run_with_its_own_token_only(api, registry):
+    """run 조회는 강제 지점 라우트다 — 모르는 신원 · 기록 없는 run 은 빈 답, 형식 오류는 VAL_002."""
+    worker = registry.issue_identity("worker", "dep-1")
+
+    no_run = await api.post(
+        "/v1/access/runs", json={"credential": worker, "run_id": "r-1"}, headers=bearer(ENFORCER)
+    )
+    unknown = await api.post(
+        "/v1/access/runs", json={"credential": "made-up", "run_id": "r-1"}, headers=bearer(ENFORCER)
+    )
+    malformed = await api.post(
+        "/v1/access/runs", json={"credential": worker, "run_id": " r-1"}, headers=bearer(ENFORCER)
+    )
+    as_operator = await api.post(
+        "/v1/access/runs", json={"credential": worker, "run_id": "r-1"}, headers=bearer(CONTROL)
+    )
+
+    assert no_run.status_code == 200
+    assert (no_run.json()["agent"], no_run.json()["node"], no_run.json()["spaces"]) == (
+        "worker",
+        False,
+        {},
+    )
+    assert unknown.status_code == 200 and unknown.json()["agent"] is None
+    assert malformed.status_code == 400 and malformed.json()["error"]["code"] == "VAL_002"
+    assert " r-1" not in malformed.text
+    assert as_operator.status_code == 401
+
+
 async def test_an_enforcer_learns_who_a_credential_belongs_to(api, registry):
     worker = registry.issue_identity("worker", "dep-1")
 

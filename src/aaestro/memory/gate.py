@@ -31,7 +31,6 @@ from aaestro.core.manifest import (
 )
 from aaestro.memory.service import AccessToken, MemorySpace
 from aaestro.memory.tokens import issue_token
-from aaestro.modules.memoryset import MemoryScope
 
 if TYPE_CHECKING:
     from aaestro.access.client import AccessClient
@@ -99,12 +98,23 @@ class RegistryGate:
         if agent is None:
             # 모르는 신원, 폐기된 신원, 판정 불가 모두 — 무엇이 없는지 알려주지 않는다
             raise unauthorized("memory token is not recognised")
-        from aaestro.access.baselines import DIRECT_RUN_PREFIX
-
-        if run_id is not None and run_id.startswith(DIRECT_RUN_PREFIX):
-            run_id = None  # direct 태스크에는 run space 가 없다 (09 Scope Rules 5)
+        run_spaces: MemorySpec | None = None
+        if run_id is not None:
+            # 후보는 레지스트리의 run 스냅샷이다 (#468 결정 a) — 노드가 아니면 (direct- ·
+            # 모르는 run · 다른 그래프의 신원 포함) run 도 후보도 없다. 출처의 run 도 이 답이
+            # 정한다 (09 Entry Rules 4)
+            node, spaces, _ = await self.client.run_participation(presented, run_id)
+            if node:
+                run_spaces = MemorySpec(
+                    spaces=tuple(
+                        MemorySpaceRef.model_validate({"ref": ref, "as": a})
+                        for a, ref in spaces.items()
+                    )
+                )
+            else:
+                run_id = None
         # space 별 판정이 없는 접근 (미선언 별칭) 의 출처는 신원 확인의 출처다
-        return replace(self._declared(agent, run_id), decision_source=source.value)
+        return replace(self._declared(agent, run_id, run_spaces), decision_source=source.value)
 
     async def narrow(
         self, presented: str, token: AccessToken, aliases: Sequence[str], *, write: bool
@@ -131,31 +141,11 @@ class RegistryGate:
                     decision_source=verdict.source.value,
                 )
             )
-        # 기억의 출처 run 은 헤더의 주장이 아니라 레지스트리가 참여를 인정한 run 이다
-        # (09 Entry Rules 4) — 출처는 쓰기에만 실리므로 확인도 쓰기에서만 한다
-        confirmed = any(s.scope is MemoryScope.RUN for s in allowed)
-        if token.run_id is not None and write and not confirmed:
-            confirmed = await self._participates(presented, token)
-        return replace(
-            token,
-            spaces=tuple(allowed),
-            refusals=tuple(refusals),
-            run_id=token.run_id if confirmed else None,
-        )
+        return replace(token, spaces=tuple(allowed), refusals=tuple(refusals))
 
-    async def _participates(self, presented: str, token: AccessToken) -> bool:
-        """이 신원이 토큰의 run 에 참여하는가 — 그 run 의 space 하나라도 읽을 수 있으면."""
-        for space in token.spaces:
-            if space.scope is not MemoryScope.RUN:
-                continue
-            verdict = await self.client.decide(
-                presented, ResourceKind.MEMORY, space.space_id, Mode.RO
-            )
-            if verdict.allowed:
-                return True
-        return False
-
-    def _declared(self, agent: str, run_id: str | None = None) -> AccessToken:
+    def _declared(
+        self, agent: str, run_id: str | None = None, run_spaces: MemorySpec | None = None
+    ) -> AccessToken:
         try:
             manifest = self.catalog.agent(agent)
         except AaestroError as err:
@@ -167,23 +157,8 @@ class RegistryGate:
             group=groups.get(manifest.metadata.group or ""),
             global_spaces=global_group.spec.memory if global_group else None,
             run_id=run_id,
-            run_spaces=self._run_candidates() if run_id is not None else None,
+            run_spaces=run_spaces,
         )
-
-    def _run_candidates(self) -> MemorySpec:
-        """run space 후보 — 카탈로그의 그래프가 선언한 run scope 별칭 전부.
-
-        후보일 뿐 권한이 아니다: 이 run 의 시작 시점 스냅샷에 그 별칭이 있고 이 신원이 노드인지는
-        ``narrow`` 가 space 마다 레지스트리에 묻는다 (#608). 후보를 선언으로 묶어 두는 것은 호출자가
-        고른 별칭마다 판정 캐시가 늘지 않게 하기 위해서다.
-        shortcut: run 시작 뒤 그래프 파일에서 지운 별칭은 후보에 없어 닿지 못한다 — 레지스트리가
-        run 스냅샷의 별칭을 알려 주는 창구가 생기면 그것으로 바꾼다.
-        """
-        aliases: dict[str, MemorySpaceRef] = {}
-        for graph in self.catalog.graphs().items.values():
-            for space in graph.spec.memory.spaces:
-                aliases.setdefault(space.alias, space)
-        return MemorySpec(spaces=tuple(aliases.values()))
 
 
 def _addressed_by_id(alias: str) -> MemorySpace | None:
@@ -192,6 +167,7 @@ def _addressed_by_id(alias: str) -> MemorySpace | None:
     해석만 넓힌다: 허용 여부는 여전히 요청마다 레지스트리가 판정한다. 선언도 부여도 없으면 거부.
     """
     from aaestro.access.baselines import SPACE_ID
+    from aaestro.modules.memoryset import MemoryScope
 
     matched = SPACE_ID.fullmatch(alias)
     if matched is None:
