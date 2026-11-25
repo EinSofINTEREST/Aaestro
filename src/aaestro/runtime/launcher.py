@@ -1193,8 +1193,10 @@ class AgentLauncher:
                     # 제거 실패 — 감시가 멈춰 값이 갱신되지 않으니 0 으로 고정한다.
                     # 1 이 남으면 지워지지 않은 컨테이너가 healthy 로 보인다
                     gauge.labels(agent=agent, replica=str(launched.replica)).set(0)
-            if self.ports is not None and launched.stopped:
-                self.ports.release(agent, replica=launched.replica)
+            if launched.stopped and launched.a2a_port is not None:
+                # 끊긴 교체 기동을 엔진이 아직 정리 중이면 그 컨테이너가 포트를 쥘 수 있다 — 판정은
+                # 한 곳에서 하고, 정리가 끝날 때 다시 본다 (#686)
+                self.release_if_unowned(agent, launched.replica, launched.a2a_port)
         # 끊긴 재시작의 교체 기동이 남긴 것까지 — 위의 재시작 취소 뒤라야 보인다 (#654)
         await self._remove_orphans(agent, replica=replica)
 

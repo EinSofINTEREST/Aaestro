@@ -1729,6 +1729,8 @@ async def test_a_redeploy_while_a_rolled_back_start_settles_is_refused(workspace
         with pytest.raises(AaestroError) as excinfo:
             await manager.deploy("wired")
         assert excinfo.value.code == ErrorCode.RT_010
+        assert excinfo.value.details["deployments"] == [record.deployment_id]
+        assert "tear that one down" in excinfo.value.message
         assert ports.held("alpha") == held
         # 기록 없이도 막는다 — 정리 중인 기동은 launcher · 기록 어디에도 레플리카가 없다
         manager.store.upsert(
@@ -1739,6 +1741,10 @@ async def test_a_redeploy_while_a_rolled_back_start_settles_is_refused(workspace
         with pytest.raises(AaestroError) as excinfo:
             await manager.deploy("wired")
         assert excinfo.value.code == ErrorCode.RT_010, "정리 중인 기동이 있는 이름을 점유했다"
+        # 해체할 배포가 없다 — 기다리라고 말하고 이유를 싣는다
+        assert excinfo.value.details["deployments"] == []
+        assert excinfo.value.details["settling"] == ["alpha"]
+        assert "cleaned up" in excinfo.value.message
         manager.store.upsert(record)
     finally:
         docker.release()

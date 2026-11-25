@@ -1428,14 +1428,22 @@ class DeploymentManager:
             n for n in names if n in holders or self.launcher.replicas_of(n) or self._settling(n)
         ]
         if taken:
+            deployments = sorted({d for n in taken for d in holders.get(n, ())})
+            settling = [n for n in taken if self._settling(n)]
+            # 정리 중인 기동만 막았다면 해체할 배포가 없다 — 기다리면 풀린다 (#686)
+            message = (
+                "agents still being cleaned up from a cancelled start — retry once it finishes"
+                if settling and not deployments and not any(map(self.launcher.replicas_of, taken))
+                else "agents already run under another deployment — tear that one down first"
+            )
+            details: dict[str, Any] = {"agents": taken, "deployments": deployments}
+            if settling:
+                details["settling"] = settling
             raise AaestroError(
                 category=ErrorCategory.RUNTIME,
                 code=ErrorCode.RT_010,
-                message="agents already run under another deployment — tear that one down first",
-                details={
-                    "agents": taken,
-                    "deployments": sorted({d for n in taken for d in holders.get(n, ())}),
-                },
+                message=message,
+                details=details,
             )
         self._claimed.update(dict.fromkeys(names, deployment_id))
         return names
