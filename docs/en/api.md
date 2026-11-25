@@ -366,17 +366,29 @@ The skeleton copies those three into `/app` and puts `/app/src` on `PYTHONPATH`,
   **last stage**; it must reach the base directly or through earlier stage names (`AS name`). Builder
   stages from other images are fine;
 - not end as `root` (going up to install and back down is fine);
-- `COPY`/`ADD` only from inside the context — no absolute paths, no `..`, no remote URLs.
+- `COPY`/`ADD` only from plain relative paths inside the context — no absolute paths, no `..`, no remote
+  URLs.
 
-The check reads instructions, not lines: `\` continuations are joined, comments are skipped, keywords
-are case-insensitive, and the JSON form (`ADD ["src", "dst"]`) is read as such. `USER` counts as root
-when the user part of `user:group` is `root` or `0` (`root:0`, `0:1000`; `agent:0` is not root); only the last stage's last `USER` counts (a stage inheriting from a named
-stage inherits its `USER`), and one containing a variable (`$`) is refused since it cannot be checked.
-`COPY --from=` must name an earlier stage (its `AS` name or index); sources are then files of that stage
-and are not path-checked. Any other value — an image reference, a later stage, a `$` variable — is refused,
-since it would pull an outside image at build time. A
-`# escape=` parser directive is refused, since it changes how continuations read. A refusal
-carries only the line the instruction starts on (`details.line`), never the value.
+The check reads instructions the way Docker does, not lines: a `\` continuation joins the next line
+with **no separator** (`USER ro\` + `ot` is `USER root`), comments are skipped, keywords are
+case-insensitive, instructions and arguments are split on `[ \t\v\f\r]+` (a tab works), a leading
+UTF-8 BOM is dropped, and the JSON form (`ADD ["src", "dst"]`) is read as such. Notations whose reading
+could differ are refused rather than guessed (`VAL_002`, `details.line` only, never the value):
+
+- parser directives `# escape=` and `# syntax=` (they change how the file is read; `# check=` only
+  tunes linting and is allowed);
+- heredocs (`<<` in any instruction);
+- a `COPY`/`ADD` source that is not made of `[A-Za-z0-9._/*?-]` (so no quotes, `\`, `$`, `:` or `@` —
+  URLs, `git@…`, `ssh://…`), or that normalizes to an absolute path or to `..`/`../…`;
+- a `USER` value that is not a plain `user[:group]` of `[A-Za-z0-9_.-]`, or whose user part is `root`/`0`
+  (`root:0`, `0:1000`; `agent:0` is not root);
+- a final-image `FROM` that is not `aaestro/agent-base:<tag>` (the tag may be `${NAME}`).
+
+Only the last stage counts: it must reach the base directly or through earlier stage names (`AS name`),
+and its last `USER` (a stage inheriting from a named stage inherits its `USER`) is the one judged.
+Builder stages from other images are fine. `COPY --from=` must name an earlier stage (its `AS` name or
+index); its sources are files of that stage and are not path-checked. Any other value — an image
+reference, a later stage, a variable — is refused, since it would pull an outside image at build time.
 
 What is refused before anything is built:
 

@@ -149,7 +149,7 @@ _BASE = "FROM aaestro/agent-base:0.1.0\n"
         (_BASE + "USER ROOT\n", 2),
         (_BASE + "USER \\\n  root\n", 2),
         ("# escape=`\n" + _BASE, 1),
-        ("# syntax=x\n# Escape = `\n" + _BASE, 2),
+        ("# check=skip=x\n# Escape = `\n" + _BASE, 2),
     ],
 )
 def test_instruction_bypasses_are_refused_with_the_start_line(text, line):
@@ -170,7 +170,7 @@ def test_instruction_bypasses_are_refused_with_the_start_line(text, line):
         _BASE + "COPY --chown=1000:1000 \\\n  src/ \\\n  /app/src/\n",
         _BASE + 'COPY ["src/", "/app/src/"]\n',
         _BASE + "# ADD https://x/y /z\nRUN echo hi # USER root\n",
-        "# syntax=docker/dockerfile:1\n" + _BASE,
+        "# check=skip=JSONArgsRecommended\n" + _BASE,
         _BASE + "# escape=`\nRUN x\n",
     ],
 )
@@ -221,6 +221,51 @@ def test_multi_stage_and_variable_bypasses_are_refused(text, line):
 )
 def test_builder_stages_and_alias_chains_pass(text):
     check_dockerfile(text)
+
+
+@pytest.mark.parametrize(
+    ("text", "line"),
+    [
+        (_BASE + "USER ro\\\not\n", 2),  # 구분자 없는 이어 쓰기 = USER root (docker build 로 확인)
+        (_BASE + "USER\troot\n", 2),  # 탭 구분 (docker build 로 확인)
+        (_BASE + "USER\froot\n", 2),
+        (_BASE + 'USER r"oo"t\n', 2),
+        (_BASE + "USER r\\oot\n", 2),
+        (_BASE + "USER +0\n", 2),
+        (_BASE + "USER $MARKER\n", 2),
+        ("\ufeff# escape=`\n" + _BASE + "RUN echo \\\nUSER root\n", 1),
+        (_BASE + "FROM\tMARKER/image:1\n", 2),
+        (_BASE + "FR\\\nOM MARKER/image:1\n", 2),
+        ("FROM MARKER/image:1\nRUN <<EOF\nFROM aaestro/agent-base:0.1.0\nEOF\n", 2),
+        (_BASE + "USER root\nRUN <<EOF\nUSER 1000\nEOF\n", 3),
+        ("# syntax=MARKER/frontend:1\n" + _BASE, 1),
+        (_BASE + "ADD\thttps://MARKER.example/x /app/x\n", 2),
+        (_BASE + "AD\\\nD https://MARKER.example/x /app/x\n", 2),
+        (_BASE + 'ADD h"ttps"://MARKER.example/x /app/x\n', 2),
+        (_BASE + "ADD ht\\tps://MARKER.example/x /app/x\n", 2),
+        (_BASE + "ARG U=https://MARKER.example/x\nADD $U /app/x\n", 3),
+        (_BASE + "ADD ${U:-https://MARKER.example/x} /app/x\n", 2),
+        (_BASE + "ADD ssh://git@MARKER.com/evil/x.git /app/x\n", 2),
+        (_BASE + "ADD git@MARKER.com:evil/x.git /app/x\n", 2),
+        (_BASE + "ADD ./../MARKER /app/x\n", 2),
+        (_BASE + "ADD '\"/MARKER\"' /x\n", 2),
+        (_BASE + 'COPY ["\\u002e\\u002e/MARKER", "/x"]\n', 2),
+        (_BASE + "COPY src/../../MARKER /x\n", 2),
+        ("FROM python:3.12 AS b\n" + _BASE + 'COPY --from="b" /x /y\n', 3),
+        ("FROM python:3.12 AS b\n" + _BASE + "COPY --from=$MARKER /x /y\n", 3),
+        ('FROM python:3.12 AS "b"\n' + _BASE + 'COPY --from="b" /x /y\n', 3),
+        ("ARG X\nFROM aaestro/agent-base:0.1.0$MARKER\n", 2),
+        ('FROM "aaestro/agent-base:0.1.0"\n', 1),
+    ],
+)
+def test_ambiguous_notations_fail_closed(text, line):
+    with pytest.raises(AaestroError) as exc_info:
+        check_dockerfile(text)
+
+    err = exc_info.value
+    assert err.code == ErrorCode.VAL_002
+    assert err.details == {"line": line}
+    assert "marker" not in (err.message + str(err.details)).lower()
 
 
 def test_the_shipped_material_dockerfiles_still_pass():
