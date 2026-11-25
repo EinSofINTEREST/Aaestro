@@ -7,8 +7,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import os
 import re
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -23,6 +26,9 @@ SCHEME = "artifact://"
 """참조 접두사 — 값이 참조임을 한눈에 드러낸다."""
 
 _REF_PATTERN = re.compile(r"^artifact://(?P<scope>[a-z0-9-]+)/(?P<key>[A-Za-z0-9._/-]+)$")
+
+TEMP_PREFIX = ".tmp-"
+"""원자적 쓰기의 임시 파일 접두사 — 읽기에서도 key 로 받지 않는다."""
 
 _SAFE_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
 """저장 key 로 허용하는 모양 — 경로 탈출과 숨김 파일을 막는다."""
@@ -85,13 +91,15 @@ def parse_ref(raw: str) -> ArtifactRef:
     return ArtifactRef(scope=match["scope"], key=validate_key(match["key"]))
 
 
-def validate_key(key: str) -> str:
+def validate_key(key: str, *, for_write: bool = False) -> str:
     """Reject keys that would escape the store root.
 
     저장 루트를 벗어나는 key 를 거부합니다.
 
     Args:
         key: The requested key.
+        for_write: Also reject segments starting with ``.`` — 새 규칙은 쓰기에만
+            적용한다. 예전에 저장된 참조를 읽는 길은 막지 않는다.
 
     Returns:
         The key, unchanged, when it is safe.
@@ -110,6 +118,12 @@ def validate_key(key: str) -> str:
         raise invalid_key(key, "key must not contain empty segments")
     if "." in segments:
         raise invalid_key(key, "key must not contain '.' segments")
+    if any(segment.startswith(TEMP_PREFIX) for segment in segments):
+        # 쓰는 중인 임시 파일을 읽거나 덮지 못하게 한다
+        raise invalid_key(key, "key segments must not look like temporary files")
+    if for_write and any(segment.startswith(".") for segment in segments):
+        # 점으로 시작하는 이름은 임시 파일 몫이다 — 새로 쓰는 key 는 쓰지 않는다
+        raise invalid_key(key, "key segments must not start with '.'")
     if key.startswith("/"):
         raise invalid_key(key, "key must be relative")
     if not _SAFE_KEY.fullmatch(key):
@@ -147,14 +161,16 @@ class FilesystemArtifactStore:
         Returns:
             The ``artifact://`` reference.
 
+        취소된 호출의 스레드는 계속 돌 수 있다 — 결과는 앞선 내용 전부 아니면
+        새 내용 전부이고 반쪽 파일은 생기지 않지만, 취소된 쓰기의 결과는 확정되지 않는다.
+
         Raises:
             AaestroError: VALIDATION/``VAL_002`` for an unsafe key,
                 STORAGE/``STOR_003`` if the write fails.
         """
-        target = self._path_for(validate_key(key))
+        key = validate_key(key, for_write=True)
         try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(data)
+            await asyncio.to_thread(self._write_atomic, key, data)
         except OSError as err:
             raise storage_error(
                 "artifact could not be stored", key=key, cause=type(err).__name__
@@ -187,9 +203,8 @@ class FilesystemArtifactStore:
                 details={"ref": ref, "scope": self.scope},
             )
 
-        target = self._path_for(parsed.key)
         try:
-            return target.read_bytes()
+            return await asyncio.to_thread(self._read, parsed.key)
         except FileNotFoundError as err:
             raise AaestroError(
                 category=ErrorCategory.NOT_FOUND,
@@ -201,6 +216,28 @@ class FilesystemArtifactStore:
             raise storage_error(
                 "artifact could not be read", ref=ref, cause=type(err).__name__
             ) from err
+
+    def _read(self, key: str) -> bytes:
+        """경로 해석 (resolve · lstat) 까지 한 스레드 호출에서 읽는다."""
+        return self._path_for(key).read_bytes()
+
+    def _write_atomic(self, key: str, data: bytes) -> None:
+        """같은 디렉토리의 임시 파일에 쓴 뒤 교체한다 — 쓰다 실패해도 앞선 내용이 남는다."""
+        target = self._path_for(key)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(dir=target.parent, prefix=TEMP_PREFIX)
+        try:
+            try:
+                handle = os.fdopen(fd, "wb")
+            except BaseException:
+                os.close(fd)  # fdopen 이 실패하면 fd 의 소유자가 없다
+                raise
+            with handle:
+                handle.write(data)
+            Path(tmp_name).replace(target)
+        except BaseException:
+            Path(tmp_name).unlink(missing_ok=True)
+            raise
 
     def _path_for(self, key: str) -> Path:
         """key 를 저장 경로로 — 검증된 key 만 들어온다."""
@@ -218,7 +255,12 @@ class FilesystemArtifactStore:
         base = self.root / self.scope
         if not base.exists():
             return []
-        return sorted(str(path.relative_to(base)) for path in base.rglob("*") if path.is_file())
+        return sorted(
+            str(path.relative_to(base))
+            for path in base.rglob("*")
+            if path.is_file()
+            and not any(part.startswith(".") for part in path.relative_to(base).parts)
+        )
 
     def used_bytes(self) -> int:
         """이 스코프가 차지한 바이트 — quota 검증에 쓴다."""

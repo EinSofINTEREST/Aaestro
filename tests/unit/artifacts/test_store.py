@@ -7,6 +7,9 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 import pytest
 
 from aaestro.artifacts import FilesystemArtifactStore, parse_ref
@@ -64,7 +67,20 @@ async def test_storing_the_same_key_twice_overwrites(store):
 
 @pytest.mark.parametrize(
     "key",
-    ["../escape", "/absolute", "", "a/../../x", "sub/../ok", "..", "a//b", "ok.txt\n"],
+    [
+        "../escape",
+        "/absolute",
+        "",
+        "a/../../x",
+        "sub/../ok",
+        "..",
+        "a//b",
+        "ok.txt\n",
+        "a/.hidden",
+        ".a",
+        "a/.",
+        "a/..",
+    ],
 )
 async def test_a_key_cannot_escape_the_store_root(store, key):
     """`../` 한 조각이면 루트 밖 어디든 쓸 수 있다."""
@@ -139,3 +155,90 @@ def test_a_malformed_reference_is_rejected(raw):
 def test_a_content_key_is_stable_for_the_same_bytes():
     assert digest_key("p", b"same") == digest_key("p", b"same")
     assert digest_key("p", b"same") != digest_key("p", b"other")
+
+
+# --- 원자적 쓰기 (#664) ---------------------------------------------------------
+
+
+async def test_a_failed_write_keeps_the_previous_content_and_leaves_no_temp(store, monkeypatch):
+    ref = await store.put("k", b"old")
+
+    def boom(fd, mode):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("aaestro.artifacts.store.os.fdopen", boom)
+    with pytest.raises(AaestroError) as exc_info:
+        await store.put("k", b"new")
+    monkeypatch.undo()
+
+    assert exc_info.value.code == ErrorCode.STOR_003
+    assert isinstance(exc_info.value.__cause__, OSError)
+    assert await store.get(ref) == b"old"
+    assert [p.name for p in (store.root / store.scope).iterdir()] == ["k"]
+
+
+async def test_a_failed_replace_removes_the_temp_file(store, monkeypatch):
+    def boom(self, target):
+        raise OSError("busy")
+
+    monkeypatch.setattr(Path, "replace", boom)
+    with pytest.raises(AaestroError):
+        await store.put("k", b"new")
+
+    assert list((store.root / store.scope).iterdir()) == []
+
+
+async def test_temp_files_are_not_listed_as_keys(store):
+    await store.put("k", b"x")
+    (store.root / store.scope / ".tmp-leftover").write_bytes(b"partial")
+
+    assert list(store.stored_keys()) == ["k"]
+
+
+async def test_a_reference_stored_under_the_old_rules_is_still_readable(store):
+    """점 시작 조각 거절은 쓰기에만 — state 안에 남은 예전 참조를 읽을 수 있어야 한다."""
+    legacy = store.root / store.scope / "a" / ".hidden"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_bytes(b"old")
+
+    assert await store.get("artifact://researcher/a/.hidden") == b"old"
+    with pytest.raises(AaestroError) as exc_info:
+        await store.put("a/.hidden", b"new")
+    assert exc_info.value.code == ErrorCode.VAL_002
+
+
+async def test_a_temp_file_name_is_rejected_on_read(store):
+    (store.root / store.scope).mkdir(parents=True)
+    (store.root / store.scope / ".tmp-abc").write_bytes(b"partial")
+
+    with pytest.raises(AaestroError) as exc_info:
+        await store.get("artifact://researcher/.tmp-abc")
+    assert exc_info.value.code == ErrorCode.VAL_002
+    with pytest.raises(AaestroError) as exc_info:
+        await store.get("artifact://researcher/a/.tmp-abc")
+    assert exc_info.value.code == ErrorCode.VAL_002
+
+
+async def test_files_under_a_hidden_directory_are_not_listed(store):
+    await store.put("k", b"x")
+    hidden = store.root / store.scope / ".d"
+    hidden.mkdir()
+    (hidden / "f").write_bytes(b"x")
+
+    assert list(store.stored_keys()) == ["k"]
+
+
+async def test_a_failing_fdopen_closes_the_descriptor(store, monkeypatch):
+    closed = []
+    real_close = os.close
+    monkeypatch.setattr(
+        "aaestro.artifacts.store.os.close", lambda fd: (closed.append(fd), real_close(fd))
+    )
+    monkeypatch.setattr(
+        "aaestro.artifacts.store.os.fdopen", lambda *a, **k: (_ for _ in ()).throw(OSError("x"))
+    )
+
+    with pytest.raises(AaestroError):
+        await store.put("k", b"x")
+
+    assert len(closed) == 1

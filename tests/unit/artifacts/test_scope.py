@@ -6,6 +6,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import threading
+
 import pytest
 
 from aaestro.artifacts.scope import ArtifactScope, ScopedArtifacts
@@ -167,3 +170,47 @@ def test_no_quota_declared_means_unlimited():
     from aaestro.core.manifest import ArtifactSpec
 
     assert ArtifactSpec().quota_bytes is None
+
+
+async def test_concurrent_writes_cannot_both_pass_the_quota_check(tmp_path):
+    """쓰기가 스레드로 넘어가도 검사와 쓰기가 한 덩어리여야 상한을 넘지 않는다."""
+    access = scoped(tmp_path, quotas={ArtifactScope.LOCAL: 100})
+
+    results = await asyncio.gather(
+        access.put("a", b"x" * 80), access.put("b", b"y" * 80), return_exceptions=True
+    )
+
+    failed = [r for r in results if isinstance(r, AaestroError)]
+    assert len(failed) == 1
+    assert failed[0].code == ErrorCode.ART_002
+
+
+async def test_a_cancelled_put_keeps_the_lock_until_its_write_finishes(tmp_path, monkeypatch):
+    """취소돼도 쓰기 스레드는 계속 돈다 — 그 사이 다음 저장이 낡은 사용량으로 통과하면 안 된다."""
+    access = scoped(tmp_path, quotas={ArtifactScope.LOCAL: 100})
+    store = access.stores[ArtifactScope.LOCAL]
+    started, release = threading.Event(), threading.Event()
+    real_write = store._write_atomic
+
+    def held_write(key, data):
+        started.set()
+        release.wait(timeout=10)
+        real_write(key, data)
+
+    monkeypatch.setattr(store, "_write_atomic", held_write)
+
+    first = asyncio.create_task(access.put("a", b"x" * 80))
+    await asyncio.to_thread(started.wait, 10)
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+
+    second = asyncio.create_task(access.put("b", b"y" * 80))
+    for _ in range(20):
+        await asyncio.sleep(0)
+    assert not second.done()  # 첫 쓰기가 끝나기 전에는 quota 검사에 들어가지 못한다
+
+    release.set()
+    with pytest.raises(AaestroError) as exc_info:
+        await second
+    assert exc_info.value.code == ErrorCode.ART_002
