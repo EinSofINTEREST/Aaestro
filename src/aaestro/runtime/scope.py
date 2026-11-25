@@ -148,7 +148,7 @@ class ScopedSecrets:
             raise AaestroError(
                 category=ErrorCategory.CONFIG,
                 code=ErrorCode.CFG_002,
-                message=f"secret key is not in the agent env_allowlist{where}",
+                message="secret key is not in the agent env_allowlist",
                 details={"group": self._group_name or RESERVED_GLOBAL_GROUP, **at},
             )
 

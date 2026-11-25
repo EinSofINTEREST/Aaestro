@@ -301,5 +301,9 @@ def test_resolution_failure_names_a_position_not_the_key(declared):
     assert marker not in err.message
     assert marker not in str(err.details)
     assert marker not in str(err.payload())
-    assert "env_allowlist[0]" in err.message
     assert err.details["index"] == 0
+    if declared:
+        assert "env_allowlist[0]" in err.message
+    else:
+        # 이 키는 allowlist 에 없다 — 그 위치라고 말하지 않는다
+        assert err.message == "secret key is not in the agent env_allowlist"
