@@ -90,6 +90,17 @@ async def test_a_path_outside_the_build_context_is_400(api):
     assert response.json()["error"]["code"] == ErrorCode.VAL_002
 
 
+@pytest.mark.parametrize("body", [{"files": {}}, {}])
+async def test_an_empty_upload_is_400_and_leaves_the_version_open(api, body):
+    response = await api.put("/v1/agents/custom/materials", json=body)
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == ErrorCode.VAL_002
+    assert (await api.get("/v1/agents/custom/materials")).json()["updated_at"] == ""
+    retry = await api.put("/v1/agents/custom/materials", json={"files": {"src/a.py": "A = 1"}})
+    assert retry.status_code == 200
+
+
 async def test_a_bad_body_is_400(api):
     response = await api.put("/v1/agents/custom/materials", json={"files": "not-a-map"})
 
@@ -141,19 +152,6 @@ async def test_a_misspelled_files_key_is_400_and_stores_nothing(api):
     assert typo.status_code == 400
     assert typo.json()["error"]["code"] == ErrorCode.VAL_002
     assert right.status_code == 200
-
-
-async def test_an_empty_files_map_is_stored_and_locks_the_version(api):
-    """알려진 한계 (재료 스토어는 #386 범위 밖): 빈 ``files`` 도 저장되어 그 버전을 잠근다.
-
-    빈 맵을 거절하는 검증이 생기면 이 테스트를 뒤집는다.
-    """
-    empty = await api.put("/v1/agents/custom/materials", json={"files": {}})
-    then = await api.put("/v1/agents/custom/materials", json={"files": {"src/a.py": "one"}})
-
-    assert empty.status_code == 200
-    assert then.status_code == 400
-    assert then.json()["error"]["code"] == ErrorCode.MOD_002
 
 
 async def test_the_largest_legal_upload_fits_the_body_cap(api):

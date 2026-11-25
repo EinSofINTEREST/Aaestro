@@ -135,9 +135,11 @@ def check_path(path: str) -> str:
 def check_files(files: Mapping[str, str]) -> dict[str, str]:
     """Validate a whole material set — paths, sizes, and count.
 
-    빈 집합도 받는다: 재료를 지우는 것과 같은 뜻이 아니라, "이 버전에는 재료가 없다" 를
-    명시적으로 적는 경우가 있다.
+    빈 집합은 거절한다: 빈 묶음이 저장되면 그 버전이 잠겨 (불변) 올바른 재료를 올릴 수 없다.
+    재료를 비우는 길은 DELETE 다.
     """
+    if not files:
+        raise _invalid("material set is empty")
     if len(files) > MAX_FILES:
         raise _invalid("too many material files", count=len(files), limit=MAX_FILES)
     checked: dict[str, str] = {}

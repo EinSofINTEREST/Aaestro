@@ -325,6 +325,7 @@ The response has the same shape as `GET`, with `updated_at` stamped. The rules:
   (`src/./a.py` and `src//a.py` are refused, as is anything with `..`). At most 200 files,
   each at most 256 KiB of text, and each path at most 4096 characters. A request body over 1 MiB is refused with `413` (`VAL_002`) before parsing, except this upload, whose cap is file-count × (6 × file-size + 12 × path-length) plus 1 MiB of structure, which holds the worst-case JSON escaping (6 bytes per content byte, 12 per path character). Violations are `400` (`VAL_002`) with the offending `path`
   in `details`.
+- **An empty set is refused** (`400`, `VAL_002`) and nothing is stored — use `DELETE` to clear.
 - **A version's materials are immutable.** Different content under the same version is `400`
   (`MOD_002`); identical content is idempotent. Bump the agent's version, save the agent,
   then save the new materials.
