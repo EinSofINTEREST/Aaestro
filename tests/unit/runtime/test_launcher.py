@@ -14,7 +14,7 @@ import pytest
 import yaml
 
 from aaestro.core.agent import AGENT_TOKEN_ENV
-from aaestro.core.errors import AaestroError, ErrorCode
+from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 from aaestro.core.manifest import AgentManifest, GroupManifest
 from aaestro.runtime.docker.engine import DockerEngine
 from aaestro.runtime.launcher import AgentLauncher
@@ -846,10 +846,9 @@ async def test_adopt_counts_a_sidecar_as_the_larger_of_declared_and_held():
     await McpSidecars(client).start(declared("1.0"), {})
 
     assert await adopt_first(client, agents, declared("0.25")) is True
-    [launched] = agents.launched.values()
-    assert launched.sidecars_held is not None
-    assert launched.sidecars_held.cpu_cores == 1.0
-    assert launched.sidecars_held.memory_bytes == 64 * 1024**2
+    held = agents.sidecars_held["echo"]
+    assert held.cpu_cores == 1.0
+    assert held.memory_bytes == 64 * 1024**2
 
 
 async def test_adopt_refuses_when_a_declared_sidecar_is_missing():
@@ -865,3 +864,77 @@ async def test_adopt_refuses_when_a_declared_sidecar_is_missing():
     }  # fmt: skip
 
     assert await adopt_first(client, agents, AgentManifest.model_validate(doc)) is False
+
+
+def with_sidecar_cpu(cpu: str, *, name: str = "echo") -> AgentManifest:
+    """echo (0.5 코어) 에 CPU 만 정한 사이드카 하나를 단 선언."""
+    doc = manifest().model_dump(by_alias=True, mode="json")
+    doc["metadata"]["name"] = name
+    sidecar = {"image": "mcp/search:0.3.0", "resources": {"cpu": cpu, "memory": "64Mi"}}
+    doc["spec"]["mcp"] = {
+        "servers": [{"name": "search", "transport": "streamable-http", "sidecar": sidecar}]
+    }
+    return AgentManifest.model_validate(doc)
+
+
+async def stop_the_adopted_replica_while_another_starts(*, fail: bool) -> AgentLauncher:
+    """실제 1.0 · 선언 0.25 인 사이드카로 레플리카 0 을 재부착하고, 레플리카 1 이 엔진 기동을
+    기다리는 동안 레플리카 0 을 멈춘 뒤 기동을 끝낸다 (``fail`` 이면 기동이 실패한다)."""
+    from aaestro.runtime.sidecars import McpSidecars
+
+    client = FakeDockerClient()
+    agents = launcher(client)
+    await McpSidecars(client).start(with_sidecar_cpu("1.0"), {})
+    assert await adopt_first(client, agents, with_sidecar_cpu("0.25")) is True
+
+    entered, gate = asyncio.Event(), asyncio.Event()
+    original = agents.engine.start
+
+    async def held_start(spec):
+        entered.set()
+        await gate.wait()
+        if fail:
+            raise AaestroError(
+                category=ErrorCategory.RUNTIME, code=ErrorCode.RT_001, message="boom"
+            )
+        return await original(spec)
+
+    agents.engine.start = held_start  # type: ignore[method-assign]
+    starting = asyncio.create_task(agents.start(with_sidecar_cpu("0.25"), replica=1))
+    await entered.wait()
+    await agents.stop("echo", replica=0)
+    gate.set()
+    if fail:
+        with pytest.raises(AaestroError):
+            await starting
+    else:
+        await starting
+    agents.engine.start = original  # type: ignore[method-assign]
+    return agents
+
+
+async def test_a_sidecar_share_outlives_a_stop_while_another_replica_starts():
+    """레플리카 1 이 기동 중일 때 레플리카 0 을 멈춰도 사이드카는 돈다 — 몫을 지우지 않는다 (#649).
+
+    echo 0.5 + 사이드카 실제 1.0 + beta 0.5 = 2.0 > 1.75. 몫을 잊으면 1.25 로 통과한다.
+    """
+    agents = await stop_the_adopted_replica_while_another_starts(fail=False)
+    assert ("echo", 1) in agents.launched
+    assert "echo" in agents.sidecars_held
+    agents.host_cpu_cores = 1.75
+
+    beta = manifest().model_dump(by_alias=True, mode="json")
+    beta["metadata"]["name"] = "beta"
+    with pytest.raises(AaestroError) as caught:
+        await agents.start(AgentManifest.model_validate(beta))
+
+    assert caught.value.code == ErrorCode.RT_006
+    await agents.stop_all()
+
+
+async def test_a_sidecar_share_is_dropped_when_the_pending_start_fails():
+    """미룬 정리는 끝나는 기동이 마저 한다 — 레플리카가 남지 않으면 몫도 토큰과 함께 버린다."""
+    agents = await stop_the_adopted_replica_while_another_starts(fail=True)
+
+    assert agents.launched == {}
+    assert "echo" not in agents.sidecars_held

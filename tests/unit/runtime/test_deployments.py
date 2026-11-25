@@ -459,6 +459,95 @@ async def test_a_sidecar_lookup_failure_loses_only_its_deployment(workspace, doc
     await second.launcher.stop_all()
 
 
+async def reattached_with_a_shrunk_sidecar(workspace, docker, store) -> DeploymentManager:
+    """사이드카 1.0 으로 띄우고 선언을 0.25 로 줄인 뒤 재부착한 manager — alpha 실제 몫 1.5."""
+    quota_workspace(workspace)
+    with_sized_sidecar(workspace, "1.0")
+    sized(workspace, "beta", "0.25")
+    await sidecar_manager(workspace, docker, store).deploy("first")
+    with_sized_sidecar(workspace, "0.25")
+    second = sidecar_manager(workspace, docker, store)
+    await second.reattach()
+    assert ("alpha", 0) in second.launcher.launched, "재부착되지 않았다"
+    return second
+
+
+@pytest.mark.parametrize(("beta", "refused"), [("1.0", True), ("0.5", False)])
+async def test_a_reused_sidecar_is_still_counted_after_its_agent_is_replaced(
+    workspace, docker, healthy, beta, refused
+):
+    """레플리카 교체는 사이드카를 다시 세우지 않는다 — 교체 뒤에도 실제 한도로 센다 (#649 리뷰).
+
+    실제 0.5 + 1.0 + beta 1.0 = 2.5 > 2.0, 교체가 몫을 잊으면 0.75 + 1.0 = 1.75 로 통과한다.
+    대조군 beta 0.5 는 실제로 딱 2.0.
+    """
+    store = InMemoryDeploymentStore()
+    second = await reattached_with_a_shrunk_sidecar(workspace, docker, store)
+    sidecar = docker.find(SIDECAR)
+    launched = second.launcher.launched[("alpha", 0)]
+    launched.lifecycle.transition(AgentState.UNHEALTHY)  # 재시작은 Unhealthy 에서 온다
+    await second.launcher._replace(launched)  # noqa: SLF001 — 재시작 경로를 직접 태운다
+    assert second.launcher.launched[("alpha", 0)] is not launched, "교체되지 않았다"
+    assert docker.find(SIDECAR) == sidecar, "교체가 사이드카를 다시 세웠다"
+    sized(workspace, "beta", beta)
+
+    if refused:
+        with pytest.raises(AaestroError) as excinfo:
+            await second.deploy("second")
+        assert excinfo.value.code == ErrorCode.RT_006
+    else:
+        await second.deploy("second")
+    await second.launcher.stop_all()
+
+
+@pytest.mark.parametrize(("quota", "refused"), [("1.0", True), ("1.5", False)])
+async def test_the_replacement_launch_counts_the_reused_sidecar(
+    workspace, docker, healthy, quota, refused
+):
+    """교체 기동 자신의 quota 검사도 사이드카의 실제 한도를 센다 — 옛 엔트리를 지운 뒤라도.
+
+    alpha 0.5 + 사이드카 실제 1.0 = 1.5. 한도 1.0 이면 거절 (선언으로는 0.75), 1.5 면 통과.
+    """
+    store = InMemoryDeploymentStore()
+    second = await reattached_with_a_shrunk_sidecar(workspace, docker, store)
+    global_group = yaml.safe_load((workspace / "groups" / "global.yaml").read_text("utf-8"))
+    global_group["spec"]["quotas"] = {"cpu": quota}
+    write(workspace / "groups" / "global.yaml", global_group)
+    launched = second.launcher.launched[("alpha", 0)]
+    launched.lifecycle.transition(AgentState.UNHEALTHY)
+
+    if refused:
+        with pytest.raises(AaestroError) as excinfo:
+            await second.launcher._replace(launched)  # noqa: SLF001
+        assert excinfo.value.code == ErrorCode.RT_006
+        # 거절된 교체는 원래 레플리카를 되돌린다 — 사이드카 몫도 계속 센다
+        assert second.launcher.launched[("alpha", 0)] is launched
+        assert "alpha" in second.launcher.sidecars_held
+    else:
+        await second.launcher._replace(launched)  # noqa: SLF001
+        assert second.launcher.launched[("alpha", 0)] is not launched
+    await second.launcher.stop_all()
+    assert "alpha" not in second.launcher.sidecars_held, "마지막 레플리카를 멈췄는데 몫이 남았다"
+
+
+async def test_a_redeploy_that_rebuilds_the_sidecar_drops_the_old_limits(
+    workspace, docker, healthy
+):
+    """해체 뒤 재배포는 사이드카를 지금 선언으로 새로 세운다 — 옛 실제 한도를 과다 계산하지 않는다.
+
+    재배포 뒤 0.5 + 0.25 (새 사이드카) + beta 1.0 = 1.75 — 옛 1.0 을 남기면 2.5 로 거절된다.
+    """
+    store = InMemoryDeploymentStore()
+    second = await reattached_with_a_shrunk_sidecar(workspace, docker, store)
+    [record] = [r for r in second.deployments() if r.graph == "first"]
+    await second.teardown(record.deployment_id)
+    await second.deploy("first")
+    sized(workspace, "beta", "1.0")
+
+    await second.deploy("second")
+    await second.launcher.stop_all()
+
+
 async def test_reattach_refuses_an_agent_whose_limits_cannot_be_read(workspace, docker, healthy):
     """한도를 읽지 못한 컨테이너는 선언으로 세지 않고 붙이지 않는다 (#649)."""
     quota_workspace(workspace)
