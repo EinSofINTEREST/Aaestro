@@ -436,9 +436,12 @@ aaestro_memory_recall_injected_tokens{agent}           # 프롬프트 주입량 
 aaestro_memory_recall_filtered_total{agent, band}      # 회상 필터가 본 항목 — act|uncertain|reject
 ```
 
-`aaestro_memory_operations_total` 의 `space` 는 **space id** 다 (별칭이 아니다 — 별칭은 에이전트 관점의
+메모리 메트릭의 `space` 라벨은 **space id** 다 (별칭이 아니다 — 별칭은 에이전트 관점의
 이름이라 서로 다른 space 가 한 시계열로 합쳐진다). space 로 해석되지 않은 접근 (미선언 별칭, 레지스트리가
-거부한 space) 은 고정값 `undeclared` 로 센다 — 호출자가 고른 문자열을 라벨로 쓰지 않는다. 감사 로그의
+거부한 space) 은 고정값 `undeclared` 로 센다 — 호출자가 고른 문자열을 라벨로 쓰지 않는다. 예외는 run
+space (`run:<run_id>:<alias>`) 다: run 마다 새 시계열이 생기지 않게 라벨은 run 을 뺀 `run:<alias>` 이고,
+같은 별칭의 run 들은 한 시계열로 합쳐진다 (게이지는 항목 수는 합, 인덱싱 지연은 최댓값). 저장 · 판정의 space id
+는 그대로다. 감사 로그의
 `memory_space` 는 에이전트가 부른 별칭 그대로다.
 
 검색 · 회상은 **한 호출을 한 결과로** 센다: 여러 space 를 보는 검색이 도중에 실패하면 그 호출이 본

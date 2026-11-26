@@ -212,7 +212,9 @@ class RuntimeConfig(BaseModel):
     agent_env: dict[str, str] = Field(default_factory=dict)
     """모든 에이전트 컨테이너에 주입하는 **비밀이 아닌** 인프라 env — provider base URL
     처럼 "어디에 있는가" 를 알리는 값. secrets 는 여기가 아니라 env_allowlist 로 간다
-    (02 Secrets Injection); 이름이 secret 패턴이면 기동을 거부한다 (#243)."""
+    (02 Secrets Injection); 이름이 secret 패턴이거나 `AAESTRO_EGRESS_` 로 시작하면 기동을
+    거부한다 (#243). 프록시가 종단하는 자격 이름 (모델 키 · 원격 MCP 토큰) 은 프록시가 있으면
+    env 조립 때 거른다."""
 
     @model_validator(mode="after")
     def _reject_host_network(self) -> RuntimeConfig:

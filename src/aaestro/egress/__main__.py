@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 from collections.abc import Awaitable, Collection, Mapping
 from typing import Any
@@ -50,6 +51,12 @@ OPENAI_COMPAT_KEY_ENV = "OPENAI_COMPAT_API_KEY"  # noqa: S105 — 키 이름이�
 PROXY_HELD_SECRETS = frozenset({ANTHROPIC_KEY_ENV, OPENAI_COMPAT_KEY_ENV})
 """프록시가 provider 호출에만 쓰는 비밀 — 원격 MCP 자격 목록에 올릴 수 없다."""
 MCP_TOKENS_ENV = "AAESTRO_EGRESS_MCP_TOKENS"
+DECISION_PROVIDERS_ENV = "AAESTRO_EGRESS_DECISION_PROVIDERS"
+"""결정 provider — 설정 ``decision.providers`` 와 같은 모양의 JSON 객체 (#595). 프록시는 설정 파일을
+읽지 않으므로 배포가 같은 선언을 실어 준다. 비우면 결정 provider 를 종단하지 않는다 (404)."""
+DECISION_KEY_ENV_PREFIX = "AAESTRO_EGRESS_DECISION_KEY_"
+"""결정 provider 키 — 뒤에 provider 이름 대문자 (``-`` 는 ``_``). ``AAESTRO_`` 접두사라 원격 MCP
+자격 목록에 올릴 수 없고 (``_mcp_tokens``), 에이전트 ``env_allowlist`` 에도 적을 수 없다."""
 REGISTRY_ROOT_ENV_PREFIX = "AAESTRO_REGISTRY_ROOT_"
 """``registry.roots`` 의 루트별 env — 뒤에 키 이름 대문자 (`..._GRAPHS`). 프록시는 설정 파일을
 읽지 않으므로 (비밀을 쥔 컴포넌트라 입력을 줄인다) 배포가 이 env 로 같은 루트를 실어 준다."""
@@ -97,6 +104,7 @@ def settings(environ: Mapping[str, str]) -> dict[str, Any]:
         ),
         "anthropic_key": _key(environ, ANTHROPIC_KEY_ENV),
         **_openai_compat(environ, private),
+        "decision_providers": _decision_providers(environ, private),
         "allow_plaintext": environ.get(PLAINTEXT_UPSTREAM_ENV, "").lower() == "true",
         "repo_root": environ.get(REPO_ROOT_ENV, ""),
         "registry_roots": _registry_roots(environ),
@@ -180,6 +188,52 @@ def _openai_compat(environ: Mapping[str, str], private: frozenset[str]) -> dict[
             [OPENAI_COMPAT_UPSTREAM_ENV],
         )
     return {"openai_compat_upstream": upstream, "openai_compat_key": key}
+
+
+def _decision_providers(
+    environ: Mapping[str, str], private: frozenset[str]
+) -> dict[str, tuple[Any, str]]:
+    """결정 provider 이름 → (선언, 키). 선언은 설정과 같은 모델로 검증한다.
+
+    평문 ``http`` 는 그 provider 의 ``allow_plaintext`` **와** 사설 목적지 명시가 둘 다 있어야 한다
+    (03 Egress 결정 모델 행) — 루프백도 예외가 아니다. 키가 없는 provider 는 기동하지 않는다
+    (호출할 때에야 드러나지 않게).
+    """
+    raw = environ.get(DECISION_PROVIDERS_ENV, "").strip()
+    if not raw:
+        return {}
+    from pydantic import ValidationError
+
+    from aaestro.config import DecisionConfig
+
+    try:
+        declared = DecisionConfig.model_validate({"providers": json.loads(raw)}).providers
+    except (ValueError, ValidationError):
+        # 메시지가 받은 값 (URL) 을 되비출 수 있다 — 위치만 남기고 체인을 끊는다
+        raise _config("decision providers setting is not a valid providers mapping",
+                      [DECISION_PROVIDERS_ENV]) from None  # fmt: skip
+    resolved: dict[str, tuple[Any, str]] = {}
+    for name, provider in declared.items():
+        key_env = decision_key_env(name)
+        key = _key(environ, key_env)
+        if not key:
+            raise _config("decision provider has no key", [DECISION_PROVIDERS_ENV, key_env])
+        plaintext = urlsplit(provider.base_url).scheme == "http"
+        if plaintext and not plaintext_allowed(
+            provider.allow_plaintext, url_target(provider.base_url), private
+        ):
+            raise _config(
+                "decision provider base_url must use https — plain http needs allow_plaintext and "
+                "the destination listed as private",
+                [DECISION_PROVIDERS_ENV, PRIVATE_DESTINATIONS_ENV],
+            )
+        resolved[name] = (provider, key)
+    return resolved
+
+
+def decision_key_env(provider: str) -> str:
+    """결정 provider 의 키 env 이름 — ``posek-2`` → ``AAESTRO_EGRESS_DECISION_KEY_POSEK_2``."""
+    return DECISION_KEY_ENV_PREFIX + provider.upper().replace("-", "_")
 
 
 def _key(environ: Mapping[str, str], setting: str) -> str:
@@ -280,7 +334,11 @@ async def run(config: dict[str, Any], *, metrics: Metrics | None = None) -> None
     provider = uvicorn.Server(
         uvicorn.Config(
             create_provider_app(
-                access, upstreams, mode=config["mode"], routers=_mcp_routers(config, access)
+                access,
+                upstreams,
+                mode=config["mode"],
+                routers=_mcp_routers(config, access),
+                decision_upstreams=decision_upstreams(config),
             ),
             host="0.0.0.0",  # noqa: S104
             port=config["provider_port"],
@@ -291,6 +349,7 @@ async def run(config: dict[str, Any], *, metrics: Metrics | None = None) -> None
         "egress proxy ready",
         mode=config["mode"].value,
         providers=sorted(upstreams),
+        decision_providers=sorted(config["decision_providers"]),
         port=config["connect_port"],
     )
     try:
@@ -334,6 +393,30 @@ def provider_upstreams(config: Mapping[str, Any]) -> dict[str, Any]:
             endpoints=OPENAI_COMPAT_ENDPOINTS,
         )
     return upstreams
+
+
+def decision_upstreams(config: Mapping[str, Any]) -> dict[str, Any]:
+    """The decision providers this proxy terminates — 판정 대상은 논리 이름이다.
+
+    여는 경로는 그 kind 의 어댑터가 부르는
+    것뿐이다 — 같은 키로 닿는 provider 의 다른 API 를 열지 않는다.
+    """
+    from aaestro.access.baselines import decision_target
+    from aaestro.egress.providers import DECISION_ENDPOINTS, Upstream
+
+    return {
+        name: Upstream(
+            base_url=provider.base_url.rstrip("/"),
+            logical_host=decision_target(name),
+            api_key=key,
+            # shortcut: 자격 자리는 Jev 와이어 (Authorization: Bearer) 하나다, 다른 kind 가 오면
+            # DECISION_ENDPOINTS 처럼 kind 별 표로 옮긴다
+            key_header="authorization",
+            key_scheme="Bearer",
+            endpoints=DECISION_ENDPOINTS[provider.kind],
+        )
+        for name, (provider, key) in config["decision_providers"].items()
+    }
 
 
 def _mcp_routers(config: Mapping[str, Any], access: Any) -> list[Any]:

@@ -166,7 +166,7 @@ METRIC_SPECS: Final[tuple[MetricSpec, ...]] = (
         ("graph", "field"),
         "Estimated tokens of a state field that declares compaction",
     ),
-    # Memory — operations 의 space 는 space id (별칭 아님), 해석되지 않은 접근은 "undeclared"
+    # Memory — space 라벨: space id (별칭 아님) · run space 는 run:<alias> · 미해석은 "undeclared"
     MetricSpec(
         "aaestro_memory_operations_total",
         "counter",
