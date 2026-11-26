@@ -295,3 +295,24 @@ async def test_run_participation_cache_is_bounded(monkeypatch):
 
     assert len(client._runs) == 8  # noqa: SLF001
     assert "run-49" in {run for _, run in client._runs}, "가장 최근 것이 남는다"  # noqa: SLF001
+
+
+async def test_decision_and_identity_caches_are_bounded(monkeypatch):
+    """대상 · 자격은 호출자가 고른다 — 서로 다른 것을 물어도 캐시는 상한을 넘지 않는다 (#698)."""
+    from aaestro.access import client as access_client
+
+    monkeypatch.setattr(access_client, "MAX_CACHED_DECISIONS", 8)
+    monkeypatch.setattr(access_client, "MAX_CACHED_IDENTITIES", 8)
+    client = AccessClient(base_url="http://cp", enforcer_token="t", component="memory")
+
+    async def answer(path: str, body: dict) -> dict:
+        return {"agent": "a", "decision": "allow", "decided_by": "declaration", "version": 1}
+
+    monkeypatch.setattr(client, "_post", answer)
+    for i in range(50):
+        await client.decide("cred", ResourceKind.MEMORY, f"space-{i}")
+        await client.identify(f"cred-{i}")
+
+    assert len(client._decisions) == 8  # noqa: SLF001
+    assert "space-49" in {key[2] for key in client._decisions}, "가장 최근 것이 남는다"  # noqa: SLF001
+    assert len(client._identities) == 8  # noqa: SLF001

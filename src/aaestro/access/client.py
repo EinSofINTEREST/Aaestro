@@ -43,6 +43,10 @@ FEED_WAIT_S = 25.0
 MAX_CACHED_RUNS = 1024
 """run 참여 캐시의 상한 (LRU) — run id 는 요청 헤더가 고르므로 상한 없이는 요청 수만큼 자란다
 (#610). 값은 다른 기억 상한 (``REMEMBERED_RESULTS`` · ``REMEMBERED_ANSWERS``) 과 같다."""
+MAX_CACHED_DECISIONS = 1024
+"""판정 캐시의 상한 (LRU) — 키가 자격 · 대상 · 티켓이라 호출자가 고르는 값으로 자란다 (#698)."""
+MAX_CACHED_IDENTITIES = 1024
+"""신원 캐시의 상한 (LRU) — 키가 요청이 내미는 자격의 해시다 (#698)."""
 
 
 class DecisionSource(StrEnum):
@@ -122,7 +126,9 @@ class AccessClient:
             body = await self._post("/v1/access/identities", {"credential": credential})
             return body["agent"], int(body["version"]), None
 
-        agent, source = await self._cached(self._identities, key, fetch)
+        agent, source = await self._cached(
+            self._identities, key, fetch, limit=MAX_CACHED_IDENTITIES
+        )
         return agent, source
 
     async def decide(
@@ -143,7 +149,7 @@ class AccessClient:
             answer = (body["agent"], body["decision"] == "allow", body["decided_by"])
             return answer, int(body["version"]), body.get("valid_until")
 
-        answer, source = await self._cached(self._decisions, key, fetch)
+        answer, source = await self._cached(self._decisions, key, fetch, limit=MAX_CACHED_DECISIONS)
         if answer is None:
             verdict = Verdict(None, False, "unreachable", source)
         else:
@@ -190,7 +196,10 @@ class AccessClient:
             return answer, int(body["version"]), body.get("valid_until")
 
         answer, source = await self._cached(
-            self._decisions, ("ticket", _hash(ticket), "", ""), fetch
+            self._decisions,
+            ("ticket", _hash(ticket), "", ""),
+            fetch,
+            limit=MAX_CACHED_DECISIONS,
         )
         if answer is None:
             verdict = Verdict(None, False, "unreachable", source)
