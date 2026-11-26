@@ -238,6 +238,7 @@ class InboundGuard:
         """
         if self.verifier is None:
             return self._token_caller(headers)
+        from aaestro.access.client import DecisionSource
         from aaestro.protocols.a2a.tickets import TICKET_HEADER
 
         claimed = headers.get(CALLER_HEADER, "") or "unknown"
@@ -249,7 +250,11 @@ class InboundGuard:
             )
         verdict = await self.verifier.verify_ticket(ticket)
         if not verdict.allowed or verdict.agent is None:
-            self.refused(A2aRefusal.DENIED)
+            self.refused(
+                A2aRefusal.UNREACHABLE
+                if verdict.source is DecisionSource.UNREACHABLE
+                else A2aRefusal.DENIED
+            )
             # 헤더의 이름 주장은 싣지 않는다 — 확인되지 않은 이름이다 (형제 거절 로그와 같은 결)
             log.info(
                 "a2a inbound denied by registry",

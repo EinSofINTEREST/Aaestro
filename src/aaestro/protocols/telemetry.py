@@ -63,6 +63,8 @@ class A2aRefusal(StrEnum):
     """자격 (토큰 · 표) 을 싣지 않았다."""
     DENIED = "denied"
     """자격이 틀렸거나 판정이 거부했다 (A2A_004)."""
+    UNREACHABLE = "unreachable"
+    """레지스트리에 닿지 못하고 캐시도 없어 판정하지 못했다 — 거부와 대응이 다르다 (인프라 장애)."""
     MALFORMED = "malformed"
     """본문이 계약에 맞지 않는다 (VAL_001 · VAL_002)."""
     TOO_DEEP = "too_deep"

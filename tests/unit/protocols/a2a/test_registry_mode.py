@@ -321,3 +321,37 @@ async def test_the_callee_still_checks_the_delegation_depth_in_registry_mode(sta
     caller.allowlist = Allowlist(edges=caller.allowlist.edges, secret=b"x", max_depth=99)
 
     assert (await refused(caller.call("planner", deep))).code == ErrorCode.A2A_005
+
+
+@pytest.mark.parametrize(
+    ("source", "reason"),
+    [("unreachable", "unreachable"), ("fresh", "denied"), ("cache", "denied")],
+)
+async def test_an_undecidable_ticket_is_counted_apart_from_a_denial(source, reason):
+    """레지스트리 장애로 판정하지 못한 거절은 거부와 대응이 다르다 — 따로 센다 (#420)."""
+    from aaestro.access.client import DecisionSource, Verdict
+    from aaestro.observability.metrics import Metrics
+    from aaestro.protocols.a2a.sdk import CALLER_HEADER
+    from aaestro.protocols.a2a.tickets import TICKET_HEADER
+    from aaestro.protocols.telemetry import A2aInboundTelemetry
+
+    class Answering:
+        async def verify_ticket(self, ticket):
+            return Verdict(None, False, source, DecisionSource(source))
+
+    metrics = Metrics()
+    guard = InboundGuard(
+        server=A2AServer(agent="planner", allowlist=_allowlist()),
+        verifier=Answering(),  # type: ignore[arg-type]
+        telemetry=A2aInboundTelemetry(metrics, callee="planner"),
+    )
+
+    assert (
+        await refused(guard.admit({CALLER_HEADER: "researcher", TICKET_HEADER: "t"}))
+    ).code == ErrorCode.A2A_004
+    assert (
+        metrics.registry.get_sample_value(
+            "aaestro_a2a_refusals_total", {"callee": "planner", "reason": reason}
+        )
+        == 1.0
+    )

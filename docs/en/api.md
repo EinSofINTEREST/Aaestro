@@ -1544,9 +1544,11 @@ With or without a registry, an agent's A2A port answers two things only: the age
   completes, fails or is refused, the store drops it — the result travels in the response and
   nowhere else. An agent run that ends by cancellation from inside the agent is answered as a
   `canceled` task, so the SDK's internal registry of active tasks lets it go too (#420).
-- **Refusals are counted on the callee.** `aaestro_a2a_refusals_total{callee, reason}` counts every
-  request the server turned away — `no_credential`, `denied`, `malformed`, `too_deep`,
-  `unsupported`. The caller's name is not a label: it is an unverified claim. The agent card on
+- **Refusals are counted on the callee.** `aaestro_a2a_refusals_total{callee, reason}` counts the
+  requests the framework's guard turned away — `no_credential`, `denied`, `unreachable`
+  (the registry could not be reached), `malformed`, `too_deep`, `unsupported`. Requests the SDK
+  rejects before the guard sees them (unparseable JSON, an unknown method, invalid params, a wrong
+  `A2A-Version`) are not counted. The caller's name is not a label: it is an unverified claim. The agent card on
   both the Control API and the A2A port advertises no push notifications, since the server refuses
   every push configuration request.
 

@@ -382,3 +382,35 @@ async def test_call_caps_the_delegated_deadline_at_the_call_timeout():
     await client.call("planner", make_task())
 
     assert seen == [7.0]
+
+
+# --- 피호출자 실행이 취소로 끝남 (#420) ----------------------------------------------
+
+
+async def test_a_peer_run_that_ended_canceled_is_a_failure_not_an_empty_success():
+    """피호출자는 새어 나온 취소를 ``canceled`` 로 답한다 — 빈 출력을 성공으로 넘기면 모델이 답을
+    받은 줄 안다. 부수효과 여부를 알 수 없으니 재시도 없는 A2A_003 이고, 회로는 열지 않는다."""
+    from aaestro.observability.metrics import Metrics
+
+    canceled = TaskResult.canceled(make_task())
+    metrics = Metrics()
+    client = make_client(FakePeer(result=canceled))
+    client = A2AClient(
+        agent=client.agent, allowlist=client.allowlist, transport=client.transport, metrics=metrics
+    )
+
+    for _ in range(6):
+        with pytest.raises(AaestroError) as exc_info:
+            await client.call("planner", make_task())
+        assert exc_info.value.code == "A2A_003"
+        assert exc_info.value.retryable is False
+        assert exc_info.value.details["state"] == "canceled"
+
+    assert client._breaker("planner").can_attempt() is True
+    assert (
+        metrics.registry.get_sample_value(
+            "aaestro_a2a_calls_total",
+            {"caller": "researcher", "callee": "planner", "status": "failed"},
+        )
+        == 6.0
+    )
