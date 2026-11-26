@@ -216,16 +216,18 @@ class AccessClient:
             answer = (body["agent"], body["decision"] == "allow", body["decided_by"])
             return answer, int(body["version"]), body.get("valid_until")
 
-        # 티켓은 호출마다 새로 발급돼 다시 오지 않는다 — 캐시하면 1회용 키만 쌓인다.
-        # 장애 시에는 캐시가 없으므로 거부다 (캐시에 없는 판정은 거부 — 01)
-        try:
-            answer, _, _ = await fetch()
-        except (_UnreachableError, _RejectedError):
-            self._reachable(False)
-            verdict = Verdict(None, False, "unreachable", DecisionSource.UNREACHABLE)
+        # 호출자가 표를 만료 직전까지 재사용하므로 적중이 많다 — 판정 캐시를 공유한다
+        answer, source = await self._cached(
+            (self._decisions, self._decisions_denied),
+            ("ticket", _hash(ticket), "", ""),
+            fetch,
+            limit=MAX_CACHED_DECISIONS,
+            allowed=lambda value: value[1],
+        )
+        if answer is None:
+            verdict = Verdict(None, False, "unreachable", source)
         else:
-            self._reachable(True)
-            verdict = Verdict(answer[0], answer[1], answer[2], DecisionSource.FRESH)
+            verdict = Verdict(answer[0], answer[1], answer[2], source)
         self._count(ResourceKind.A2A, verdict)
         return verdict
 

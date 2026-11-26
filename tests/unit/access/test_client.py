@@ -403,23 +403,36 @@ async def test_cache_hit_during_an_outage_refreshes_lru_order(monkeypatch):
     assert next(reversed(client._decisions))[2] == "h0"  # noqa: SLF001
 
 
-async def test_ticket_verdicts_are_not_cached(monkeypatch):
-    """티켓은 호출마다 새로 발급된다 — 캐시에 남지 않고, 장애 중에는 거부다 (#698)."""
+async def test_ticket_verdicts_are_cached_and_bounded_like_decisions(monkeypatch):
+    """같은 표는 장애 중에도 캐시 허용이고 거부는 허용을 밀어내지 못한다 (#698)."""
+    from aaestro.access import client as access_client
     from aaestro.access.client import _UnreachableError
 
+    monkeypatch.setattr(access_client, "MAX_CACHED_DECISIONS", 4)
     client = AccessClient(base_url="http://cp", enforcer_token="t", component="a2a")
+    client._feed_alive = True  # noqa: SLF001
+    client._version = 1  # noqa: SLF001
     down = [False]
 
     async def post(path: str, body: dict) -> dict:
         if down[0]:
             raise _UnreachableError
-        return {"agent": "a", "decision": "allow", "decided_by": "declaration", "version": 1}
+        ok = body["ticket"] == "good"
+        return {
+            "agent": "a" if ok else None,
+            "decision": "allow" if ok else "deny",
+            "decided_by": "declaration",
+            "version": 1,
+        }
 
     monkeypatch.setattr(client, "_post", post)
-    first = await client.verify_ticket("t1")
-    assert first.allowed and first.source is DecisionSource.FRESH
-    assert not client._decisions and not client._decisions_denied  # noqa: SLF001
-
+    assert (await client.verify_ticket("good")).source is DecisionSource.FRESH
+    for i in range(20):
+        await client.verify_ticket(f"bad-{i}")
     down[0] = True
-    refused = await client.verify_ticket("t1")
+
+    cached = await client.verify_ticket("good")
+    assert cached.allowed and cached.source is DecisionSource.CACHE
+    assert len(client._decisions_denied) == 4  # noqa: SLF001
+    refused = await client.verify_ticket("never-seen")
     assert not refused.allowed and refused.source is DecisionSource.UNREACHABLE
