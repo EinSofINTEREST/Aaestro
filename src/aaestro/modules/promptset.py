@@ -12,7 +12,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
 import structlog
-from jinja2 import StrictUndefined, TemplateSyntaxError, meta
+from jinja2 import StrictUndefined, TemplateSyntaxError, meta, nodes
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -578,9 +578,11 @@ def _check_template_files(
                     message="failed to read template file",
                     details={"promptset": ref, "template": printable_label(name)},
                 ) from err
-            _check_source(source, ref, name, ErrorCode.MOD_003)
             if vet_names:
-                _check_compiles(source, ref, name, frozenset(spec.variables))
+                locale = None if candidate is default else candidate.parent.name
+                _vet_template(source, ref, name, frozenset(spec.variables), locale)
+            else:
+                _check_source(source, ref, name, ErrorCode.MOD_003)
 
 
 def _inside_root(root: Path, candidate: Path) -> Path | None:
@@ -630,30 +632,53 @@ def _check_source(source: str, ref: str, template: str, code: ErrorCode) -> None
         ) from err
 
 
-def _check_compiles(source: str, ref: str, template: str, declared: frozenset[str]) -> None:
-    """렌더 환경으로 컴파일하고, 선언 밖의 이름을 렌더 전에 거절한다 (#716).
+MAX_REPORTED_NAMES = 10
+"""거절 사유에 싣는 이름의 상한 — 템플릿이 만든 이름이라 개수와 길이를 묶는다."""
 
-    ``check_syntax`` 는 파싱까지다 — 없는 필터 · 테스트는 컴파일에서, 제거된 전역 (``lipsum``) 과
-    선언하지 않은 변수는 이름 해석에서 드러난다. 렌더하지 않는다 (코드 실행 없음). 값은 싣지 않는다.
+
+def _vet_template(
+    source: str, ref: str, template: str, declared: frozenset[str], locale: str | None
+) -> None:
+    """게시 검증 — 구문 검사에 더해 렌더 환경으로 컴파일하고 선언 밖의 이름을 거절한다 (#716).
+
+    ``check_syntax`` 는 파싱까지다 — 없는 필터 · 테스트와 제거된 전역 (``lipsum``) · 선언하지 않은
+    변수는 이름 해석에서 드러난다. 렌더하지 않는다 (코드 실행 없음). 값 · 원문은 싣지 않는다.
     """
     environment = GuardedEnvironment(
         output_limit=DEFAULT_RENDER_LIMIT, autoescape=False, undefined=StrictUndefined
     )
-    reason: str
+    names: list[str] = []
     try:
-        compiled_ast = environment.parse(source)
-        environment.compile(compiled_ast)
+        _check_source(source, ref, template, ErrorCode.MOD_003)
+        tree = environment.parse(source)
+        environment.compile(tree)
+        # 컴파일은 조건 자리의 없는 test 를 지나친다 — AST 의 이름을 환경과 직접 대조한다
+        names = [
+            node.name
+            for node in tree.find_all((nodes.Filter, nodes.Test))
+            if node.name
+            not in (environment.filters if isinstance(node, nodes.Filter) else environment.tests)
+        ]
+        if names:
+            reason = f"template uses unknown filters or tests: {template}"
+        else:
+            names = sorted(
+                meta.find_undeclared_variables(tree) - declared - set(environment.globals)
+            )
+            reason = f"template uses undeclared names: {template}"
     except TemplateSyntaxError as err:
-        # 없는 필터 · 테스트 — 컴파일이 던진다
         reason = f"template syntax is invalid: {template} (line {err.lineno})"
+    except RecursionError:
+        # 깊은 중첩 — 파서 · 컴파일러가 던진다. 한 promptset 의 문제로 가둔다 (원인 체인은 끊는다)
+        reason = f"template nesting is too deep: {template}"
     else:
-        unknown = meta.find_undeclared_variables(compiled_ast) - declared - set(environment.globals)
-        if not unknown:
+        if not names:
             return
-        reason = f"template uses undeclared names: {template}"
+    details: dict[str, Any] = {"promptset": ref, "template": printable_label(template)}
+    if names:
+        details["names"] = [printable_label(n) for n in sorted(set(names))[:MAX_REPORTED_NAMES]]
+    if locale is not None:
+        details["locale"] = printable_label(locale)
     raise AaestroError(
-        category=ErrorCategory.MODULE,
-        code=ErrorCode.MOD_003,
-        message=reason,
-        details={"promptset": ref, "template": printable_label(template)},
-    )
+        category=ErrorCategory.MODULE, code=ErrorCode.MOD_003, message=reason, details=details
+    ) from None

@@ -12,7 +12,7 @@ import pytest
 import yaml
 
 from aaestro.catalog import Catalog
-from aaestro.core.errors import ErrorCode
+from aaestro.core.errors import AaestroError, ErrorCode
 
 REF = "promptsets/solo@0.1.0"
 
@@ -59,6 +59,10 @@ def test_a_clean_template_is_published(tmp_path):
         "{{ lipsum() }}",  # 제거된 전역
         "{{ query | random }}",  # 제거된 필터
         "{{ stranger }}",  # 선언하지 않은 변수
+        "{% if query is nosuchtest %}x{% endif %}",  # 조건 자리의 없는 test
+        "{{ 'a' if query is nosuch else 'b' }}",  # 삼항 자리의 없는 test
+        "{{ stranger is defined }}",  # is defined 로 감싸도 선언 밖 이름이다
+        "{{ " + "(" * 80 + "1" + ")" * 80 + " }}",  # 깊은 중첩 — RecursionError
     ],
 )
 def test_a_bad_template_body_is_not_published(tmp_path, body):
@@ -67,6 +71,46 @@ def test_a_bad_template_body_is_not_published(tmp_path, body):
     assert REF not in catalog.module_refs()
     problems = catalog.modules("promptsets").problems
     assert [p.code for p in problems] == [ErrorCode.MOD_003]
+    # 단건 조회도 같은 검증을 지난다 — 목록에 없는 것이 200 이 되지 않는다
+    with pytest.raises(AaestroError) as excinfo:
+        catalog.module("promptsets", "solo", "0.1.0")
+    assert excinfo.value.code == ErrorCode.MOD_003
+    assert excinfo.value.__cause__ is None or not isinstance(
+        excinfo.value.__cause__, RecursionError
+    )
+
+
+def test_a_deep_nesting_only_drops_that_promptset(tmp_path):
+    publish(tmp_path, "{{ " + "(" * 80 + "1" + ")" * 80 + " }}")
+    good = tmp_path / "modules" / "promptsets" / "good" / "0.1.0"
+    good.mkdir(parents=True)
+    (good / "promptset.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "apiVersion": "aaestro/v1",
+                "kind": "Promptset",
+                "metadata": {"name": "good", "version": "0.1.0"},
+                "spec": {"engine": "jinja2", "templates": {"system": {"file": "s.j2"}}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (good / "s.j2").write_text("ok", encoding="utf-8")
+
+    listed = Catalog.under(tmp_path).modules("promptsets")
+
+    assert listed.items == {"good": ("0.1.0",)}
+    assert [p.code for p in listed.problems] == [ErrorCode.MOD_003]
+
+
+def test_the_rejection_names_the_undeclared_names_and_the_locale(tmp_path):
+    publish(tmp_path, "{{ query }}", locale_body="{{ zeta }} {{ alpha }}")
+
+    with pytest.raises(AaestroError) as excinfo:
+        Catalog.under(tmp_path).module("promptsets", "solo", "0.1.0")
+
+    assert excinfo.value.details["names"] == ["alpha", "zeta"]
+    assert excinfo.value.details["locale"] == "ko"
 
 
 def test_a_bad_locale_override_is_not_published(tmp_path):

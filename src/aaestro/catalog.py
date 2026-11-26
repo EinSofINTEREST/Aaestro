@@ -483,6 +483,8 @@ class Catalog:
             _path, document = registry.load_document(ref)
             if module_type == "decisionsets":
                 DecisionsetLoader(registry).load(ref)  # 목록과 같은 검증
+            elif module_type == "promptsets":
+                PromptsetLoader(registry).load(ref, vet_names=True)  # 목록과 같은 검증
         except AaestroError as err:
             if err.code == ErrorCode.MOD_001:
                 raise not_found("module", ref) from err
