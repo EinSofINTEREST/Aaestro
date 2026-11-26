@@ -1527,6 +1527,13 @@ With or without a registry, an agent's A2A port answers two things only: the age
   deadline (`config.timeout_s` — the caller's A2A call timeout, 120 s by default). The callee only
   shortens its own task limit with it, never extends it, and a task past it fails with `TO_001`.
   A deadline that is not a positive number is `VAL_002`.
+- **A delegated task shares the callee's task limit.** It waits for a slot under
+  `max_concurrent_tasks` like a Control API task, and a draining agent does not start it. A task
+  refused before it started — its deadline passed while waiting for a slot (`TO_001`), or the agent
+  is draining (`RT_005`) — carries `details.started: false`, and the caller gets it as `A2A_001`
+  (retryable). A failure after the task started stays `A2A_003`, even when the callee marked it
+  retryable: it may have had side effects. While a task waits on a peer it gives its slot back, so a
+  delegation that calls back into the same agent does not deadlock.
 - **A message cannot be addressed to an existing task.** A send that names a `taskId` is refused
   the same way; every delegation is a new task.
 - **The task store keeps no finished task.** It holds a task only while it runs; once the task

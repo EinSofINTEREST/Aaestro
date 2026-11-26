@@ -172,6 +172,24 @@ async def test_peer_failure_is_a2a_003():
     assert exc_info.value.retryable is False
 
 
+@pytest.mark.parametrize(("details", "code"), [({"started": False}, "A2A_001"), ({}, "A2A_003")])
+async def test_a_failed_result_is_classified_like_the_sdk_path(details, code):
+    """transport 가 FAILED 결과를 돌려주는 경로도 시작 전 거절만 A2A_001 이다 (#416)."""
+    task = make_task()
+    failed = TaskResult.failed(
+        task,
+        AaestroErrorPayload(
+            category="timeout", code="TO_001", message="t", retryable=True, details=details
+        ),
+    )
+    client = make_client(FakePeer(result=failed))
+
+    with pytest.raises(AaestroError) as exc_info:
+        await client.call("planner", task)
+
+    assert exc_info.value.code == code
+
+
 async def test_peer_failure_carries_the_peer_reason_as_its_cause():
     """details 는 모델에 실리지 않는다 — peer 의 사유는 원인으로 가야 ask_peer 를 고칠 수 있다."""
     task = make_task()

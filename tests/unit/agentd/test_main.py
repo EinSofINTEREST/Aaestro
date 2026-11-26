@@ -411,7 +411,7 @@ def entry(monkeypatch):
         seen["token"] = kwargs.get("token")
         return real_build_app(*args, **kwargs)
 
-    async def fake_serve(app, manifest, executor, bind_host):
+    async def fake_serve(app, manifest, invoke, bind_host):
         seen["bind_host"] = bind_host
 
     monkeypatch.setattr(agentd, "build_app", spy_build_app)
@@ -541,6 +541,22 @@ def test_main_without_bind_override_binds_the_container_default(entry):
     assert seen["bind_host"] == agentd.DEFAULT_BIND_HOST
 
 
+def test_main_routes_peer_tasks_through_the_shared_task_queue(entry):
+    """A2A 수신 입구는 실행기 직결이 아니라 Control 과 같은 상한 · 추적 · drain 을 지난다 (#416)."""
+    agentd, monkeypatch, _ = entry
+    monkeypatch.setenv(agentd.AGENT_TOKEN_ENV, "issued-token")
+    served = {}
+
+    async def serve(app, manifest, invoke, bind_host):
+        served.update(app=app, invoke=invoke)
+
+    monkeypatch.setattr(agentd, "_serve", serve)
+
+    agentd.main()
+
+    assert served["invoke"] == served["app"].state.runtime.run
+
+
 def test_main_configures_logging_before_judging_the_token(entry):
     agentd, monkeypatch, _ = entry
     order: list[str] = []
@@ -586,7 +602,7 @@ async def test_serve_binds_the_control_server_to_the_given_host(uvicorn_spy, mon
     agentd, configs = uvicorn_spy
     monkeypatch.delenv("AAESTRO_A2A_PORT", raising=False)
 
-    await agentd._serve("app", load_manifest(ECHO_MANIFEST), EchoExecutor(), "127.0.0.1")
+    await agentd._serve("app", load_manifest(ECHO_MANIFEST), EchoExecutor().execute, "127.0.0.1")
 
     assert [(app, kw["host"]) for app, kw in configs] == [("app", "127.0.0.1")]
 
