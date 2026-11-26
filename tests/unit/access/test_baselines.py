@@ -401,3 +401,23 @@ def test_an_unknown_fallback_provider_is_silently_left_out_of_the_declaration(tm
     declared = EgressBaseline.declared(catalog.agent("planner"))
 
     assert declared == frozenset({"api.anthropic.com"})
+
+
+def test_a_declared_decision_providers_logical_name_is_declared(tmp_path):
+    """결정 provider 도 프록시가 종단한다 — 선언한 에이전트만 그 이름으로 허용된다 (#595)."""
+    from aaestro.access.baselines import EgressBaseline, decision_target
+
+    deciding = agent("triager")
+    deciding["spec"]["decision"] = {
+        "provider": "jev",
+        "model": "jev-1.13",
+        "sets": [{"ref": "decisionsets/triage@0.1.0", "as": "triage"}],
+    }
+    write(tmp_path / "agents" / "triager" / "manifest.yaml", deciding)
+    write(tmp_path / "agents" / "plain" / "manifest.yaml", agent("plain"))
+    baseline = EgressBaseline(Catalog.under(tmp_path))
+
+    assert decision_target("jev") == "jev.decision.invalid"
+    assert baseline.allows("triager", "jev.decision.invalid", None) is True
+    assert baseline.allows("triager", "posek.decision.invalid", None) is False
+    assert baseline.allows("plain", "jev.decision.invalid", None) is False

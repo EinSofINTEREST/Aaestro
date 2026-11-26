@@ -16,6 +16,7 @@ import structlog
 
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 from aaestro.core.manifest import MemoryMode
+from aaestro.memory.telemetry import UNDECLARED_SPACE_LABEL, space_label
 from aaestro.modules.memoryset import MemoryScope
 
 if TYPE_CHECKING:
@@ -42,11 +43,6 @@ TOKEN_DECISION_SOURCE: Final = "token"  # noqa: S105 — 판정 출처의 이름
 """판정 출처 — 레지스트리에 묻지 않고, 기동 시 발급한 토큰의 선언으로 정한 접근이다.
 
 05 의 ``decision_source`` 어휘에 있다."""
-
-UNDECLARED_SPACE_LABEL: Final = "undeclared"
-"""space 로 해석되지 않은 접근의 메트릭 ``space`` 라벨.
-
-호출자가 고른 별칭을 라벨로 쓰면 시계열 수를 호출자가 정한다 — 해석되지 않은 것은 한 값으로 센다."""
 
 log = structlog.get_logger(__name__)
 
@@ -239,7 +235,7 @@ class MemoryService:
         if self.metrics is not None and count_metric:
             space = token.resolve(alias)
             self.metrics.counter("aaestro_memory_operations_total").labels(
-                space=space.space_id if space is not None else UNDECLARED_SPACE_LABEL,
+                space=space_label(space.space_id) if space is not None else UNDECLARED_SPACE_LABEL,
                 op=op,
                 status=status,
             ).inc()

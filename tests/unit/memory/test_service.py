@@ -514,3 +514,24 @@ def test_append_allows_a_correction_inside_the_same_space():
 
     assert stored.supersedes == first.entry_id
     store.close()
+
+
+def test_run_spaces_share_one_label_per_alias():
+    """run 마다 새 시계열이 생기면 카디널리티가 끝없이 자란다 (#689)."""
+    store = SqliteMemoryStore()
+    try:
+        service, metrics = metered_service(store)
+
+        for run_id in ("run-1", "run-2", "run-3"):
+            service.append(token(run_spaces=[("scratch", run_id)]), "scratch", entry())
+
+        assert metric_value(metrics, space="run:scratch", op="append", status="ok") == 3.0
+        labels = {
+            s.labels["space"]
+            for m in metrics.registry.collect()
+            for s in m.samples
+            if m.name == "aaestro_memory_operations"
+        }
+        assert labels == {"run:scratch"}
+    finally:
+        store.close()

@@ -96,7 +96,7 @@ class AaestroError(Exception):
 | `protocols/a2a/` 의 원격 호출 결과 | `A2A`, `NETWORK`, `TIMEOUT` |
 | `protocols/mcp/` 의 세션/tool 호출 결과 | `MCP`, `TIMEOUT` |
 | `agentd/executor.py` 의 모델 호출 결과 | `MODEL`, `RATE_LIMIT`, `TIMEOUT`, `NETWORK` |
-| `decision/providers/` 의 결정 호출 결과 | `DECISION`, `RATE_LIMIT`, `TIMEOUT` |
+| `decision/providers/` 의 결정 호출 결과 | `DECISION`, `RATE_LIMIT`, `TIMEOUT` (+ 이그레스 프록시 자신의 거절 — `FORBIDDEN` / `NETWORK`, ACC_001 · ACC_002) |
 | `orchestrator/` 의 node 실행/state 병합 결과 | `GRAPH` |
 | `modules/registry.py` 의 ref 해석/로드 결과 | `MODULE`, `CONFIG` |
 | `orchestrator/checkpoint.py` 의 저장/복원 결과 | `STORAGE` |
@@ -173,8 +173,10 @@ DEC_001: 결정 provider 호출 실패 (네트워크/서버 오류) — retryabl
 DEC_002: 결정 provider rate limited (category: rate_limit) — retryable
 DEC_003: 질문/state 가 provider 한도 초과 (입력 길이, 보기·등급 수) — 영구
 DEC_004: 응답이 선언한 값 집합 밖이거나 파싱 불가 — 영구 (provider 어댑터 boundary 가 변환)
-         결정 호출의 timeout 은 TO_004. 쓰임 안에서는 DEC_*/TO_004 모두 "unavailable" 로 취급해
-         원래 경로로 간다 (01 Decision Models 2) — 결정 실패가 태스크를 실패시키지 않는다
+         결정 호출의 timeout 은 TO_004. 쓰임 안에서는 DEC_*/TO_004 와 이그레스 프록시 자신의 거절
+         (ACC_001 · ACC_002 — 응답 헤더 x-aaestro-egress-error-code 로 가르고 circuit 에 세지 않는다, #595)
+         모두 "unavailable" 로 취급해 원래 경로로 간다 (01 Decision Models 2) — 결정 실패가 태스크를
+         실패시키지 않는다
 
 RT_001:  컨테이너 기동 실패 / 기동 직후 · 재부착 시 격리 · 경화 불일치 (details.kind: network | hardening) /
          교체 전 옛 컨테이너 제거 실패 — 교체를 시작하지 않고 다음 backoff 에 다시 지운다 (retryable)
@@ -278,7 +280,7 @@ DECISION_RETRY = RetryPolicy(
     retryable_categories=(
         ErrorCategory.NETWORK, ErrorCategory.TIMEOUT, ErrorCategory.RATE_LIMIT,
         ErrorCategory.DECISION,   # DEC_001 (retryable) — 영구 오류 DEC_003/004 는 retryable=False 로 걸러진다
-    ),
+    ),  # 프록시의 ACC_002 (NETWORK, 레지스트리 장애) 도 한 번 재시도된다 — ACC_001 (FORBIDDEN) 은 아니다
 )
 ```
 
@@ -529,7 +531,7 @@ aaestro_state_compactions_total{graph, field, strategy, status}  # strategy: kee
 aaestro_state_field_tokens{graph, field}                 # Gauge — 압축을 선언한 필드의 추정 토큰 (경계마다)
 
 # Memory metrics ([09-memory-context.md](09-memory-context.md))
-aaestro_memory_operations_total{space, op, status}       # op: append|read|latest|search|recall — space: space id | "undeclared"
+aaestro_memory_operations_total{space, op, status}       # op: append|read|latest|search|recall — space: space id (run space 는 run:<alias>) | "undeclared"
 aaestro_memory_search_duration_seconds{space}
 aaestro_memory_entries{space}                            # Gauge
 aaestro_memory_index_lag_seconds{space}

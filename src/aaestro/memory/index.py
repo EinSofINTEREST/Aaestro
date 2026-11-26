@@ -444,14 +444,11 @@ class IndexRegistry:
         if self.metrics is None:
             return
 
-        telemetry = IndexTelemetry(self.metrics)
-        for space, index in self.indexes.items():
-            telemetry.entries(space=space, count=len(index.metadata))
-
-        lag = self.queue.lag_seconds(now=now)
         # 큐가 빈 space 는 지연이 0 이다 — 값을 남겨두면 해소된 지연이 계속 보인다
-        for space in self.indexes:
-            telemetry.index_lag(space=space, seconds=lag.get(space, 0.0))
+        IndexTelemetry(self.metrics).space_gauges(
+            sizes={space: len(index.metadata) for space, index in self.indexes.items()},
+            lags=self.queue.lag_seconds(now=now),
+        )
 
     def reindex(
         self, space: str, entries: Iterable[MemoryEntry], spec: ChunkSpec, *, embedder: Embedder

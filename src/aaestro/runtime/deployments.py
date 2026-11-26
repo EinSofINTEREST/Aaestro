@@ -33,6 +33,12 @@ from aaestro.access.client import ACCESS_URL_ENV
 from aaestro.access.model import ACCESS_CREDENTIAL_ENV
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 from aaestro.core.manifest import MANIFEST_ENV, agent_name
+from aaestro.decision import (
+    DECISION_KIND_ENV,
+    DECISION_PROXY_PREFIX,
+    DECISION_TIMEOUT_ENV,
+    DECISION_URL_ENV,
+)
 from aaestro.protocols.a2a.allowlist import ALLOW_TOKEN_MODE_ENV, admit_token_mode
 from aaestro.protocols.mcp.transport import MCP_PROXY_URL_ENV
 from aaestro.runtime.docker.engine import AGENT_LABEL, ContainerHandle
@@ -429,7 +435,9 @@ class DeploymentManager:
         agent_env: 모든 에이전트에 주입하는 **비밀이 아닌** 인프라 env (provider base
             URL 등). secrets 와 달리 allowlist 를 거치지 않는다 — 어디에 provider 가
             있는지는 자격증명이 아니라 배치다. 여기 secret 을 넣으면 allowlist 를 우회하는
-            것이므로, 이름이 secret 패턴이면 거부한다.
+            것이므로, 이름이 secret 패턴이거나 `AAESTRO_EGRESS_` 로 시작하면 거부한다.
+            프록시가 종단하는 자격 이름 (모델 키 · 원격 MCP 토큰) 은 프록시가 있으면
+            env 조립 때 거른다.
         memory_url / memory_tokens: Memory Service 주소와 에이전트별 토큰 파일 내용.
         ready_timeout_s / poll: health 대기. 06 — sleep 은 주입한다.
         images: 빌드 단계 (#266). 재료가 있는 에이전트는 그 버전이 `built` 여야 기동한다.
@@ -480,12 +488,19 @@ class DeploymentManager:
         if self.launcher.groups is None:
             # 기동 · 재시작 · 재부착이 모두 카탈로그의 **지금** 그룹 선언으로 quota 를 본다 (#474)
             self.launcher.groups = self._current_group
-        secretish = [k for k in self.agent_env if _looks_secret(k)]
+        secretish = [
+            k
+            for k in self.agent_env
+            if _looks_secret(k) or k.upper().startswith(PROXY_ONLY_ENV_PREFIX)
+        ]
         if secretish:
             raise AaestroError(
                 category=ErrorCategory.CONFIG,
                 code=ErrorCode.CFG_002,
-                message="agent_env must not carry secrets — those go through env_allowlist",
+                message=(
+                    "agent_env must not carry secrets or proxy-only keys"
+                    " — secrets go through env_allowlist"
+                ),
                 details={"keys": secretish},
             )
 
@@ -1312,6 +1327,7 @@ class DeploymentManager:
                     env[ACCESS_URL_ENV] = self.access_url
                 if self.egress is not None:
                     env.update(self.egress.env_for(manifest.name, credential))
+                    env.update(self.egress.decision_env(manifest))
             # 권한 에이전트는 그래프 배선이 아니라 설정이 정한다 — 떠 있으면 모두가 요청할 수 있다.
             # 호출은 표로만 증명되므로 레지스트리 모드에서만 잇는다
             reachable = (
@@ -1614,11 +1630,21 @@ class DeploymentManager:
             group_values=self.secrets_env,
             global_values=self.secrets_env,
         ).env_for(tuple(manifest.spec.runtime.env_allowlist))
+        infra = self.agent_env
         if self.egress is not None:
-            # 프록시가 종단하는 서비스의 키는 에이전트에게 주지 않는다 — 프록시가 주입한다 (02)
+            # 프록시가 종단하는 서비스의 키는 에이전트에게 주지 않는다 — 프록시가 주입한다 (02).
+            # agent_env 도 같다: 매니페스트마다 달라 기동 시 검사가 아니라 여기서 거른다
             terminated = PROXY_TERMINATED_SECRETS | remote_mcp_credentials(manifest)
             scoped = {k: v for k, v in scoped.items() if k not in terminated}
-        return {**self.agent_env, **scoped, **provision.env}
+            dropped = sorted(k for k in infra if k in terminated)
+            if dropped:
+                log.warning(
+                    "agent_env keys held by the egress proxy were not injected",
+                    agent=manifest.name,
+                    keys=dropped,
+                )
+                infra = {k: v for k, v in infra.items() if k not in terminated}
+        return {**infra, **scoped, **provision.env}
 
     def _memory_for(self, manifest: AgentManifest, provision: Provision) -> MemoryEndpoint | None:
         """Memory Service 주소와 내밀 자격.
@@ -1775,6 +1801,10 @@ class EgressEndpoints:
     control_url: str | None = None
     """control plane 이 프록시 provider 창구에 닿는 주소 (#644) — 비우면 ``providers_url``.
     에이전트 env 에는 실리지 않는다."""
+    decision_kinds: Mapping[str, str] = field(default_factory=dict)
+    """설정 ``decision.providers`` 의 이름 → 어댑터 kind (#595) — 결정 provider 도 프록시가 종단."""
+    decision_timeout_s: float = 5.0
+    """설정 ``decision.timeout_s`` — agentd 는 설정 파일을 읽지 않는다."""
 
     def env_for(self, agent: str, credential: str) -> dict[str, str]:
         """이 에이전트의 외부 호출 배선 — 프록시 자격은 **그 에이전트의 신원**이다."""
@@ -1796,6 +1826,23 @@ class EgressEndpoints:
             # OpenAI 호환 provider 도 같은 방식이다 — 주소는 프록시 종단 창구, 키 자리는 신원
             "OPENAI_COMPAT_BASE_URL": f"{self.providers_url.rstrip('/')}/openai-compat",
             "OPENAI_COMPAT_API_KEY": credential,
+        }
+
+    def decision_env(self, manifest: AgentManifest) -> dict[str, str]:
+        """결정 provider 배선 — 주소는 프록시 창구, 자격은 신원 (``ACCESS_CREDENTIAL_ENV``) 이다.
+
+        설정에 없는 provider 는 배포 검증이 이미 거절했다 (``VAL_002``) — 여기서는 싣지 않는다.
+        """
+        declared = manifest.spec.decision
+        kind = None if declared is None else self.decision_kinds.get(declared.provider)
+        if declared is None or kind is None:
+            return {}
+        return {
+            DECISION_URL_ENV: (
+                f"{self.providers_url.rstrip('/')}/{DECISION_PROXY_PREFIX}/{declared.provider}"
+            ),
+            DECISION_KIND_ENV: kind,
+            DECISION_TIMEOUT_ENV: str(self.decision_timeout_s),
         }
 
 
@@ -1907,6 +1954,10 @@ def _malformed(details: dict[str, Any]) -> AaestroError:
 
 def _code(err: BaseException) -> str:
     return str(getattr(err, "code", type(err).__name__))
+
+
+# 프록시 전용 자격 · 설정 env — 에이전트에 있을 이유가 없다 (egress 진입점은 import 하지 않는다)
+PROXY_ONLY_ENV_PREFIX = "AAESTRO_EGRESS_"
 
 
 def _looks_secret(key: str) -> bool:

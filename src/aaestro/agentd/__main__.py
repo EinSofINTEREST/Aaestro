@@ -299,7 +299,7 @@ async def build_executor(manifest: AgentManifest, *, metrics: Metrics | None = N
 async def _standard_executor(
     manifest: AgentManifest, registry: Any, mcp: Any, *, metrics: Metrics | None
 ) -> Any:
-    from aaestro.agentd.bootstrap import model_factory
+    from aaestro.agentd.bootstrap import decision_client, model_factory
     from aaestro.agentd.executor import Executor, ExecutorServices
     from aaestro.agentd.models import ModelChains
     from aaestro.agentd.render import warn_if_headroom_exceeds_memory
@@ -335,6 +335,8 @@ async def _standard_executor(
             output_keys=binding.output_keys,
             # 그래프가 해석한 태스크의 모델 선언(#358) — 없으면 노드·배포 override 가 무시된다
             chains=chains.for_config,
+            # 결정 provider — 프록시가 종단한다 (#595). 쓰임은 아직 부르지 않는다 (#596 · #597)
+            decision=decision_client(manifest, os.environ, metrics=metrics),
         ),
     )
     # 기동 묶음을 통째로 건다 — 생성자는 일부 필드만 받아, 뜨지 못한 optional 서버(degraded)가

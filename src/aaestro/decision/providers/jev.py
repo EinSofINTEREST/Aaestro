@@ -22,7 +22,6 @@ import httpx
 from aaestro.core.decision import Decision, QuestionKind
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode, raise_detached
 from aaestro.decision.bands import decision_from
-from aaestro.http_auth import is_loopback
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -53,6 +52,13 @@ HTTP_REDIRECT_FIRST: Final = 300
 HTTP_PAYLOAD_TOO_LARGE: Final = 413
 HTTP_RATE_LIMITED: Final = 429
 HTTP_SERVER_ERROR: Final = 500
+EGRESS_ERROR_CODE_HEADER: Final = "x-aaestro-egress-error-code"
+"""프록시가 **자기** 거절 (403 ``ACC_001`` · 503 ``ACC_002``) 에만 싣는 헤더 (#595).
+
+``egress/providers.py`` 와 같은 이름이어야 한다. 본문은 upstream 이 흉내 낼 수 있지만 이 헤더는
+프록시의 응답 허용 목록 밖이라 upstream 에서 오지 않는다. ``agentd/providers/egress_refusal.py``
+의 최소 복제다 — egress 프록시 프로세스가 이 모듈을 import 하므로 agentd 를 끌어올 수 없다.
+어긋나면 ``tests/unit/egress/test_decision.py`` 의 프록시 경유 테스트가 실패한다."""
 
 
 def _error(
@@ -83,7 +89,10 @@ def _config_error(reason: str) -> AaestroError:
 
 
 def _endpoint(base_url: str, *, allow_plaintext: bool) -> str:
-    """https, 또는 루프백 · 명시 opt-in 의 http 만 받는다 (03 Egress 결정 모델 행)."""
+    """https, 또는 명시 opt-in 의 http 만 받는다 (03 Egress 결정 모델 행).
+
+    루프백도 opt-in 이 필요하다 — 설정 (``DecisionProviderConfig``) 과 같은 규칙이다 (#595).
+    """
     endpoint = base_url.rstrip("/") + SYSTEMONE_PATH
     try:
         parts = urlsplit(base_url)
@@ -96,8 +105,8 @@ def _endpoint(base_url: str, *, allow_plaintext: bool) -> str:
     if not parts.hostname or parts.query or parts.fragment or parts.username or parts.password:
         raise _config_error("base_url is not a plain http(s) URL")
     if parts.scheme == "http":
-        if not (allow_plaintext or is_loopback(parts.hostname)):
-            raise _config_error("plaintext base_url needs a loopback host or an explicit opt-in")
+        if not allow_plaintext:
+            raise _config_error("plaintext base_url needs an explicit opt-in")
     elif parts.scheme != "https":
         raise _config_error("base_url scheme must be https")
     return endpoint
@@ -115,7 +124,7 @@ class JevDecisionModel:
         credential: Bearer value, or ``None`` when the egress proxy injects it.
         timeout_s: Per-request HTTP timeout.
         client: Injected HTTP client (tests pass a ``MockTransport``); one is created when omitted.
-        allow_plaintext: Accept ``http`` to a non-loopback host (test doubles, internal networks).
+        allow_plaintext: Accept ``http`` (the egress proxy listener, test doubles).
 
     Raises:
         AaestroError: CONFIG/``CFG_001`` for an unusable base URL or credential.
@@ -195,6 +204,9 @@ class JevDecisionModel:
                 timeout=self._timeout,
                 follow_redirects=False,
             ) as response:
+                _raise_for_refusal(
+                    response.headers.get(EGRESS_ERROR_CODE_HEADER), response.status_code
+                )
                 _raise_for_status(response.status_code)
                 body = bytearray()
                 async for chunk in response.aiter_bytes():
@@ -232,6 +244,27 @@ class JevDecisionModel:
                     cause=type(err).__name__,
                 )
             )
+
+
+def _raise_for_refusal(code: str | None, status: int) -> None:
+    """프록시의 권한 거절은 provider 고장이 아니다 — 그 코드로 올린다 (circuit 은 세지 않는다)."""
+    if code == ErrorCode.ACC_001:
+        raise _error(
+            ErrorCode.ACC_001,
+            "denied by the egress proxy",
+            retryable=False,
+            category=ErrorCategory.FORBIDDEN,
+            cause=f"http_{status}",
+        )
+    if code == ErrorCode.ACC_002:
+        # 레지스트리가 돌아오면 풀린다 — DECISION_RETRY 가 NETWORK 로 한 번 다시 두드린다
+        raise _error(
+            ErrorCode.ACC_002,
+            "egress proxy could not decide",
+            retryable=True,
+            category=ErrorCategory.NETWORK,
+            cause=f"http_{status}",
+        )
 
 
 def _raise_for_status(status: int) -> None:

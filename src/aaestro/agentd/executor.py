@@ -73,6 +73,7 @@ if TYPE_CHECKING:
     from aaestro.core.errors import RetryPolicy
     from aaestro.core.manifest import ModelConfig
     from aaestro.core.skill import ArtifactStore
+    from aaestro.decision.client import DecisionClient
 
     TaskRecall = Callable[[TaskRequest], Awaitable[str]]
     """태스크 진입 시 1회 회상해 프롬프트에 붙일 텍스트를 만드는 콜러블."""
@@ -286,6 +287,9 @@ class ExecutorServices:
     """태스크가 실어 온 모델 선언(``TaskConfig.model``)으로 체인을 만든다.
 
     없으면 그 선언을 쓸 수 없다 — 기본 체인으로 돌고 WARN 을 남긴다."""
+    decision: DecisionClient | None = None
+    """결정 provider 클라이언트 (#595) — 배선이라 리로드가 바꾸지 않는다 (02 Hot Reload).
+    쓰임 (회상 필터 · 입력 판별 · 도구 게이트) 은 아직 부르지 않는다 (#596 · #597)."""
 
 
 def _tool_error(
@@ -403,6 +407,11 @@ class Executor:
         # 키는 _completed 와 같은 (호출자, task_id) — 운영자 steer 는 Control API 공간의 태스크에만
         # 닿고, peer 가 같은 id 로 보낸 태스크의 대기열과 섞이지 않는다 (03 A2A Client Rules 8)
         self._steers: dict[TaskKey, _SteerQueue] = {}
+
+    @property
+    def decision(self) -> DecisionClient | None:
+        """결정 provider 클라이언트 — health 가 circuit 상태를 본다."""
+        return self._services.decision
 
     @property
     def binding(self) -> ModuleBinding:
