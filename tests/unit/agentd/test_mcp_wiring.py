@@ -133,8 +133,9 @@ def test_the_daemon_builds_and_serves_on_one_loop_and_closes_sessions(
         loops["built"] = asyncio.get_running_loop()
         return await original(manifest, **kwargs)
 
-    async def serve(app, manifest, executor, bind_host):
+    async def serve(app, manifest, invoke, bind_host):
         loops["served"] = asyncio.get_running_loop()
+        executor = app.state.runtime.executor
         loops["live_while_serving"] = executor.binding.tools.mcp.sessions["fs"].connected
 
     monkeypatch.setattr(agentd, "build_executor", build)

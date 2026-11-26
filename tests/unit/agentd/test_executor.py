@@ -34,6 +34,7 @@ from aaestro.protocols.mcp.errors import tool_failed
 from aaestro.protocols.mcp.session import ToolResult as McpToolResult
 from tests.fixtures.builders import make_task
 from tests.fixtures.fake_model import FakeModel, FakeTools, calls, text
+from tests.fixtures.waiting import until
 
 
 def make_executor(
@@ -744,6 +745,138 @@ async def test_the_oldest_result_is_forgotten_past_the_limit(monkeypatch):
     await executor.execute(make_task(task_id="t1"))  # 잊었으므로 다시 돈다
 
     assert model.turns == 4
+
+
+async def test_a_peer_cannot_evict_the_control_spaces_cached_result(monkeypatch):
+    """한 호출자가 보낸 태스크 수가 다른 호출자의 기억을 밀어내면 노드 재시도가 다시 돈다 (#416)."""
+    monkeypatch.setattr(executor_module, "REMEMBERED_RESULTS", 2)
+    executor, model, _ = make_executor([text("node"), text("p0"), text("p1"), text("p2")])
+    node = make_task(task_id="t-node")
+
+    await executor.execute(node)
+    for i in range(3):
+        await executor.execute(make_task(task_id=f"p{i}", caller="writer"))
+    await executor.execute(node)  # peer 가 넘친 것은 peer 의 기억만 밀어낸다
+
+    assert model.turns == 4
+
+
+class GatedTools(FakeTools):
+    """문이 열릴 때까지 도는 부수효과 도구."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.gate = asyncio.Event()
+
+    async def call(self, name, arguments, ctx):
+        self.started.append(name)
+        await self.gate.wait()
+        self.calls.append(name)
+        return "ok"
+
+
+async def test_concurrent_calls_with_the_same_key_run_once():
+    """같은 호출자의 동시 재시도가 부수효과 도구를 두 번 부르지 않는다 (#416)."""
+    tools = GatedTools()
+    executor, model, _ = make_executor(
+        [calls("post"), text("done"), calls("post"), text("again")], tools
+    )
+    task = make_task(task_id="t-dup")
+
+    first = asyncio.create_task(executor.execute(task))
+    second = asyncio.create_task(executor.execute(task))
+    await until(lambda: tools.started == ["post"])
+    await asyncio.sleep(0)  # 겹친 쪽이 실행을 시작할 기회를 준다
+    tools.gate.set()
+
+    results = await asyncio.gather(first, second)
+
+    assert tools.calls == ["post"]
+    assert results[0] == results[1]
+    assert model.turns == 2
+
+
+async def test_a_joined_call_runs_itself_when_the_first_is_canceled():
+    """앞선 실행이 취소되면 겹친 재시도는 취소 결과를 물려받지 않고 스스로 돈다."""
+    tools = GatedTools()
+    executor, model, _ = make_executor([calls("post"), text("again")], tools)
+    task = make_task(task_id="t-dup")
+
+    first = asyncio.create_task(executor.execute(task))
+    await until(lambda: tools.started == ["post"])
+    second = asyncio.create_task(executor.execute(task))
+    await asyncio.sleep(0)
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+
+    result = await second
+
+    assert result.status == TaskStatus.COMPLETED
+    assert model.turns == 2
+
+
+async def test_waiting_on_a_same_key_run_counts_against_the_deadline():
+    """합류 대기도 마감 안이다 — 앞선 실행이 끝나지 않으면 마감에 TO_001 로 답한다 (#416)."""
+    tools = GatedTools()
+    executor, model, _ = make_executor([calls("post"), text("done")], tools)
+    task = make_task(task_id="t-dup")
+    first = asyncio.create_task(executor.execute(task))
+    await until(lambda: tools.started == ["post"])
+
+    late = task.model_copy(update={"config": TaskConfig(timeout_s=0.05)})
+    result = await asyncio.wait_for(executor.execute(late), timeout=5)
+
+    assert result.status == TaskStatus.FAILED
+    assert result.error.code == "TO_001"
+    tools.gate.set()
+    assert (await first).status == TaskStatus.COMPLETED
+    assert model.turns == 2
+
+
+async def test_a_run_after_waiting_gets_only_the_remaining_deadline():
+    """대기 뒤 스스로 도는 실행은 남은 마감만 쓴다 — 합쳐서 config.timeout_s 다 (#416)."""
+    tools = GatedTools()
+    executor, _, _ = make_executor([calls("post"), text("done")], tools)
+    seen: list[float] = []
+    real = executor._execute
+
+    async def spy(task):
+        seen.append(task.config.timeout_s)
+        return await real(task)
+
+    executor._execute = spy
+    task = make_task(task_id="t-dup", config=TaskConfig(timeout_s=30))
+    first = asyncio.create_task(executor.execute(task))
+    await until(lambda: tools.started == ["post"])
+    second = asyncio.create_task(executor.execute(task))
+    await asyncio.sleep(0)
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    tools.gate.set()
+    await second
+
+    assert seen[0] == 30
+    assert seen[1] < 30
+
+
+async def test_canceling_a_joined_call_leaves_the_first_running():
+    """겹친 쪽의 취소는 그쪽만 끝낸다 — 앞선 실행이 남의 취소로 끊기지 않는다."""
+    tools = GatedTools()
+    executor, _, _ = make_executor([calls("post"), text("done")], tools)
+    task = make_task(task_id="t-dup")
+
+    first = asyncio.create_task(executor.execute(task))
+    await until(lambda: tools.started == ["post"])
+    second = asyncio.create_task(executor.execute(task))
+    await asyncio.sleep(0)
+    second.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await second
+    tools.gate.set()
+
+    assert (await first).status == TaskStatus.COMPLETED
 
 
 async def test_distinct_tasks_execute_separately():

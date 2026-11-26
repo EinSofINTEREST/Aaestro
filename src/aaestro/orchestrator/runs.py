@@ -134,11 +134,17 @@ class RunService:
             await self.submitter.start_service(topology, initial_state, run_id=run_id)
             self._pin_models(run_id, topology, overrides)
         else:
+            # 끝난 run 의 id 를 다시 쓰면 checkpoint thread 가 겹친다 — 공지가 덮기 전에 거절한다
+            if self.store.get(run_id) is not None:
+                raise run_refused(run_id, topology.metadata.name)
             # 제출 응답이 돌아간 직후의 GET 이 404 면 안 된다 — 드라이버가 기록을
             # 남기기 전이라도 **여기서** 먼저 쓴다 (read-your-writes)
             self._announce(run_id, topology, model_overrides=overrides)
             self._drive(
-                run_id, lambda: self.submitter.submit(topology, initial_state, run_id=run_id)
+                run_id,
+                lambda: self.submitter.submit(
+                    topology, initial_state, run_id=run_id, announced=True
+                ),
             )
         bound.info("run submitted", deployment_id=deployment.deployment_id)
         return self._record(run_id, topology)

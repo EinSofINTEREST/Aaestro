@@ -501,6 +501,7 @@ class Overlap:
     """같은 ``task_id`` 로 겹쳐 도는 두 실행 — 먼저 것은 tool 에서 붙잡혀 있다.
 
     A2A 로 받은 태스크의 ``task_id`` 는 peer 가 정한다: 진행 중인 id 를 골라 보낼 수 있다.
+    같은 키의 ``execute`` 는 앞선 실행을 기다리므로 (#416) 겹침은 같은 키의 ``stream`` 으로 만든다.
     """
 
     def __init__(self) -> None:
@@ -531,8 +532,9 @@ class Overlap:
         await reached(self.entered, running)
         return running
 
-    def second(self):
-        return self.executor.execute(make_task(input={"who": "second"}))
+    async def second(self) -> None:
+        async for _ in self.executor.stream(make_task(input={"who": "second"})):
+            pass
 
 
 async def test_a_later_run_with_the_same_task_id_cannot_take_over_the_steers():

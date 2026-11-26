@@ -22,7 +22,13 @@ from a2a.utils.errors import A2AError
 
 from aaestro.core.agent import TaskResult
 from aaestro.core.errors import AaestroError, ErrorCode
-from aaestro.protocols.a2a.errors import a2a_error, submit_failed, task_rejected, unreachable
+from aaestro.protocols.a2a.errors import (
+    a2a_error,
+    peer_failure,
+    submit_failed,
+    task_rejected,
+    unreachable,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -209,8 +215,11 @@ class SdkPeerTransport:
             return TaskResult.completed(task, output=read_output(final))
         peer_error = read_output(final).get("error")
         if isinstance(peer_error, dict):
-            # 피호출자가 실어 보낸 사유 — 코드로 대응을 가를 수 있게 그대로 싣는다
-            raise task_rejected(self.agent, callee, state=name, peer_error=peer_error)
+            # 피호출자가 실어 보낸 사유 — 코드로 대응을 가를 수 있게 그대로 싣는다. 분류
+            # (시작 전 거절만 A2A_001) 는 transport 경로와 같은 peer_failure 가 한다.
+            # details.started 는 피호출자가 정한 값이라 신뢰할 수 없다 — 자동 재시도 계층이
+            # 이 값으로 판단하게 되면 다시 따진다
+            raise peer_failure(self.agent, callee, peer_error, state=name)
         raise task_rejected(self.agent, callee, state=name)
 
     async def _client(self, callee: str, *, token: str, headers: Mapping[str, str]) -> Client:

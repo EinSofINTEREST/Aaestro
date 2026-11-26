@@ -204,8 +204,8 @@ def test_the_served_app_reloads_the_standard_executor(root, tmp_path, monkeypatc
     monkeypatch.setattr(agentd, "_configure_logging", lambda: None)
     served = {}
 
-    async def serve(app, manifest, executor, bind_host):
-        served.update(app=app, executor=executor)
+    async def serve(app, manifest, invoke, bind_host):
+        served.update(app=app, executor=app.state.runtime.executor)
 
     monkeypatch.setattr(agentd, "_serve", serve)
 

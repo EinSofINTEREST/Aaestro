@@ -53,7 +53,7 @@ if TYPE_CHECKING:
 
     from fastapi import FastAPI
 
-    from aaestro.core.agent import TaskRequest
+    from aaestro.core.agent import TaskRequest, TaskResult
 
 CONTROL_PORT = 8080
 """Control port — 컨테이너 내부 고정 (02 Network). A2A 포트는 runtime 이 할당한다."""
@@ -768,7 +768,8 @@ async def _run(manifest: AgentManifest, metrics: Metrics, serving: Serving) -> N
             agent_version=manifest.metadata.version,
             port=CONTROL_PORT,
         )
-        await _serve(app, manifest, executor, serving.bind_host)
+        # A2A 로 받은 태스크도 Control 태스크와 같은 상한 · 추적 · drain 을 지난다 (#416)
+        await _serve(app, manifest, app.state.runtime.run, serving.bind_host)
     finally:
         await _close_wiring(executor)
 
@@ -788,7 +789,12 @@ async def _close_wiring(executor: Any) -> None:
         await close_memory()
 
 
-async def _serve(app: Any, manifest: AgentManifest, executor: Any, bind_host: str) -> None:
+async def _serve(
+    app: Any,
+    manifest: AgentManifest,
+    invoke: Callable[[TaskRequest], Awaitable[TaskResult]],
+    bind_host: str,
+) -> None:
     """Control API 를 서빙하고, 선언되어 있으면 A2A 도 함께 띄운다.
 
     03 기동 순서 5단계 — 두 포트는 **별개 서버**다: Control 은 runtime 만,
@@ -796,7 +802,7 @@ async def _serve(app: Any, manifest: AgentManifest, executor: Any, bind_host: st
     """
     from aaestro.agentd.a2a_server import a2a_port, build_a2a_app
 
-    peer_app = build_a2a_app(manifest, executor.execute)
+    peer_app = build_a2a_app(manifest, invoke)
     port = a2a_port()
     if peer_app is None or port is None:
         config = uvicorn.Config(app, host=bind_host, port=CONTROL_PORT, log_config=None)
