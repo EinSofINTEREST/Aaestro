@@ -58,8 +58,13 @@ def _url_port(parts: SplitResult) -> int | None:
         return INVALID_PORT
 
 
-def _require_http_url(value: str, what: str) -> None:
-    """스킴·호스트·유효한 포트가 있는 http(s) URL 인가 — 판정이 이 값을 풀다 터지지 않게."""
+def require_http_url(
+    value: str, what: str, *, credentials_hint: str = "use auth.token_env"
+) -> None:
+    """스킴·호스트·유효한 포트가 있는 http(s) URL 인가 — 판정이 이 값을 풀다 터지지 않게.
+
+    ``credentials_hint`` 는 자격증명이 실린 URL 을 거절할 때 대신 쓸 곳을 알리는 문구다.
+    """
     parts = split_url(value)
     if parts is None:
         raise ValueError(f"{what} must be a valid http(s) URL")
@@ -67,7 +72,7 @@ def _require_http_url(value: str, what: str) -> None:
     # 메시지에는 값을 싣지 않는다 (field_problems 가 가리지만 원인 쪽에서도 막는다)
     if parts.username is not None or parts.password is not None:
         # 자격증명은 auth.token_env 로만 — URL 에 실리면 로그·카드·에러 곳곳에 샌다
-        raise ValueError(f"{what} must not carry credentials; use auth.token_env")
+        raise ValueError(f"{what} must not carry credentials; {credentials_hint}")
     port = _url_port(parts)
     if port == INVALID_PORT:
         raise ValueError(f"{what} has an invalid port")
@@ -596,7 +601,7 @@ class McpServerSpec(BaseModel):
         if self.sidecar is not None and self.auth is not None:
             raise ValueError("sidecar servers must not declare 'auth' — url is runtime-injected")
         if self.url is not None:
-            _require_http_url(self.url, "mcp server url")
+            require_http_url(self.url, "mcp server url")
         return self
 
 
@@ -869,6 +874,90 @@ class RuntimeSpec(BaseModel):
         return _require_pinned_image(value, "agent")
 
 
+DECISIONSET_REF_PREFIX = "decisionsets/"
+_DECISION_ALIAS = r"[a-z][a-z0-9_]*"
+QUESTION_REF_PATTERN = rf"^{_DECISION_ALIAS}\.{_DECISION_ALIAS}$"
+"""쓰임이 가리키는 질문 — ``alias.question`` (alias 는 ``sets`` 의 ``as``)."""
+
+
+class DecisionSetRef(BaseModel):
+    """A decisionset attached under an alias — questions are referenced as ``alias.question``."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", populate_by_name=True)
+
+    ref: ModuleRefStr
+    alias: str = Field(alias="as", pattern=rf"^{_DECISION_ALIAS}$")
+
+    @field_validator("ref")
+    @classmethod
+    def _decisionset_ref(cls, value: str) -> str:
+        if not value.startswith(DECISIONSET_REF_PREFIX):
+            raise ValueError(f"decision set ref must be a {DECISIONSET_REF_PREFIX}* reference")
+        return value
+
+
+class RecallFilterUse(BaseModel):
+    """Use 1 — filter recalled memories (09 Context Assembly)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    question: str = Field(pattern=QUESTION_REF_PATTERN)
+    uncertain: Literal["keep", "drop"] = "keep"
+
+
+class InputScreenUse(BaseModel):
+    """Use 2 — flag instructions in tool results / A2A replies / recalled memories."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    question: str = Field(pattern=QUESTION_REF_PATTERN)
+
+
+class ToolGateUse(BaseModel):
+    """Use 6 — judge a side-effecting tool call before it runs (02 Decision Hooks)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    tools: tuple[Annotated[str, Field(min_length=1)], ...] = Field(min_length=1)
+    """도구 이름 glob — 네임스페이스 이름 기준 (``mcp__mail__*``)."""
+    question: str = Field(pattern=QUESTION_REF_PATTERN)
+    uncertain: Literal["block", "allow"] = "block"
+    unavailable: Literal["allow", "block"] = "allow"
+
+
+class DecisionSpec(BaseModel):
+    """The agent's decision model — provider, question sets and the uses that ask them.
+
+    결정 모델 선언 (02 Manifest Rules 8). ``provider`` 는 설정 ``decision.providers`` 의 키다.
+    질문 참조의 해석 · 종류 · locale 은 배포 검증이 본다 (01 Contract Validation 9).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    provider: str = Field(min_length=1)
+    model: str = Field(min_length=1)
+    sets: tuple[DecisionSetRef, ...] = Field(min_length=1)
+    recall_filter: RecallFilterUse | None = None
+    input_screen: InputScreenUse | None = None
+    tool_gates: tuple[ToolGateUse, ...] = ()
+
+    @field_validator("sets")
+    @classmethod
+    def _unique_aliases(cls, value: tuple[DecisionSetRef, ...]) -> tuple[DecisionSetRef, ...]:
+        repeated = repeated_positions([s.alias for s in value])
+        if repeated:
+            raise ValueError(f"duplicate decision set alias at index {repeated}")
+        return value
+
+    def questions(self) -> tuple[tuple[str, str], ...]:
+        """(use, ``alias.question``) for every use that asks a question."""
+        asked = [("recall_filter", self.recall_filter), ("input_screen", self.input_screen)]
+        return (
+            *((use, decl.question) for use, decl in asked if decl is not None),
+            *(("tool_gates", gate.question) for gate in self.tool_gates),
+        )
+
+
 class AgentSpec(BaseModel):
     """The agent contract body.
 
@@ -882,6 +971,7 @@ class AgentSpec(BaseModel):
     skillsets: tuple[ModuleRef, ...] = ()
     skillpacks: tuple[ModuleRef, ...] = ()
     memory: MemorySpec = Field(default_factory=MemorySpec)
+    decision: DecisionSpec | None = None
     mcp: McpSpec = Field(default_factory=McpSpec)
     a2a: A2ASpec = Field(default_factory=A2ASpec)
     runtime: RuntimeSpec = Field(default_factory=RuntimeSpec)

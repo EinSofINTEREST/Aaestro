@@ -16,6 +16,7 @@ import structlog
 from pydantic import ValidationError
 
 from aaestro.access.baselines import PROVIDER_HOSTS
+from aaestro.core.decision import QuestionKind
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode, field_problems
 from aaestro.core.manifest import RESERVED_GLOBAL_GROUP, agent_name, agent_ref_parts
 from aaestro.core.topology import GraphMode, validate_topology
@@ -33,10 +34,16 @@ from aaestro.orchestrator.state_artifacts import STATE_ARTIFACT_SETTING
 from aaestro.runtime.quota import check_group_quota, check_host_capacity
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping, Sequence
+    from collections.abc import Iterable, Iterator, Mapping, Sequence
 
-    from aaestro.core.manifest import AgentManifest, GroupManifest, MemorySpaceRef
+    from aaestro.core.manifest import (
+        AgentManifest,
+        DecisionSpec,
+        GroupManifest,
+        MemorySpaceRef,
+    )
     from aaestro.core.topology import GraphTopology, NodeSpec
+    from aaestro.modules.decisionset import LoadedDecisionset
     from aaestro.modules.promptset import PromptsetManifest
 
 log = structlog.get_logger(__name__)
@@ -158,6 +165,16 @@ class DeployValidator:
     비어 있으면 그 검사는 아무 것도 보지 못한다 — 호출자가 반드시 채워야 하며,
     `Author.validate` 가 그 자리다 (#467).
     """
+    decisionsets: Mapping[str, LoadedDecisionset] = field(default_factory=dict)
+    """decisionset ref → 로드된 질문. 쓰임의 질문 해석 · 종류 · locale 을 본다 (01 검증 9).
+
+    비어 있으면 그 검사는 질문을 보지 못한다 — `Author.validate` 가 채운다.
+    """
+    decision_providers: Mapping[str, frozenset[str]] = field(default_factory=dict)
+    """설정 ``decision.providers`` 의 이름 → 검증된 locales.
+
+    없는 provider 를 선언한 에이전트는 거절한다.
+    """
     local_secrets: Mapping[str, frozenset[str]] = field(default_factory=dict)
     global_secrets: frozenset[str] = frozenset()
     host_cpu_cores: float | None = None
@@ -201,6 +218,7 @@ class DeployValidator:
 
         findings.extend(self._check_module_refs())
         findings.extend(self._check_memory_attachments(topologies))
+        findings.extend(self._check_decisions())
         findings.extend(self._check_system_templates())
         findings.extend(self._check_groups())
         findings.extend(self._check_env_allowlists())
@@ -504,6 +522,8 @@ class DeployValidator:
             refs.extend(s.ref for s in manifest.spec.skillsets)
             refs.extend(s.ref for s in manifest.spec.skillpacks)
             refs.extend(s.ref for s in manifest.spec.memory.spaces)
+            if manifest.spec.decision is not None:
+                refs.extend(s.ref for s in manifest.spec.decision.sets)
 
             for ref in refs:
                 if ref not in self.resolvable_refs:
@@ -615,6 +635,68 @@ class DeployValidator:
                 )
             )
         return findings
+
+    def _check_decisions(self) -> list[Finding]:
+        """결정 모델 선언이 닫혀 있는지 (01 Contract Validation 9, 02 Manifest Rules 8).
+
+        - provider 가 설정 ``decision.providers`` 에 있는가 (``VAL_002`` — 모델 provider 와 같은 결)
+        - provider 의 locales 가 각 decisionset 의 ``locale`` 을 지원하는가 (``MOD_003``)
+        - 쓰임의 ``alias.question`` 이 sets 의 alias · 질문으로 해석되는가 (``MOD_001``)
+        - 쓰임의 질문이 ``predicate`` 인가 (``MOD_003``)
+
+        해석되지 않은 set ref 는 module_refs 가 보고하므로 그 set 의 질문 · locale 은 건너뛴다.
+        """
+        findings: list[Finding] = []
+        for name, manifest in self.manifests.items():
+            decision = manifest.spec.decision
+            if decision is not None:
+                findings.extend(
+                    Finding(
+                        check="decision", code=code, message=message, details={"agent": name, **d}
+                    )
+                    for code, message, d in self._decision_problems(decision)
+                )
+        return findings
+
+    def _decision_problems(
+        self, decision: DecisionSpec
+    ) -> Iterator[tuple[ErrorCode, str, dict[str, str]]]:
+        """에이전트 하나의 결정 선언 문제 — (코드, 메시지, details). 선언 값은 싣지 않는다."""
+        locales = self.decision_providers.get(decision.provider)
+        if locales is None:
+            yield (
+                ErrorCode.VAL_002,
+                "decision provider is not configured in decision.providers",
+                {"provider": decision.provider},
+            )
+        sets = {s.alias: s.ref for s in decision.sets}
+        for ref in sets.values():
+            loaded = self.decisionsets.get(ref)
+            if (
+                locales is not None
+                and loaded is not None
+                and loaded.manifest.spec.locale not in locales
+            ):
+                yield (
+                    ErrorCode.MOD_003,
+                    "decision provider does not support the decisionset locale",
+                    {"provider": decision.provider, "module_ref": ref},
+                )
+        for use, question in decision.questions():
+            alias, _, question_name = question.partition(".")
+            set_ref = sets.get(alias)
+            if set_ref is None:
+                yield ErrorCode.MOD_001, "question alias is not a declared set", {"use": use}
+                continue
+            loaded = self.decisionsets.get(set_ref)
+            if loaded is None:
+                continue  # 해석 실패는 module_refs 가, 읽기 실패는 호출자가 보고한다
+            declared = loaded.questions.get(question_name)
+            details = {"use": use, "module_ref": set_ref}
+            if declared is None:
+                yield ErrorCode.MOD_001, "question is not declared in the decisionset", details
+            elif declared.kind is not QuestionKind.PREDICATE:
+                yield ErrorCode.MOD_003, f"{use} needs a predicate question", details
 
     def _check_system_templates(self) -> list[Finding]:
         """`spec.entrypoint` 없는 에이전트의 promptset 이 ``system`` 을 선언하는지 (#445).
@@ -926,6 +1008,8 @@ def validate_deployment(
     resolvable_refs: Iterable[str] = (),
     promptsets: Mapping[str, PromptsetManifest] | None = None,
     memorysets: Mapping[str, LoadedMemoryset] | None = None,
+    decisionsets: Mapping[str, LoadedDecisionset] | None = None,
+    decision_providers: Mapping[str, frozenset[str]] | None = None,
     local_secrets: Mapping[str, frozenset[str]] | None = None,
     global_secrets: Iterable[str] = (),
     host_cpu_cores: float | None = None,
@@ -945,6 +1029,8 @@ def validate_deployment(
         resolvable_refs: Module refs the registry resolves.
         promptsets: Promptset ref to its declaration — 노드 id 템플릿 검사 입력.
         memorysets: Memoryset ref to its loaded policy — memory 부착 검사 입력.
+        decisionsets: Decisionset ref to its loaded questions — 결정 선언 검사 입력.
+        decision_providers: Configured decision provider name to its locales.
         local_secrets: Agent name to its locally available secret keys.
         global_secrets: Globally available secret keys.
         host_cpu_cores: Host CPU ceiling.
@@ -963,6 +1049,8 @@ def validate_deployment(
         resolvable_refs=frozenset(resolvable_refs),
         promptsets=dict(promptsets or {}),
         memorysets=dict(memorysets or {}),
+        decisionsets=dict(decisionsets or {}),
+        decision_providers=dict(decision_providers or {}),
         local_secrets=dict(local_secrets or {}),
         global_secrets=frozenset(global_secrets),
         host_cpu_cores=host_cpu_cores,

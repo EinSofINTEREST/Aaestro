@@ -457,7 +457,7 @@ TypeSafe 의 Jev 이지만, 시스템은 Jev 가 아니라 **`DecisionModel` 계
 
 ### 📋 Planned (v0.1.0 — bootstrap)
 
-> **구현 상태**: 아래 "Decision Models" 항목의 선언 (`spec.decision`, 그래프 노드 `decision`, memoryset `compaction.importance`) 은 스키마가 아직 받지 않아 모르는 키로 거절된다 (`VAL_002` / `MOD_003`).
+> **구현 상태**: 아래 "Decision Models" 항목의 선언 중 그래프 노드 `decision` 과 memoryset `compaction.importance` 는 스키마가 아직 받지 않아 모르는 키로 거절된다 (`VAL_002` / `MOD_003`). manifest `spec.decision` 과 설정 `decision:` 은 스키마 · 배포 검증까지 받는다 (#593).
 
 - **Core Framework**
   - Agent interface + manifest schema (pydantic)
@@ -780,10 +780,12 @@ registry:
 
 decision:
   timeout_s: 5                  # 결정 호출 상한 — 판정은 생성보다 훨씬 빨라야 의미가 있다
-  providers:                    # provider 별 base URL — 프록시가 종단하고 자격증명을 주입한다
+  providers:                    # 이름 → 어댑터 kind + 옵션. 여럿 둘 수 있다 — 프록시가 종단하고 자격증명을 주입한다
     jev:
+      kind: jev                 # 어댑터 레지스트리 (decision/providers/registry.py) 의 kind — 모르는 kind 는 CFG_001
       base_url: https://api.typesafe.ai
       locales: [en]             # 검증된 언어만 — decisionset 의 locale 과 대조 (06 Calibration)
+    # posek: {kind: jev, base_url: http://posek.internal:8000, locales: [en], allow_plaintext: true}   # Jev 와 같은 와이어 — http 는 opt-in
 
 memory:
   backend: sqlite               # sqlite (dev) | postgres (prod)
@@ -794,8 +796,6 @@ observability:
   log_format: pretty          # pretty (dev) | json (prod)
   metrics_port: 9090
 ```
-
-> **구현 상태**: 위 설정 예시의 `decision:` 은 v0.1 설정 모델이 아직 받지 않는다 — 모르는 키로 `CFG_001` 거절된다.
 
 ### Contract Validation at Deploy Time
 
@@ -813,7 +813,8 @@ observability:
 9. 결정 모델 선언이 닫혀 있는가 — manifest·memoryset·그래프가 참조하는 decisionset ref 와
    질문이 해석되고, 그 질문을 쓰는 에이전트가 `spec.decision.provider` 를 선언했으며, provider 가
    decisionset 의 `locale` 을 지원하는가. 그래프 decision 노드의 `output_map` 이 `decision.` 키만
-   읽는가
+   읽는가 — manifest 쓰임은 alias · 질문 해석 `MOD_001`, 질문 종류 · locale `MOD_003`, 설정에 없는
+   provider `VAL_002` (02 Manifest Rules 8)
 10. 모든 모델 provider (primary · fallback · 노드/배포 override) 가 알려진 논리 호스트를 갖고,
     프록시를 쓰면 `runtime.egress_proxy.providers` 에 있으며, override 의 provider 는 manifest 가
     선언한 집합 안인가. 프록시를 쓰면 그 provider 에 프록시의 **실제 upstream** 이 있는가 — 배포마다

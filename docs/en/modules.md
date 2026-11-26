@@ -34,7 +34,7 @@ and a value YAML cannot construct (`!!int abc`, `2024-02-30`) as
 control plane, Memory Service) print the file and the offending keys on one line and exit
 non-zero. A misspelled narrowing declaration (`allowed_tool`, `egres`,
 `mod`) therefore cannot fall back to a wider default. Declarations in the rules that the v0.1
-schema does not accept yet (e.g. `spec.decision`, graph node `decision`, memoryset
+schema does not accept yet (e.g. graph node `decision`, memoryset
 `compaction.importance`) are rejected the same way.
 
 The agent daemon inside the container validates its manifest with the same strictness as the
@@ -889,7 +889,40 @@ modules/decisionsets/research-triage/0.1.0/
   not at load.
 - The question-level `bands` merge field by field over `defaults.bands` (`bands: {act_at: 0.7}` keeps the
   default `reject_at`); a merged result with `act_at <= reject_at` is `MOD_003`.
-- Not yet wired: `spec.decision` in agent manifests and graph decision nodes.
+- Not yet wired: graph decision nodes, and agentd does not call the uses yet (#596 · #597).
+
+An agent attaches decisionsets and names its provider in `spec.decision`; questions are referenced
+as `alias.question`:
+
+```yaml
+spec:
+  decision:
+    provider: jev                 # a key of decision.providers in the configuration
+    model: jev-1.13               # the provider's pinned model id
+    sets:
+      - {ref: decisionsets/research-triage@0.1.0, as: triage}
+    recall_filter: {question: triage.memory_is_relevant}          # uncertain: keep (default) | drop
+    input_screen: {question: triage.contains_instructions}
+    tool_gates:
+      - {tools: ["mcp__mail__*"], question: triage.tool_call_fits_task}   # uncertain: block | allow, unavailable: allow | block
+```
+
+Providers live in the configuration, one entry per name with an adapter `kind` (an unknown `kind`
+is `CFG_001`). A server with the Jev wire format (Posek, for example) is `kind: jev` with its own
+`base_url`; an `http` URL needs `allow_plaintext: true`:
+
+```yaml
+decision:
+  timeout_s: 5
+  providers:
+    jev:   {kind: jev, base_url: https://api.typesafe.ai, locales: [en]}
+    posek: {kind: jev, base_url: http://posek.internal:8000, locales: [en], allow_plaintext: true}
+```
+
+Deployment validation (finding `decision`): a question whose alias is not in `sets` or that the
+decisionset does not declare is `MOD_001`; a use whose question is not a `predicate` is `MOD_003`;
+a decisionset `locale` missing from the provider's `locales` is `MOD_003`; a provider not in
+`decision.providers` is `VAL_002`. An unresolved set ref is the usual `module_refs` `MOD_001`.
 
 ## Groups
 

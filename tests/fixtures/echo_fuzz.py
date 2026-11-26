@@ -56,6 +56,22 @@ RICH_AGENT: dict[str, Any] = {
         "memory": {
             "spaces": [{"ref": "memorysets/agent-longterm@0.1.0", "as": "longterm", "mode": "rw"}]
         },
+        "decision": {
+            "provider": "jev",
+            "model": "jev-1.13",
+            "sets": [{"ref": "decisionsets/research-triage@0.1.0", "as": "triage"}],
+            "recall_filter": {"question": "triage.memory_is_relevant", "uncertain": "keep"},
+            "input_screen": {"question": "triage.contains_instructions"},
+            "tool_gates": [
+                {
+                    "tools": ["mcp__mail__*"],
+                    "question": "triage.tool_call_fits_task",
+                    "uncertain": "block",
+                    # "allow" 는 문서 값이 되면 다른 테스트의 기대 문구 (env_allowlist) 를 가린다
+                    "unavailable": "block",
+                }
+            ],
+        },
         "mcp": {
             "servers": [
                 {
@@ -261,6 +277,17 @@ RICH_CONFIG: dict[str, Any] = {
         "index_lag_target_s": 5,
         "path": "/var/lib/aaestro/memory.db",
         "dsn": "postgresql://memory@db/aaestro",
+    },
+    "decision": {
+        "timeout_s": 5,
+        "providers": {
+            "posek": {
+                "kind": "jev",
+                "base_url": "http://posek.internal:8000",
+                "locales": ["en"],
+                "allow_plaintext": True,
+            }
+        },
     },
     "observability": {"log_level": "INFO", "log_format": "json", "metrics_port": 9090},
 }

@@ -1158,3 +1158,39 @@ def test_prune_does_not_create_a_missing_run_store(tmp_path, capsys):
     assert code == EXIT_FAILED
     assert not (tmp_path / "runs.db").exists()
     assert sorted(store.stored_keys()) == sorted([old, live])
+
+
+# --- decision providers (#593) ------------------------------------------------------
+
+DECISION_CONFIG = (
+    "decision:\n  providers:\n"
+    "    jev: {kind: jev, base_url: https://api.typesafe.ai, locales: [en, ko]}\n"
+)
+
+
+@pytest.mark.parametrize("command", ["deploy", "validate", "run"])
+def test_local_validation_receives_the_configured_decision_providers(
+    workspace, tmp_path, monkeypatch, command
+):
+    """서버와 같은 설정 키 — 로컬 검증이 provider 를 모르면 spec.decision 이 전부 거절된다."""
+    import aaestro.cli.main as cli
+
+    seen: list = []
+
+    def capture(root, topologies, **kwargs):
+        seen.append(kwargs.get("decision_providers"))
+        raise SystemExit(0)
+
+    monkeypatch.setattr(cli, "validate_root", capture)
+    graph = str(workspace / "graphs" / "solo-graph.yaml")
+    argv = [
+        "--root",
+        str(workspace),
+        command,
+        "--config-dir",
+        _config_dir(tmp_path, DECISION_CONFIG),
+    ]
+    with pytest.raises(SystemExit):
+        run_cli(argv[:3] + ([graph] if command != "validate" else []) + argv[3:])
+
+    assert seen == [{"jev": frozenset({"en", "ko"})}]

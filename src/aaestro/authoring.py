@@ -15,7 +15,7 @@ import os
 import stat
 import tempfile
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +29,7 @@ from aaestro.core.manifest import AgentManifest, GroupManifest, agent_name
 from aaestro.core.topology import GraphTopology
 from aaestro.deploy import Finding, ValidationReport, validate_deployment
 from aaestro.materials import Materials, MaterialStore, check_files
+from aaestro.modules.decisionset import DecisionsetLoader, LoadedDecisionset
 from aaestro.modules.memoryset import LoadedMemoryset, MemorysetLoader
 from aaestro.modules.promptset import PromptsetManifest
 from aaestro.modules.registry import ModuleRegistry
@@ -124,6 +125,8 @@ class Author:
             없으면 `summarize` 압축을 선언한 그래프가 검증에서 거절된다.
         host_cpu_cores: Host CPU ceiling (#646). None 이면 호스트 합계를 검사하지 않는다.
         host_memory_bytes: Host memory ceiling (#646).
+        decision_providers: Configured decision provider name to its locales (#593). 비어 있으면
+            `spec.decision` 을 선언한 에이전트가 검증에서 거절된다 — 설정에 없는 provider 다.
     """
 
     catalog: Catalog
@@ -134,6 +137,7 @@ class Author:
     state_artifacts: bool = False
     host_cpu_cores: float | None = None
     host_memory_bytes: int | None = None
+    decision_providers: Mapping[str, frozenset[str]] = field(default_factory=dict)
 
     # --- 검증 ----------------------------------------------------------------
 
@@ -171,6 +175,8 @@ class Author:
             manifests.values(), saved_groups.items.values(), topologies, published
         )
         unloadable.extend(unreadable)
+        decisionsets, unreadable = self._decisionsets(manifests.values(), published)
+        unloadable.extend(unreadable)
 
         report = validate_deployment(
             topologies,
@@ -179,6 +185,8 @@ class Author:
             resolvable_refs=published,
             promptsets=promptsets,
             memorysets=memorysets,
+            decisionsets=decisionsets,
+            decision_providers=self.decision_providers,
             global_secrets=(
                 frozenset(saved_groups.items["global"].spec.secrets)
                 if "global" in saved_groups.items
@@ -297,6 +305,33 @@ class Author:
                             code=ErrorCode(err.code),
                             message=f"memoryset could not be loaded: {err.message}",
                             details={**owner, "module_ref": ref},
+                        )
+                    )
+        return found, problems
+
+    def _decisionsets(
+        self, manifests: Iterable[AgentManifest], published: frozenset[str]
+    ) -> tuple[dict[str, LoadedDecisionset], list[Finding]]:
+        """에이전트가 붙인 decisionset 을 ref 로 모은다 (#593) — `_memorysets` 와 같은 규칙."""
+        loader = DecisionsetLoader(ModuleRegistry(self.catalog.roots))
+        found: dict[str, LoadedDecisionset] = {}
+        problems: list[Finding] = []
+        for manifest in manifests:
+            if manifest.spec.decision is None:
+                continue
+            for item in manifest.spec.decision.sets:
+                ref = item.ref
+                if ref in found or ref not in published:
+                    continue
+                try:
+                    found[ref] = loader.load(ref)
+                except AaestroError as err:
+                    problems.append(
+                        Finding(
+                            check="decision",
+                            code=ErrorCode(err.code),
+                            message=f"decisionset could not be loaded: {err.message}",
+                            details={"agent": manifest.name, "module_ref": ref},
                         )
                     )
         return found, problems

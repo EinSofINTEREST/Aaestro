@@ -197,3 +197,15 @@ def test_trailing_newline_in_state_name_rejected(repo: Path):
     with pytest.raises(AaestroError) as exc:
         load(repo)
     assert exc.value.code == ErrorCode.MOD_003
+
+
+@pytest.mark.parametrize("locale", ["", "e", "en us", "en\n", "x" * 9])
+def test_locale_follows_the_shared_language_tag_pattern(repo: Path, locale: str):
+    """provider ``locales`` 와 같은 규칙 (``LOCALE_PATTERN``) — 두 쪽이 대조할 수 있는 표기만."""
+    path = pack_dir(repo) / "decisionset.yaml"
+    doc = yaml.safe_load(path.read_text())
+    doc["spec"]["locale"] = locale
+    path.write_text(yaml.safe_dump(doc))
+    with pytest.raises(AaestroError) as exc:
+        load(repo)
+    assert exc.value.code == ErrorCode.MOD_003

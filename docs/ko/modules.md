@@ -30,7 +30,7 @@ Aaestro 에서 배포 가능한 모든 것은 모듈입니다: 솔루션은 버�
 으로 보고됩니다. `aaestro validate` 와 프로세스 진입점(agentd · control
 plane · Memory Service)은 파일과 문제의 키를 한 줄로 출력하고 비정상 종료합니다. 그래서 좁히는 선언의
 오타(`allowed_tool`, `egres`, `mod`)가 더 넓은 기본값으로 바뀌지 않습니다. 규약에는 있으나
-v0.1 스키마가 아직 받지 않는 선언(`spec.decision`, 그래프 노드 `decision`, memoryset
+v0.1 스키마가 아직 받지 않는 선언(그래프 노드 `decision`, memoryset
 `compaction.importance` 등)도 같은 방식으로 거절됩니다.
 
 컨테이너 안의 에이전트 데몬도 control plane 과 같은 엄격도로 manifest 를 검증하므로 "검증을
@@ -817,7 +817,37 @@ modules/decisionsets/research-triage/0.1.0/
   `aaestro decision calibrate` 가 본다.
 - 질문의 `bands` 는 `defaults.bands` 위에 필드 단위로 병합된다 (`bands: {act_at: 0.7}` 이면
   `reject_at` 은 defaults 의 값). 병합 결과가 `act_at <= reject_at` 이면 `MOD_003`.
-- 아직 연결되지 않은 것: 에이전트 manifest 의 `spec.decision`, 그래프 decision 노드.
+- 아직 연결되지 않은 것: 그래프 decision 노드. agentd 는 아직 쓰임을 부르지 않는다 (#596 · #597).
+
+에이전트는 `spec.decision` 에 디시전셋을 붙이고 provider 를 정한다. 질문은 `alias.question` 으로 가리킨다:
+
+```yaml
+spec:
+  decision:
+    provider: jev                 # 설정 decision.providers 의 키
+    model: jev-1.13               # provider 의 모델 id — 버전 고정
+    sets:
+      - {ref: decisionsets/research-triage@0.1.0, as: triage}
+    recall_filter: {question: triage.memory_is_relevant}          # uncertain: keep (기본) | drop
+    input_screen: {question: triage.contains_instructions}
+    tool_gates:
+      - {tools: ["mcp__mail__*"], question: triage.tool_call_fits_task}   # uncertain: block | allow, unavailable: allow | block
+```
+
+provider 는 설정에 이름마다 어댑터 `kind` 와 함께 둔다 (모르는 `kind` 는 `CFG_001`). Jev 와 같은 와이어
+형식의 서버 (예: Posek) 는 `kind: jev` 에 자기 `base_url` 을 준다. `http` URL 은 `allow_plaintext: true` 가 필요하다:
+
+```yaml
+decision:
+  timeout_s: 5
+  providers:
+    jev:   {kind: jev, base_url: https://api.typesafe.ai, locales: [en]}
+    posek: {kind: jev, base_url: http://posek.internal:8000, locales: [en], allow_plaintext: true}
+```
+
+배포 검증 (finding `decision`): alias 가 `sets` 에 없거나 디시전셋이 선언하지 않은 질문은 `MOD_001`, 쓰임의
+질문이 `predicate` 가 아니면 `MOD_003`, 디시전셋 `locale` 이 provider `locales` 에 없으면 `MOD_003`,
+`decision.providers` 에 없는 provider 는 `VAL_002`. 해석되지 않는 set ref 는 기존 `module_refs` 의 `MOD_001` 이다.
 
 ## 그룹
 

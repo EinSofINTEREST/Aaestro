@@ -201,12 +201,18 @@ def test_manifest_unknown_top_level_key_is_rejected():
         AgentManifest.model_validate(_with(manifest_dict(), [], "decision", {}))
 
 
-def test_manifest_spec_decision_is_explicitly_rejected():
-    """규약에는 있으나 v0.1 스키마가 아직 받지 않는 선언 — 조용히 무시되지 않는다."""
-    doc = _with(manifest_dict(), ["spec"], "decision", {"provider": "jev"})
+def test_manifest_spec_decision_unknown_key_is_rejected():
+    """`spec.decision` (#593) 도 닫혀 있다 — 오타 난 쓰임이 조용히 꺼지지 않는다."""
+    decision = {
+        "provider": "jev",
+        "model": "jev-1.13",
+        "sets": [{"ref": "decisionsets/research-triage@0.1.0", "as": "triage"}],
+        "recall_filtr": {"question": "triage.memory_is_relevant"},
+    }
+    doc = _with(manifest_dict(), ["spec"], "decision", decision)
     with pytest.raises(ValidationError) as exc_info:
         AgentManifest.model_validate(doc)
-    assert exc_info.value.errors()[0]["loc"] == ("spec", "decision")
+    assert exc_info.value.errors()[0]["loc"] == ("spec", "decision", "recall_filtr")
 
 
 def test_group_unknown_key_is_rejected():

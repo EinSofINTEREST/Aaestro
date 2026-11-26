@@ -16,7 +16,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from aaestro.core.decision import Bands, Question, QuestionKind
+from aaestro.core.decision import LOCALE_PATTERN, Bands, Question, QuestionKind
 from aaestro.core.errors import (
     AaestroError,
     ErrorCategory,
@@ -122,7 +122,7 @@ class DecisionsetSpec(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    locale: str = Field(min_length=1)
+    locale: str = Field(pattern=LOCALE_PATTERN)
     defaults: DecisionsetDefaults = Field(default_factory=DecisionsetDefaults)
     questions: dict[str, QuestionDecl] = Field(min_length=1, max_length=MAX_QUESTIONS)
 

@@ -911,3 +911,37 @@ def test_a_memory_only_host_limit_reaches_the_author_and_the_launcher(tmp_path, 
     with pytest.raises(AaestroError) as excinfo:
         manager.launcher.admit(echo)
     assert excinfo.value.code == ErrorCode.RT_006
+
+
+def test_decision_providers_reach_both_authors(tmp_path, monkeypatch):
+    """설정 decision.providers 가 두 Author 에 닿는다 (#593)."""
+    from aaestro.catalog import Catalog
+    from aaestro.config import AaestroConfig, OrchestratorConfig
+
+    providers = {"jev": {"kind": "jev", "base_url": "https://api.typesafe.ai", "locales": ["en"]}}
+    monkeypatch.setattr(entrypoint, "agent_engine", lambda runtime, client: None)
+    config = AaestroConfig.model_validate({"decision": {"providers": providers}})
+    orchestrator = OrchestratorConfig(deployment_store=str(tmp_path / "deployments.db"))
+    manager = entrypoint._deployment_manager(  # noqa: SLF001
+        config, Catalog.under(REPO_ROOT), store_root=tmp_path, orchestrator=orchestrator
+    )
+    assert manager.author.decision_providers == {"jev": frozenset({"en"})}
+
+    write_config(tmp_path, {"run_store": str(tmp_path / "runs.db"), "control_port": 18999})
+    cfg = tmp_path / "local.yaml"
+    doc = yaml.safe_load(cfg.read_text("utf-8"))
+    doc["decision"] = {"providers": providers}
+    cfg.write_text(yaml.safe_dump(doc), encoding="utf-8")
+    monkeypatch.setenv("AAESTRO_ENV", "local")
+    monkeypatch.setenv("AAESTRO_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("AAESTRO_REPO_ROOT", str(REPO_ROOT))
+    monkeypatch.setattr(entrypoint, "_setup_observability", lambda: None)
+    captured: dict = {}
+    monkeypatch.setattr(
+        entrypoint, "create_app", lambda store, **kw: captured.update(kw) or object()
+    )
+    monkeypatch.setattr(entrypoint.uvicorn, "run", lambda app, **_kw: None)
+
+    entrypoint.main()
+
+    assert captured["author"].decision_providers == {"jev": frozenset({"en"})}
