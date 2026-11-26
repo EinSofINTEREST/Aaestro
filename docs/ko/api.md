@@ -1172,10 +1172,12 @@ runtime:
 
 배포 검증은 `providers` 에 없는 모델 provider(primary·fallback)를 거절한다 (`400 VAL_001`, finding `model_providers`).
 이 목록은 선언일 뿐 프록시가 provider 마다 키를 쥐었다는 증거가 아니다. 그래서 배포마다 프록시에도 묻는다:
-`control_url` (없으면 `providers_url`) 의 `GET /v1/providers` 가 `{"providers": [...]}` — 지금 upstream (키) 이 있는 provider 를 정렬해 —
+`control_url` (없으면 `providers_url`) 의 `GET /v1/providers` 가 `{"providers": [...], "decision_providers": [...]}` — 지금 upstream (키) 이 있는 모델 · 결정 provider 를 각각 정렬해 —
 로 답한다. 신원이 필요 없고 키는 싣지 않는다. 배포가 쓰는 provider (primary · fallback · 노드 `model` · 배포
 `model_overrides`) 가 그 답에 없으면 컨테이너를 띄우기 전에 거절한다 (`400 VAL_002`, `details.agent` ·
-`details.provider`). 프록시가 답하지 못해도 거절한다 — 선언 목록으로 물러나지 않는다: 연결 거부
+`details.provider`). `spec.decision.provider` 가 `decision_providers` 에 없는 에이전트도 같게 거절한다
+(`400 VAL_002`). `decision_providers` 키가 없는 옛 프록시는 중계하지 않는 것으로 보고, 메시지가 프록시가 결정 upstream 을 알리지 않는다고 말한다. 프록시가 없으면 `spec.decision` 은 거절하지 않고 배포 검증이 경고하며 원래 경로로 돈다.
+프록시가 답하지 못해도 거절한다 — 선언 목록으로 물러나지 않는다: 연결 거부
 `503 NET_001` 과 timeout `503 NET_002` (둘 다 retryable — 조회 전체에 5초 마감이 있다), `5xx` 는 `503 NET_001`
 (retryable), 그 밖의 상태나 모양이 틀리거나 64 KiB 를 넘거나 압축된 본문 (control plane 은 `identity` 를
 청하고 받은 바이트 그대로 세므로 응답을 풀지 않는다) 은 `500 NET_001` (retryable 아님 —

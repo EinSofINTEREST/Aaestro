@@ -154,12 +154,13 @@ def create_provider_app(
     for router in routers:
         app.include_router(router)
 
+    decisions = decision_upstreams or {}
+
     @app.get(PROVIDERS_PATH)
     async def providers() -> dict[str, list[str]]:
-        # 무인증 — 키가 아니라 어떤 provider 를 중계하는지만 알린다. 배포가 기동 전에 묻는다 (#644)
-        return {"providers": sorted(upstreams)}
-
-    decisions = decision_upstreams or {}
+        # 무인증 — 키가 아니라 어떤 provider 를 중계하는지만 알린다. 배포가 기동 전에 묻는다 (#644).
+        # 모델 목록은 ``providers`` 그대로 두고 결정 목록을 별도 키로 더한다 (#713)
+        return {"providers": sorted(upstreams), "decision_providers": sorted(decisions)}
 
     @app.api_route(f"/{DECISION_PROXY_PREFIX}/{{name}}/{{path:path}}", methods=["POST"])
     async def decide(name: str, path: str, request: Request) -> Response:

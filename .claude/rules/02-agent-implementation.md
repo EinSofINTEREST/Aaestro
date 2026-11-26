@@ -207,6 +207,8 @@ spec:
    `recall_filter` / `input_screen` / `tool_gates` 의 질문은 `sets` 의 alias 로 해석돼야 한다
    (배포 검증 `MOD_001`). 질문 종류도 맞아야 한다 — 세 쓰임 모두 `predicate` (`MOD_003`).
    `provider` 는 설정 `decision.providers` 의 이름이어야 하고 (없으면 `VAL_002` — 모델 provider 와 같은 결),
+   프록시를 쓰면 그 provider 에 프록시의 실제 결정 upstream 이 있어야 하고 (`VAL_002`, 조회 실패는 `NET_001` / `NET_002`),
+   프록시가 없으면 거절 대신 경고하며 원래 경로로 돈다 (#713),
    그 provider 의 `locales` 가 붙인 decisionset 의 `locale` 을 지원해야 한다 (`MOD_003`). `model` 도 필수다.
    provider 자격증명은 env 에 없다 — 프록시가 주입한다 (Secrets Injection)
 9. **Model Resilience Declaration**: `spec.model` 의 `fallbacks` / `retry` / `circuit` 은 전부

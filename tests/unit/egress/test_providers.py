@@ -649,8 +649,25 @@ async def test_the_provider_list_names_only_providers_with_an_upstream():
         response = await client.get("/v1/providers")
 
     assert response.status_code == 200
-    assert response.json() == {"providers": ["anthropic"]}
+    assert response.json() == {"providers": ["anthropic"], "decision_providers": []}
     assert registry.asked == [], "목록은 판정을 거치지 않는다 — 무인증"
+
+
+async def test_the_provider_list_names_decision_upstreams_under_their_own_key():
+    """결정 목록은 별도 키 — 기존 소비자가 읽는 ``providers`` 는 모델만 그대로다 (#713)."""
+    model = Upstream(
+        base_url="https://api.anthropic.com", logical_host="api.anthropic.com", api_key=KEY
+    )
+    decision = Upstream(base_url="https://jev.example", logical_host="decision:jev", api_key=KEY)
+    app = create_provider_app(
+        Registry(), {"anthropic": model}, decision_upstreams={"posek": decision, "jev": decision}
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://egress"
+    ) as client:
+        response = await client.get("/v1/providers")
+
+    assert response.json() == {"providers": ["anthropic"], "decision_providers": ["jev", "posek"]}
 
 
 async def test_the_provider_list_is_routed_before_the_provider_catch_all():
@@ -665,7 +682,10 @@ async def test_the_provider_list_is_routed_before_the_provider_catch_all():
         response = await client.get("/v1/providers")
 
     assert response.status_code == 200
-    assert response.json() == {"providers": ["anthropic", "openai-compat"]}
+    assert response.json() == {
+        "providers": ["anthropic", "openai-compat"],
+        "decision_providers": [],
+    }
 
 
 @pytest.mark.parametrize(
