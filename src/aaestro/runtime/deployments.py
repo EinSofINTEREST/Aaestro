@@ -33,6 +33,12 @@ from aaestro.access.client import ACCESS_URL_ENV
 from aaestro.access.model import ACCESS_CREDENTIAL_ENV
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 from aaestro.core.manifest import MANIFEST_ENV, agent_name
+from aaestro.decision import (
+    DECISION_KIND_ENV,
+    DECISION_PROXY_PREFIX,
+    DECISION_TIMEOUT_ENV,
+    DECISION_URL_ENV,
+)
 from aaestro.protocols.a2a.allowlist import ALLOW_TOKEN_MODE_ENV, admit_token_mode
 from aaestro.protocols.mcp.transport import MCP_PROXY_URL_ENV
 from aaestro.runtime.docker.engine import AGENT_LABEL, ContainerHandle
@@ -1312,6 +1318,7 @@ class DeploymentManager:
                     env[ACCESS_URL_ENV] = self.access_url
                 if self.egress is not None:
                     env.update(self.egress.env_for(manifest.name, credential))
+                    env.update(self.egress.decision_env(manifest))
             # 권한 에이전트는 그래프 배선이 아니라 설정이 정한다 — 떠 있으면 모두가 요청할 수 있다.
             # 호출은 표로만 증명되므로 레지스트리 모드에서만 잇는다
             reachable = (
@@ -1775,6 +1782,10 @@ class EgressEndpoints:
     control_url: str | None = None
     """control plane 이 프록시 provider 창구에 닿는 주소 (#644) — 비우면 ``providers_url``.
     에이전트 env 에는 실리지 않는다."""
+    decision_kinds: Mapping[str, str] = field(default_factory=dict)
+    """설정 ``decision.providers`` 의 이름 → 어댑터 kind (#595) — 결정 provider 도 프록시가 종단."""
+    decision_timeout_s: float = 5.0
+    """설정 ``decision.timeout_s`` — agentd 는 설정 파일을 읽지 않는다."""
 
     def env_for(self, agent: str, credential: str) -> dict[str, str]:
         """이 에이전트의 외부 호출 배선 — 프록시 자격은 **그 에이전트의 신원**이다."""
@@ -1796,6 +1807,23 @@ class EgressEndpoints:
             # OpenAI 호환 provider 도 같은 방식이다 — 주소는 프록시 종단 창구, 키 자리는 신원
             "OPENAI_COMPAT_BASE_URL": f"{self.providers_url.rstrip('/')}/openai-compat",
             "OPENAI_COMPAT_API_KEY": credential,
+        }
+
+    def decision_env(self, manifest: AgentManifest) -> dict[str, str]:
+        """결정 provider 배선 — 주소는 프록시 창구, 자격은 신원 (``ACCESS_CREDENTIAL_ENV``) 이다.
+
+        설정에 없는 provider 는 배포 검증이 이미 거절했다 (``VAL_002``) — 여기서는 싣지 않는다.
+        """
+        declared = manifest.spec.decision
+        kind = None if declared is None else self.decision_kinds.get(declared.provider)
+        if declared is None or kind is None:
+            return {}
+        return {
+            DECISION_URL_ENV: (
+                f"{self.providers_url.rstrip('/')}/{DECISION_PROXY_PREFIX}/{declared.provider}"
+            ),
+            DECISION_KIND_ENV: kind,
+            DECISION_TIMEOUT_ENV: str(self.decision_timeout_s),
         }
 
 

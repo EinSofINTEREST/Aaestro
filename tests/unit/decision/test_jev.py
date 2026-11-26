@@ -169,18 +169,18 @@ def test_constructor_rejects_unsafe_settings_with_cfg_001(base_url, kwargs):
     assert "has space" not in str(exc.value)
 
 
-@pytest.mark.parametrize(
-    ("base_url", "allow_plaintext"),
-    [("http://127.0.0.1:8080", False), ("http://fake-provider:8080", True)],
-)
-def test_constructor_accepts_loopback_or_opted_in_plaintext(base_url, allow_plaintext):
+@pytest.mark.parametrize("base_url", ["http://127.0.0.1:8080", "http://fake-provider:8080"])
+def test_constructor_accepts_opted_in_plaintext(base_url):
     JevDecisionModel(
-        base_url=base_url,
-        model="m",
-        credential=None,
-        timeout_s=1,
-        allow_plaintext=allow_plaintext,
+        base_url=base_url, model="m", credential=None, timeout_s=1, allow_plaintext=True
     )
+
+
+def test_constructor_loopback_plaintext_without_opt_in_raises_cfg_001():
+    # 설정 (DecisionProviderConfig) 과 같은 규칙 — 루프백도 opt-in 이 필요하다 (#595)
+    with pytest.raises(AaestroError) as exc:
+        JevDecisionModel(base_url="http://127.0.0.1:8080", model="m", credential=None, timeout_s=1)
+    assert exc.value.code == "CFG_001"
 
 
 def test_adapter_for_known_and_unknown_kind():

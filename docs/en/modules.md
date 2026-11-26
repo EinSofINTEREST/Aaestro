@@ -919,6 +919,16 @@ decision:
     posek: {kind: jev, base_url: http://posek.internal:8000, locales: [en], allow_plaintext: true}
 ```
 
+With `runtime.egress_proxy` set, agentd calls the provider through the proxy: the deployment gives a
+declaring agent `AAESTRO_DECISION_URL` (`<providers_url>/decision/<provider>`),
+`AAESTRO_DECISION_KIND` and `AAESTRO_DECISION_TIMEOUT_S`, and the agent sends its identity — the
+proxy swaps it for the operator key (`AAESTRO_EGRESS_DECISION_KEY_<NAME>`, see the
+[egress proxy](api.md)). The registry decides the call as `egress` to `<provider>.decision.invalid`,
+which every agent declaring that provider holds; revoking it is `403` (`ACC_001`) on the next call.
+Without the proxy, agentd logs `decision provider not wired, uses take the original path` and builds no
+provider. The uses do not call it yet (#596 · #597); agent health reports a `decision` component,
+`degraded` while its circuit is open.
+
 Deployment validation (finding `decision`): a question whose alias is not in `sets` or that the
 decisionset does not declare is `MOD_001`; a use whose question is not a `predicate` is `MOD_003`;
 a decisionset `locale` missing from the provider's `locales` is `MOD_003`; a provider not in

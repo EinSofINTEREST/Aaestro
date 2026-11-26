@@ -26,6 +26,8 @@ from starlette.background import BackgroundTask
 from aaestro.access.client import DecisionSource
 from aaestro.access.model import ResourceKind
 from aaestro.core.errors import AaestroError, ErrorCategory
+from aaestro.decision import DECISION_PROXY_PREFIX
+from aaestro.decision.providers import jev
 from aaestro.egress.connect import (
     UNKNOWN_IDENTITY,
     Decider,
@@ -122,11 +124,13 @@ def create_provider_app(
     http: httpx.AsyncClient | None = None,
     routers: Sequence[APIRouter] = (),
     resolver: Resolver = resolve,
+    decision_upstreams: Mapping[str, Upstream] | None = None,
 ) -> FastAPI:
     """Build the termination app — ``/{provider}/{path}`` forwards to that provider.
 
     ``routers`` 는 provider 경로보다 **먼저** 붙는다 — 원격 MCP 종단(``/mcp/{server}``)이
-    ``mcp`` 라는 provider 로 잘못 잡히지 않게.
+    ``mcp`` 라는 provider 로 잘못 잡히지 않게. 결정 provider 는 ``/decision/{name}/{path}`` 다
+    (#595) — 모델 API 와 같은 판정 · 키 주입 · 응답 가림을 지난다.
     """
     client = http or httpx.AsyncClient(timeout=UPSTREAM_TIMEOUT_S)
     # 모든 에이전트의 호출이 이 클라이언트 하나를 지난다 — 쿠키를 기억하면 한 에이전트의 호출에
@@ -155,87 +159,114 @@ def create_provider_app(
         # 무인증 — 키가 아니라 어떤 provider 를 중계하는지만 알린다. 배포가 기동 전에 묻는다 (#644)
         return {"providers": sorted(upstreams)}
 
+    decisions = decision_upstreams or {}
+
+    @app.api_route(f"/{DECISION_PROXY_PREFIX}/{{name}}/{{path:path}}", methods=["POST"])
+    async def decide(name: str, path: str, request: Request) -> Response:
+        upstream = decisions.get(name)
+        if upstream is None:
+            return _error(404, "unknown decision provider")
+        return await _forward(
+            upstream, path, request, access=access, client=client, resolver=resolver, mode=mode
+        )
+
     @app.api_route("/{provider}/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
     async def forward(provider: str, path: str, request: Request) -> Response:
         upstream = upstreams.get(provider)
         if upstream is None:
             return _error(404, "unknown provider")
-        # 신원 판정이 엔드포인트 검사보다 먼저다 — 통하지 않는 자격은 어느 엔드포인트에서나
-        # 같은 401 이라, 응답 차이로 허용 엔드포인트를 열거하지 못한다 (#495)
-        credential = _credential(request)
-        if not credential:  # 미들웨어 없이 라우터를 쓰는 경우의 다층 방어
-            return _error(401, "agent identity required")
-        verdict = await access.decide(credential, ResourceKind.EGRESS, upstream.logical_host)
-        refusal = _refusal(verdict, upstream.logical_host, mode)
-        if refusal is not None:
-            return refusal
-
-        # 판정한 경로를 그대로 보낸다 — 맞춰 본 것과 보내는 것이 다르면 여는 범위를 알 수 없다
-        endpoint = path.strip("/")
-        if (request.method.upper(), endpoint) not in upstream.endpoints:
-            log.warning(
-                "provider endpoint not allowed",
-                agent=verdict.agent or "",
-                resource=ResourceKind.EGRESS.value,
-                target=f"{upstream.logical_host}/{path}",
-                error_code="ACC_001",
-            )
-            return _error(403, "provider endpoint not allowed through the proxy", code="ACC_001")
-
-        headers = {
-            name: value
-            for name, value in request.headers.items()
-            if name.lower() in upstream.request_headers - _HOP_BY_HOP - _IDENTITY_HEADERS
-        }
-        headers[upstream.key_header] = _key_value(upstream)
-        base = await _pinned_base(upstream.base_url, resolver, headers)
-        if base is None:
-            log.error("provider plaintext to a public address refused", agent=verdict.agent or "",
-                      resource=ResourceKind.EGRESS.value, target=upstream.logical_host)  # fmt: skip
-            return _error(502, "plain http is sent only to an upstream that resolves privately")
-        outbound = client.build_request(
-            request.method,
-            f"{base}/{endpoint}",
-            params=request.query_params,
-            headers=headers,
-            content=await request.body(),
-        )
-        try:
-            answer = await client.send(outbound, stream=True)
-        except httpx.HTTPError as err:
-            log.warning(
-                "provider upstream unreachable",
-                agent=verdict.agent or "",
-                resource=ResourceKind.EGRESS.value,
-                target=upstream.logical_host,
-                exc_info=err,
-            )
-            return _error(502, "provider unreachable")
-        returned = {
-            name: redact(value, upstream.api_key)
-            for name, value in answer.headers.items()
-            if _returned(name)
-        }
-        if answer.is_success:
-            # 2xx 는 원문 그대로 흘린다 — 버퍼링하면 모델 스트리밍이 깨진다. 성공 본문에 요청을
-            # 되비추는 upstream 은 위협 모델 밖으로 둔다 (#390)
-            return StreamingResponse(
-                answer.aiter_raw(),
-                status_code=answer.status_code,
-                headers=returned,
-                background=BackgroundTask(answer.aclose),
-            )
-        try:
-            body = await error_body(answer, upstream.api_key)
-        finally:
-            await answer.aclose()
-        return JSONResponse(
-            status_code=answer.status_code,
-            content=body,
-            headers={k: v for k, v in returned.items() if k.lower() not in _BODY_HEADERS},
+        return await _forward(
+            upstream, path, request, access=access, client=client, resolver=resolver, mode=mode
         )
 
     return app
+
+
+async def _forward(
+    upstream: Upstream,
+    path: str,
+    request: Request,
+    *,
+    access: Decider,
+    client: httpx.AsyncClient,
+    resolver: Resolver,
+    mode: EgressMode,
+) -> Response:
+    """판정 → 엔드포인트 검사 → 신원 헤더를 떼고 키를 붙여 전달 → 응답 가림."""
+    # 신원 판정이 엔드포인트 검사보다 먼저다 — 통하지 않는 자격은 어느 엔드포인트에서나
+    # 같은 401 이라, 응답 차이로 허용 엔드포인트를 열거하지 못한다 (#495)
+    credential = _credential(request)
+    if not credential:  # 미들웨어 없이 라우터를 쓰는 경우의 다층 방어
+        return _error(401, "agent identity required")
+    verdict = await access.decide(credential, ResourceKind.EGRESS, upstream.logical_host)
+    refusal = _refusal(verdict, upstream.logical_host, mode)
+    if refusal is not None:
+        return refusal
+
+    # 판정한 경로를 그대로 보낸다 — 맞춰 본 것과 보내는 것이 다르면 여는 범위를 알 수 없다
+    endpoint = path.strip("/")
+    if (request.method.upper(), endpoint) not in upstream.endpoints:
+        log.warning(
+            "provider endpoint not allowed",
+            agent=verdict.agent or "",
+            resource=ResourceKind.EGRESS.value,
+            target=f"{upstream.logical_host}/{path}",
+            error_code="ACC_001",
+        )
+        return _error(403, "provider endpoint not allowed through the proxy", code="ACC_001")
+
+    headers = {
+        name: value
+        for name, value in request.headers.items()
+        if name.lower() in upstream.request_headers - _HOP_BY_HOP - _IDENTITY_HEADERS
+    }
+    headers[upstream.key_header] = _key_value(upstream)
+    base = await _pinned_base(upstream.base_url, resolver, headers)
+    if base is None:
+        log.error("provider plaintext to a public address refused", agent=verdict.agent or "",
+                  resource=ResourceKind.EGRESS.value, target=upstream.logical_host)  # fmt: skip
+        return _error(502, "plain http is sent only to an upstream that resolves privately")
+    outbound = client.build_request(
+        request.method,
+        f"{base}/{endpoint}",
+        params=request.query_params,
+        headers=headers,
+        content=await request.body(),
+    )
+    try:
+        answer = await client.send(outbound, stream=True)
+    except httpx.HTTPError as err:
+        log.warning(
+            "provider upstream unreachable",
+            agent=verdict.agent or "",
+            resource=ResourceKind.EGRESS.value,
+            target=upstream.logical_host,
+            exc_info=err,
+        )
+        return _error(502, "provider unreachable")
+    returned = {
+        name: redact(value, upstream.api_key)
+        for name, value in answer.headers.items()
+        if _returned(name)
+    }
+    if answer.is_success:
+        # 2xx 는 원문 그대로 흘린다 — 버퍼링하면 모델 스트리밍이 깨진다. 성공 본문에 요청을
+        # 되비추는 upstream 은 위협 모델 밖으로 둔다 (#390)
+        return StreamingResponse(
+            answer.aiter_raw(),
+            status_code=answer.status_code,
+            headers=returned,
+            background=BackgroundTask(answer.aclose),
+        )
+    try:
+        body = await error_body(answer, upstream.api_key)
+    finally:
+        await answer.aclose()
+    return JSONResponse(
+        status_code=answer.status_code,
+        content=body,
+        headers={k: v for k, v in returned.items() if k.lower() not in _BODY_HEADERS},
+    )
 
 
 async def _pinned_base(base_url: str, resolver: Resolver, headers: dict[str, str]) -> str | None:
@@ -282,7 +313,7 @@ def _refusal(verdict: Any, target: str, mode: EgressMode) -> Response | None:
         log.warning("provider call denied but recorded only", **fields)
         return None
     log.info("provider call denied", error_code="ACC_001", **fields)
-    return _error(403, "model API denied for this agent", code="ACC_001")
+    return _error(403, "provider denied for this agent", code="ACC_001")
 
 
 def _returned(name: str) -> bool:
@@ -362,7 +393,15 @@ OPENAI_COMPAT_KEY_SCHEME = "Bearer"
 진짜 키를 새로 싣는 것이다."""
 
 
+DECISION_ENDPOINTS: Mapping[str, frozenset[tuple[str, str]]] = {
+    jev.KIND: frozenset({("POST", jev.SYSTEMONE_PATH.lstrip("/"))}),
+}
+"""결정 provider kind → 여는 경로 — 어댑터가 부르는 것뿐 (#595). 어댑터 레지스트리의 kind 마다
+한 줄이어야 한다 (테스트가 대조한다)."""
+
+
 __all__ = [
+    "DECISION_ENDPOINTS",
     "ANTHROPIC_ENDPOINTS",
     "ANTHROPIC_REQUEST_HEADERS",
     "COMMON_REQUEST_HEADERS",

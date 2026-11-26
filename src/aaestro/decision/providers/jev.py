@@ -22,7 +22,6 @@ import httpx
 from aaestro.core.decision import Decision, QuestionKind
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode, raise_detached
 from aaestro.decision.bands import decision_from
-from aaestro.http_auth import is_loopback
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -83,7 +82,10 @@ def _config_error(reason: str) -> AaestroError:
 
 
 def _endpoint(base_url: str, *, allow_plaintext: bool) -> str:
-    """https, 또는 루프백 · 명시 opt-in 의 http 만 받는다 (03 Egress 결정 모델 행)."""
+    """https, 또는 명시 opt-in 의 http 만 받는다 (03 Egress 결정 모델 행).
+
+    루프백도 opt-in 이 필요하다 — 설정 (``DecisionProviderConfig``) 과 같은 규칙이다 (#595).
+    """
     endpoint = base_url.rstrip("/") + SYSTEMONE_PATH
     try:
         parts = urlsplit(base_url)
@@ -96,8 +98,8 @@ def _endpoint(base_url: str, *, allow_plaintext: bool) -> str:
     if not parts.hostname or parts.query or parts.fragment or parts.username or parts.password:
         raise _config_error("base_url is not a plain http(s) URL")
     if parts.scheme == "http":
-        if not (allow_plaintext or is_loopback(parts.hostname)):
-            raise _config_error("plaintext base_url needs a loopback host or an explicit opt-in")
+        if not allow_plaintext:
+            raise _config_error("plaintext base_url needs an explicit opt-in")
     elif parts.scheme != "https":
         raise _config_error("base_url scheme must be https")
     return endpoint
@@ -115,7 +117,7 @@ class JevDecisionModel:
         credential: Bearer value, or ``None`` when the egress proxy injects it.
         timeout_s: Per-request HTTP timeout.
         client: Injected HTTP client (tests pass a ``MockTransport``); one is created when omitted.
-        allow_plaintext: Accept ``http`` to a non-loopback host (test doubles, internal networks).
+        allow_plaintext: Accept ``http`` (the egress proxy listener, test doubles).
 
     Raises:
         AaestroError: CONFIG/``CFG_001`` for an unusable base URL or credential.

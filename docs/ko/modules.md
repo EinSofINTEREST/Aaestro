@@ -845,6 +845,16 @@ decision:
     posek: {kind: jev, base_url: http://posek.internal:8000, locales: [en], allow_plaintext: true}
 ```
 
+`runtime.egress_proxy` 를 설정하면 agentd 는 provider 를 프록시로 부른다: 배포가 선언한 에이전트에
+`AAESTRO_DECISION_URL` (`<providers_url>/decision/<provider>`), `AAESTRO_DECISION_KIND`,
+`AAESTRO_DECISION_TIMEOUT_S` 를 주고, 에이전트는 자기 신원을 싣는다 — 프록시가 그것을 운영자 키
+(`AAESTRO_EGRESS_DECISION_KEY_<NAME>`, [이그레스 프록시](api.md)) 로 바꾼다. 레지스트리는 이 호출을
+`egress` 대상 `<provider>.decision.invalid` 로 판정하고, 그 provider 를 선언한 에이전트는 모두 이 권한을
+갖는다. 회수하면 다음 호출부터 `403` (`ACC_001`) 이다. 프록시가 없으면 agentd 는
+`decision provider not wired, uses take the original path` 를 남기고 provider 를 만들지 않는다. 쓰임은
+아직 부르지 않는다 (#596 · #597). 에이전트 health 에 `decision` 컴포넌트가 생기고, circuit 이 열려 있으면
+`degraded` 다.
+
 배포 검증 (finding `decision`): alias 가 `sets` 에 없거나 디시전셋이 선언하지 않은 질문은 `MOD_001`, 쓰임의
 질문이 `predicate` 가 아니면 `MOD_003`, 디시전셋 `locale` 이 provider `locales` 에 없으면 `MOD_003`,
 `decision.providers` 에 없는 provider 는 `VAL_002`. 해석되지 않는 set ref 는 기존 `module_refs` 의 `MOD_001` 이다.

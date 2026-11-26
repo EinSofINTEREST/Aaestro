@@ -1257,6 +1257,8 @@ spec:
 | `AAESTRO_EGRESS_ANTHROPIC_UPSTREAM` | 모델 호출이 가는 곳 (기본 `https://api.anthropic.com`) |
 | `OPENAI_COMPAT_API_KEY` | 프록시가 `openai-compat` 호출에 `Authorization: Bearer` 로 붙이는 키. 키가 필요 없는 로컬 서버도 자리는 채운다. 설정했는데 공백뿐인 provider 키는 기동을 거부한다 (`CFG_001`) — `ANTHROPIC_API_KEY` 도 같다 |
 | `AAESTRO_EGRESS_OPENAI_COMPAT_UPSTREAM` | `openai-compat` 호출이 가는 곳 — **`/v1` 앞까지**: `https://api.openai.com`, `http://vllm:8000`, `https://gateway.example.com/llm`. 기본값이 없다. 키와 함께 두거나 둘 다 두지 않는다. 하나만 있거나 `/v1` 로 끝나면 기동을 거부한다 (`CFG_001`). 아래 평문 `http` 규칙이 적용된다 |
+| `AAESTRO_EGRESS_DECISION_PROVIDERS` | 프록시가 종단하는 결정 provider — 설정 `decision.providers` 와 같은 모양의 JSON 객체 (`{"jev": {"kind": "jev", "base_url": "https://api.typesafe.ai", "locales": ["en"]}}`). 프록시는 설정 파일을 읽지 않으므로 배포가 같은 블록을 넘긴다. 없으면 결정 provider 를 종단하지 않는다 (`404`). 형식이 틀리면 기동을 거부한다 (`CFG_001`, 값은 되비추지 않는다) |
+| `AAESTRO_EGRESS_DECISION_KEY_<NAME>` | 그 provider 호출에 `Authorization: Bearer` 로 붙이는 키 — `<NAME>` 은 provider 이름 대문자, `-` 는 `_` (`jev` → `AAESTRO_EGRESS_DECISION_KEY_JEV`). 키가 없는 provider 는 기동을 거부한다 (`CFG_001`). 평문 `http` `base_url` 은 그 provider 의 `allow_plaintext: true` **와** 목적지의 `AAESTRO_EGRESS_PRIVATE_DESTINATIONS` 명시가 둘 다 필요하다 — 루프백도 같다. 아래 전역 스위치는 결정 provider 에 쓰이지 않는다 |
 | `AAESTRO_EGRESS_ALLOW_PLAINTEXT_UPSTREAM` | `true` 이고 목적지가 `AAESTRO_EGRESS_PRIVATE_DESTINATIONS` 에도 **있을 때만** 평문 `http` 를 받는다 — 사설망의 테스트 대역용. 요청마다 이름을 풀어 사설 주소로만 붙고, 목록의 이름이 공인 주소로 풀리면 거부한다(`502`). 공인 주소로는 설정을 어떻게 해도 평문이 나가지 않는다 |
 | `AAESTRO_EGRESS_PORT`, `AAESTRO_EGRESS_PROVIDER_PORT` | CONNECT 창구와 provider 창구 (기본 `8080`, `8081`) |
 | `AAESTRO_EGRESS_MODE` | `enforce`(기본) 또는 `record` |

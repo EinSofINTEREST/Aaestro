@@ -3694,3 +3694,35 @@ async def test_a_control_address_failure_loses_only_its_deployment(workspace, he
     assert "alpha (lookup RuntimeError)" in (touched[broken.deployment_id].error or "")
     assert touched[fine.deployment_id].status == DeploymentStatus.READY
     await second.launcher.stop_all()
+
+
+def test_a_decision_declaring_agent_reaches_its_provider_through_the_proxy(manager):
+    """#595 — 결정 provider 주소는 프록시 창구, kind · 상한은 설정에서. 자격은 신원 하나뿐이다."""
+    from aaestro.core.manifest import AgentManifest
+    from aaestro.decision import DECISION_KIND_ENV, DECISION_TIMEOUT_ENV, DECISION_URL_ENV
+    from aaestro.runtime.deployments import EgressEndpoints
+
+    doc = agent_doc("alpha")
+    doc["spec"]["decision"] = {
+        "provider": "posek",
+        "model": "jev-1.13",
+        "sets": [{"ref": "decisionsets/triage@0.1.0", "as": "triage"}],
+    }
+    deciding = AgentManifest.model_validate(doc)
+    plain = manager.catalog.agent("beta")
+    manager.egress = EgressEndpoints(
+        connect_url="http://aaestro-egress:8080",
+        providers_url="http://aaestro-egress:8081/",
+        decision_kinds={"posek": "jev"},
+        decision_timeout_s=3.0,
+    )
+    topology = manager.catalog.graph("two")
+
+    provisions = manager._provision(  # noqa: SLF001 — 배선 조립만 본다
+        topology, [deciding, plain], a2a_secret="s", credentials={"alpha": "c-a", "beta": "c-b"}
+    )
+
+    env = provisions["alpha"].env
+    assert env[DECISION_URL_ENV] == "http://aaestro-egress:8081/decision/posek"
+    assert (env[DECISION_KIND_ENV], env[DECISION_TIMEOUT_ENV]) == ("jev", "3.0")
+    assert DECISION_URL_ENV not in provisions["beta"].env, "선언하지 않은 에이전트에는 싣지 않는다"

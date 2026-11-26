@@ -457,7 +457,7 @@ TypeSafe 의 Jev 이지만, 시스템은 Jev 가 아니라 **`DecisionModel` 계
 
 ### 📋 Planned (v0.1.0 — bootstrap)
 
-> **구현 상태**: 아래 "Decision Models" 항목의 선언 중 그래프 노드 `decision` 과 memoryset `compaction.importance` 는 스키마가 아직 받지 않아 모르는 키로 거절된다 (`VAL_002` / `MOD_003`). manifest `spec.decision` 과 설정 `decision:` 은 스키마 · 배포 검증까지 받는다 (#593).
+> **구현 상태**: 아래 "Decision Models" 항목의 선언 중 그래프 노드 `decision` 과 memoryset `compaction.importance` 는 스키마가 아직 받지 않아 모르는 키로 거절된다 (`VAL_002` / `MOD_003`). manifest `spec.decision` 과 설정 `decision:` 은 스키마 · 배포 검증까지 받는다 (#593). 이그레스 프록시의 결정 provider 종단과 agentd 의 provider 클라이언트 생성은 있다 (#595) — 쓰임이 아직 부르지 않는다.
 
 - **Core Framework**
   - Agent interface + manifest schema (pydantic)
