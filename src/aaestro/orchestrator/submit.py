@@ -315,10 +315,10 @@ class RunSubmitter:
             run_id=run_id or f"svc-{uuid4().hex[:12]}",
             resuming=resuming,
             lease_until=lease_until,
+            # 태스크가 돌기 전, 첫 기록부터 세워야 한다 — checkpoint thread_id 와
+            # max_iterations 판정, 다음 재개의 탐색 시작점이 모두 이 값을 본다
+            iteration=start_iteration,
         )
-        # 태스크가 돌기 전에 세워야 한다 — checkpoint thread_id 와 max_iterations
-        # 판정이 둘 다 이 값을 본다
-        handle.iteration = start_iteration
         runner = ServiceRunner(
             topology,
             build_graph(
@@ -415,8 +415,13 @@ class RunSubmitter:
             )
 
         previous = self.manager.get(run_id)
+        if previous.lease_lost:
+            # 이 프로세스가 임대를 잃고 멈춘 run — 로컬 핸들은 STOPPED 지만 기록은 일부러
+            # running 이다. 기록을 다시 읽어야 만료된 뒤 이 프로세스도 가져갈 수 있다
+            previous = self.manager.recorded(run_id) or previous
         claimed: float | None = None
-        if previous.status is RunStatus.RUNNING and run_id not in self.manager.runs:
+        local = self.manager.runs.get(run_id)
+        if previous.status is RunStatus.RUNNING and (local is None or local.lease_lost):
             # 검사와 가져오기가 한 번의 조건부 갱신 — 임대가 살아 있거나 남이 먼저 가져갔으면 None
             claimed = self.manager.claim(run_id)
         orphaned = claimed is not None

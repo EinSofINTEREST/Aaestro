@@ -679,3 +679,78 @@ def test_a_record_of_another_mode_is_not_overwritten(store):
     assert store.upsert(owned()) is False
     found = store.get("svc")
     assert (found.mode, found.graph, found.owner) == ("mission", "other", "")
+
+
+class Recovers(SqliteRunStore):
+    """잠깐 갱신을 못 하다 회복하는 저장소."""
+
+    failing = False
+
+    def renew(self, run_id: str, owner: str, lease_until: float) -> bool:
+        if self.failing:
+            raise AaestroError(
+                category=ErrorCategory.STORAGE, code=ErrorCode.STOR_003, message="locked"
+            )
+        return super().renew(run_id, owner, lease_until)
+
+
+async def test_the_process_that_lost_the_lease_can_resume_once_it_expires(path):
+    """임대를 잃고 멈춘 프로세스의 로컬 핸들 (STOPPED) 이 재개를 막지 않는다 — 기록을 읽는다."""
+    clock, gate, store = Clock(), Gate(), Recovers(path=path)
+    runtime = Watcher(block_at=3)
+    owner = process(
+        path, runtime, build_checkpointer("memory"), owner="a", clock=clock, sleep=gate, store=store
+    )
+    await owner.start_service(topology(), {"query": "q"}, run_id="svc", sleep=no_sleep)
+    await runtime.blocked.wait()
+
+    store.failing = True
+    clock.now = T0 + DEFAULT_RUN_LEASE_S - DEFAULT_RUN_LEASE_S / 3
+    gate.opened.set()
+    stopped = await asyncio.wait_for(owner.services["svc"], timeout=5)
+    assert stopped.lease_lost
+    assert owner.manager.runs["svc"].status is RunStatus.STOPPED
+    assert store.get("svc").status == "running"
+
+    store.failing = False
+    clock.now = AFTER_EXPIRY
+    resumed = await owner.resume_service(topology(), "svc", max_iterations=4, sleep=no_sleep)
+    await owner.services["svc"]
+
+    assert resumed.run_id == "svc"
+    assert resumed.iteration == 4
+    assert store.get("svc").owner == "a"
+
+
+async def test_an_orphan_taken_over_and_killed_again_still_resumes(path):
+    """`:resumed` 처럼 0 이 아닌 회차에서 시작한 run 을 가져온 직후 다시 죽어도 다음 재개가 잇는다.
+
+    가져올 때 회차 0 으로 먼저 기록하면 다음 재개가 없는 회차 0 thread 를 찾아 STOR_002 였다.
+    """
+    from tests.unit.orchestrator.test_cross_process_resume import (
+        PlansThenFails,
+        accumulating_service,
+    )
+
+    graph = accumulating_service()
+    checkpointer = build_checkpointer("memory")
+    first = process(path, PlansThenFails(succeed=2), checkpointer, owner="p1", clock=Clock())
+    await first.start_service(graph, {"query": "q"}, run_id="svc", sleep=no_sleep)
+    halted = await first.services["svc"]
+    assert halted.status is RunStatus.HALTED
+
+    dead: list[RunSubmitter] = []
+    resumed_id = "svc:resumed"
+    for step, (run_id, now) in enumerate(
+        [("svc", T0), (resumed_id, AFTER_EXPIRY), (resumed_id, AFTER_EXPIRY + 31)]
+    ):
+        runtime = Watcher(block_at=1)
+        dying = process(path, runtime, checkpointer, owner=f"d{step}", clock=Clock(now))
+        handle = await dying.resume_service(graph, run_id, sleep=no_sleep)
+        await runtime.blocked.wait()  # 첫 회차가 끝나기 전에 죽는다
+        assert handle.run_id == resumed_id
+        assert dying.manager.store.get(resumed_id).iteration >= halted.iteration
+        dead.append(dying)
+
+    for dying in dead:
+        await bury(dying)

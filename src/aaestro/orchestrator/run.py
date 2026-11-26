@@ -339,6 +339,7 @@ class RunManager:
         run_id: str | None = None,
         resuming: bool = False,
         lease_until: float = 0.0,
+        iteration: int = 0,
     ) -> RunHandle:
         """Reserve a run slot for a graph.
 
@@ -350,6 +351,9 @@ class RunManager:
             resuming: 끝난 run 을 같은 id 로 다시 잡는다 — 재개 전용. 새 제출이 끝난 run 의
                 id 를 재사용하면 옛 checkpoint 위에 새 실행이 얹히므로 제출에는 열지 않는다.
             lease_until: 이미 저장소에 쓴 임대 만료 (``claim``) — 재개 전용. 없으면 기록이 쓴다.
+            iteration: 이어갈 회차 — 첫 기록부터 이 값이어야 한다. 0 으로 먼저 쓰면 첫 회차가
+                끝나기 전에 죽은 재개의 기록이 회차 0 을 가리켜, 다음 재개가 이어갈 thread 를
+                찾지 못한다 (#662).
 
         Returns:
             The run handle.
@@ -391,7 +395,11 @@ class RunManager:
             # 프로세스의 mission 이거나 #662 이전 바이너리가 구동 중인 run 일 수 있다
             raise run_refused(resolved_id, topology.name)
         handle = RunHandle(
-            run_id=resolved_id, graph=topology.name, mode=mode, lease_until=lease_until
+            run_id=resolved_id,
+            graph=topology.name,
+            mode=mode,
+            lease_until=lease_until,
+            iteration=iteration,
         )
         if not self.publish(handle, topology=topology):
             # 202 를 내고 첫 갱신에서야 임대를 잃은 것으로 드러나지 않게 지금 거절한다
@@ -419,6 +427,10 @@ class RunManager:
                 details={"run_id": run_id},
             )
         return run
+
+    def recorded(self, run_id: str) -> RunHandle | None:
+        """저장소 기록으로 만든 핸들 — 이 프로세스의 핸들을 보지 않는다 (없으면 None)."""
+        return self._restore(run_id)
 
     def _restore(self, run_id: str) -> RunHandle | None:
         """Rebuild a handle for a run this process did not start.
