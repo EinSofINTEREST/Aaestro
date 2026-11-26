@@ -7,6 +7,7 @@ Control API 응답. Docker 가 없으면 skip 한다 (게이트를 막지 않는
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import time
@@ -21,7 +22,9 @@ import pytest
 pytestmark = pytest.mark.integration
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-NETWORK = "aaestro-net-test"
+# 동시 실행 (CI 두 잡 · 로컬 두 프로세스) 이 서로의 리소스를 지우지 않도록 실행마다 다른 접미사
+RUN = f"{os.getpid()}-{uuid.uuid4().hex[:6]}"
+NETWORK = f"aaestro-net-test-{RUN}"
 READY_TIMEOUT_S = 90.0
 TOKEN = "integration-token"  # noqa: S105
 

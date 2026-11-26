@@ -6,7 +6,10 @@ E2E 는 통과하고 실제 배포는 다르게 동작한다 (#243). 같은 계�
 
 from __future__ import annotations
 
+import dataclasses
 import json
+import os
+import uuid
 from typing import Any
 
 import pytest
@@ -21,7 +24,24 @@ from tests.integration.runtime.test_docker_lifecycle import (
 )
 
 pytestmark = [pytest.mark.integration, requires_docker]
-NETWORK = "aaestro-contract-net"
+# 동시 실행 (CI 두 잡 · 로컬 두 프로세스) 이 서로의 리소스를 지우지 않도록 실행마다 다른 접미사
+RUN = f"{os.getpid()}-{uuid.uuid4().hex[:6]}"
+NETWORK = f"aaestro-contract-net-{RUN}"
+
+
+def echo_spec(**kwargs: Any):
+    """lifecycle 의 echo 스펙에 실행별 접미사를 붙인다 — 동시 실행과 이름이 겹치지 않게."""
+    from tests.integration.runtime.test_docker_lifecycle import echo_spec as base
+
+    spec = base(**kwargs)
+    return dataclasses.replace(spec, name=f"{spec.name}-{RUN}")
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _drop_shared_network():
+    """이 실행이 만든 네트워크만 지운다 — 접미사가 다른 동시 실행의 것은 건드리지 않는다."""
+    yield
+    docker("network", "rm", NETWORK, check=False)
 
 
 def spec_kwargs(image: str, name: str) -> dict[str, Any]:
@@ -41,7 +61,7 @@ def spec_kwargs(image: str, name: str) -> dict[str, Any]:
         "init": True,  # 에이전트 기본 스펙의 HARDENED_INIT (#570)
         "tmpfs": {"/tmp": "size=64m", "/workspace": "size=64m"},  # noqa: S108 — 컨테이너 안 경로다
         "volumes": {},
-        "labels": {"aaestro.contract": "1"},
+        "labels": {"aaestro.contract": RUN},
         "network_mode": None,
         "publish_all_ports": False,
     }
@@ -57,7 +77,7 @@ def container(client: DockerClient, echo_image: str):
     """만들고 반드시 지운다 — 유령 컨테이너는 05 Consistency 3 위반이다."""
     client.ensure_image(echo_image)
     client.ensure_network(NETWORK)
-    name = f"contract-{type(client).__name__.lower()}"
+    name = f"contract-{type(client).__name__.lower()}-{RUN}"
     docker("rm", "-f", name, check=False)
     container_id = client.create(**spec_kwargs(echo_image, name))
     try:
@@ -106,7 +126,7 @@ def test_the_security_settings_reach_the_container(client, container):
 def test_find_resolves_a_name_to_the_live_id_only(client, container):
     """재부착은 이름으로 찾는다 — 재시작마다 id 가 바뀌기 때문이다."""
     container_id = container
-    name = f"contract-{type(client).__name__.lower()}"
+    name = f"contract-{type(client).__name__.lower()}-{RUN}"
     assert client.find(name) == container_id
     assert client.find("aaestro-no-such-container") is None
     client.remove(container_id)
@@ -119,7 +139,7 @@ def test_remove_is_idempotent(client, container):
     client.remove(container)  # 두 번째도 조용히 성공해야 정리 경로가 안전하다
 
 
-INTERNAL = "aaestro-contract-internal"
+INTERNAL = f"aaestro-contract-internal-{RUN}"
 
 
 def test_network_isolation_is_created_and_a_mismatch_is_refused(client):
@@ -149,7 +169,7 @@ def test_networks_and_address_are_read_from_the_container(client, container):
         client.address_of(container, "aaestro-not-attached")
 
 
-SIDE = "aaestro-contract-side"
+SIDE = f"aaestro-contract-side-{RUN}"
 
 
 def test_a_container_joins_and_leaves_a_second_network_idempotently(client, container):
@@ -177,14 +197,14 @@ def test_a_container_joins_and_leaves_a_second_network_idempotently(client, cont
 
 
 def test_labeled_finds_stopped_containers_and_nothing_else(client, container):
-    assert container in client.labeled({"aaestro.contract": "1"})
-    assert client.labeled({"aaestro.contract": "1", "aaestro.nothing": "x"}) == ()
+    assert container in client.labeled({"aaestro.contract": RUN})
+    assert client.labeled({"aaestro.contract": RUN, "aaestro.nothing": "x"}) == ()
     client.remove(container)
-    assert container not in client.labeled({"aaestro.contract": "1"})
+    assert container not in client.labeled({"aaestro.contract": RUN})
 
 
 def test_sidecar_hardening_reaches_the_container(client, echo_image):
-    name = f"contract-hardened-{type(client).__name__.lower()}"
+    name = f"contract-hardened-{type(client).__name__.lower()}-{RUN}"
     docker("rm", "-f", name, check=False)
     kwargs = {
         **spec_kwargs(echo_image, name),
@@ -235,7 +255,6 @@ async def test_a_container_built_from_the_spec_passes_the_engine_check(client, e
     손으로 쓴 kwargs 가 아니라 실제 스펙이어야 스펙과 대조의 어긋남(표기 · 빈 값)이 드러난다.
     """
     from aaestro.runtime.docker.engine import DockerEngine
-    from tests.integration.runtime.test_docker_lifecycle import echo_spec
 
     client.ensure_image(echo_image)
     client.ensure_network(NETWORK)
@@ -256,7 +275,6 @@ async def test_engine_start_passes_its_own_hardening_check(client, echo_image, t
     거절하면 모든 기동이 실패한다. 손으로 쓴 kwargs 가 아니라 실제 스펙으로 `engine.start` 를 돈다.
     """
     from aaestro.runtime.docker.engine import DockerEngine
-    from tests.integration.runtime.test_docker_lifecycle import echo_spec
 
     client.ensure_image(echo_image)
     declaration = tmp_path / "declaration"
@@ -285,7 +303,7 @@ async def test_sidecar_start_passes_its_own_hardening_check(client, echo_image):
     from aaestro.runtime.sidecars import McpSidecars
     from tests.fixtures.builders import make_manifest
 
-    agent = f"contract-sidecar-{type(client).__name__.lower()}"
+    agent = f"contract-sidecar-{type(client).__name__.lower()}-{RUN}"
     manifest = make_manifest(
         metadata={"name": agent, "version": "0.1.0"},
         spec={"mcp": {"servers": [{"name": "search", "transport": "streamable-http",
@@ -327,7 +345,6 @@ async def verdict(client, image, kwargs, expected) -> list[str]:
 
 
 def mounted_echo_spec(image: str, mounts):
-    from tests.integration.runtime.test_docker_lifecycle import echo_spec
 
     return echo_spec(image=image, network=NETWORK, mounts=mounts)
 
@@ -387,7 +404,7 @@ async def test_reattach_refuses_a_device_the_spec_did_not_set(client, echo_image
 
 async def test_reattach_accepts_an_image_volume(client, echo_image, tmp_path):
     """이미지의 `VOLUME ["/data"]` 가 만든 익명 볼륨 때문에 정상 컨테이너가 lost 가 되지 않는다."""
-    tag = "aaestro/contract-image-volume:0.0.1"
+    tag = f"aaestro/contract-image-volume-{RUN}:0.0.1"
     context = tmp_path / "context"
     context.mkdir()
     (context / "Dockerfile").write_text(f'FROM {echo_image}\nVOLUME ["/data"]\n', encoding="utf-8")
@@ -412,7 +429,7 @@ async def test_reattach_refuses_a_volume_recreated_onto_a_host_path(client, echo
     """같은 이름이어도 `--opt o=bind` 로 다시 만든 볼륨은 호스트 경로를 연다 — 거절 (#488 QA)."""
     client.ensure_image(echo_image)
     client.ensure_network(NETWORK)
-    name = f"aaestro-contract-cache-{type(client).__name__.lower()}"
+    name = f"aaestro-contract-cache-{type(client).__name__.lower()}-{RUN}"
     host = tmp_path / "host"
     host.mkdir()
     spec = mounted_echo_spec(
@@ -457,8 +474,8 @@ def test_remove_deletes_anonymous_volumes_and_keeps_named_ones(client, echo_imag
     """이미지 VOLUME 의 익명 볼륨은 컨테이너와 함께 지우고, 이름 있는 볼륨은 남긴다 (#511)."""
     client.ensure_image(echo_image)
     client.ensure_network(NETWORK)
-    name = f"contract-volumes-{type(client).__name__.lower()}"
-    cache = f"aaestro-contract-keep-{type(client).__name__.lower()}"
+    name = f"contract-volumes-{type(client).__name__.lower()}-{RUN}"
+    cache = f"aaestro-contract-keep-{type(client).__name__.lower()}-{RUN}"
     docker("rm", "-f", "-v", name, check=False)
     # tmpfs 를 비워야 base 이미지의 VOLUME(/tmp, /workspace) 이 익명 볼륨이 된다
     kwargs = {
@@ -499,7 +516,7 @@ async def test_two_agents_declaring_the_same_volume_get_separate_volumes(client,
     client.ensure_network(NETWORK)
     suffix = type(client).__name__.lower()
     specs = []
-    for agent in (f"contract-a-{suffix}", f"contract-b-{suffix}"):
+    for agent in (f"contract-a-{suffix}-{RUN}", f"contract-b-{suffix}-{RUN}"):
         document = yaml.safe_load(ECHO_MANIFEST.read_text(encoding="utf-8"))
         document["metadata"]["name"] = agent
         document["spec"]["runtime"]["image"] = echo_image
