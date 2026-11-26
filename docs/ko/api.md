@@ -628,6 +628,8 @@ curl -X POST -H "Authorization: Bearer $TOKEN" -H 'content-type: application/jso
 
 - **service run** 은 마지막 iteration 부터, 두 상태에서만 이어간다. `halted` — service 그래프가
   연속 실패 임계를 넘어 도달하는 상태 (`GRAPH_005`) — 는 새 run id (`<run_id>:resumed`) 로 잇는다.
+  같은 halted run 을 다시 재개하면 그 `:resumed` 기록이 이미 있어 `409` 다 — 그때는 `:resumed` 쪽을
+  재개한다.
   구동하던 프로세스가 죽어 `running` 으로 남은 run 은 소유자의 임대가 만료된 뒤 **같은 run id** 로
   잇는다: service run 을 구동하는 프로세스는 기록에 자신을 소유자로 남기고 임대 (30초, 10초마다
   갱신) 를 계속 미루므로, 임대가 지난 `running` run 은 아무도 구동하지 않는 run 이다. 재개는 조건부

@@ -662,7 +662,8 @@ Continues a run from where it stopped. What that means differs by mode:
 
 - **Service runs** resume from their last iteration, and only from two states. `halted` — the
   state a service graph reaches after too many consecutive failures (`GRAPH_005`) — continues
-  under a new run id (`<run_id>:resumed`). A run left `running` by a process that died continues
+  under a new run id (`<run_id>:resumed`); resuming the same halted run a second time is `409`
+  because that `:resumed` record already exists — resume the `:resumed` run instead. A run left `running` by a process that died continues
   under **the same run id**, once its owner's lease has expired: the process driving a service
   run records itself as the owner and keeps pushing a lease forward (30 seconds, renewed every
   10), so a `running` run whose lease is past is one nobody is driving. The resume takes the run

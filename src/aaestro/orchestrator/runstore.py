@@ -214,7 +214,9 @@ class InMemoryRunStore:
     def upsert(self, record: RunRecord) -> bool:
         """기록을 남긴다 — drain 요청은 보존한다."""
         existing = self._records.get(record.run_id)
-        if existing is not None and existing.owner not in ("", record.owner):
+        if existing is not None and (
+            existing.owner not in ("", record.owner) or existing.mode != record.mode
+        ):
             return False
         owner, lease_until = record.owner, record.lease_until
         if existing is not None and (existing.owner or existing.mode != "service"):
@@ -357,7 +359,9 @@ class SqliteRunStore:
                         THEN excluded.lease_until ELSE runs.lease_until END,
                     updated_at = excluded.updated_at
                 -- 임대를 잃은 옛 소유자의 갱신이 새 소유자의 기록을 덮지 않는다 (#662)
-                WHERE runs.owner = '' OR runs.owner = excluded.owner
+                -- mode 가 다른 갱신은 다른 run 이다 — 같은 id 를 먼저 쓴 mission 을 덮지 않는다
+                WHERE (runs.owner = '' OR runs.owner = excluded.owner)
+                    AND runs.mode = excluded.mode
                 """,
                     (
                         record.run_id,

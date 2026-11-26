@@ -669,3 +669,13 @@ async def test_a_failing_let_go_does_not_hide_why_the_resume_failed(path):
         await resumer.resume_service(topology(), "svc", max_iterations=1, sleep=no_sleep)
 
     assert excinfo.value.code == ErrorCode.STOR_002
+
+
+def test_a_record_of_another_mode_is_not_overwritten(store):
+    """검사와 기록 사이에 남의 mission 이 같은 id 를 먼저 쓰면 service 기록은 거절된다 (qa 3차)."""
+    mission = RunRecord(run_id="svc", graph="other", mode="mission", status="running")
+    store.upsert(mission)
+
+    assert store.upsert(owned()) is False
+    found = store.get("svc")
+    assert (found.mode, found.graph, found.owner) == ("mission", "other", "")
