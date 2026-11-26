@@ -247,8 +247,13 @@ spec:
    COPY --chown=1000:1000 src/ /app/src/
    # base 이미지가 이미 non-root (uid 1000, user: agent) 로 실행
    ```
-   - 빌더가 **굽기 전에** 검사한다 (`VAL_002`): `FROM aaestro/agent-base:<tag>` 로 시작,
-     root 로 끝나지 않음, `COPY`/`ADD` 소스가 컨텍스트 안의 로컬 경로 (원격 `ADD` 금지)
+   - 빌더가 **굽기 전에** 검사한다 (`VAL_002`, `details` 는 지시문 시작 줄 `line` 만): Docker 해석 그대로
+     지시문 단위로 읽는다 (`\` 이어 쓰기는 구분자 없이 결합, `[ \t\v\f\r]+` 구분, BOM 제거, JSON 형식).
+     해석이 갈릴 수 있는 표기는 추측하지 않고 거절한다 (오탐 감수 — `RUN` 문자열 안의 `<<` · 공백 경로 · `[ab]` 글롭) — 파서 지시문 `escape` · `syntax` (위치 무관, `//` · JSON 모양 포함), ASCII 밖의 공백, heredoc (`<<`),
+     `COPY`/`ADD` 소스의 `[A-Za-z0-9._/*?-]` 밖 문자 · 절대 · `..` 경로, 평범한 `user[:group]` 이 아닌 `USER`.
+     굽히는 것은 마지막 스테이지다: `FROM aaestro/agent-base:<tag>` (태그 자리의 `${NAME}` 만 변수 허용, `@sha256:` 다이제스트 고정 허용) 로
+     별칭을 거쳐 닿아야 하고 (빌더 스테이지는 자유), 그 스테이지의 마지막 `USER` 의 user 쪽이 `root`/`0`
+     이면 거절. `--from=` 은 앞 스테이지 (이름 · 인덱스) 만 허용 — 이미지 참조 · 뒤 스테이지 · 변수는 거절
    - MUST run as non-root user
    - MUST NOT bake secrets into images (빌드 arg 로도 금지)
    - SHOULD use read-only root filesystem + 명시적 writable volume (`/workspace`, `/tmp`)

@@ -12,6 +12,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import posixpath
 import re
 import shutil
 import sqlite3
@@ -20,7 +22,7 @@ import threading
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import structlog
@@ -58,12 +60,27 @@ ENV PYTHONPATH=/app/{SOURCE_ROOT} \\
     AAESTRO_ROOT=/app
 """
 
-_USER_DIRECTIVE = re.compile(r"^\s*USER\s+(\S+)", re.IGNORECASE | re.MULTILINE)
-_COPY_DIRECTIVE = re.compile(r"^\s*(COPY|ADD)\s+(.+)$", re.IGNORECASE | re.MULTILINE)
 _FLAG = re.compile(r"^--\S+")
-_REMOTE = re.compile(r"^(https?|git|ftp)://", re.IGNORECASE)
-_FROM_DIRECTIVE = re.compile(r"^\s*FROM\s+(\S+)", re.IGNORECASE | re.MULTILINE)
-_ROOT_USERS = frozenset({"root", "0", "0:0"})
+# 해석을 바꾸는 파서 지시문 모양 — 위치와 무관하게 거절한다 (BuildKit 의 관용성을 확인할 수 없다).
+# `check` 는 lint 동작만 바꾸므로 허용한다
+# `//syntax=` 와 JSON 형태 `{"syntax": …}` 도 BuildKit 이 읽을 수 있다 (추정) — 같이 거절한다
+_REFUSED_DIRECTIVE = re.compile(
+    r"^(?:#|//)\s*(?:escape|syntax)\s*=|^\{.*\"\s*(?:escape|syntax)\s*\"", re.IGNORECASE
+)
+_ASCII_SPACE = frozenset(" \t\n\v\f\r")
+# Docker 의 지시문 · 인자 구분과 이어 쓰기 (`\` 뒤 공백 허용) — `str.split()` 과 다르다
+_SEPARATOR = re.compile(r"[ \t\v\f\r]+")
+_CONTINUATION = re.compile(r"\\[ \t]*$")
+# 해석이 갈릴 수 있는 표기 (따옴표 · `\` · `$` · `:` · `@`) 는 허용 목록 밖이다
+_SAFE_SOURCE = re.compile(r"[A-Za-z0-9._/*?-]+")
+_SAFE_USER = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*(:[A-Za-z0-9_][A-Za-z0-9_.-]*)?")
+_QUOTING = frozenset("'\"\\$")
+_DIGEST = r"@sha256:[0-9a-f]{64}"
+_TAG = r"(?:[A-Za-z0-9_][A-Za-z0-9_.-]*|\$\{[A-Za-z_][A-Za-z0-9_]*\})"
+# 태그 자리의 `${NAME}` 과 다이제스트 고정 (태그 없이도) 만 허용 — 저장소 이름은 고정이다
+_BASE_IMAGE = re.compile(
+    re.escape(BASE_IMAGE_PREFIX.removesuffix(":")) + rf"(?::{_TAG}(?:{_DIGEST})?|{_DIGEST})"
+)
 
 
 class BuildStatus(StrEnum):
@@ -114,45 +131,133 @@ def _invalid(message: str, **details: object) -> AaestroError:
     )
 
 
-def _line_at(text: str, offset: int) -> int:
-    """1-based line number of ``offset`` — 정규식이 줄을 가르는 기준 (`\\n`) 과 같다 (#412)."""
-    return text.count("\n", 0, offset) + 1
-
-
 def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _tokens(text: str) -> list[str]:
+    return [t for t in _SEPARATOR.split(text) if t]
+
+
+def _instructions(text: str) -> list[tuple[int, str, str]]:
+    """Dockerfile 을 (시작 줄 번호, 대문자 지시문, 나머지) 로 푼다 — 모든 검사가 같은 해석을 쓴다.
+
+    Docker 의 규칙 그대로다: `\\` (뒤의 공백 · 탭 허용) 로 이어 쓴 줄은 **구분자 없이** 결합하고
+    (`USER ro\\` + `ot` 는 `USER root`), 주석 · 빈 줄은 이어 쓰는 중에도 건너뛴다. 지시문과 인자는
+    `[ \\t\\v\\f\\r]+` 로 가른다. 줄 번호는 1-based.
+    shortcut: 이스케이프 문자는 `\\` 만 안다 — 바꾸는 `# escape=` 는 `check_dockerfile` 이 거절한다.
+    """
+    found: list[tuple[int, str, str]] = []
+    start = 0
+    buffer: str | None = None
+    for number, raw in enumerate(text.split("\n"), 1):
+        raw = raw.rstrip("\r")  # CRLF — Docker 는 줄 끝을 먼저 떼고 이어 쓰기를 본다
+        stripped = raw.strip(" \t\v\f\r")
+        if not stripped or stripped.startswith("#"):
+            continue
+        if buffer is None:
+            start, buffer = number, ""
+            raw = stripped  # 첫 줄만 앞 공백을 뗀다 — 이어 붙는 줄은 그대로 둔다
+        if raw.rstrip(" \t").endswith("\\\\"):
+            # BuildKit 은 `\\` 를 이스케이프된 백슬래시로 보아 이어 쓰기가 아니다 — 해석이 갈린다
+            raise _invalid("Dockerfile must not end a line with an escaped backslash", line=number)
+        cont = _CONTINUATION.search(raw)
+        buffer += raw[: cont.start()] if cont else raw
+        if cont is None:
+            found.append((start, *_split_keyword(buffer)))
+            buffer = None
+    if buffer is not None:
+        found.append((start, *_split_keyword(buffer)))
+    return found
+
+
+def _split_keyword(line: str) -> tuple[str, str]:
+    parts = _SEPARATOR.split(line.strip(" \t\v\f\r"), maxsplit=1)
+    return parts[0].upper(), parts[1] if len(parts) > 1 else ""
+
+
+def _check_lexical(text: str) -> None:
+    """줄 단위로 해석이 갈릴 수 있는 것을 거절한다 — 줄 번호는 그 줄이다.
+
+    Docker 는 앞 공백 · 빈 줄 · 주석 판정에 유니코드 공백을 쓰지만 이 검사는 ASCII 공백만 안다 —
+    ASCII 밖의 공백 (NBSP · NEL · U+2028 등) 은 둘의 해석을 가르므로 어디에 있든 거절한다.
+    파서 지시문 `escape` 는 이어 쓰기 해석을, `syntax` 는 프런트엔드를 바꾼다.
+    shortcut: 폭 없는 서식 문자 (범주 Cf) 는 양쪽이 같은 일반 문자로 읽어 거절하지 않는다.
+    """
+    for number, raw in enumerate(text.split("\n"), 1):
+        if any(c.isspace() and c not in _ASCII_SPACE for c in raw):
+            raise _invalid("Dockerfile must not contain non-ASCII whitespace", line=number)
+        if _REFUSED_DIRECTIVE.search(raw.strip(" \t\v\f\r")):
+            raise _invalid("Dockerfile must not use this parser directive", line=number)
+
+
 def check_dockerfile(text: str) -> None:
-    """Validate a Dockerfile against the layout rules (#263).
+    """Validate a Dockerfile against the layout rules (#263, #690).
 
     빌드가 시작되고 나면 이미지가 절반 만들어진 채 실패한다 — 규약 위반은 **굽기 전에**
-    잡는다.
+    잡는다. Docker 해석을 흉내 내지 않는다: 해석이 갈릴 수 있는 표기 (heredoc · 따옴표 ·
+    역슬래시 · 변수) 는 fail closed 다.
 
     Raises:
         AaestroError: VALIDATION/``VAL_002`` on any rule violation.
     """
-    first_from = _FROM_DIRECTIVE.search(text)
-    if first_from is None:
+    text = text.removeprefix("\ufeff")  # Docker 는 첫 줄의 UTF-8 BOM 을 뗀 뒤 파서 지시문을 본다
+    _check_lexical(text)
+    instructions = _instructions(text)
+    for line, _, rest in instructions:
+        if "<<" in rest:
+            # heredoc 본문은 지시문처럼 보이는 줄을 숨기고 Docker 는 그 줄을 지시문으로 읽지 않는다
+            raise _invalid("Dockerfile must not use heredocs", line=line)
+    # 스테이지 = (FROM 줄, 이미지, 별칭, 그 스테이지의 USER 지시문들)
+    stages: list[tuple[int, str, str, list[tuple[int, str]]]] = []
+    for line, keyword, rest in instructions:
+        if keyword == "FROM":
+            image, alias = _from_parts(rest)
+            stages.append((line, image, alias, []))
+        elif keyword == "USER" and stages:
+            stages[-1][3].append((line, rest))
+    if not stages:
         raise _invalid("Dockerfile must declare a FROM")
-    if not first_from[1].startswith(BASE_IMAGE_PREFIX):
-        # agentd 가 base 에 들어 있다 — 다른 이미지에서 시작하면 Control API 가 없다
-        raise _invalid(
-            f"Dockerfile must start FROM {BASE_IMAGE_PREFIX}<tag>",
-            line=_line_at(text, first_from.start(1)),
-        )
-    users = list(_USER_DIRECTIVE.finditer(text))
-    last_user = users[-1] if users else None
-    if last_user is not None and last_user[1].strip().strip('"') in _ROOT_USERS:
-        # 설치 동안 root 로 올라가는 것은 흔하다 — 되돌리지 않고 끝나는 것이 문제다
-        raise _invalid(
-            "Dockerfile must not end as root (02 Security)",
-            line=_line_at(text, last_user.start(1)),
-        )
-    _check_sources(text)
+    # 굽히는 이미지는 마지막 스테이지다 — 앞 스테이지 별칭을 따라 base 에 닿아야 한다.
+    # 빌더 스테이지 (COPY --from 으로 산출물만 가져오는) 는 base 일 필요가 없다
+    index = len(stages) - 1
+    user: tuple[int, str] | None = None
+    while True:
+        line, image, _, users = stages[index]
+        if user is None and users:
+            user = users[-1]  # 스테이지마다 가장 가까운 USER — 별칭 상속이면 부모의 것이 이어진다
+        parent = next((i for i in range(index - 1, -1, -1) if stages[i][2] == image.lower()), None)
+        if parent is None:
+            break
+        index = parent
+    if not _BASE_IMAGE.fullmatch(image):
+        # agentd 가 base 에 들어 있다 — 다른 이미지에서 시작하면 Control API 가 없다.
+        # 태그 자리의 `${NAME}` 만 변수를 받는다 (저장소 이름은 고정이다)
+        raise _invalid(f"Dockerfile must end FROM {BASE_IMAGE_PREFIX}<tag>", line=stages[-1][0])
+    if user is not None:
+        if not _SAFE_USER.fullmatch(user[1]):
+            # 변수 · 따옴표 · 역슬래시는 검사할 수 없다 — fail closed
+            raise _invalid("USER must be a plain user[:group]", line=user[0])
+        if _is_root(user[1]):
+            # 설치 동안 root 로 올라가는 것은 흔하다 — 되돌리지 않고 끝나는 것이 문제다
+            raise _invalid("Dockerfile must not end as root (02 Security)", line=user[0])
+    _check_sources(instructions)
 
 
-def _check_sources(text: str) -> None:
+def _from_parts(rest: str) -> tuple[str, str]:
+    """`FROM [--flag] image [AS name]` 의 (이미지, 소문자 별칭)."""
+    tokens = [t for t in _tokens(rest) if not _FLAG.match(t)]
+    alias = tokens[2].lower() if len(tokens) >= 3 and tokens[1].lower() == "as" else ""
+    return (tokens[0] if tokens else ""), alias
+
+
+def _is_root(spec: str) -> bool:
+    """`user[:group]` 의 user 쪽이 root 인가 — group 만 0 인 `agent:0` 은 root 가 아니다."""
+    user = spec.split(":")[0]
+    return user.lower() == "root" or (user.isdigit() and int(user) == 0)
+
+
+def _check_sources(instructions: list[tuple[int, str, str]]) -> None:
     """`COPY`/`ADD` 의 소스가 컨텍스트 안의 로컬 경로인지.
 
     컨텍스트 밖 경로는 Docker 자신도 막지만 **빌드 도중에** 막는다 — 이미지가 절반
@@ -163,24 +268,51 @@ def _check_sources(text: str) -> None:
     02 는 이미지를 배포 파이프라인이 굽고 버전을 고정하라고 규정하므로, 굽는 도중의
     임의 다운로드는 그 계약 밖이다.
     """
-    for match in _COPY_DIRECTIVE.finditer(text):
-        directive, rest = match[1], match[2]
-        line = _line_at(text, match.start(1))
-        parts = [token for token in rest.split() if not _FLAG.match(token)]
+    names: list[str] = []  # 선언된 스테이지 별칭 — 인덱스는 이 목록의 위치와 같다
+    for line, directive, rest in instructions:
+        if directive == "FROM":
+            names.append(_from_parts(rest)[1])
+            continue
+        if directive not in ("COPY", "ADD"):
+            continue
+        tokens = _tokens(rest)
+        source_stage: str | None = None
+        while tokens and _FLAG.match(tokens[0]):
+            if tokens[0].lower().startswith("--from="):
+                source_stage = tokens[0][len("--from=") :].lower()
+            tokens.pop(0)
+        if source_stage is not None:
+            # --from 은 이미지 참조도 받는다 — 앞 스테이지가 아니면 굽는 시점에 외부 이미지를 당긴다
+            earlier = names[:-1]  # 마지막은 지금 스테이지
+            if directive == "ADD":
+                raise _invalid("ADD does not support --from", line=line)
+            is_index = source_stage.isascii() and source_stage.isdigit()
+            if (
+                source_stage
+                and not _QUOTING.intersection(source_stage)
+                and (source_stage in earlier or (is_index and int(source_stage) < len(earlier)))
+            ):
+                continue  # 다른 스테이지의 파일 — 컨텍스트 경로가 아니다
+            raise _invalid(f"{directive} --from must name an earlier stage", line=line)
+        parsed = None
+        if tokens and tokens[0].startswith("["):
+            try:
+                parsed = json.loads(" ".join(tokens))
+            except ValueError:
+                parsed = (
+                    None  # Docker 도 JSON 이 아니면 셸 형식으로 읽는다 — 아래 허용 목록이 거른다
+                )
+        if isinstance(parsed, list):
+            tokens = [str(t) for t in parsed]
         # 마지막 토큰은 목적지다 — 소스만 본다
-        for source in parts[:-1]:
-            cleaned = source.strip().strip('"').strip("'")
-            if _REMOTE.match(cleaned):
-                raise _invalid(
-                    f"{directive.upper()} must not fetch a remote source — "
-                    "pin it in the base image",
-                    line=line,
-                )
-            if cleaned.startswith("/") or PurePosixPath(cleaned).parts[:1] == ("..",):
-                raise _invalid(
-                    f"{directive.upper()} source must stay inside the build context",
-                    line=line,
-                )
+        for source in tokens[:-1]:
+            # 허용 목록: 컨텍스트 안의 상대 경로 문자만. URL · git · ssh (`:` `@`) 와 셸 단어 처리 ·
+            # 치환 (따옴표 · `\` · `$`) 으로 해석이 갈리는 표기는 여기서 걸린다
+            if not _SAFE_SOURCE.fullmatch(source):
+                raise _invalid(f"{directive} source must be a plain relative path", line=line)
+            normal = posixpath.normpath(source)
+            if normal.startswith("/") or normal == ".." or normal.startswith("../"):
+                raise _invalid(f"{directive} source must stay inside the build context", line=line)
 
 
 @dataclass
