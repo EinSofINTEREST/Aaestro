@@ -337,8 +337,12 @@ Answer it.
   canceled. The child receives the task input over a pipe only after its limits are set, and
   serialising, starting, sending and rendering share one deadline. A serialised input larger than
   `RENDER_INPUT_MAX_BYTES` (16 × the render limit, about 4 MB) is refused before any child starts
-  with `VAL_002` (`details.kind: input`, size and limit only) — a transfer limit, and the one
-  exception to "values are cut, not refused". The task prompt and the `system` template both go this way. This isolates
+  with `VAL_002` (`details.kind: input`, size and limit only; the size is the bytes written up to
+  the point the limit was crossed, a lower bound of the real size) — a transfer limit, and the one
+  exception to "values are cut, not refused". Serialising stops at that limit. It runs in a thread,
+  but the C pickler keeps the GIL while it writes built-in types, so the event loop stands still
+  meanwhile — for at most the time it takes to produce the limit. agentd starts the fork server
+  before the first render, outside any render deadline. The task prompt and the `system` template both go this way. This isolates
   resources, not permissions — the child runs as the same user on the same filesystem.
 
 These rules belong to the framework's renderer. Published modules are immutable and were not

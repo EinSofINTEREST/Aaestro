@@ -379,6 +379,8 @@ async def load_modules(
     ).run()
     # 렌더는 자식 프로세스에서 — 템플릿 하나가 이벤트 루프와 데몬의 메모리를 쥐지 못하게 (#715)
     renderer = sandbox or RenderSandbox()
+    # forkserver 기동은 첫 렌더 (system) 의 마감 밖에서 — 기동이 그 2초를 먹지 않게
+    await renderer.warm()
     system = await _system(manifest, result, renderer)
     tools = AgentToolRegistry(
         agent=manifest.name, skillsets=result.skillsets, memory=memory, peers=peers, mcp=mcp

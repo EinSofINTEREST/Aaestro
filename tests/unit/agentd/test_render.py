@@ -13,10 +13,12 @@ import json
 import multiprocessing
 import os
 import resource
+import threading
 import time
 from dataclasses import dataclass
+from multiprocessing import forkserver
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import httpx
 import pytest
@@ -24,6 +26,7 @@ import yaml
 from structlog.testing import capture_logs
 
 from aaestro.agentd import __main__ as agentd
+from aaestro.agentd import render as render_module
 from aaestro.agentd.executor import Executor
 from aaestro.agentd.render import (
     RENDER_INPUT_MAX_BYTES,
@@ -401,6 +404,69 @@ async def test_sending_the_input_counts_against_the_render_deadline(registry):
 
     assert (exc_info.value.code, exc_info.value.details["kind"]) == ("VAL_002", "time")
     assert time.perf_counter() - started < 1.5
+
+
+async def test_the_input_is_serialized_off_the_event_loop_thread(registry, monkeypatch):
+    seen: list[threading.Thread] = []
+    encode = render_module._encode_input
+
+    def recording(variables):
+        seen.append(threading.current_thread())
+        return encode(variables)
+
+    monkeypatch.setattr(render_module, "_encode_input", recording)
+
+    await RenderSandbox().render(promptset(registry), "default", {"q": "x"}, agent="a")
+
+    assert seen
+    assert seen[0] is not threading.main_thread()
+
+
+def test_serializing_an_oversized_input_stops_near_the_limit():
+    """끝까지 직렬화하면 상한 초과 입력도 입력 크기 (여기서 약 25 MB) 만큼 만든다."""
+    huge = {"q": [10**40 + i for i in range(1_300_000)]}
+
+    written = render_module._encode_input(huge)
+
+    assert isinstance(written, int)
+    # 상한을 넘은 쓰기에서 멈춘다 — protocol 4+ 의 프레임 (약 64 KB) 하나 남짓까지만
+    assert RENDER_INPUT_MAX_BYTES < written <= RENDER_INPUT_MAX_BYTES + (1 << 17)
+
+
+# --- forkserver 는 첫 렌더의 마감 밖에서 뜬다 --------------------------------------------
+
+
+async def test_a_render_after_warm_reuses_the_running_fork_server(registry):
+    sandbox = RenderSandbox()
+    await sandbox.warm()
+    server = forkserver._forkserver._forkserver_pid
+
+    await sandbox.render(promptset(registry), "default", {"q": "x"}, agent="a")
+
+    assert server is not None
+    assert forkserver._forkserver._forkserver_pid == server
+
+
+class RecordingSandbox(RenderSandbox):
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls: list[str] = []
+
+    async def warm(self) -> None:
+        self.calls.append("warm")
+        await super().warm()
+
+    async def render(self, *args: Any, **kwargs: Any) -> str:
+        self.calls.append("render")
+        return await super().render(*args, **kwargs)
+
+
+async def test_agentd_warms_the_fork_server_before_the_system_render(registry):
+    sandbox = RecordingSandbox()
+
+    await agentd.load_modules(make_manifest(), registry, memory=None, peers=None, sandbox=sandbox)
+
+    assert sandbox.calls[:2] == ["warm", "render"]
 
 
 # --- 기동 경고 -------------------------------------------------------------------------

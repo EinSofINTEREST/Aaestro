@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import multiprocessing
+import multiprocessing.forkserver
 import os
 import pickle
 from pathlib import Path
@@ -41,7 +42,11 @@ RENDER_INPUT_MAX_BYTES = 16 * DEFAULT_RENDER_LIMIT
 그 밖은 잘린다 — 글자당 4바이트로 직렬화해도 768 KB 다. 렌더 상한의 16배는 그 다섯 배 남짓으로,
 잘릴 입력도 넉넉히 받아 렌더가 자르게 둔다 (04 Promptset Rules 2 의 "입력 탓으로 실패하지
 않는다" 의 예외는 이 상한뿐이다). 위로는 자식의 메모리 여유분 (``RENDER_MEMORY_HEADROOM``) 이 받은
-바이트와 풀어 놓은 객체를 함께 담아야 하고, 데몬도 직렬화 사본 하나를 이만큼 더 쥔다."""
+바이트와 풀어 놓은 객체를 함께 담아야 하고, 데몬도 직렬화 사본 하나를 이만큼 더 쥔다.
+
+직렬화는 이 상한에서 멈춘다 (``_BoundedWriter``) — 상한을 넘는 입력도 상한 남짓까지만 만든다.
+직렬화는 스레드에서 돌지만 C pickler 는 내장 타입을 쓰는 동안 GIL 을 놓지 않아 그동안 이벤트
+루프도 선다. 그 정지는 이 상한만큼 만드는 시간에 묶인다 (실측은 PR #726)."""
 
 REPLY_OVERHEAD = 64 << 10
 """응답 상한에서 본문 밖의 몫 (JSON 틀 · 로그)."""
@@ -92,6 +97,15 @@ class RenderSandbox:
         # 테스트가 자식 진입 직후를 흉내 내는 자리 (사망 · 큰 응답) — 모듈 최상위 함수여야 한다
         self._child_hook = child_hook
 
+    async def warm(self) -> None:
+        """Start the fork server ahead of the first render, outside any render deadline.
+
+        forkserver 를 첫 렌더 전에 띄운다 — 띄우는 데 수백 ms 가 들고 ``Process.start`` 가 그것을
+        동기로 기다리므로, 첫 렌더 (agentd 기동의 ``system`` 렌더) 의 마감을 먹지 않게 마감 밖에서.
+        컨텍스트의 forkserver 는 모듈 전역 하나라 ``ensure_running`` 이 같은 것을 띄운다.
+        """
+        await asyncio.to_thread(multiprocessing.forkserver.ensure_running)
+
     async def render(
         self,
         promptset: LoadedPromptset,
@@ -110,7 +124,8 @@ class RenderSandbox:
                 (``details.kind``), INTERNAL/``INTERNAL_001`` if the child died without a reply
                 or replied beyond the size limit, or the error the render raised.
         """
-        # 직렬화 · 시작 · 입력 전송 · 렌더가 한 마감이다 — 큰 입력이 마감 앞에서 루프를 쥐지 않게
+        # 직렬화 · 시작 · 입력 전송 · 렌더가 한 마감이다. 직렬화가 루프를 세우는 시간은 입력 크기가
+        # 아니라 전송 상한까지 만드는 시간에 묶인다 (RENDER_INPUT_MAX_BYTES)
         try:
             async with asyncio.timeout(self._limits.timeout_s):
                 payload = await asyncio.to_thread(_encode_input, variables)
@@ -123,7 +138,7 @@ class RenderSandbox:
 
     async def _run_child(
         self,
-        payload: bytes,
+        payload: bytearray,
         promptset: LoadedPromptset,
         template: str,
         agent: str,
@@ -228,7 +243,7 @@ class RenderSandbox:
             message="task input exceeds the render transfer limit",
             agent=agent,
             task_id=task_id,
-            # 크기는 직렬화한 길이 또는 멈춘 지점까지 센 하한이다 — 값은 싣지 않는다
+            # 크기는 상한을 넘은 시점까지 쓴 바이트 — 실제 직렬화 크기의 하한이다. 값은 싣지 않는다
             details={
                 "kind": "input",
                 "size_bytes": size,
@@ -284,46 +299,46 @@ def warn_if_headroom_exceeds_memory(
         )
 
 
-def _encode_input(variables: Mapping[str, Any]) -> bytes | int:
-    """입력을 피클 바이트로 — 상한을 넘으면 그 크기 (또는 하한) 를 돌려준다. 스레드에서 돈다.
+class _InputTooLargeError(Exception):
+    """직렬화가 전송 상한을 넘었다 — ``written`` 은 넘은 쓰기까지의 바이트 (실제 크기의 하한)."""
 
-    직렬화는 입력 전체를 훑고 같은 크기의 사본을 만든다. 먼저 싼 하한 (글자 · 원소 수) 을 세어
-    상한을 넘으면 직렬화 전에 멈춘다.
+    def __init__(self, written: int) -> None:
+        super().__init__("render input exceeds the transfer limit")
+        self.written = written
+
+
+class _BoundedWriter:
+    """pickler 가 쓰는 버퍼 — 상한을 넘는 쓰기에서 예외를 던져 직렬화를 멈춘다.
+
+    protocol 4 이상은 약 64 KB 프레임마다 ``write`` 하므로 상한 + 한 프레임 근처에서 멈춘다.
     """
-    estimate = _size_lower_bound(variables, RENDER_INPUT_MAX_BYTES)
-    if estimate > RENDER_INPUT_MAX_BYTES:
-        return estimate
-    payload = pickle.dumps(dict(variables), protocol=pickle.HIGHEST_PROTOCOL)
-    return len(payload) if len(payload) > RENDER_INPUT_MAX_BYTES else payload
+
+    def __init__(self, limit: int) -> None:
+        self.buffer = bytearray()
+        self._limit = limit
+
+    def write(self, data: bytes | memoryview) -> int:
+        size = len(self.buffer) + len(data)
+        if size > self._limit:
+            raise _InputTooLargeError(size)
+        self.buffer += data
+        return len(data)
 
 
-def _size_lower_bound(value: Any, limit: int) -> int:
-    """직렬화 크기의 하한 — 문자열 · 바이트는 길이, 컨테이너는 원소 수. 상한을 넘으면 멈춘다."""
-    total = 0
-    stack = [value]
-    while stack:
-        item = stack.pop()
-        if isinstance(item, str | bytes):
-            total += len(item)
-        elif isinstance(item, dict):
-            total += len(item)
-            if total > limit:
-                return total
-            stack.extend(item.keys())
-            stack.extend(item.values())
-        elif isinstance(item, list | tuple):
-            total += len(item)
-            if total > limit:
-                return total
-            stack.extend(item)
-        else:
-            total += 1
-        if total > limit:
-            return total
-    return total
+def _encode_input(variables: Mapping[str, Any]) -> bytearray | int:
+    """입력을 피클 바이트로 — 상한을 넘으면 그 시점까지 쓴 바이트 수 (실제 크기의 하한) 를 돌려준다.
+
+    스레드에서 돈다. 상한에서 멈추므로 상한을 넘는 입력도 상한 남짓까지만 만든다.
+    """
+    writer = _BoundedWriter(RENDER_INPUT_MAX_BYTES)
+    try:
+        pickle.Pickler(writer, protocol=pickle.HIGHEST_PROTOCOL).dump(dict(variables))
+    except _InputTooLargeError as err:
+        return err.written
+    return writer.buffer  # 복사하지 않는다 — 데몬이 쥐는 사본은 이것 하나다
 
 
-async def _send(sender: Connection, payload: bytes) -> None:
+async def _send(sender: Connection, payload: bytearray) -> None:
     """입력을 자식에게 쓰고 닫는다 — 파이프가 차면 이벤트 루프가 기다린다 (블로킹 쓰기 없음).
 
     스레드에서 쓰지 않는다: 마감 · 취소로 떠난 뒤에도 스레드가 fd 를 쥐고 쓰면 닫힌 fd 번호가
