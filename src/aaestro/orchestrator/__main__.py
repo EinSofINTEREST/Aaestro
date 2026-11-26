@@ -161,6 +161,7 @@ def _start(metrics: Metrics) -> None:
         providers=_proxy_providers(config),
         state_artifacts=orchestrator.state_artifact_root is not None,
         **_host_limits(config),
+        decision_providers=_decision_providers(config),
     )
     if deployments is not None:
         # manager 는 검증에 author 를 쓴다 — 서로를 가리키므로 여기서 잇는다
@@ -239,6 +240,7 @@ def _deployment_manager(
             providers=_proxy_providers(config),
             state_artifacts=orchestrator.state_artifact_root is not None,
             **_host_limits(config),
+            decision_providers=_decision_providers(config),
         ),
         launcher=launcher,
         store=SqliteDeploymentStore(path=orchestrator.deployment_store),
@@ -256,6 +258,11 @@ def _host_limits(config: Any) -> dict[str, Any]:
     if limits is None:
         return {"host_cpu_cores": None, "host_memory_bytes": None}
     return {"host_cpu_cores": limits.cpu_cores, "host_memory_bytes": limits.memory_bytes}
+
+
+def _decision_providers(config: Any) -> dict[str, frozenset[str]]:
+    """배포 검증이 대조할 결정 provider — 이름 → 검증된 locales (#593)."""
+    return {name: frozenset(p.locales) for name, p in config.decision.providers.items()}
 
 
 def _proxy_providers(config: Any) -> frozenset[str] | None:

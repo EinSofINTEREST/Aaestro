@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
@@ -488,6 +488,65 @@ class MemoryConfig(BaseModel):
     dsn: str = ""
 
 
+class DecisionProviderConfig(BaseModel):
+    """One decision provider — an adapter ``kind`` plus its options.
+
+    결정 provider 하나 (#551 D1 — provider 는 여럿, 계약 하나 + 어댑터 레지스트리). Jev 와 같은
+    경로 · 형식의 서빙 (Posek 등) 은 ``kind: jev`` 에 다른 ``base_url`` 로 붙인다.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    kind: str = Field(min_length=1)
+    base_url: str = Field(min_length=1)
+    """provider 의 base URL — ``/v1`` 앞까지. 프록시가 종단하고 자격증명을 주입한다."""
+    locales: tuple[str, ...] = Field(min_length=1)
+    """calibration 을 통과한 언어만 — decisionset 의 ``locale`` 과 대조한다 (06 Calibration 3)."""
+    allow_plaintext: bool = False
+    """``http`` base URL 을 받는다 — 테스트 대역 · 내부망 (03 Egress). 기본은 https 만."""
+
+    @field_validator("kind")
+    @classmethod
+    def _known_kind(cls, value: str) -> str:
+        # 레지스트리가 httpx 를 끌어오므로 decision 설정이 있을 때만 읽는다
+        from aaestro.decision.providers.registry import ADAPTERS
+
+        if value not in ADAPTERS:
+            # 받은 값은 싣지 않는다 — 아는 kind 만 말한다
+            raise ValueError(f"unknown decision provider kind; known: {sorted(ADAPTERS)}")
+        return value
+
+    @model_validator(mode="after")
+    def _plain_url(self) -> DecisionProviderConfig:
+        parts = split_url(self.base_url)
+        if (
+            parts is None
+            or parts.scheme not in ("http", "https")
+            or not parts.hostname
+            or parts.username
+            or parts.password
+            or parts.query
+            or parts.fragment
+        ):
+            raise ValueError("decision provider base_url must be a plain http(s) URL")
+        if parts.scheme == "http" and not self.allow_plaintext:
+            raise ValueError("decision provider base_url must be https unless allow_plaintext")
+        return self
+
+
+class DecisionConfig(BaseModel):
+    """Decision model settings (01 Decision Models)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    timeout_s: float = Field(default=5.0, gt=0)
+    """결정 호출 전체 상한 — 재시도 대기 포함 (05 DECISION_RETRY)."""
+    providers: dict[Annotated[str, Field(pattern=r"^[a-z][a-z0-9-]*$")], DecisionProviderConfig] = (
+        Field(default_factory=dict)
+    )
+    """이름 → provider. manifest 의 ``spec.decision.provider`` 가 이 키를 가리킨다."""
+
+
 class ObservabilityConfig(BaseModel):
     """Logging and metrics settings."""
 
@@ -512,6 +571,7 @@ class AaestroConfig(BaseModel):
     protocols: ProtocolsConfig = Field(default_factory=ProtocolsConfig)
     registry: RegistryConfig = Field(default_factory=RegistryConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
+    decision: DecisionConfig = Field(default_factory=DecisionConfig)
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
 
 
@@ -660,6 +720,8 @@ __all__ = [
     "ENV_PREFIX",
     "NESTED_SEPARATOR",
     "A2AConfig",
+    "DecisionConfig",
+    "DecisionProviderConfig",
     "HealthCheckConfig",
     "AaestroConfig",
     "McpConfig",

@@ -353,8 +353,6 @@ spec:
         as: triage
 ```
 
-> **구현 상태**: 위 `spec.decision` 은 v0.1 스키마가 아직 받지 않는다 — 모르는 키로 `VAL_002` 거절된다.
-
 질문 참조는 `alias.question` — manifest 의 쓰임(`recall_filter` / `input_screen` / `tool_gates`)과
 그래프 decision 노드(그 노드의 에이전트 alias 로 해석)가 쓴다. memoryset 은 에이전트 밖의
 모듈이라 전체 ref `decisionsets/{name}@{version}#question` 으로 가리킨다

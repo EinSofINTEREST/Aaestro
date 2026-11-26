@@ -542,3 +542,65 @@ def test_host_limits_default_to_unset_and_parse_when_given():
 def test_invalid_host_limits_are_rejected(limits):
     with pytest.raises(ValidationError):
         RuntimeConfig.model_validate({"host_limits": limits})
+
+
+# --- decision (#593) ------------------------------------------------------------
+
+DECISION = """\
+decision:
+  timeout_s: 3
+  providers:
+    jev:
+      kind: jev
+      base_url: https://api.typesafe.ai
+      locales: [en]
+    posek:
+      kind: jev
+      base_url: http://posek.internal:8000
+      locales: [en, ko]
+      allow_plaintext: true
+"""
+
+
+def test_decision_providers_are_accepted_with_several_names(tmp_path):
+    """provider 는 여럿 — Jev 와 같은 와이어의 Posek 은 kind: jev + 다른 base_url 이다."""
+    config = load_config("dev", config_dir=write(tmp_path, DECISION), environ={})
+
+    assert config.decision.timeout_s == 3
+    assert {n: p.kind for n, p in config.decision.providers.items()} == {
+        "jev": "jev",
+        "posek": "jev",
+    }
+    assert config.decision.providers["posek"].locales == ("en", "ko")
+
+
+def test_decision_defaults_to_no_provider(tmp_path):
+    config = load_config("dev", config_dir=write(tmp_path, ""), environ={})
+
+    assert config.decision.timeout_s == 5.0
+    assert config.decision.providers == {}
+
+
+@pytest.mark.parametrize(
+    ("needle", "replacement"),
+    [
+        ("kind: jev\n      base_url: https", "kind: unknown-kind\n      base_url: https"),
+        ("      allow_plaintext: true\n", ""),
+        ("https://api.typesafe.ai", "https://user:pw@api.typesafe.ai"),
+        ("https://api.typesafe.ai", "ftp://api.typesafe.ai"),
+        ("      locales: [en]\n", "      locales: []\n"),
+        ("  timeout_s: 3", "  timeout_s: 0"),
+        ("  timeout_s: 3", "  timeout_s: 3\n  typo: 1"),
+    ],
+)
+def test_invalid_decision_settings_are_cfg_001(tmp_path, needle, replacement):
+    assert needle in DECISION
+    body = DECISION.replace(needle, replacement, 1)
+
+    with pytest.raises(AaestroError) as exc_info:
+        load_config("dev", config_dir=write(tmp_path, body), environ={})
+
+    assert exc_info.value.code == "CFG_001"
+    # 받은 값 (URL · kind) 은 싣지 않는다
+    assert "unknown-kind" not in str(exc_info.value.details)
+    assert "pw@" not in str(exc_info.value.details)

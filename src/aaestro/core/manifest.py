@@ -869,6 +869,90 @@ class RuntimeSpec(BaseModel):
         return _require_pinned_image(value, "agent")
 
 
+DECISIONSET_REF_PREFIX = "decisionsets/"
+_DECISION_ALIAS = r"[a-z][a-z0-9_]*"
+QUESTION_REF_PATTERN = rf"^{_DECISION_ALIAS}\.{_DECISION_ALIAS}$"
+"""쓰임이 가리키는 질문 — ``alias.question`` (alias 는 ``sets`` 의 ``as``)."""
+
+
+class DecisionSetRef(BaseModel):
+    """A decisionset attached under an alias — questions are referenced as ``alias.question``."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", populate_by_name=True)
+
+    ref: ModuleRefStr
+    alias: str = Field(alias="as", pattern=rf"^{_DECISION_ALIAS}$")
+
+    @field_validator("ref")
+    @classmethod
+    def _decisionset_ref(cls, value: str) -> str:
+        if not value.startswith(DECISIONSET_REF_PREFIX):
+            raise ValueError(f"decision set ref must be a {DECISIONSET_REF_PREFIX}* reference")
+        return value
+
+
+class RecallFilterUse(BaseModel):
+    """Use 1 — filter recalled memories (09 Context Assembly)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    question: str = Field(pattern=QUESTION_REF_PATTERN)
+    uncertain: Literal["keep", "drop"] = "keep"
+
+
+class InputScreenUse(BaseModel):
+    """Use 2 — flag instructions in tool results / A2A replies / recalled memories."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    question: str = Field(pattern=QUESTION_REF_PATTERN)
+
+
+class ToolGateUse(BaseModel):
+    """Use 6 — judge a side-effecting tool call before it runs (02 Decision Hooks)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    tools: tuple[Annotated[str, Field(min_length=1)], ...] = Field(min_length=1)
+    """도구 이름 glob — 네임스페이스 이름 기준 (``mcp__mail__*``)."""
+    question: str = Field(pattern=QUESTION_REF_PATTERN)
+    uncertain: Literal["block", "allow"] = "block"
+    unavailable: Literal["allow", "block"] = "allow"
+
+
+class DecisionSpec(BaseModel):
+    """The agent's decision model — provider, question sets and the uses that ask them.
+
+    결정 모델 선언 (02 Manifest Rules 8). ``provider`` 는 설정 ``decision.providers`` 의 키다.
+    질문 참조의 해석 · 종류 · locale 은 배포 검증이 본다 (01 Contract Validation 9).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    provider: str = Field(min_length=1)
+    model: str = Field(min_length=1)
+    sets: tuple[DecisionSetRef, ...] = Field(min_length=1)
+    recall_filter: RecallFilterUse | None = None
+    input_screen: InputScreenUse | None = None
+    tool_gates: tuple[ToolGateUse, ...] = ()
+
+    @field_validator("sets")
+    @classmethod
+    def _unique_aliases(cls, value: tuple[DecisionSetRef, ...]) -> tuple[DecisionSetRef, ...]:
+        repeated = repeated_positions([s.alias for s in value])
+        if repeated:
+            raise ValueError(f"duplicate decision set alias at index {repeated}")
+        return value
+
+    def questions(self) -> tuple[tuple[str, str], ...]:
+        """(use, ``alias.question``) for every use that asks a question."""
+        asked = [("recall_filter", self.recall_filter), ("input_screen", self.input_screen)]
+        return (
+            *((use, decl.question) for use, decl in asked if decl is not None),
+            *(("tool_gates", gate.question) for gate in self.tool_gates),
+        )
+
+
 class AgentSpec(BaseModel):
     """The agent contract body.
 
@@ -882,6 +966,7 @@ class AgentSpec(BaseModel):
     skillsets: tuple[ModuleRef, ...] = ()
     skillpacks: tuple[ModuleRef, ...] = ()
     memory: MemorySpec = Field(default_factory=MemorySpec)
+    decision: DecisionSpec | None = None
     mcp: McpSpec = Field(default_factory=McpSpec)
     a2a: A2ASpec = Field(default_factory=A2ASpec)
     runtime: RuntimeSpec = Field(default_factory=RuntimeSpec)

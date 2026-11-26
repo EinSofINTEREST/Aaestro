@@ -46,7 +46,7 @@ from aaestro.observability.logging import configure
 from aaestro.orchestrator.models import CatalogModels, resolve_node_model
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
 EXIT_OK = 0
 EXIT_FAILED = 1
@@ -72,6 +72,7 @@ def validate_root(
     catalog: Catalog | None = None,
     host_cpu_cores: float | None = None,
     host_memory_bytes: int | None = None,
+    decision_providers: Mapping[str, frozenset[str]] | None = None,
 ) -> ValidationReport:
     """Validate topologies against the repository's declarations.
 
@@ -90,6 +91,8 @@ def validate_root(
         # 호스트 총량 상한 — 서버와 같은 설정을 읽어 "로컬은 통과, 배포는 거절" 을 막는다 (#646)
         host_cpu_cores=host_cpu_cores,
         host_memory_bytes=host_memory_bytes,
+        # 결정 provider — 서버와 같은 설정 키다 (#593). 없으면 spec.decision 이 거절된다
+        decision_providers=dict(decision_providers or {}),
     )
     return author.validate(graphs=topologies, with_saved_graphs=False)
 
@@ -195,6 +198,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         state_artifacts=state_artifact_root_for(args) is not None,
         catalog=catalog,
         **host_limits_for(args),
+        **decision_providers_for(args),
     )
 
     # 경고는 실패가 아니다 — 판정(status · 종료 코드)을 바꾸지 않고, 있을 때만 싣는다
@@ -264,6 +268,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
         state_artifacts=state_artifact_root_for(args) is not None,
         catalog=catalog,
         **host_limits_for(args),
+        **decision_providers_for(args),
     )
     ok = report.ok and not graphs.problems
 
@@ -421,6 +426,20 @@ def host_limits_for(args: argparse.Namespace) -> dict[str, Any]:
     return {"host_cpu_cores": limits.cpu_cores, "host_memory_bytes": limits.memory_bytes}
 
 
+def decision_providers_for(args: argparse.Namespace) -> dict[str, Any]:
+    """The configured ``decision.providers`` (name → locales), as `validate_root` keywords.
+
+    `host_limits_for` 와 같은 규칙 — 설정 디렉토리가 없으면 비운다 (#593).
+    """
+    if not Path(getattr(args, "config_dir", DEFAULT_CONFIG_DIR)).is_dir():
+        return {}
+    providers = load_config(
+        resolve_environment(getattr(args, "environment", None)),
+        config_dir=getattr(args, "config_dir", DEFAULT_CONFIG_DIR),
+    ).decision.providers
+    return {"decision_providers": {n: frozenset(p.locales) for n, p in providers.items()}}
+
+
 def run_manager_for(args: argparse.Namespace) -> Any:
     """Build the run manager, recording to the configured store when there is one.
 
@@ -534,6 +553,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         state_artifacts=state_artifact_root is not None,
         catalog=catalog,
         **host_limits_for(args),
+        **decision_providers_for(args),
     )
     if not report.ok:
         # 검증에 실패한 그래프를 굴리면 노드 실행 중에야 실패한다

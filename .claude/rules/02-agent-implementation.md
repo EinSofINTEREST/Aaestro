@@ -183,8 +183,6 @@ spec:
     volumes: []                 # 기본 없음 — 필요 시 명시 선언 (아래 격리 규칙 참조)
 ```
 
-> **구현 상태**: 위 예시의 `spec.decision` 은 v0.1 스키마가 아직 받지 않는다. 지금은 모르는 키로 `VAL_002` 거절된다 (`extra="forbid"`). 아래 Manifest Rules 8 의 `MOD_001` / `MOD_003` 은 구현 뒤의 계약이다.
-
 ### Manifest Rules
 
 1. **Validation**: 배포 시 pydantic 스키마로 검증 — 미검증 manifest 로 컨테이너 기동 금지
@@ -208,6 +206,8 @@ spec:
 8. **Decision Declaration**: `spec.decision` 은 선택이다. 있으면 `provider` 와 `sets` 가 필수이고,
    `recall_filter` / `input_screen` / `tool_gates` 의 질문은 `sets` 의 alias 로 해석돼야 한다
    (배포 검증 `MOD_001`). 질문 종류도 맞아야 한다 — 세 쓰임 모두 `predicate` (`MOD_003`).
+   `provider` 는 설정 `decision.providers` 의 이름이어야 하고 (없으면 `VAL_002` — 모델 provider 와 같은 결),
+   그 provider 의 `locales` 가 붙인 decisionset 의 `locale` 을 지원해야 한다 (`MOD_003`). `model` 도 필수다.
    provider 자격증명은 env 에 없다 — 프록시가 주입한다 (Secrets Injection)
 9. **Model Resilience Declaration**: `spec.model` 의 `fallbacks` / `retry` / `circuit` 은 전부
    선택이며 생략하면 기존 동작이다. `fallbacks[].on` 은 `rate_limit` / `server_error` /
@@ -553,7 +553,7 @@ if pending_steers:                                   # 턴 경계 — tool 결�
 
 ### Decision Hooks — 루프 안의 결정 모델
 
-> **구현 상태**: 아래 결정 모델 훅 (회상 필터 · 입력 판별 `[untrusted: instructions detected]` · 도구 게이트) 은 아직 구현되지 않았다 — `spec.decision` 을 스키마가 받지 않는다.
+> **구현 상태**: 아래 결정 모델 훅 (회상 필터 · 입력 판별 `[untrusted: instructions detected]` · 도구 게이트) 은 아직 구현되지 않았다 — `spec.decision` 은 스키마와 배포 검증까지다 (#593). agentd 는 아직 쓰임을 부르지 않는다 (#596 · #597).
 
 `spec.decision` 이 있으면 루프의 세 자리에서 결정 모델을 부른다. 셋 다 **원래 경로를 바꾸지
 않는 층**이다 — provider 가 없거나 `uncertain` 이면 결정 모델이 없을 때와 같이 동작한다

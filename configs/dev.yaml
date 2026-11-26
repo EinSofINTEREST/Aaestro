@@ -44,6 +44,14 @@ registry:
     graphs: ./graphs
     groups: ./groups
 
+# 결정 모델 provider — 이름 → 어댑터 kind + 옵션 (#593). manifest 의 spec.decision.provider 가 이름을 가리킨다.
+# locales 는 calibration 을 통과한 언어만. 없으면 spec.decision 을 선언한 에이전트는 배포 검증에서 거절된다
+# decision:
+#   timeout_s: 5
+#   providers:
+#     jev: {kind: jev, base_url: https://api.typesafe.ai, locales: [en]}
+#     posek: {kind: jev, base_url: http://posek.internal:8000, locales: [en], allow_plaintext: true}   # Jev 와 같은 와이어 — http 는 opt-in
+
 memory:
   backend: sqlite
   index_lag_target_s: 5
