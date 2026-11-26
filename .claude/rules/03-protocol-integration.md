@@ -270,7 +270,7 @@ Network). 외부로 나가는 호출은 전부 **egress proxy** 를 거치고, �
 | 대상 | 프록시 동작 | 판정 단위 |
 |---|---|---|
 | 모델 API | base URL 로 **종단** — 에이전트는 프록시를 provider 로 부른다 | 요청, 자격증명 주입 |
-| 결정 모델 API | **HTTPS** base URL 로 종단 — 모델 API 와 같은 규칙 ([01](01-architecture.md) Decision Models). HTTP 는 명시된 private 목적지와 명시적 plaintext opt-in(테스트 대역·내부망)에서만 | 요청, 자격증명 주입 |
+| 결정 모델 API | **HTTPS** base URL 로 종단 — 모델 API 와 같은 규칙 ([01](01-architecture.md) Decision Models). HTTP 는 명시된 private 목적지와 명시적 plaintext opt-in(테스트 대역·내부망)에서만 — 둘 다 있어야 하고 루프백도 예외가 아니다 (#595) | 요청 — 논리 이름 `<provider>.decision.invalid` (`egress`), 자격증명 주입 |
 | 원격 MCP (sidecar / external) | base URL 로 **종단** | **도구 이름** (`mcp_tool`), 자격증명 주입 |
 | 그 밖의 외부 HTTPS | CONNECT 터널 | 목적지 호스트 (`egress`) |
 
@@ -293,7 +293,8 @@ Network). 외부로 나가는 호출은 전부 **egress proxy** 를 거치고, �
    provider 실패와 가른다 (`agentd/providers/egress_refusal.py`, #398) — 본문 모양은 upstream 이 흉내 낼
    수 있지만 이 헤더는 응답 허용 목록 밖이라 upstream 에서 오지 않는다. 둘 다 모델 fallback 과 모델
    circuit breaker 를 움직이지 않는다 (다른 모델도 같은 프록시가 막는다). `ACC_002` 는 agentd 의 network
-   재시도를 탄다
+   재시도를 탄다. 결정 provider 경로도 같다 — 결정 어댑터가 같은 헤더로 `ACC_00x` 를 올리고 결정 circuit
+   에 세지 않는다 (쓰임은 unavailable, #595)
 3. **stdio MCP 와 스킬 코드**: 그 외부 효과는 목적지 판정으로 통제된다. 로컬 효과만 있는
    동작은 실시간 통제 대상이 아니다
 4. **프록시 자체의 격리**: 프록시는 비밀값을 모두 쥐므로 최소 권한으로 따로 격리한다.

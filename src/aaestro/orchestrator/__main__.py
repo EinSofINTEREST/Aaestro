@@ -147,6 +147,9 @@ def _start(metrics: Metrics) -> None:
                 connect_url=proxy.connect_url,
                 providers_url=proxy.providers_url,
                 control_url=proxy.control_url,
+                # 결정 provider 도 프록시가 종단한다 — agentd 에 kind · 상한을 넘긴다 (#595)
+                decision_kinds={n: p.kind for n, p in config.decision.providers.items()},
+                decision_timeout_s=config.decision.timeout_s,
             )
             deployments.sidecar_proxy = sidecar_proxy(proxy)
     # 실행 중 run 과 배포가 참조하는 선언은 지우거나 덮어쓰지 못한다 (#242 리뷰 / #243)

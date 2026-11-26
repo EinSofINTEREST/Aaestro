@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import math
 import re
 import unicodedata
 from dataclasses import dataclass, field
@@ -29,8 +30,10 @@ if TYPE_CHECKING:
 
     from aaestro.agentd.executor import Model
     from aaestro.core.manifest import AgentManifest, McpServerSpec, ModelConfig
+    from aaestro.decision.client import DecisionClient
     from aaestro.modules.promptset import LoadedPromptset
     from aaestro.modules.skillset import LoadedSkillset
+    from aaestro.observability.metrics import Metrics
 
 MCP_STARTUP_TIMEOUT_S = 15.0
 
@@ -436,6 +439,89 @@ def model_factory(agent: str, environ: Mapping[str, str]) -> Callable[[ModelConf
         return adapter(config, agent, environ)
 
     return build
+
+
+def decision_client(
+    manifest: AgentManifest, environ: Mapping[str, str], *, metrics: Metrics | None = None
+) -> DecisionClient | None:
+    """Build the agent's decision provider client from ``spec.decision`` (#595).
+
+    결정 provider 클라이언트를 만든다. 주소는 이그레스 프록시 창구, 자격은 에이전트 신원이다 — 키는
+    프록시가 주입한다 (02 Secrets Injection). 선언이 없으면 None. 선언은 있는데 배선 (프록시) 이
+    없으면 WARN 과 함께 None — 쓰임은 결정 모델이 없을 때와 같이 원래 경로로 간다 (01 Decision
+    Models 2).
+
+    Raises:
+        AaestroError: CONFIG/``CFG_001`` when the wiring is partial — 주소 · kind · 상한 중 일부만
+            있거나, 상한이 유한한 양수가 아니거나, 신원이 없다.
+    """
+    declared = manifest.spec.decision
+    if declared is None:
+        return None
+    from aaestro.access.model import ACCESS_CREDENTIAL_ENV
+    from aaestro.decision import DECISION_KIND_ENV, DECISION_TIMEOUT_ENV, DECISION_URL_ENV
+
+    url, kind, timeout = (
+        environ.get(name, "").strip()
+        for name in (DECISION_URL_ENV, DECISION_KIND_ENV, DECISION_TIMEOUT_ENV)
+    )
+    if not (url or kind or timeout):
+        # 셋 다 없을 때만 "배선 없음" 이다 — 하나라도 있으면 runtime 이 주입하다 만 것이다
+        log.warning(
+            "decision provider not wired, uses take the original path",
+            agent=manifest.name,
+            provider=declared.provider,
+        )
+        return None
+    identity = environ.get(ACCESS_CREDENTIAL_ENV, "").strip()
+    timeout_s = _positive_float(timeout)
+    missing = [
+        name
+        for name, ok in (
+            (DECISION_URL_ENV, url),
+            (DECISION_KIND_ENV, kind),
+            (DECISION_TIMEOUT_ENV, timeout_s),
+            (ACCESS_CREDENTIAL_ENV, identity),
+        )
+        if not ok
+    ]
+    if missing or timeout_s is None:  # 뒤 조건은 타입 좁히기 — missing 이 이미 센다
+        raise AaestroError(
+            category=ErrorCategory.CONFIG,
+            code=ErrorCode.CFG_001,
+            message="decision provider wiring is incomplete",
+            agent=manifest.name,
+            details={"provider": declared.provider, "settings": missing},
+        )
+    from aaestro.decision.client import DecisionClient
+    from aaestro.decision.providers.registry import adapter_for
+
+    provider = adapter_for(kind)(
+        base_url=url,
+        model=declared.model,
+        credential=identity,
+        timeout_s=timeout_s,
+        # 프록시 창구는 에이전트 내부망의 http 다 (runtime.egress_proxy 는 http://host:port 만
+        # 받는다). upstream 의 평문 규칙 (opt-in + 사설 목적지) 은 프록시가 강제한다
+        allow_plaintext=True,
+    )
+    return DecisionClient(
+        provider=provider,
+        agent=manifest.name,
+        provider_kind=kind,
+        model=declared.model,
+        timeout_s=timeout_s,
+        metrics=metrics,
+    )
+
+
+def _positive_float(raw: str) -> float | None:
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    # inf · nan 은 상한이 아니다 — asyncio.timeout 이 끝나지 않거나 비교가 늘 거짓이다
+    return value if math.isfinite(value) and value > 0 else None
 
 
 class Bootstrap:
