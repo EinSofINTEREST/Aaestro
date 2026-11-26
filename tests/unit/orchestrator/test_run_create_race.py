@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from aaestro.core.errors import AaestroError, ErrorCode
+from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 from aaestro.orchestrator.run import RunManager
 from aaestro.orchestrator.runs import RunService
 from aaestro.orchestrator.runstore import RunRecord, SqliteRunStore
@@ -54,10 +54,17 @@ def test_separate_processes_creating_the_same_id_only_one_wins(tmp_path):
     ctx = multiprocessing.get_context("spawn")
     start, results = ctx.Barrier(PROCESSES), ctx.Queue()
     procs = [ctx.Process(target=_create, args=(path, start, results)) for _ in range(PROCESSES)]
-    for proc in procs:
-        proc.start()
-    for proc in procs:
-        proc.join(timeout=60)
+    try:
+        for proc in procs:
+            proc.start()
+        for proc in procs:
+            proc.join(timeout=60)
+    finally:
+        # 걸린 자식이 테스트 뒤에 남지 않게
+        for proc in procs:
+            if proc.is_alive():
+                proc.terminate()
+                proc.join(timeout=5)
 
     assert all(proc.exitcode == 0 for proc in procs)
     assert sorted(results.get(timeout=5) for _ in procs) == [False] * (PROCESSES - 1) + [True]
@@ -65,6 +72,8 @@ def test_separate_processes_creating_the_same_id_only_one_wins(tmp_path):
 
 @pytest.mark.parametrize("make", [make_mission, make_service])
 def test_two_connections_submitting_the_same_id_only_one_records(tmp_path, make):
+    # service 는 #711 이전에도 막혔다 — 다른 프로세스의 기록에 소유자가 있어 upsert 가 거절한다.
+    # 원자적 생성이 아니면 실패하는 것은 소유자 없는 mission 쪽이다
     path = str(tmp_path / "runs.db")
     rival = RunManager(store=SqliteRunStore(path=path))
     store = Interleaved(path=path)
@@ -99,3 +108,16 @@ async def test_control_plane_loses_to_a_cli_submission_of_the_same_id(tmp_path):
     assert excinfo.value.code == ErrorCode.GRAPH_006
     assert submitter.calls == []  # 드라이버를 띄우지 않았다
     assert list(cli.runs) == ["r1"]
+
+
+def test_create_on_a_broken_connection_raises_stor_003(tmp_path):
+    store = SqliteRunStore(path=str(tmp_path / "runs.db"))
+    store.close()  # 닫힌 연결의 execute 는 sqlite3.ProgrammingError (sqlite3.Error)
+
+    with pytest.raises(AaestroError) as excinfo:
+        store.create(RunRecord(run_id="r1", graph="g", mode="mission", status="running"))
+
+    assert excinfo.value.code == ErrorCode.STOR_003
+    assert excinfo.value.category is ErrorCategory.STORAGE
+    assert excinfo.value.retryable is False
+    assert excinfo.value.details == {"run_id": "r1"}
