@@ -310,6 +310,44 @@ async def test_a_cancelled_lock_wait_does_not_leak_the_lock(tmp_path):
     await asyncio.wait_for(second.put("b", b"y" * 10, scope=ArtifactScope.GROUP), timeout=10)
 
 
+async def test_a_cancelled_write_keeps_the_flock_until_its_thread_finishes(tmp_path, monkeypatch):
+    """취소돼도 워커 스레드는 계속 쓴다 — 쓰기가 반영되기 전에는 다른 쓰기가 잠금을 못 얻는다."""
+    access = scoped(tmp_path, quotas={ArtifactScope.GROUP: 100})
+    store = access.stores[ArtifactScope.GROUP]
+    entered, release = threading.Event(), threading.Event()
+    real_write = store._write_atomic
+
+    def held_write(key: str, data: bytes) -> None:
+        entered.set()
+        assert release.wait(10)
+        real_write(key, data)
+
+    monkeypatch.setattr(store, "_write_atomic", held_write)
+    put = asyncio.create_task(access.put("a", b"x" * 80, scope=ArtifactScope.GROUP))
+    assert await asyncio.to_thread(entered.wait, 10)
+    for write in list(access._writes):
+        write.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await put
+
+    other = os.open(tmp_path / "research" / ".quota.lock", os.O_RDONLY)
+    try:
+        with pytest.raises(BlockingIOError):
+            fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)  # 스레드가 아직 쓰는 중이다
+        release.set()
+        for _ in range(500):
+            try:
+                fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                await asyncio.sleep(0.01)
+        else:
+            pytest.fail("flock was never released after the write finished")
+    finally:
+        os.close(other)
+    assert store.used_bytes() == 80  # 쓰기는 끝까지 반영됐다
+
+
 _STARVE_CHILD = """
 import asyncio, sys
 from concurrent.futures import ThreadPoolExecutor

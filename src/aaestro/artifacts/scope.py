@@ -195,13 +195,21 @@ class ScopedArtifacts:
         if self.quotas.get(scope) is None:
             return await store.put(key, data)
         fd = await _quota_flock(store)
+        # fd 는 이 스레드가 소유한다 — 태스크가 취소돼도 쓰기가 끝난 뒤에야 flock 이 풀린다.
+        # 획득 직후 곧바로 제출하므로 그 사이에 취소가 끼어들 자리가 없다
+        return await asyncio.to_thread(self._check_and_write, fd, scope, store, key, data)
+
+    def _check_and_write(
+        self, fd: int, scope: ArtifactScope, store: FilesystemArtifactStore, key: str, data: bytes
+    ) -> str:
+        """flock 을 쥔 채 quota 검사와 쓰기를 하고, 끝나면 fd 를 닫아 잠금을 푼다."""
         try:
-            await self._check_quota(scope, store, len(data))
-            return await store.put(key, data)
+            limit = self.quotas[scope]
+            used = store.used_bytes()
+            if used + len(data) > limit:
+                raise over_quota(str(scope), used=used, limit=limit, incoming=len(data))
+            return store.put_blocking(key, data)
         finally:
-            # 닫으면 flock 이 풀린다
-            # shortcut: 이 태스크 자체가 취소되면 (루프 종료) 쓰기 스레드가 끝나기 전에
-            # 잠금이 풀려 그 한 번의 쓰기는 quota 검사와 어긋날 수 있다 — 종료 중에만 생기므로 감수
             os.close(fd)
 
     def _finish_write(self, write: asyncio.Future[str]) -> None:
@@ -238,17 +246,6 @@ class ScopedArtifacts:
                 return await store.get(ref)
 
         raise denied(parsed.scope, "scope was not declared for this agent", ref=ref)
-
-    async def _check_quota(
-        self, scope: ArtifactScope, store: FilesystemArtifactStore, size: int
-    ) -> None:
-        """이 저장이 상한을 넘는지 — 넘으면 쓰기 전에 막는다."""
-        limit = self.quotas.get(scope)
-        if limit is None:
-            return
-        used = await asyncio.to_thread(store.used_bytes)
-        if used + size > limit:
-            raise over_quota(str(scope), used=used, limit=limit, incoming=size)
 
 
 __all__ = [
