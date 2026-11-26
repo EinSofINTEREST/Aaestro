@@ -274,6 +274,8 @@ async def _pinned_base(base_url: str, resolver: Resolver, headers: dict[str, str
 
     기동 검증은 이름이 사설 목록에 있는지만 본다. 그 이름이 공인 주소로 풀리면 키가 평문으로
     나간다 — 보낼 때마다 풀어 사설 주소일 때만 그 주소로 붙는다 (#305 리뷰). https 는 그대로.
+    사설 목적지 규칙은 평문 http upstream 에만 적용된다 — 운영자가 설정에 적은 https upstream 은
+    주소 검사를 하지 않는 의도된 예외다 (키는 TLS 로만 나간다).
     """
     parts = urlsplit(base_url)
     if parts.scheme != "http" or not parts.hostname:

@@ -835,7 +835,18 @@ async def test_the_sqlite_store_survives_a_reopen(tmp_path, manager):
 # --- agent_env 는 secret 을 우회하지 못한다 ------------------------------------------
 
 
-@pytest.mark.parametrize("key", ["ANTHROPIC_API_KEY", "DB_PASSWORD", "MY_SECRET", "X_TOKEN"])
+@pytest.mark.parametrize(
+    "key",
+    [
+        "ANTHROPIC_API_KEY",
+        "DB_PASSWORD",
+        "MY_SECRET",
+        "X_TOKEN",
+        # 이름이 비밀처럼 안 보여도 프록시 전용 키는 에이전트 env 에 못 들어간다
+        "AAESTRO_EGRESS_DECISION_KEY_JEV",
+        "AAESTRO_EGRESS_MODE",
+    ],
+)
 def test_agent_env_refuses_secret_looking_keys(workspace, docker, key):
     catalog = Catalog.under(workspace)
     with pytest.raises(AaestroError) as excinfo:

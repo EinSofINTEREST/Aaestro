@@ -1266,7 +1266,7 @@ spec:
 | `AAESTRO_EGRESS_ALLOW_PLAINTEXT_UPSTREAM` | `true` 이고 목적지가 `AAESTRO_EGRESS_PRIVATE_DESTINATIONS` 에도 **있을 때만** 평문 `http` 를 받는다 — 사설망의 테스트 대역용. 요청마다 이름을 풀어 사설 주소로만 붙고, 목록의 이름이 공인 주소로 풀리면 거부한다(`502`). 공인 주소로는 설정을 어떻게 해도 평문이 나가지 않는다 |
 | `AAESTRO_EGRESS_PORT`, `AAESTRO_EGRESS_PROVIDER_PORT` | CONNECT 창구와 provider 창구 (기본 `8080`, `8081`) |
 | `AAESTRO_EGRESS_MODE` | `enforce`(기본) 또는 `record` |
-| `AAESTRO_EGRESS_PRIVATE_DESTINATIONS` | 사설 주소로 풀려도 되는 목적지, 쉼표로 |
+| `AAESTRO_EGRESS_PRIVATE_DESTINATIONS` | 사설 주소로 풀려도 되는 목적지, 쉼표로. 사설 목적지 규칙은 평문 `http` upstream 에만 적용된다 — 운영자가 설정한 `https` upstream 은 주소 검사를 하지 않는다 |
 
 응답: 거부된 목적지는 `403`(`ACC_001`), 레지스트리에 닿지 않고 캐시도 없어 판정하지 못하면
 `503`(`ACC_002`), 신원이 없거나 모르는 신원이면 CONNECT 는 `407`, provider 창구는 `401` 이다. 설정 형식이

@@ -486,7 +486,11 @@ class DeploymentManager:
         if self.launcher.groups is None:
             # 기동 · 재시작 · 재부착이 모두 카탈로그의 **지금** 그룹 선언으로 quota 를 본다 (#474)
             self.launcher.groups = self._current_group
-        secretish = [k for k in self.agent_env if _looks_secret(k)]
+        secretish = [
+            k
+            for k in self.agent_env
+            if _looks_secret(k) or k.upper().startswith(PROXY_ONLY_ENV_PREFIX)
+        ]
         if secretish:
             raise AaestroError(
                 category=ErrorCategory.CONFIG,
@@ -1935,6 +1939,10 @@ def _malformed(details: dict[str, Any]) -> AaestroError:
 
 def _code(err: BaseException) -> str:
     return str(getattr(err, "code", type(err).__name__))
+
+
+# 프록시 전용 자격 · 설정 env — 에이전트에 있을 이유가 없다 (egress 진입점은 import 하지 않는다)
+PROXY_ONLY_ENV_PREFIX = "AAESTRO_EGRESS_"
 
 
 def _looks_secret(key: str) -> bool:
