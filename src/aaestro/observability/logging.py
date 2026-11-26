@@ -272,6 +272,52 @@ def configure(
         logger_factory=_StreamLoggerFactory(stream_name),
         cache_logger_on_first_use=True,
     )
+    _bridge_stdlib(processors, stream_name)
+
+
+STDLIB_LOG_LEVEL: Final = logging.WARNING
+"""stdlib 로거 (a2a-sdk · uvicorn · httpx …) 를 내보내는 하한.
+
+프레임워크 레벨을 따르지 않는다 — 서드파티의 DEBUG · INFO 는 요청 본문 (SDK 의 태스크 덤프) 과
+요청마다 한 줄 (접근 로그) 을 싣는다. 설정 전에도 stdlib 은 ``logging.lastResort`` 로 WARNING 부터만
+나갔다 — 바뀌는 것은 형식뿐이다.
+"""
+
+
+class _StdlibBridge(logging.Handler):
+    """stdlib 레코드를 structlog 와 같은 processor · 출력으로 보낸다 (#420).
+
+    핸들러가 없으면 ``lastResort`` 가 원문 한 줄을 stderr 에 쓴다 — 마스킹을 거치지 않고, 요청이
+    보낸 값의 개행이 줄을 나눈다. JSON 렌더러는 제어 문자를 이스케이프한다.
+    """
+
+    def __init__(self, stream_name: Literal["stdout", "stderr"]) -> None:
+        super().__init__(level=STDLIB_LOG_LEVEL)
+        self._out = _StreamLogger(stream_name)
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            self._out.msg(self.format(record))
+        except Exception:  # noqa: BLE001 — logging 계약: 실패는 handleError 가 알린다
+            self.handleError(record)
+
+
+def _bridge_stdlib(processors: list[Any], stream_name: Literal["stdout", "stderr"]) -> None:
+    """root stdlib 로거에 브리지를 하나만 단다 — 다시 설정하면 앞의 것을 바꾼다."""
+    *chain, renderer = processors
+    handler = _StdlibBridge(stream_name)
+    handler.setFormatter(
+        structlog.stdlib.ProcessorFormatter(
+            # structlog 쪽 체인을 그대로 — 레벨 · 시각 · 예외 · 마스킹
+            foreign_pre_chain=[structlog.stdlib.add_logger_name, *chain],
+            processors=[structlog.stdlib.ProcessorFormatter.remove_processors_meta, renderer],
+        )
+    )
+    root = logging.getLogger()
+    for old in [h for h in root.handlers if isinstance(h, _StdlibBridge)]:
+        root.removeHandler(old)
+    root.addHandler(handler)
+    root.setLevel(STDLIB_LOG_LEVEL)
 
 
 def get_logger(name: str | None = None) -> Any:

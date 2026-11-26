@@ -325,3 +325,44 @@ def test_built_peer_client_advertises_only_peers_with_an_address(monkeypatch):
     client = build_peer_client(manifest("researcher"))
 
     assert client is not None and client.peers() == ("planner",)
+
+
+async def test_a_delegation_the_peer_ended_canceled_reaches_the_model_as_an_error():
+    """피호출자 실행이 취소로 끝난 위임은 모델에 ``is_error`` 결과로 간다 — 빈 출력이 답처럼 보이면
+    모델이 그것을 근거로 다음 턴을 쓴다 (#420)."""
+    import json
+
+    from aaestro.agentd.executor import Executor, ModelResponse, ToolCall, ToolTurn
+    from aaestro.agentd.tools import AgentToolRegistry
+    from aaestro.core.agent import ModelUsage, TaskStatus
+    from aaestro.protocols.a2a.allowlist import Allowlist, Edge
+    from aaestro.protocols.a2a.client import A2AClient
+    from tests.fixtures.builders import make_task
+    from tests.fixtures.fake_model import FakeModel, text
+
+    class CanceledPeer:
+        async def send(self, *, callee, task, token, headers):
+            return TaskResult.canceled(task)
+
+    client = A2AClient(
+        agent="researcher",
+        allowlist=Allowlist(edges=frozenset({Edge("researcher", "planner")}), secret=b"s"),
+        transport=CanceledPeer(),
+    )
+    ask = ToolCall(id="c0", name=ASK_PEER_TOOL, arguments={"peer": "planner", "request": "q"})
+    model = FakeModel([ModelResponse(tool_calls=(ask,), usage=ModelUsage()), text("done")])
+    executor = Executor(
+        agent="researcher",
+        model=model,
+        tools=AgentToolRegistry(agent="researcher", peers=client),
+        render=lambda task: "prompt",
+    )
+
+    result = await executor.execute(make_task())
+
+    assert result.status is TaskStatus.COMPLETED
+    *_, turn = model.requests[1][1]
+    assert isinstance(turn, ToolTurn)
+    (outcome,) = turn.outcomes
+    assert outcome.is_error
+    assert json.loads(outcome.content)["error"]["code"] == "A2A_003"

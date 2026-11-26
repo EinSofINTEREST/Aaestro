@@ -1055,3 +1055,29 @@ def test_resource_notations_that_turn_infinite_or_absurd_are_rejected_everywhere
         assert "999" not in str(excinfo.value.errors()[0]["msg"]), "거절 사유에 값이 실렸다"
     # 경계: 상한 안의 값은 그대로 받는다
     assert ResourceSpec(cpu="64", memory="1024Ti").memory_bytes == 1024**4 * 1024
+
+
+def test_declaring_push_notifications_is_val_002(tmp_path):
+    """A2A 서버는 push 설정을 전부 거절한다 — 선언을 조용히 무시하면 켜진 줄 안다 (#420)."""
+    raw = manifest_dict(
+        spec={"a2a": {"enabled": True, "capabilities": {"push_notifications": True}}}
+    )
+    path = tmp_path / "manifest.yaml"
+    path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    with pytest.raises(AaestroError) as exc:
+        parse_declaration(path, AgentManifest)
+
+    assert exc.value.code == "VAL_002"
+    assert "push notifications are not supported" in str(exc.value.details)
+
+
+def test_push_notifications_false_is_still_accepted():
+    """옛 선언 (``false`` 를 명시) 은 그대로 받는다."""
+    manifest = AgentManifest.model_validate(
+        manifest_dict(
+            spec={"a2a": {"enabled": True, "capabilities": {"push_notifications": False}}}
+        )
+    )
+
+    assert manifest.spec.a2a.capabilities.push_notifications is False

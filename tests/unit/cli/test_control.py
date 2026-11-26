@@ -43,7 +43,9 @@ def serving(app):
 
     import uvicorn
 
-    config = uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning")
+    # 운영 진입점과 같이 log_config=None — 기본 설정은 uvicorn 로거의 propagate 를 끄고
+    # 프로세스에 남아 뒤 테스트의 로그 브리지를 비켜 간다 (#420)
+    config = uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning", log_config=None)
     server = uvicorn.Server(config)
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
@@ -258,7 +260,9 @@ def test_a_cli_drain_stops_a_run_started_elsewhere(tmp_path):
     path = tmp_path / "runs.db"
     driver = SqliteRunStore(path=path)  # 프로세스 A — run 을 구동한다
     serving = SqliteRunStore(path=path)  # Control Plane 이 보는 창구
-    config = uvicorn.Config(create_app(serving), host="127.0.0.1", port=0, log_level="warning")
+    config = uvicorn.Config(
+        create_app(serving), host="127.0.0.1", port=0, log_level="warning", log_config=None
+    )
     server = uvicorn.Server(config)
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
@@ -302,7 +306,9 @@ def test_a_cli_list_shows_a_run_started_elsewhere(tmp_path):
     path = tmp_path / "runs.db"
     driver = SqliteRunStore(path=path)
     serving = SqliteRunStore(path=path)
-    config = uvicorn.Config(create_app(serving), host="127.0.0.1", port=0, log_level="warning")
+    config = uvicorn.Config(
+        create_app(serving), host="127.0.0.1", port=0, log_level="warning", log_config=None
+    )
     server = uvicorn.Server(config)
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
@@ -411,7 +417,11 @@ async def test_a_cli_resume_continues_from_the_next_iteration(tmp_path):
     # 서버는 이 테스트의 루프에서 돌고, CLI 는 별도 스레드에서 동기 HTTP 로 부른다 —
     # resume 핸들러가 submitter 와 같은 루프에 있어야 태스크를 이어받을 수 있다
     config = uvicorn.Config(
-        create_app(store, resume=resume), host="127.0.0.1", port=0, log_level="warning"
+        create_app(store, resume=resume),
+        host="127.0.0.1",
+        port=0,
+        log_level="warning",
+        log_config=None,
     )
     server = uvicorn.Server(config)
     serving = asyncio.create_task(server.serve())

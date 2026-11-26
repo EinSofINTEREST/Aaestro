@@ -31,6 +31,7 @@ if TYPE_CHECKING:
 
     from aaestro.core.agent import TaskRequest, TaskResult
     from aaestro.core.manifest import AgentManifest
+    from aaestro.observability.metrics import Metrics
 
 PORT_ENV = "AAESTRO_A2A_PORT"
 """runtime 이 할당한 A2A 포트 — 미주입 시 서버를 띄우지 않는다."""
@@ -194,6 +195,8 @@ def _default_max_depth() -> int:
 def build_a2a_app(
     manifest: AgentManifest,
     invoke: Callable[[TaskRequest], Awaitable[TaskResult]],
+    *,
+    metrics: Metrics | None = None,
 ) -> Any | None:
     """Build the inbound A2A app when this agent declares it.
 
@@ -202,6 +205,7 @@ def build_a2a_app(
     Args:
         manifest: The validated agent manifest.
         invoke: Runs one inbound task — 검증을 통과한 호출만 닿습니다.
+        metrics: Where inbound refusals are counted — 없으면 세지 않습니다.
 
     Returns:
         The FastAPI app, or ``None`` when A2A is not enabled or the runtime
@@ -230,6 +234,7 @@ def build_a2a_app(
         GuardedRequestHandler,
         InboundGuard,
     )
+    from aaestro.protocols.telemetry import A2aInboundTelemetry
 
     allowlist = Allowlist(
         edges=parse_edges(os.environ.get(EDGES_ENV, "")),
@@ -245,6 +250,9 @@ def build_a2a_app(
         server=A2AServer(agent=manifest.name, allowlist=allowlist),
         max_depth=int(os.environ.get(MAX_DEPTH_ENV, str(DEFAULT_MAX_DEPTH))),
         verifier=verifier,
+        telemetry=(
+            A2aInboundTelemetry(metrics, callee=manifest.name) if metrics is not None else None
+        ),
     )
 
     card = _protobuf_card(manifest)

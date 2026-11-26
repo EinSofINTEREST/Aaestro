@@ -25,6 +25,7 @@ from aaestro.core.agent import TaskStatus
 from aaestro.core.errors import AaestroError
 from aaestro.core.manifest import AgentManifest
 from aaestro.observability.metrics import Metrics
+from aaestro.protocols.telemetry import A2aRefusal
 from tests.fixtures.builders import make_task
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -411,7 +412,7 @@ def entry(monkeypatch):
         seen["token"] = kwargs.get("token")
         return real_build_app(*args, **kwargs)
 
-    async def fake_serve(app, manifest, invoke, bind_host):
+    async def fake_serve(app, manifest, invoke, bind_host, *, metrics=None):
         seen["bind_host"] = bind_host
 
     monkeypatch.setattr(agentd, "build_app", spy_build_app)
@@ -547,7 +548,7 @@ def test_main_routes_peer_tasks_through_the_shared_task_queue(entry):
     monkeypatch.setenv(agentd.AGENT_TOKEN_ENV, "issued-token")
     served = {}
 
-    async def serve(app, manifest, invoke, bind_host):
+    async def serve(app, manifest, invoke, bind_host, *, metrics=None):
         served.update(app=app, invoke=invoke)
 
     monkeypatch.setattr(agentd, "_serve", serve)
@@ -555,6 +556,48 @@ def test_main_routes_peer_tasks_through_the_shared_task_queue(entry):
     agentd.main()
 
     assert served["invoke"] == served["app"].state.runtime.run
+
+
+def test_main_hands_its_metrics_to_the_server(entry):
+    """main 이 노출하는 registry 가 서빙까지 간다 — A2A 거절이 거기서 세진다 (#420)."""
+    agentd, monkeypatch, _ = entry
+    monkeypatch.setenv(agentd.AGENT_TOKEN_ENV, "issued-token")
+    metrics = Metrics()
+    monkeypatch.setattr(agentd, "_setup_observability", lambda: metrics)
+    served = {}
+
+    async def serve(app, manifest, invoke, bind_host, *, metrics=None):
+        served["metrics"] = metrics
+
+    monkeypatch.setattr(agentd, "_serve", serve)
+
+    agentd.main()
+
+    assert served["metrics"] is metrics
+
+
+async def test_serve_counts_a2a_refusals_in_the_given_metrics(uvicorn_spy, monkeypatch):
+    """넘긴 metrics 가 A2A 앱의 guard 에 걸린다 — 빠지면 aaestro_a2a_refusals_total 이 비어 있다."""
+    import yaml
+
+    agentd, configs = uvicorn_spy
+    monkeypatch.setenv("AAESTRO_A2A_SECRET", "runtime-signing-secret")
+    monkeypatch.setenv("AAESTRO_A2A_PORT", "9100")
+    monkeypatch.setenv("AAESTRO_A2A_EDGES", "planner>researcher")
+    declared = (REPO_ROOT / "agents" / "researcher" / "manifest.yaml").read_text(encoding="utf-8")
+    researcher = AgentManifest.model_validate(yaml.safe_load(declared))
+    metrics = Metrics()
+
+    await agentd._serve("control", researcher, EchoExecutor().execute, "127.0.0.1", metrics=metrics)
+
+    (peer,) = [app for app, _ in configs if app != "control"]
+    peer.state.guard.refused(A2aRefusal.UNSUPPORTED)
+    assert (
+        metrics.registry.get_sample_value(
+            "aaestro_a2a_refusals_total", {"callee": "researcher", "reason": "unsupported"}
+        )
+        == 1.0
+    )
 
 
 def test_main_configures_logging_before_judging_the_token(entry):

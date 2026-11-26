@@ -7,6 +7,7 @@ runtime 이 발급한 per-edge token 을 함께 검증한다 (03 Enforcement 이
 
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 from dataclasses import dataclass
@@ -20,18 +21,19 @@ from a2a.server.tasks import TaskStore
 from a2a.types import a2a_pb2 as pb
 from a2a.utils.errors import A2AError, UnsupportedOperationError
 
-from aaestro.core.agent import TaskConfig, TaskRequest, TaskStatus, TraceContext
+from aaestro.core.agent import TaskConfig, TaskRequest, TaskResult, TaskStatus, TraceContext
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 from aaestro.core.identifiers import MAX_IDENTIFIER_CHARS, identifier_problem
 from aaestro.protocols.a2a.errors import depth_exceeded, not_allowed
 from aaestro.protocols.a2a.sdk import CALLER_HEADER, TOKEN_HEADER
+from aaestro.protocols.telemetry import A2aRefusal
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 
     from aaestro.access.client import AccessClient
-    from aaestro.core.agent import TaskResult
     from aaestro.protocols.a2a.client import A2AServer
+    from aaestro.protocols.telemetry import A2aInboundTelemetry
 
     InboundHandler = Callable[[TaskRequest], Awaitable[TaskResult]]
 
@@ -195,6 +197,13 @@ class InboundGuard:
     verifier: AccessClient | None = None
     """레지스트리 모드 — 있으면 호출마다 받은 표를 **자기 신원으로** 레지스트리에 확인한다.
     per-edge token 은 그래프의 모든 에이전트가 같은 서명 키로 만들 수 있어 경계가 아니다."""
+    telemetry: A2aInboundTelemetry | None = None
+    """거절을 센다 — 없으면 세지 않는다 (프로토콜 계층은 메트릭 없이도 온전히 동작한다)."""
+
+    def refused(self, reason: A2aRefusal) -> None:
+        """거절 하나를 기록한다 — 사유는 닫힌 집합이고 요청이 보낸 값은 싣지 않는다."""
+        if self.telemetry is not None:
+            self.telemetry.refused(reason)
 
     def check_task(
         self, headers: Mapping[str, str], task: TaskRequest, verified: str | None = None
@@ -207,6 +216,7 @@ class InboundGuard:
         if self.verifier is None:
             return self.check(headers, task)
         if verified is None:
+            self.refused(A2aRefusal.NO_CREDENTIAL)
             raise not_allowed(
                 "unknown", self.server.agent, owner=self.server.agent, reason="no ticket"
             )
@@ -228,19 +238,26 @@ class InboundGuard:
         """
         if self.verifier is None:
             return self._token_caller(headers)
+        from aaestro.access.client import DecisionSource
         from aaestro.protocols.a2a.tickets import TICKET_HEADER
 
         claimed = headers.get(CALLER_HEADER, "") or "unknown"
         ticket = headers.get(TICKET_HEADER, "")
         if not ticket:
+            self.refused(A2aRefusal.NO_CREDENTIAL)
             raise not_allowed(
                 claimed, self.server.agent, owner=self.server.agent, reason="no ticket"
             )
         verdict = await self.verifier.verify_ticket(ticket)
         if not verdict.allowed or verdict.agent is None:
+            self.refused(
+                A2aRefusal.UNREACHABLE
+                if verdict.source is DecisionSource.UNREACHABLE
+                else A2aRefusal.DENIED
+            )
+            # 헤더의 이름 주장은 싣지 않는다 — 확인되지 않은 이름이다 (형제 거절 로그와 같은 결)
             log.info(
                 "a2a inbound denied by registry",
-                a2a_caller=claimed,
                 a2a_callee=self.server.agent,
                 decision="deny",
                 decided_by=verdict.decided_by,
@@ -251,6 +268,7 @@ class InboundGuard:
             )
         if claimed not in ("unknown", verdict.agent):
             # 표는 다른 호출자의 것이다 — 이름 주장이 표와 어긋나면 누구의 호출인지 믿을 수 없다
+            self.refused(A2aRefusal.DENIED)
             raise not_allowed(
                 claimed, self.server.agent, owner=self.server.agent, reason="caller mismatch"
             )
@@ -260,6 +278,7 @@ class InboundGuard:
         # 깊이 검사는 **수신 측에서도** 한다: caller 가 자기 depth 를 정직하게
         # 실었다고 믿으면 순환 위임을 caller 하나가 뚫을 수 있다
         if task.trace.depth > self.max_depth:
+            self.refused(A2aRefusal.TOO_DEEP)
             raise depth_exceeded(
                 caller, self.server.agent, depth=task.trace.depth, limit=self.max_depth
             )
@@ -297,8 +316,13 @@ class InboundGuard:
         token = headers.get(TOKEN_HEADER, "")
         if not caller or not token:
             # 헤더가 없으면 방향을 확인할 방법이 없다 — 이름만 주장하는 호출과 같다
+            self.refused(A2aRefusal.NO_CREDENTIAL)
             raise not_allowed(caller or "unknown", self.server.agent)
-        self.server.authorize(caller, token)
+        try:
+            self.server.authorize(caller, token)
+        except AaestroError:
+            self.refused(A2aRefusal.DENIED)
+            raise
         return caller
 
 
@@ -324,7 +348,16 @@ class GuardedExecutor(AgentExecutor):
         # 고른 그대로 두고, Control API 로 온 태스크의 결과 · 상태와 섞이지 않게 한다 (#400)
         task = task.model_copy(update={"caller": caller})
 
-        result = await self._invoke(task)
+        try:
+            result = await self._invoke(task)
+        except asyncio.CancelledError:
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                # SDK 가 이 실행을 끊는 중이다 (레지스트리 종료) — 그쪽이 정리한다
+                raise
+            # 에이전트 안에서 새어 나온 취소 — SDK producer 는 이것을 삼키고 종결 상태 없이 끝나
+            # 태스크가 본문을 든 채 ActiveTaskRegistry 에 남고 호출자는 답을 못 받는다 (#420)
+            result = TaskResult.canceled(task)
         await event_queue.enqueue_event(
             pb.Task(
                 # id 는 **서버가 정한 것**을 쓴다 — 우리 내부 id 로 답하면
@@ -341,6 +374,7 @@ class GuardedExecutor(AgentExecutor):
         try:
             return read_task(context.get_user_input())
         except AaestroError as err:
+            self._guard.refused(A2aRefusal.MALFORMED)
             fields: dict[str, Any] = {
                 "a2a_callee": self._guard.server.agent,
                 "error_code": err.code,
@@ -460,8 +494,9 @@ class GuardedRequestHandler(DefaultRequestHandler):
         요청이 보낸 값(task id · 헤더 주장)은 메시지에도 로그에도 싣지 않는다.
         """
         # 호출자를 확인하지 않고 거절하므로 a2a_caller 는 없다 — 헤더의 주장을 적으면
-        # 위조된 이름이 로그에 남는다
-        log.info("a2a request refused", a2a_callee=self._guard.server.agent, operation=operation)
+        # 위조된 이름이 로그에 남는다. 요청마다 한 줄이라 DEBUG 다 — 집계는 메트릭이 한다
+        self._guard.refused(A2aRefusal.UNSUPPORTED)
+        log.debug("a2a request refused", a2a_callee=self._guard.server.agent, operation=operation)
         return UnsupportedOperationError()
 
     async def _admit(self, params: Any, context: Any) -> None:

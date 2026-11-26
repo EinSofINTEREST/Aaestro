@@ -79,8 +79,14 @@ spec:
      분류하기 전에는 구조 테스트가 통과하지 않는다
    - **태스크 store 는 끝난 태스크를 쥐지 않는다**: 읽는 창구가 없으므로 store 는 태스크를 실행
      중에만 들고, 끝나면 (성공·실패·거부) 버린다 — 요청 수만큼 쌓이는 상태는 02 Statelessness
-     위반이다. 알려진 한계: 에이전트 실행이 취소로 끝난 태스크는 SDK 내부의 활성 태스크
-     레지스트리에 남을 수 있다 (SDK 동작, 별도 이슈)
+     위반이다. 에이전트 안에서 새어 나온 취소로 끝난 실행은 `canceled` 로 답한다 — SDK producer 가
+     취소를 삼키면 종결 상태 없이 끝나 활성 태스크 레지스트리에 본문을 든 채 남는다 (#420). SDK 가
+     실행을 끊는 취소 (레지스트리 종료) 는 그대로 전파한다
+   - **거절은 피호출자가 센다**: `aaestro_a2a_refusals_total{callee, reason}` — guard 가 거절한
+     요청만이다 (SDK 가 먼저 거절한 깨진 JSON · 없는 메서드 · 잘못된 params · 틀린 `A2A-Version` 은
+     세지 않는다). 호출자 이름은 라벨이 아니고 거절 로그의 `a2a_caller` 도 아니다 (확인되지 않은
+     주장이다). 카드 둘 (Control `/v1/card` ·
+     A2A well-known) 은 push 를 광고하지 않는다 — push 설정 요청을 전부 거절하므로
 2. **Discovery**: 에이전트는 peer 의 주소를 직접 알지 못한다 —
    `AgentContext.peers` 로 주입된 (allowlist 기반) 목록만 조회 가능
 3. **No Transitive Calls**: A 가 B 를 호출하고 B 가 C 를 호출하는 것은 각각의 선언이 있을 때만

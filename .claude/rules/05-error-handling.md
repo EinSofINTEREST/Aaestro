@@ -509,6 +509,8 @@ aaestro_decision_unavailable_total{agent, provider, reason}         # reason: ti
 aaestro_tool_calls_total{agent, source, tool, status}    # source: skillset|mcp
 aaestro_mcp_tool_calls_total{agent, server, tool, status}
 aaestro_a2a_calls_total{caller, callee, status}
+aaestro_a2a_refusals_total{callee, reason}                # 피호출자의 guard 가 거절한 수신 요청 — reason: no_credential|denied|unreachable|malformed|too_deep|unsupported.
+                                                         #   호출자 이름은 라벨이 아니다 — 확인되지 않은 값이다 (#420)
 
 # Runtime metrics
 aaestro_containers_running{agent}                        # Gauge
