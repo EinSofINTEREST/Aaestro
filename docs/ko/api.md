@@ -618,6 +618,10 @@ curl -X POST -H "Authorization: Bearer $TOKEN" -H 'content-type: application/jso
 버전으로 편집됐으면 `400` (`VAL_002`) — 먼저 재배포한다. 그러지 않으면 다른 선언으로 만든
 컨테이너를 구동하게 된다.
 
+이미 run 기록이 있는 `run_id` 는 — 끝났든 아니든, mission 이든 service 든, 이 프로세스의 것이든 앞선
+프로세스가 남긴 것이든 — `409` (`GRAPH_006`) 다: 옛 checkpoint thread 를 다시 쓰게 된다. 새 id 를 쓰거나
+run 을 재개한다 (`POST /v1/runs/{run_id}/resume`).
+
 ### `GET /v1/runs`, `GET /v1/runs/{run_id}`
 
 목록은 `?mode=mission|service` 를 받는다. 단건 조회는 **이 프로세스에서** 완주한 run 에
