@@ -134,12 +134,11 @@ class RunService:
             await self.submitter.start_service(topology, initial_state, run_id=run_id)
             self._pin_models(run_id, topology, overrides)
         else:
-            # 끝난 run 의 id 를 다시 쓰면 checkpoint thread 가 겹친다 — 공지가 덮기 전에 거절한다
-            if self.store.get(run_id) is not None:
-                raise run_refused(run_id, topology.metadata.name)
             # 제출 응답이 돌아간 직후의 GET 이 404 면 안 된다 — 드라이버가 기록을
-            # 남기기 전이라도 **여기서** 먼저 쓴다 (read-your-writes)
-            self._announce(run_id, topology, model_overrides=overrides)
+            # 남기기 전이라도 **여기서** 먼저 쓴다 (read-your-writes). 기록이 이미 있으면
+            # (끝난 run 포함) checkpoint thread 가 겹친다 — 없을 때만 만드는 한 연산이라
+            # 다른 프로세스의 같은 id 제출과 경합해도 하나만 이긴다 (#711)
+            self._announce(run_id, topology, model_overrides=overrides, create=True)
             self._drive(
                 run_id,
                 lambda: self.submitter.submit(
@@ -258,9 +257,11 @@ class RunService:
         topology: GraphTopology,
         *,
         model_overrides: Mapping[str, Mapping[str, Any]] | None = None,
+        create: bool = False,
     ) -> None:
         # 비워 보내도 저장소가 기존 override 를 보존한다 — resume 의 재공지가 지우지 않는다
-        written = self.store.upsert(
+        write = self.store.create if create else self.store.upsert
+        written = write(
             RunRecord(
                 run_id=run_id,
                 graph=topology.metadata.name,
@@ -273,7 +274,8 @@ class RunService:
             )
         )
         if not written:
-            # 다른 프로세스가 소유한 run 기록이다 (같은 id 의 service run) — 202 를 내지 않는다
+            # 새 제출이면 같은 id 의 기록이 이미 있고, 재공지면 다른 프로세스가 소유한 run
+            # 기록이다 (같은 id 의 service run) — 202 를 내지 않는다
             raise run_refused(run_id, topology.metadata.name)
 
     def _pin_models(

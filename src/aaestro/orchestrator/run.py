@@ -253,23 +253,25 @@ class RunManager:
             return True
         if handle.lease_lost:
             return False  # 반납 기록도 쓰지 않는다 — `ServiceRunner._publish` 와 같다
+        return self._store.upsert(self._record_of(handle, topology))
+
+    def _record_of(self, handle: RunHandle, topology: GraphTopology | None) -> RunRecord:
+        """핸들의 저장소 기록 — service 면 이 manager 의 소유 · 임대를 싣는다."""
         # mission 재개는 임대를 보지 않는다 — 소유자를 두면 다른 프로세스의 공지가 막힌다
         service = handle.mode is GraphMode.SERVICE
         if service and not handle.lease_until:
             handle.lease_until = self.lease.until()
-        return self._store.upsert(
-            RunRecord(
-                run_id=handle.run_id,
-                graph=handle.graph,
-                mode=str(handle.mode),
-                status=str(handle.status),
-                iteration=handle.iteration,
-                failure_streak=handle.failure_streak,
-                drain=handle.drain_requested,
-                owner=self.lease.owner if service else "",
-                lease_until=handle.lease_until if service else 0.0,
-                **(participation(topology) if topology is not None else {}),
-            )
+        return RunRecord(
+            run_id=handle.run_id,
+            graph=handle.graph,
+            mode=str(handle.mode),
+            status=str(handle.status),
+            iteration=handle.iteration,
+            failure_streak=handle.failure_streak,
+            drain=handle.drain_requested,
+            owner=self.lease.owner if service else "",
+            lease_until=handle.lease_until if service else 0.0,
+            **(participation(topology) if topology is not None else {}),
         )
 
     def claim(self, run_id: str) -> float | None:
@@ -351,8 +353,8 @@ class RunManager:
             run_id: Optional run id; generated when omitted.
             resuming: 끝난 run 을 같은 id 로 다시 잡는다 — 재개 전용. 새 제출이 끝난 run 의
                 id 를 재사용하면 옛 checkpoint 위에 새 실행이 얹히므로 제출에는 열지 않는다.
-            announced: 호출자가 기록 유무를 먼저 확인하고 이 run 의 기록을 직접 써 둔 제출 —
-                control plane 의 mission 제출. 그 기록을 기존 기록으로 보지 않는다.
+            announced: 호출자가 이 run 의 기록을 원자적 생성 (``RunStore.create``) 으로 먼저
+                만들어 둔 제출 — control plane 의 mission 제출. 그 기록을 자기 것으로 보고 갱신한다.
             lease_until: 이미 저장소에 쓴 임대 만료 (``claim``) — 재개 전용. 없으면 기록이 쓴다.
             iteration: 이어갈 회차 — 첫 기록부터 이 값이어야 한다. 0 으로 먼저 쓰면 첫 회차가
                 끝나기 전에 죽은 재개의 기록이 회차 0 을 가리켜, 다음 재개가 이어갈 thread 를
@@ -384,15 +386,6 @@ class RunManager:
             # 상태 충돌이라 저장소 기록을 만났을 때와 같은 GRAPH_006 이다 (#663)
             raise run_refused(resolved_id, topology.name)
 
-        if (
-            not (resuming or announced)
-            and self._store is not None
-            and self._store.get(resolved_id) is not None
-        ):
-            # 새 제출이 이미 있는 기록을 만나면 (끝난 run 포함, 두 모드 공통) 넘겨받지 않는다 —
-            # checkpoint thread · 압축 원문 key 가 겹친다. 소유자 없는 기록은 다른 프로세스의
-            # mission 이거나 #662 이전 바이너리가 구동 중인 run 일 수 있다
-            raise run_refused(resolved_id, topology.name)
         handle = RunHandle(
             run_id=resolved_id,
             graph=topology.name,
@@ -400,7 +393,14 @@ class RunManager:
             lease_until=lease_until,
             iteration=iteration,
         )
-        if not self.publish(handle, topology=topology):
+        if resuming or announced or self._store is None:
+            written = self.publish(handle, topology=topology)
+        else:
+            # 새 제출이 이미 있는 기록을 만나면 (끝난 run 포함, 두 모드 공통) 넘겨받지 않는다 —
+            # checkpoint thread · 압축 원문 key 가 겹친다. 확인과 기록이 한 연산이라 다른
+            # 프로세스 (다른 control plane · CLI) 의 같은 id 제출과 경합해도 하나만 이긴다 (#711)
+            written = self._store.create(self._record_of(handle, topology))
+        if not written:
             # 202 를 내고 첫 갱신에서야 임대를 잃은 것으로 드러나지 않게 지금 거절한다
             raise run_refused(resolved_id, topology.name)
         self._runs[handle.run_id] = handle

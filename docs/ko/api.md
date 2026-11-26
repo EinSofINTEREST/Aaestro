@@ -620,7 +620,9 @@ curl -X POST -H "Authorization: Bearer $TOKEN" -H 'content-type: application/jso
 
 이미 run 기록이 있는 `run_id` 는 — 끝났든 아니든, mission 이든 service 든, 이 프로세스의 것이든 앞선
 프로세스가 남긴 것이든 — `409` (`GRAPH_006`) 다: 옛 checkpoint thread 를 다시 쓰게 된다. 새 id 를 쓰거나
-run 을 재개한다 (`POST /v1/runs/{run_id}/resume`).
+run 을 재개한다 (`POST /v1/runs/{run_id}/resume`). 확인과 기록은 run 저장소의 원자적 생성 한 연산이라, 두
+제출자 (control plane 둘, 또는 control plane 과 `aaestro run --run-id`) 가 같은 id 로 경합하면 하나만 이기고
+나머지는 `409` 다.
 
 ### `GET /v1/runs`, `GET /v1/runs/{run_id}`
 
