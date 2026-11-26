@@ -7,7 +7,10 @@
 from __future__ import annotations
 
 import asyncio
+import subprocess
+import sys
 import threading
+import time
 
 import pytest
 
@@ -214,3 +217,105 @@ async def test_a_cancelled_put_keeps_the_lock_until_its_write_finishes(tmp_path,
     with pytest.raises(AaestroError) as exc_info:
         await second
     assert exc_info.value.code == ErrorCode.ART_002
+
+
+# --- 같은 그룹 디렉토리를 쓰는 다른 인스턴스 · 프로세스 (#679) ----------------------------
+
+
+async def test_two_instances_on_one_group_directory_cannot_both_pass_the_quota(tmp_path):
+    """asyncio 락은 인스턴스 안만 직렬화한다 — 디렉토리의 flock 이 인스턴스 사이를 막는다."""
+    quotas = {ArtifactScope.GROUP: 100}
+    first, second = (scoped(tmp_path, quotas=quotas) for _ in range(2))
+
+    results = await asyncio.gather(
+        first.put("a", b"x" * 80, scope=ArtifactScope.GROUP),
+        second.put("b", b"y" * 80, scope=ArtifactScope.GROUP),
+        return_exceptions=True,
+    )
+
+    failed = [r for r in results if isinstance(r, AaestroError)]
+    assert len(failed) == 1
+    assert failed[0].code == ErrorCode.ART_002
+
+
+async def test_the_lock_file_is_not_an_artifact(tmp_path):
+    access = scoped(tmp_path, quotas={ArtifactScope.GROUP: 100})
+    await access.put("a", b"x" * 10, scope=ArtifactScope.GROUP)
+
+    store = access.stores[ArtifactScope.GROUP]
+    assert (tmp_path / "research" / ".quota.lock").exists()
+    assert list(store.stored_keys()) == ["a"]
+    assert store.used_bytes() == 10
+
+
+async def test_a_scope_without_quota_takes_no_lock_file(tmp_path):
+    access = scoped(tmp_path)
+    await access.put("a", b"x")
+
+    assert not (tmp_path / "researcher" / ".quota.lock").exists()
+
+
+async def test_a_lock_failure_is_a_typed_error_and_nothing_is_written(tmp_path):
+    access = scoped(tmp_path, quotas={ArtifactScope.GROUP: 100})
+    (tmp_path / "research").mkdir()
+    (tmp_path / "research" / ".quota.lock").symlink_to(tmp_path / "elsewhere")  # O_NOFOLLOW 거절
+
+    with pytest.raises(AaestroError) as exc_info:
+        await access.put("a", b"x", scope=ArtifactScope.GROUP)
+
+    assert exc_info.value.code == ErrorCode.STOR_003
+    assert list(access.stores[ArtifactScope.GROUP].stored_keys()) == []
+
+
+_CHILD = """
+import asyncio, sys, time
+from pathlib import Path
+from aaestro.artifacts.scope import ArtifactScope, ScopedArtifacts
+from aaestro.artifacts.store import FilesystemArtifactStore
+from aaestro.core.errors import AaestroError
+
+base, name, rounds = Path(sys.argv[1]), sys.argv[2], int(sys.argv[3])
+
+async def main():
+    (base / f"ready-{name}").touch()
+    for r in range(rounds):
+        while not (base / f"go-{r}").exists():
+            time.sleep(0.001)
+        store = FilesystemArtifactStore(root=base / f"r{r}", scope="research")
+        access = ScopedArtifacts(
+            stores={ArtifactScope.GROUP: store}, quotas={ArtifactScope.GROUP: 100}
+        )
+        try:
+            await access.put(name, b"x" * 80, scope=ArtifactScope.GROUP)
+            print("ok", flush=True)
+        except AaestroError as err:
+            print(err.code, flush=True)
+
+asyncio.run(main())
+"""
+
+
+def test_two_processes_cannot_both_pass_the_group_quota(tmp_path):
+    """서로 다른 프로세스의 동시 저장 — 라운드마다 하나만 성공하고 하나는 ART_002 다."""
+    rounds = 15
+    procs = [
+        subprocess.Popen(  # noqa: S603 — 고정 인자의 테스트용 자식 프로세스
+            [sys.executable, "-I", "-c", _CHILD, str(tmp_path), name, str(rounds)],
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        for name in ("a", "b")
+    ]
+    try:
+        while not all((tmp_path / f"ready-{n}").exists() for n in ("a", "b")):
+            time.sleep(0.01)
+        for r in range(rounds):
+            (tmp_path / f"go-{r}").touch()
+            time.sleep(0.05)
+        outputs = [p.communicate(timeout=60)[0].split() for p in procs]
+    finally:
+        for p in procs:
+            p.kill()
+
+    for r in range(rounds):
+        assert sorted(out[r] for out in outputs) == ["ART_002", "ok"], f"round {r}"

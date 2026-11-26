@@ -8,13 +8,15 @@
 from __future__ import annotations
 
 import asyncio
+import fcntl
+import os
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
 import structlog
 
-from aaestro.artifacts.store import parse_ref
+from aaestro.artifacts.store import parse_ref, storage_error
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 
 if TYPE_CHECKING:
@@ -62,6 +64,30 @@ def over_quota(scope: str, *, used: int, limit: int, incoming: int) -> AaestroEr
     )
 
 
+QUOTA_LOCK_NAME = ".quota.lock"
+"""스코프 디렉토리의 잠금 파일 — 점으로 시작해 key · 목록 · 사용량 계산과 섞이지 않는다."""
+
+
+def _quota_flock(store: FilesystemArtifactStore) -> int:
+    """스코프 디렉토리의 잠금 파일에 배타 flock 을 걸고 fd 를 돌려준다 (블로킹 — 스레드에서).
+
+    열린 파일 설명별 잠금이라 같은 프로세스의 다른 인스턴스와도 배타다.
+    잠금을 못 얻으면 잠금 없이 쓰지 않고 실패한다.
+    """
+    base = store.root / store.scope
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+        fd = os.open(base / QUOTA_LOCK_NAME, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    except OSError as err:
+        raise storage_error("artifact scope lock failed", cause=type(err).__name__) from err
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+    except OSError as err:
+        os.close(fd)
+        raise storage_error("artifact scope lock failed", cause=type(err).__name__) from err
+    return fd
+
+
 @dataclass
 class ScopedArtifacts:
     """Routes artifact access across local / group / global scopes.
@@ -82,9 +108,9 @@ class ScopedArtifacts:
     """quota 검사부터 쓰기 완료까지를 묶는 락 — 이 객체가 소유한다.
 
     쓰기가 스레드로 넘어가면 동시에 온 두 저장이 둘 다 같은 사용량을 보고 검사를 통과해
-    상한을 넘는다. 보호 대상은 스코프별 사용량 (디스크) 이고, 이 객체가 발급한 쓰기만
-    직렬화된다 — 같은 스코프 디렉토리를 쓰는 다른 객체 (다른 에이전트 프로세스) 의 쓰기는
-    이 락으로 막지 못한다 (#679). 취소된 저장도 쓰기가 끝날 때 놓는다.
+    상한을 넘는다. 이 락은 이 객체가 발급한 쓰기만 직렬화한다 — 같은 스코프 디렉토리를 쓰는
+    다른 객체 · 프로세스는 quota 가 있는 스코프의 ``flock`` (``_quota_flock``) 이 막는다 (#679).
+    취소된 저장도 쓰기가 끝날 때 놓는다.
     """
     """쓰기가 허용된 스코프.
 
@@ -123,23 +149,36 @@ class ScopedArtifacts:
             raise denied(str(scope), "scope is read-only for this agent")
 
         await self._write_lock.acquire()
-        try:
-            await self._check_quota(scope, store, len(data))
-            write = asyncio.ensure_future(store.put(key, data))
-        except BaseException:
-            self._write_lock.release()
-            raise
+        # 검사와 쓰기를 한 태스크로 묶는다 — 호출자가 취소돼도 flock 은 쓰기가 끝날 때 놓인다
+        write = asyncio.ensure_future(self._put_locked(scope, store, key, data))
         # 호출자가 취소돼도 쓰기 스레드는 계속 돈다 — 락은 쓰기가 끝날 때 놓아야
         # 다음 저장이 반영 전 사용량으로 quota 를 통과하지 못한다
         self._writes.add(write)
         write.add_done_callback(self._finish_write)
         return await asyncio.shield(write)
 
+    async def _put_locked(
+        self, scope: ArtifactScope, store: FilesystemArtifactStore, key: str, data: bytes
+    ) -> str:
+        """quota 검사와 쓰기 — quota 가 있으면 스코프 디렉토리의 flock 안에서."""
+        if self.quotas.get(scope) is None:
+            return await store.put(key, data)
+        fd = await asyncio.to_thread(_quota_flock, store)
+        try:
+            await self._check_quota(scope, store, len(data))
+            return await store.put(key, data)
+        finally:
+            os.close(fd)  # 닫으면 flock 이 풀린다
+
     def _finish_write(self, write: asyncio.Future[str]) -> None:
         """쓰기 태스크의 소유자 — 락을 놓고, 호출자가 떠난 뒤의 실패도 남긴다."""
         self._writes.discard(write)
         self._write_lock.release()
-        if not write.cancelled() and (err := write.exception()) is not None:
+        err = None if write.cancelled() else write.exception()
+        # quota 초과는 호출자가 받는 정상 거절이다 — 경고로 남기지 않는다
+        if err is not None and not (
+            isinstance(err, AaestroError) and err.code == ErrorCode.ART_002
+        ):
             log.warning("artifact write failed", error_type=type(err).__name__)
 
     async def get(self, ref: str) -> bytes:
