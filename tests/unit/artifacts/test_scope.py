@@ -348,6 +348,27 @@ async def test_a_cancelled_write_keeps_the_flock_until_its_thread_finishes(tmp_p
     assert store.used_bytes() == 80  # 쓰기는 끝까지 반영됐다
 
 
+async def test_a_write_cancelled_while_queued_still_releases_the_flock(tmp_path):
+    """워커가 모두 바쁠 때 제출된 쓰기가 취소돼도 work item 은 살아 있어 fd 를 닫는다."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor(max_workers=1))
+    access = scoped(tmp_path, quotas={ArtifactScope.GROUP: 100})
+    gate = threading.Event()
+    busy = asyncio.ensure_future(asyncio.to_thread(gate.wait, 10))  # 유일한 워커를 점유한다
+    await asyncio.sleep(0.05)
+    put = asyncio.create_task(access.put("a", b"x" * 10, scope=ArtifactScope.GROUP))
+    await asyncio.sleep(0.05)  # flock 을 얻고 work item 이 큐에 대기한다
+    for write in list(access._writes):
+        write.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await put
+    gate.set()
+    await busy
+
+    await asyncio.wait_for(access.put("b", b"y" * 10, scope=ArtifactScope.GROUP), timeout=5)
+
+
 _STARVE_CHILD = """
 import asyncio, sys
 from concurrent.futures import ThreadPoolExecutor

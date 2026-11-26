@@ -8,7 +8,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import fcntl
+import functools
 import os
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -141,7 +143,8 @@ class ScopedArtifacts:
     쓰기가 스레드로 넘어가면 동시에 온 두 저장이 둘 다 같은 사용량을 보고 검사를 통과해
     상한을 넘는다. 이 락은 이 객체가 발급한 쓰기만 직렬화한다 — 같은 스코프 디렉토리를 쓰는
     다른 객체 · 프로세스는 quota 가 있는 스코프의 ``flock`` (``_quota_flock``) 이 막는다 (#679).
-    취소된 저장도 쓰기가 끝날 때 놓는다.
+    호출자가 취소돼도 쓰기가 끝날 때 놓고, 쓰기 태스크 자체가 취소돼도 flock 은 워커 스레드가
+    끝날 때까지 풀리지 않는다 (그 사이 다른 프로세스의 쓰기는 잠금을 못 얻는다).
     """
     """쓰기가 허용된 스코프.
 
@@ -195,9 +198,21 @@ class ScopedArtifacts:
         if self.quotas.get(scope) is None:
             return await store.put(key, data)
         fd = await _quota_flock(store)
-        # fd 는 이 스레드가 소유한다 — 태스크가 취소돼도 쓰기가 끝난 뒤에야 flock 이 풀린다.
-        # 획득 직후 곧바로 제출하므로 그 사이에 취소가 끼어들 자리가 없다
-        return await asyncio.to_thread(self._check_and_write, fd, scope, store, key, data)
+        # 제출 전에는 await 가 없어 취소가 끼어들 창이 없고, 제출 뒤 (큐 대기 포함) 의 취소는
+        # shield 가 막는다 — work item 이 취소되지 않아 fd 는 항상 스레드가 닫는다
+        loop = asyncio.get_running_loop()
+        try:
+            job = loop.run_in_executor(
+                None,
+                contextvars.copy_context().run,
+                functools.partial(self._check_and_write, fd, scope, store, key, data),
+            )
+        except BaseException:
+            os.close(fd)  # 제출 실패 — 스레드가 fd 를 받지 못했으니 여기서 닫는다
+            raise
+        # 호출자가 떠나면 결과를 읽는 쪽이 없다 — 예외가 "never retrieved" 로 새지 않게 소비한다
+        job.add_done_callback(lambda done: done.cancelled() or done.exception())
+        return await asyncio.shield(job)
 
     def _check_and_write(
         self, fd: int, scope: ArtifactScope, store: FilesystemArtifactStore, key: str, data: bytes
