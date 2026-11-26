@@ -77,11 +77,18 @@ def _open_lock_file(path: Path) -> int:
         return os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
 
 
-def _quota_flock(store: FilesystemArtifactStore) -> int:
-    """스코프 디렉토리의 잠금 파일에 배타 flock 을 걸고 fd 를 돌려준다 (블로킹 — 스레드에서).
+LOCK_RETRY_MIN_S = 0.005
+LOCK_RETRY_MAX_S = 0.1
+"""잠금 재시도 간격의 범위 — 지수 backoff 이고 상한으로 루프를 과하게 깨우지 않는다."""
 
-    열린 파일 설명별 잠금이라 같은 프로세스의 다른 인스턴스와도 배타다.
-    잠금을 못 얻으면 잠금 없이 쓰지 않고 실패한다.
+
+async def _quota_flock(store: FilesystemArtifactStore) -> int:
+    """스코프 디렉토리의 잠금 파일에 배타 flock 을 걸고 fd 를 돌려준다.
+
+    열린 파일 설명별 잠금이라 같은 프로세스의 다른 인스턴스와도 배타다. 블로킹 ``flock`` 을
+    스레드에서 기다리면 대기자가 기본 executor 를 다 차지해 잠금을 쥔 쪽의 쓰기가 워커를 못 얻는다 —
+    ``LOCK_NB`` 로 시도하고 이벤트 루프에서 기다린다. 대기 시간 상한은 없다.
+    잠금을 못 얻으면 잠금 없이 쓰지 않고 실패한다. 취소되면 fd 만 닫는다.
     """
     base = store.root / store.scope
     try:
@@ -89,18 +96,21 @@ def _quota_flock(store: FilesystemArtifactStore) -> int:
         fd = _open_lock_file(base / QUOTA_LOCK_NAME)
     except OSError as err:
         raise storage_error("artifact scope lock failed", cause=type(err).__name__) from err
+    delay = LOCK_RETRY_MIN_S
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return fd
+            except BlockingIOError:
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, LOCK_RETRY_MAX_S)
     except OSError as err:
         os.close(fd)
         raise storage_error("artifact scope lock failed", cause=type(err).__name__) from err
-    return fd
-
-
-def _close_acquired(acquire: asyncio.Future[int]) -> None:
-    """취소로 버려진 잠금 획득의 fd 를 닫는다."""
-    if not acquire.cancelled() and acquire.exception() is None:
-        os.close(acquire.result())
+    except BaseException:
+        os.close(fd)
+        raise
 
 
 @dataclass
@@ -178,13 +188,7 @@ class ScopedArtifacts:
         """quota 검사와 쓰기 — quota 가 있으면 스코프 디렉토리의 flock 안에서."""
         if self.quotas.get(scope) is None:
             return await store.put(key, data)
-        acquire = asyncio.ensure_future(asyncio.to_thread(_quota_flock, store))
-        try:
-            fd = await asyncio.shield(acquire)
-        except BaseException:
-            # 취소돼도 스레드는 계속 돌아 잠금을 쥔 fd 를 돌려준다 — 받아서 닫는다
-            acquire.add_done_callback(_close_acquired)
-            raise
+        fd = await _quota_flock(store)
         try:
             await self._check_quota(scope, store, len(data))
             return await store.put(key, data)

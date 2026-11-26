@@ -13,6 +13,7 @@ import subprocess
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -283,7 +284,7 @@ async def test_a_read_only_lock_file_still_locks_and_writes(tmp_path):
 
 
 async def test_a_cancelled_lock_wait_does_not_leak_the_lock(tmp_path):
-    """잠금 대기 중 취소돼도 스레드가 나중에 잡은 fd 는 닫혀야 다음 쓰기가 막히지 않는다."""
+    """잠금 대기 중 취소돼도 잡은 fd 가 남지 않아야 다음 쓰기가 막히지 않는다."""
     first = scoped(tmp_path, quotas={ArtifactScope.GROUP: 100})
     second = scoped(tmp_path, quotas={ArtifactScope.GROUP: 100})
     (tmp_path / "research").mkdir()
@@ -297,9 +298,35 @@ async def test_a_cancelled_lock_wait_does_not_leak_the_lock(tmp_path):
         write.cancel()  # 잠금 대기 중인 쓰기 태스크를 취소한다
     with pytest.raises(asyncio.CancelledError):
         await put
-    os.close(held)  # 대기하던 스레드가 이제 잠금을 얻는다
+    os.close(held)
 
     await asyncio.wait_for(second.put("b", b"y" * 10, scope=ArtifactScope.GROUP), timeout=10)
+
+
+async def test_lock_waiters_do_not_starve_the_executor(tmp_path):
+    """대기자가 기본 executor 워커를 쥐면 잠금을 쥔 쪽의 쓰기가 워커를 못 얻어 교착한다."""
+    loop = asyncio.get_running_loop()
+    executor = ThreadPoolExecutor(max_workers=2)
+    loop.set_default_executor(executor)
+    quotas = {ArtifactScope.GROUP: 100}
+    instances = [scoped(tmp_path, quotas=quotas) for _ in range(4)]
+    try:
+        results = await asyncio.wait_for(
+            asyncio.gather(
+                *(
+                    inst.put(f"k{i}", b"x" * 40, scope=ArtifactScope.GROUP)
+                    for i, inst in enumerate(instances)
+                ),
+                return_exceptions=True,
+            ),
+            timeout=15,
+        )
+    finally:
+        executor.shutdown(wait=False)
+
+    failed = [r for r in results if isinstance(r, AaestroError)]
+    assert len(failed) == 2
+    assert {r.code for r in failed} == {ErrorCode.ART_002}
 
 
 _CHILD = """
