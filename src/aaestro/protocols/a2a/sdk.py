@@ -210,9 +210,15 @@ class SdkPeerTransport:
         peer_error = read_output(final).get("error")
         if isinstance(peer_error, dict):
             # 피호출자가 실어 보낸 사유 — 코드로 대응을 가를 수 있게 그대로 싣는다.
-            # 재시도 가능하다고 답한 실패 (칸 대기 마감 · drain) 는 태스크를 받지 못한 것이라
-            # 제출 실패 (A2A_001, retryable) 다 — A2A_003 으로 접으면 호출자가 재시도하지 않는다
-            if peer_error.get("retryable") is True:
+            # 실행을 시작하지 않은 재시도 가능 거절 (칸 대기 마감 · drain — details.started 가
+            # false) 만 제출 실패 (A2A_001, retryable) 다. 실행 뒤의 실패는 retryable 이어도
+            # 부수효과가 났을 수 있어 그대로 A2A_003 — 호출자가 다시 보내지 않는다
+            details = peer_error.get("details")
+            if (
+                peer_error.get("retryable") is True
+                and isinstance(details, dict)
+                and details.get("started") is False
+            ):
                 raise submit_failed(self.agent, callee, state=name, peer_error=peer_error)
             raise task_rejected(self.agent, callee, state=name, peer_error=peer_error)
         raise task_rejected(self.agent, callee, state=name)

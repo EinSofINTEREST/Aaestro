@@ -739,6 +739,8 @@ def _draining_error(runtime: AgentRuntime) -> AaestroError:
         message="agent is draining and does not accept new tasks",
         agent=runtime.agent,
         retryable=True,
+        # 실행을 시작하지 않은 거절 — A2A 호출자는 이것만 제출 실패 (A2A_001) 로 받는다
+        details={"started": False},
     )
 
 
@@ -761,6 +763,8 @@ def _queued_timeout_error(runtime: AgentRuntime, task: TaskRequest) -> AaestroEr
         agent=runtime.agent,
         task_id=task.task_id,
         retryable=True,
+        # 실행을 시작하지 않은 거절 — A2A 호출자는 이것만 제출 실패 (A2A_001) 로 받는다
+        details={"started": False},
     )
 
 

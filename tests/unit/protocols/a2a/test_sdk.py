@@ -344,35 +344,98 @@ async def test_a_peer_failure_carries_its_structured_reason_to_the_caller():
     assert exc_info.value.details["peer_error"]["message"] == "beyond the ceiling"
 
 
-@pytest.mark.parametrize("code", ["TO_001", "RT_005"])
-async def test_a_retryable_peer_failure_reaches_the_caller_as_retryable(code):
-    """피호출자가 칸 대기 마감 · drain 으로 받지 못한 태스크는 다시 보내면 된다 (#416) —
-    비재시도 A2A_003 으로 접으면 호출자의 재시도가 걸리지 않는다."""
-    from aaestro.core.errors import ErrorCategory
+class _Gated:
+    """runtime 대역 실행기 — ``hog`` 는 문이 열릴 때까지 칸을 쥔다. 나머지는 지정한 결과."""
 
-    async def handler(task):
-        return TaskResult.failed(
-            task,
-            AaestroError(
-                category=ErrorCategory.TIMEOUT, code=code, message="not taken", retryable=True
-            ),
-        )
+    def __init__(self, result=None) -> None:
+        import asyncio
 
+        self.gate = asyncio.Event()
+        self.started = asyncio.Event()
+        self.calls: list[str] = []
+        self._result = result
+
+    async def execute(self, task):
+        self.calls.append(task.task_id)
+        if task.task_id == "hog":
+            self.started.set()
+            await self.gate.wait()
+        if self._result is not None:
+            return self._result(task)
+        return TaskResult.completed(task, output={})
+
+
+async def _send_through_sdk(handler, task):
     app = serve(guard_for((CALLER, CALLEE)), handler)
-    transport = transport_to(app)
-
     with pytest.raises(AaestroError) as exc_info:
-        await transport.send(
+        await transport_to(app).send(
             callee=CALLEE,
-            task=make_task(),
+            task=task,
             token=issue_token(SECRET, Edge(caller=CALLER, callee=CALLEE)),
             headers={},
         )
+    return exc_info.value
 
-    assert exc_info.value.code == ErrorCode.A2A_001
-    assert exc_info.value.retryable is True
-    assert exc_info.value.details["peer_error"]["code"] == code
-    assert code in str(exc_info.value.__cause__)
+
+async def test_a_task_refused_while_waiting_for_a_slot_reaches_the_caller_as_retryable():
+    """칸 대기 마감 (실행 시작 전) 은 다시 보내면 된다 — 제출 실패 A2A_001 (retryable) 로 (#416)."""
+    import asyncio
+
+    from aaestro.agentd.server import AgentRuntime
+    from aaestro.core.agent import TaskConfig
+
+    executor = _Gated()
+    runtime = AgentRuntime(agent=CALLEE, executor=executor, max_concurrent_tasks=1)
+    hog = asyncio.create_task(runtime.run(make_task(task_id="hog")))
+    await asyncio.wait_for(executor.started.wait(), timeout=5)
+
+    error = await _send_through_sdk(
+        runtime.run, make_task(task_id="late", config=TaskConfig(timeout_s=0.05))
+    )
+    executor.gate.set()
+    await hog
+
+    assert error.code == ErrorCode.A2A_001
+    assert error.retryable is True
+    assert error.details["peer_error"]["details"] == {"started": False}
+    assert "TO_001" in str(error.__cause__)
+    assert executor.calls == ["hog"]
+
+
+async def test_a_draining_peer_reaches_the_caller_as_retryable():
+    from aaestro.agentd.server import AgentRuntime
+
+    runtime = AgentRuntime(agent=CALLEE, executor=_Gated())
+    await runtime.drain()
+
+    error = await _send_through_sdk(runtime.run, make_task())
+
+    assert error.code == ErrorCode.A2A_001
+    assert error.retryable is True
+
+
+async def test_a_retryable_failure_after_the_run_started_stays_a2a_003():
+    """실행 뒤의 retryable 실패 (실행 마감 TO_001) 는 부수효과가 났을 수 있다 — A2A_003 그대로."""
+    from aaestro.agentd.server import AgentRuntime
+    from aaestro.core.errors import ErrorCategory
+
+    def timed_out(task):
+        return TaskResult.failed(
+            task,
+            AaestroError(
+                category=ErrorCategory.TIMEOUT,
+                code="TO_001",
+                message="task timeout exceeded",
+                retryable=True,
+            ),
+        )
+
+    runtime = AgentRuntime(agent=CALLEE, executor=_Gated(timed_out))
+
+    error = await _send_through_sdk(runtime.run, make_task())
+
+    assert error.code == ErrorCode.A2A_003
+    assert error.retryable is False
 
 
 def test_a_peer_refusal_text_becomes_the_cause():
