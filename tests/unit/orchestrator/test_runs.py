@@ -595,3 +595,43 @@ async def test_a_submitted_mission_records_the_participation_snapshot_first(part
     assert found.status == "completed", "드라이버의 뒤 기록까지 지난 뒤에도"
     assert dict(found.memory_spaces) == {"scratch": "memorysets/run-scratch@0.1.0"}
     assert found.agents == ("planner", "researcher")
+
+
+async def test_a_service_submission_pins_overrides_on_the_record_it_owns(parts):
+    """control plane 이 제출 뒤 override 를 남기는 쓰기는 자기 기록이라 통과한다 (#662).
+
+    새 제출이 이미 있는 기록을 거절하는 규칙이 같은 프로세스의 정상 경로를 막지 않는지 본다.
+    """
+    store, catalog, _, _, service = parts
+
+    class Idle:
+        async def invoke(self, node, task) -> TaskResult:
+            return TaskResult.completed(task, output={})
+
+    node_id = service.spec.nodes[0].id
+    manager = RunManager(store=store)
+    runs = RunService(
+        catalog=catalog,
+        deployments=FakeDeployments(
+            {
+                "dep-1": DeploymentRecord(
+                    deployment_id="dep-1",
+                    graph=service.metadata.name,
+                    version=service.metadata.version,
+                    status=DeploymentStatus.READY,
+                    model_overrides={node_id: {"name": "claude-haiku-4-5"}},
+                )
+            }
+        ),
+        submitter=RunSubmitter(
+            runtime=Idle(), manager=manager, checkpointer=build_checkpointer("memory")
+        ),
+        store=store,
+    )
+
+    record = await runs.submit("dep-1", {}, run_id="svc-1")
+    await runs.close()
+
+    assert record.owner == manager.lease.owner
+    assert store.get("svc-1").owner == manager.lease.owner
+    assert store.get("svc-1").model_overrides == {node_id: {"name": "claude-haiku-4-5"}}

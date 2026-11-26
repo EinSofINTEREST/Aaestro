@@ -492,16 +492,36 @@ async def test_a_live_owner_that_cannot_renew_stops_before_anyone_can_claim(path
     assert len(inputs) == 1  # 회차 2 를 쓴 것은 이어받은 쪽 하나뿐이다
 
 
-def test_a_record_without_an_owner_is_taken_over_by_the_first_owner(store):
-    """소유자 없이 먼저 생긴 기록 (control plane 의 공지) 도 구동하는 쪽이 소유자가 된다 (qa R2)."""
+def test_only_an_ownerless_service_record_takes_its_first_owner(store):
+    """소유자 없는 service 기록은 처음 쓰는 소유자를 받고, mission 기록은 소유자를 갖지 않는다."""
     store.upsert(RunRecord(run_id="svc", graph="feed-monitor", mode="service", status="running"))
-    manager = RunManager(store=store, lease=RunLease(owner="a", clock=Clock()))
+    store.upsert(RunRecord(run_id="m1", graph="other", mode="mission", status="running"))
 
-    manager.acquire(topology(), run_id="svc")
+    store.upsert(owned(lease_until=T0 + 30))
+    store.upsert(RunRecord(**{**owned(lease_until=T0 + 30).__dict__, "run_id": "m1"}))
 
-    assert store.get("svc").owner == "a"
-    assert store.get("svc").lease_until == T0 + DEFAULT_RUN_LEASE_S
-    assert store.renew("svc", "a", T0 + 99) is True
+    assert (store.get("svc").owner, store.get("svc").lease_until) == ("a", T0 + 30)
+    assert (store.get("m1").owner, store.get("m1").lease_until) == ("", 0)
+    # mission 프로세스의 마지막 기록은 그대로 받는다
+    completed = RunRecord(run_id="m1", graph="other", mode="mission", status="completed")
+    assert store.upsert(completed) is True
+
+
+@pytest.mark.parametrize("mode", ["mission", "service"])
+async def test_a_new_submission_does_not_take_over_an_existing_ownerless_record(path, mode):
+    """남의 mission · #662 이전 바이너리가 돌리는 run 을 새 제출이 빼앗지 않는다 (qa repro4 B)."""
+    SqliteRunStore(path=path).upsert(
+        RunRecord(run_id="m1", graph="other", mode=mode, status="running")
+    )
+    submitter = process(path, Watcher(), build_checkpointer("memory"), owner="b", clock=Clock())
+
+    with pytest.raises(AaestroError) as excinfo:
+        await submitter.start_service(topology(), {"query": "q"}, run_id="m1", sleep=no_sleep)
+
+    assert excinfo.value.code == ErrorCode.GRAPH_006
+    assert submitter.services == {}
+    found = SqliteRunStore(path=path).get("m1")
+    assert (found.owner, found.mode, found.graph) == ("", mode, "other")
 
 
 async def test_starting_over_a_run_another_process_owns_is_refused(path):
@@ -567,3 +587,85 @@ def test_a_read_only_store_reads_a_database_from_before_the_added_columns(tmp_pa
     assert (found.owner, found.lease_until, found.transitions, found.agents) == ("", 0, 0, ())
     assert found.model_overrides == {}
     assert [r.run_id for r in listed] == ["svc"]
+
+
+@pytest.mark.parametrize(
+    ("first_delay", "later_delay"),
+    [
+        (4.9, 5.0),  # qa repro3 — 잠금 대기가 주기마다 여유를 조금씩 먹는다
+        (0.0, 15.0),  # 정지 시각 전에 시작한 호출이 정지 시각을 넘겨 끝난다 — 끝나자마자 멈춘다
+    ],
+)
+async def test_a_lease_holder_stops_before_expiry_even_when_renewal_is_slow(
+    first_delay, later_delay
+):
+    """저장소 호출의 지연이 여유를 먹는다 — 호출이 끝난 뒤의 시각으로 판정해 만료 전에 멈춘다.
+
+    잠긴 sqlite 는 갱신 한 번에 최대 5초를 쓴다 (qa repro3: 만료 4.9초 뒤에 멈췄다).
+    """
+    from aaestro.core.topology import GraphMode
+    from aaestro.orchestrator.run import RunHandle, hold_lease
+
+    clock = Clock()
+
+    async def sleep(delay: float) -> None:
+        clock.now += delay
+
+    class Locked(InMemoryRunStore):
+        calls = 0
+
+        def renew(self, run_id: str, owner: str, lease_until: float) -> bool:
+            self.calls += 1
+            clock.now += first_delay if self.calls == 1 else later_delay  # 잠금 대기
+            if self.calls == 1:
+                return super().renew(run_id, owner, lease_until)
+            raise AaestroError(
+                category=ErrorCategory.STORAGE, code=ErrorCode.STOR_003, message="locked"
+            )
+
+    store = Locked()
+    store.upsert(owned(lease_until=T0 + DEFAULT_RUN_LEASE_S))
+    handle = RunHandle(
+        run_id="svc",
+        graph="feed-monitor",
+        mode=GraphMode.SERVICE,
+        lease_until=T0 + DEFAULT_RUN_LEASE_S,
+    )
+    stopped: list[float] = []
+
+    await hold_lease(
+        store,
+        RunLease(owner="a", clock=clock, sleep=sleep),
+        handle,
+        lambda: stopped.append(clock.now),
+    )
+
+    written = store.get("svc").lease_until
+    assert handle.lease_lost
+    assert stopped and stopped[0] < written  # 남이 가져갈 수 있게 되기 전에 멈췄다
+    assert not store.get("svc").orphaned(stopped[0])
+
+
+async def test_a_failing_let_go_does_not_hide_why_the_resume_failed(path):
+    """임대를 놓지 못한 것은 WARN 이고, 재개가 실패한 원래 이유가 올라간다."""
+
+    class CannotRelease(SqliteRunStore):
+        def release(self, run_id: str, owner: str) -> None:
+            raise AaestroError(
+                category=ErrorCategory.STORAGE, code=ErrorCode.STOR_003, message="locked"
+            )
+
+    SqliteRunStore(path=path).upsert(owned(lease_until=T0))  # checkpoint 없는 죽은 run
+    resumer = process(
+        path,
+        Watcher(),
+        build_checkpointer("memory"),
+        owner="b",
+        clock=Clock(AFTER_EXPIRY),
+        store=CannotRelease(path=path),
+    )
+
+    with pytest.raises(AaestroError) as excinfo:
+        await resumer.resume_service(topology(), "svc", max_iterations=1, sleep=no_sleep)
+
+    assert excinfo.value.code == ErrorCode.STOR_002

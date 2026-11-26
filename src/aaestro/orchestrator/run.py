@@ -118,9 +118,10 @@ class RunLease:
     두 실행이 겹치지 않는 것은 **시간 여유** 로 보장한다 — checkpoint 쓰기에는 소유자 확인
     (fencing) 이 없다. 소유자는 갱신이 실패하는 동안 자기가 저장소에 쓴 만료 시각에서 ``margin_s``
     (갱신 주기) 를 뺀 시각에 스스로 멈추고 진행 중 회차를 취소한다. 다른 프로세스는 만료 시각이
-    지나야 가져간다. 그래서 전제는 **저장소를 공유하는 호스트들의 시계 차이 < margin_s** 이고, 그
-    밖에서는 같은 회차가 두 번 돌 수 있다. 이벤트 루프가 margin 보다 오래 막힌 소유자도 늦게
-    멈춘다 — 막힌 동안은 checkpoint 도 쓰지 못하지만, 풀린 직후의 쓰기 하나는 막지 못한다.
+    지나야 가져간다. 그래서 전제는 **저장소를 공유하는 호스트들의 시계 차이 + 저장소 호출 지연
+    (동기 호출이라 루프 전체를 막는다 — sqlite 잠금 대기는 최대 5초) + 이벤트 루프 정지 <
+    margin_s** 이고, 그 밖에서는 같은 회차가 두 번 돌 수 있다. 늦게 멈춘 소유자는 막힌 동안
+    checkpoint 도 쓰지 못하지만, 풀린 직후의 쓰기 하나는 막지 못한다.
 
     시각은 ``clock`` 의 epoch 초다. ``sleep`` 은 갱신 간격에만 쓴다 (idle backoff 의 sleep 과
     별개 — 테스트가 그것을 즉시 통과시켜도 갱신 루프가 돌지 않게).
@@ -142,11 +143,11 @@ class RunLease:
 
 
 def run_refused(run_id: str, graph: str) -> AaestroError:
-    """다른 소유자가 쥔 run 기록 — 저장소가 이 프로세스의 기록을 받지 않았다 (#662)."""
+    """쓸 수 없는 run 기록 — 다른 소유자의 것이거나 새 제출이 만난 기존 기록 (#662)."""
     return AaestroError(
         category=ErrorCategory.GRAPH,
         code=ErrorCode.GRAPH_006,
-        message="run record is owned by another process",
+        message="run record already exists for another owner or run",
         details={"run_id": run_id, "graph": graph},
     )
 
@@ -168,15 +169,25 @@ async def hold_lease(
 ) -> None:
     """Keep renewing a run's lease until cancelled; call ``on_lost`` once it is gone.
 
-    곧바로 한 번, 그 뒤 ``margin_s`` 마다 임대를 미룬다. 저장소가 소유자가 아니라고 답하면
-    (남이 가져갔다), 또는 갱신이 실패한 채 ``handle.lease_until − margin_s`` 에 닿으면 (곧 남이
-    가져갈 수 있다) 잃은 것으로 보고 멈춘다. 재개 준비 (`resume_service`) 와 루프 (`ServiceRunner`)
+    곧바로 한 번, 그 뒤 ``margin_s`` 마다 (정지 시각이 더 가까우면 그때) 임대를 미룬다. 저장소가
+    소유자가 아니라고 답하면 (남이 가져갔다), 또는 갱신하지 못한 채 ``handle.lease_until −
+    margin_s`` 에 닿으면 (곧 남이 가져갈 수 있다) 잃은 것으로 보고 멈춘다. 시각은 갱신 호출이
+    끝난 뒤 다시 잰다 — 저장소 호출이 동기라 그 지연 (sqlite 잠금 대기 등) 이 여유를 먹는다.
+    정지 시각 직전에 시작한 호출이 늦으면 그만큼 늦게 멈추므로, 여유는 시계 차이 + 저장소 호출
+    지연을 덮어야 한다. 재개 준비 (`resume_service`) 와 루프 (`ServiceRunner`)
     가 같이 쓴다.
     """
     while True:
-        now = lease.clock()
+        started = lease.clock()
+        # 정지 시각을 이미 지났으면 갱신을 부르지 않는다 — 그 호출이 다시 늦어질 수 있다
+        if handle.lease_until and started >= handle.lease_until - lease.margin_s:
+            _mark_lost(handle)
+            on_lost()
+            return
         try:
-            renewed: bool | None = store.renew(handle.run_id, lease.owner, now + lease.duration_s)
+            renewed: bool | None = store.renew(
+                handle.run_id, lease.owner, started + lease.duration_s
+            )
         except AaestroError as err:
             # 일시 장애일 수 있다 — 정지 시각 전까지는 다음 주기에 다시 미룬다
             log.warning(
@@ -188,12 +199,15 @@ async def hold_lease(
             )
             renewed = None
         if renewed:
-            handle.lease_until = now + lease.duration_s
-        elif renewed is False or now >= handle.lease_until - lease.margin_s:
+            handle.lease_until = started + lease.duration_s
+        # 저장소 호출은 동기라 그 지연이 여유를 먹는다 — 호출이 끝난 뒤의 시각으로 판정한다
+        now = lease.clock()
+        stop_at = handle.lease_until - lease.margin_s
+        if renewed is False or now >= stop_at:
             _mark_lost(handle)
             on_lost()
             return
-        await lease.sleep(lease.margin_s)
+        await lease.sleep(min(lease.margin_s, stop_at - now))
 
 
 class RunManager:
@@ -367,6 +381,15 @@ class RunManager:
                 details={"run_id": resolved_id, "graph": topology.name},
             )
 
+        if (
+            mode is GraphMode.SERVICE
+            and not resuming
+            and self._store is not None
+            and self._store.get(resolved_id) is not None
+        ):
+            # 새 제출이 이미 있는 기록을 만나면 넘겨받지 않는다 — 소유자 없는 기록은 다른
+            # 프로세스의 mission 이거나 #662 이전 바이너리가 구동 중인 run 일 수 있다
+            raise run_refused(resolved_id, topology.name)
         handle = RunHandle(
             run_id=resolved_id, graph=topology.name, mode=mode, lease_until=lease_until
         )

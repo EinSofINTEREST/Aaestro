@@ -46,27 +46,18 @@ CREATE TABLE IF NOT EXISTS runs (
 );
 """
 
-_ADDED_COLUMNS = {
-    "model_overrides": "TEXT NOT NULL DEFAULT '{}'",
+_ADDED_COLUMNS: dict[str, tuple[str, Any]] = {
+    "model_overrides": ("TEXT NOT NULL DEFAULT '{}'", "{}"),
     # 이 컬럼이 없던 시절의 run 은 빈 스냅샷 — run space 가 없다 (#608)
-    "memory_spaces": "TEXT NOT NULL DEFAULT '{}'",
-    "agents": "TEXT NOT NULL DEFAULT '[]'",
-    "transitions": "INTEGER NOT NULL DEFAULT 0",
+    "memory_spaces": ("TEXT NOT NULL DEFAULT '{}'", "{}"),
+    "agents": ("TEXT NOT NULL DEFAULT '[]'", "[]"),
+    "transitions": ("INTEGER NOT NULL DEFAULT 0", 0),
     # 임대가 없던 시절의 run 은 소유자 없음 · 만료된 임대 — running 이면 재개할 수 있다 (#662)
-    "owner": "TEXT NOT NULL DEFAULT ''",
-    "lease_until": "REAL NOT NULL DEFAULT 0",
+    "owner": ("TEXT NOT NULL DEFAULT ''", ""),
+    "lease_until": ("REAL NOT NULL DEFAULT 0", 0.0),
 }
-"""첫 스키마 이후 더해진 컬럼 — `_migrate` 가 옛 DB 에 채운다. 새로 더할 때 여기에도 적는다."""
-
-_ADDED_DEFAULTS: dict[str, Any] = {
-    "model_overrides": "{}",
-    "memory_spaces": "{}",
-    "agents": "[]",
-    "transitions": 0,
-    "owner": "",
-    "lease_until": 0.0,
-}
-"""`_ADDED_COLUMNS` 의 기본값 — 마이그레이션하지 않는 읽기 전용 저장소가 옛 DB 를 읽을 때 쓴다."""
+"""첫 스키마 이후 더해진 컬럼 — 이름 → (선언, 그 기본값). `_migrate` 가 옛 DB 에 선언을 채우고,
+읽기 전용 저장소는 마이그레이션 없이 옛 DB 를 기본값으로 읽는다. 새로 더할 때 여기에도 적는다."""
 
 
 def _storage_error(message: str, **details: str) -> AaestroError:
@@ -115,7 +106,8 @@ class RunRecord:
     owner: str = ""
     """run 을 구동하는 소유자 (``RunLease.owner``) — 빈 값은 소유자 없음 (mission · 옛 기록, #662).
 
-    소유자가 없는 기록에 소유자가 있는 갱신이 오면 그 소유자가 처음 소유자가 된다 (임대도 같이).
+    소유자가 없는 **service** 기록에 소유자가 있는 갱신이 오면 그 소유자가 처음 소유자가 된다
+    (임대도 같이 — mission 기록은 소유자를 갖지 않는다).
     그 뒤로는 ``claim`` 만 바꾼다. 소유자가 있는 기록은 같은 소유자의 갱신만 받는다 — 임대를 잃은
     옛 소유자가 새 소유자의 기록을 덮지 못한다."""
     lease_until: float = 0.0
@@ -224,6 +216,9 @@ class InMemoryRunStore:
         existing = self._records.get(record.run_id)
         if existing is not None and existing.owner not in ("", record.owner):
             return False
+        owner, lease_until = record.owner, record.lease_until
+        if existing is not None and (existing.owner or existing.mode != "service"):
+            owner, lease_until = existing.owner, existing.lease_until
         # 구동 프로세스의 갱신이 다른 프로세스의 drain 요청을 지우면
         # 그 요청은 영원히 전달되지 않는다
         drain = record.drain or (existing.drain if existing else False)
@@ -240,13 +235,9 @@ class InMemoryRunStore:
                 "memory_spaces": snapshot.memory_spaces,
                 "agents": snapshot.agents,
                 "transitions": transitions,
-                # 소유자 없는 기록은 처음 온 소유자가 넘겨받는다 — 그 뒤로는 claim 만 바꾼다
-                "owner": record.owner if existing is None or not existing.owner else existing.owner,
-                "lease_until": (
-                    record.lease_until
-                    if existing is None or not existing.owner
-                    else existing.lease_until
-                ),
+                # 소유자 없는 service 기록만 처음 온 소유자가 넘겨받는다 — 그 뒤로는 claim 만 바꾼다
+                "owner": owner,
+                "lease_until": lease_until,
                 "updated_at": _now(),
             }
         )
@@ -360,8 +351,9 @@ class SqliteRunStore:
                         THEN runs.model_overrides ELSE excluded.model_overrides END,
                     -- memory_spaces · agents 는 갱신하지 않는다 — run 시작 때의 스냅샷이다.
                     -- owner · lease_until 은 소유자 없는 기록만 넘겨받는다 (그 뒤는 claim · renew)
-                    owner = CASE WHEN runs.owner = '' THEN excluded.owner ELSE runs.owner END,
-                    lease_until = CASE WHEN runs.owner = ''
+                    owner = CASE WHEN runs.owner = '' AND runs.mode = 'service'
+                        THEN excluded.owner ELSE runs.owner END,
+                    lease_until = CASE WHEN runs.owner = '' AND runs.mode = 'service'
                         THEN excluded.lease_until ELSE runs.lease_until END,
                     updated_at = excluded.updated_at
                 -- 임대를 잃은 옛 소유자의 갱신이 새 소유자의 기록을 덮지 않는다 (#662)
@@ -493,7 +485,7 @@ def _record(row: sqlite3.Row) -> RunRecord:
     present = set(row.keys())
 
     def column(name: str) -> Any:
-        return row[name] if name in present else _ADDED_DEFAULTS[name]
+        return row[name] if name in present else _ADDED_COLUMNS[name][1]
 
     return RunRecord(
         run_id=row["run_id"],
@@ -515,7 +507,7 @@ def _record(row: sqlite3.Row) -> RunRecord:
 
 def _migrate(conn: sqlite3.Connection) -> None:
     """있는 DB 에 빠진 컬럼을 더한다 — `CREATE TABLE IF NOT EXISTS` 는 그러지 않는다 (#254)."""
-    for name, declaration in _ADDED_COLUMNS.items():
+    for name, (declaration, _default) in _ADDED_COLUMNS.items():
         if name in _columns(conn):
             continue
         try:

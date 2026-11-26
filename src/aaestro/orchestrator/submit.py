@@ -438,7 +438,16 @@ class RunSubmitter:
                 )
             except BaseException:
                 # 가져온 임대를 쥔 채 실패하면 다음 재개가 임대 기간 내내 409 다
-                self.manager.let_go(run_id)
+                try:
+                    self.manager.let_go(run_id)
+                except AaestroError as err:
+                    # 놓지 못한 것이 재개 실패의 원인을 가리지 않게 — 임대는 만료로 풀린다
+                    log.warning(
+                        "claimed run lease not released",
+                        graph=topology.metadata.name,
+                        run_id=run_id,
+                        error_code=err.code,
+                    )
                 raise
         else:
             resumed = await self._continue(
