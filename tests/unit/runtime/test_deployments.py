@@ -3401,6 +3401,61 @@ def _deciding_manifest(provider: str):
     return AgentManifest.model_validate(doc)
 
 
+def deciding_workspace(manager, workspace) -> None:
+    """alpha 가 ``jev`` 결정 provider 를 선언하고 설정에도 있는 작업 공간 — 검증은 통과한다."""
+    import shutil
+    from dataclasses import replace
+
+    shutil.copytree(REPO_ROOT / "modules" / "decisionsets", workspace / "modules" / "decisionsets")
+    alpha = agent_doc("alpha")
+    alpha["spec"]["decision"] = {
+        "provider": "jev",
+        "model": "jev-1.13",
+        "sets": [{"ref": "decisionsets/research-triage@0.1.0", "as": "triage"}],
+    }
+    write(workspace / "agents" / "alpha" / "manifest.yaml", alpha)
+    manager.author = replace(manager.author, decision_providers={"jev": frozenset({"en"})})
+
+
+async def test_a_deploy_with_a_decision_provider_the_proxy_lacks_launches_nothing(
+    manager, docker, workspace
+):
+    """#644 의 형제 — 결정 upstream 이 없는 배포는 기동 · 기록 · 점유 전에 거절된다 (#713)."""
+    deciding_workspace(manager, workspace)
+    proxied(manager, proxy_answering("anthropic", decisions=("posek",)))
+
+    with pytest.raises(AaestroError) as caught:
+        await manager.deploy("two")
+
+    err = caught.value
+    assert (err.category, err.code) == (ErrorCategory.VALIDATION, ErrorCode.VAL_002)
+    assert err.details == {"agent": "alpha", "provider": "jev"}
+    assert "decision provider has no upstream" in err.message
+    assert docker.created == [] and manager.deployments() == []
+    # 점유가 새지 않았다 — 같은 에이전트의 다음 배포가 RT_010 으로 막히지 않는다
+    manager.proxy_transport = proxy_answering("anthropic", decisions=("jev",))
+    record = await manager.deploy("two")
+    assert record.status == DeploymentStatus.READY
+    await manager.launcher.stop_all()
+
+
+async def test_an_old_proxy_is_named_in_the_refusal_not_the_provider_setting(
+    manager, docker, workspace
+):
+    deciding_workspace(manager, workspace)
+    proxied(
+        manager,
+        proxy_failing(lambda r: httpx.Response(200, json={"providers": ["anthropic"]})),
+    )
+
+    with pytest.raises(AaestroError) as caught:
+        await manager.deploy("two")
+
+    assert caught.value.code == ErrorCode.VAL_002
+    assert "does not report decision upstreams" in caught.value.message
+    assert docker.created == []
+
+
 async def test_a_decision_provider_without_a_proxy_upstream_is_val_002(manager):
     """프록시가 결정 upstream 을 답하지 않으면 기동 전 거절 — 모델 목록에 있어도 (#713)."""
     from aaestro.runtime.deployments import _check_proxy_upstreams
@@ -3427,7 +3482,7 @@ async def test_an_old_proxy_without_the_decision_key_relays_no_decision_provider
         manager, proxy_failing(lambda r: httpx.Response(200, json={"providers": ["anthropic"]}))
     )
 
-    assert await manager._relayed_providers() == (frozenset({"anthropic"}), frozenset())  # noqa: SLF001
+    assert await manager._relayed_providers() == (frozenset({"anthropic"}), None)  # noqa: SLF001
 
 
 async def test_providers_the_proxy_relays_deploy_and_are_asked_once_per_deploy(manager, docker):
@@ -3498,6 +3553,17 @@ def timed_out(request: httpx.Request) -> httpx.Response:
         (lambda r: httpx.Response(200, text="not json"), ErrorCode.NET_001, False),
         (lambda r: httpx.Response(200, json={"providers": "anthropic"}), ErrorCode.NET_001, False),
         (lambda r: httpx.Response(200, json=["anthropic"]), ErrorCode.NET_001, False),
+        # 결정 목록의 모양이 틀린 답 (#713)
+        *[
+            (
+                lambda r, bad=bad: httpx.Response(
+                    200, json={"providers": ["anthropic"], "decision_providers": bad}
+                ),
+                ErrorCode.NET_001,
+                False,
+            )
+            for bad in (None, "jev", [1])
+        ],
         # 압축이 깨진 본문 — 다시 물어도 같다 (httpx.DecodingError)
         (
             lambda r: httpx.Response(
@@ -3519,6 +3585,9 @@ def timed_out(request: httpx.Request) -> httpx.Response:
         "not-json",
         "not-a-list",
         "not-an-object",
+        "decisions-null",
+        "decisions-string",
+        "decisions-not-strings",
         "bad-gzip",
         "deep-nesting",
     ],  # fmt: skip

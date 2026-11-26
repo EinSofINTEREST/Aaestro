@@ -1251,7 +1251,7 @@ holds a key for each provider. So every deploy also asks the proxy itself: `GET 
 each sorted. It needs no identity and names no keys. A provider the deployment uses — primary, fallback,
 node `model` or a deploy `model_overrides` — that is not in that answer refuses the deploy before any
 container starts (`400 VAL_002`, `details.agent` · `details.provider`). An agent whose `spec.decision.provider` is not in `decision_providers` is refused the same way
-(`400 VAL_002`). Without a proxy a `spec.decision` is not refused: validation warns and the agent runs its original path.
+(`400 VAL_002`); an older proxy that lacks the `decision_providers` key is treated as relaying none, and the message says the proxy does not report decision upstreams. Without a proxy a `spec.decision` is not refused: validation warns and the agent runs its original path.
 If the proxy does not answer,
 the deploy is refused too — it never falls back to the declared list: connection refused `503 NET_001`
 and timeout `503 NET_002` (both retryable — the whole query has a 5-second deadline), a `5xx`
