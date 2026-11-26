@@ -654,7 +654,9 @@ redeploy before running, or the run would drive containers built from another de
 
 A `run_id` that already has a run record — finished or not, mission or service, in this process or
 left by an earlier one — is `409` (`GRAPH_006`): it would reuse the old checkpoint threads. Pick a new id,
-or resume the run (`POST /v1/runs/{run_id}/resume`).
+or resume the run (`POST /v1/runs/{run_id}/resume`). The check and the record are one atomic create in the
+run store, so when two submitters (two control planes, or a control plane and `aaestro run --run-id`) race
+with the same id, exactly one wins and the other gets `409`.
 
 ### `GET /v1/runs`, `GET /v1/runs/{run_id}`
 

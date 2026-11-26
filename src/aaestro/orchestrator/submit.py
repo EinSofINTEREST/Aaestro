@@ -149,7 +149,8 @@ class RunSubmitter:
             topology: The validated graph topology.
             initial_state: The starting state.
             run_id: Explicit run id; generated when omitted.
-            announced: 호출자가 기록 유무를 확인하고 기록을 먼저 써 둔 경우 (control plane).
+            announced: 호출자가 원자적 생성 (``RunStore.create``) 으로 먼저 만들어 둔 기록
+                (control plane) — 그 기록을 자기 것으로 보고 갱신한다.
 
         Returns:
             The run result — ``ok`` is False when the run failed.
