@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, Final
 
 if TYPE_CHECKING:
@@ -15,6 +16,21 @@ OP_SEARCH: Final = "search"
 OP_RECALL: Final = "recall"
 STATUS_OK: Final = "ok"
 STATUS_FAILED: Final = "failed"
+UNDECLARED_SPACE_LABEL: Final = "undeclared"
+
+
+# 별칭은 마지막 조각이다 — run id 는 ``:`` 를 품을 수 있다.
+# access/baselines.py 의 RUN_SPACE_ID 와 같은 모양 — agentd 는 access 를 import 하지 못한다
+_RUN_SPACE_ID = re.compile(r"^run:.+:(?P<alias>[^:]+)$")
+
+
+def space_label(space_id: str) -> str:
+    """메트릭 `space` 라벨 — run space 는 run 을 뺀 ``run:<alias>`` 다 (09 메트릭).
+
+    run id 가 라벨에 들면 run 마다 새 시계열이 생겨 카디널리티가 끝없이 자란다.
+    """
+    match = _RUN_SPACE_ID.match(space_id)
+    return f"run:{match['alias']}" if match else space_id
 
 
 class IndexTelemetry:
@@ -35,18 +51,18 @@ class IndexTelemetry:
         09 는 세 계열을 모두 집계 대상으로 둔다.
         """
         self._metrics.counter("aaestro_memory_operations_total").labels(
-            space=space, op=op, status=status
+            space=space_label(space), op=op, status=status
         ).inc()
 
     def search_finished(self, *, space: str, duration_s: float) -> None:
         """space 하나에 대한 검색 지연 — 느려지면 recall 예산이 태스크를 잡아먹는다."""
         self._metrics.histogram("aaestro_memory_search_duration_seconds").labels(
-            space=space
+            space=space_label(space)
         ).observe(duration_s)
 
     def entries(self, *, space: str, count: int) -> None:
         """space 가 담고 있는 항목 수 — 무한 성장은 검색 품질과 비용을 함께 망친다."""
-        self._metrics.gauge("aaestro_memory_entries").labels(space=space).set(count)
+        self._metrics.gauge("aaestro_memory_entries").labels(space=space_label(space)).set(count)
 
     def index_lag(self, *, space: str, seconds: float) -> None:
         """가장 오래된 미색인 항목의 나이.
@@ -54,7 +70,9 @@ class IndexTelemetry:
         09 는 eventual consistency 를 계약으로 두되 목표 지연(``index_lag_target_s``)
         을 둔다 — 그 목표를 지키는지 보려면 개수가 아니라 **시간**이어야 한다.
         """
-        self._metrics.gauge("aaestro_memory_index_lag_seconds").labels(space=space).set(seconds)
+        self._metrics.gauge("aaestro_memory_index_lag_seconds").labels(
+            space=space_label(space)
+        ).set(seconds)
 
 
 __all__ = ["IndexTelemetry"]

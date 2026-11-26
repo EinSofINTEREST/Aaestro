@@ -528,7 +528,7 @@ aaestro_state_compactions_total{graph, field, strategy, status}  # strategy: kee
 aaestro_state_field_tokens{graph, field}                 # Gauge — 압축을 선언한 필드의 추정 토큰 (경계마다)
 
 # Memory metrics ([09-memory-context.md](09-memory-context.md))
-aaestro_memory_operations_total{space, op, status}       # op: append|read|latest|search|recall — space: space id | "undeclared"
+aaestro_memory_operations_total{space, op, status}       # op: append|read|latest|search|recall — space: space id (run space 는 run:<alias>) | "undeclared"
 aaestro_memory_search_duration_seconds{space}
 aaestro_memory_entries{space}                            # Gauge
 aaestro_memory_index_lag_seconds{space}
