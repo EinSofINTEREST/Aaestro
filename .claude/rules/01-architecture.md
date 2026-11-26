@@ -180,8 +180,12 @@
      control plane · CLI · 여러 orchestrator 인스턴스가 함께 쓰므로 "이 프로세스가 모른다" 로는 죽은
      run 과 남이 구동 중인 run 을 가르지 못한다. 구동하는 소유자가 기록의 임대 (`RunLease`, 기본
      30초) 를 별도 태스크로 계속 미루고, 임대가 지난 `running` run 만 재개가 조건부 갱신
-     (compare-and-set) 으로 가져가 같은 run id 로 잇는다. 임대를 잃은 소유자는 루프를 멈추고,
-     저장소는 소유자가 아닌 쪽의 기록 갱신을 받지 않는다
+     (compare-and-set) 으로 가져가 같은 run id 로 잇는다. 저장소는 소유자가 아닌 쪽의 기록 갱신을
+     받지 않는다. 한 회차가 두 번 돌지 않는 것은 **시간 여유** 로 보장한다 (checkpoint fencing 없음):
+     갱신하지 못하는 소유자는 자기가 쓴 만료보다 `margin_s` (갱신 주기) 먼저 진행 중 회차를 취소하고
+     멈추며, 다른 쪽은 만료가 지나야 가져간다 — 전제는 호스트 간 시계 차이와 이벤트 루프 정지가
+     margin 보다 작다는 것이다. 임대 없는 옛 기록은 만료로 보므로 업그레이드 중에는 옛 프로세스를
+     모두 멈춘 뒤 resume 한다
    - 누적하는 리스트 state 는 그래프의 `state.compaction` 선언으로 **iteration 사이에서만**
      압축한다 — 끝난 iteration 의 state 를 압축한 것이 다음 iteration 의 입력이고, 끝난
      iteration 의 checkpoint 는 고치지 않는다

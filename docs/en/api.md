@@ -667,13 +667,21 @@ Continues a run from where it stopped. What that means differs by mode:
   run records itself as the owner and keeps pushing a lease forward (30 seconds, renewed every
   10), so a `running` run whose lease is past is one nobody is driving. The resume takes the run
   over with a single conditional update — two resumes racing for it get one winner — and the
-  iteration the dead owner was in the middle of counts as a failed one. Any other state is
-  `409` (`GRAPH_006`): a run whose lease is still alive (in any process), a draining run, or a
-  run you drained on purpose, which is submitted again rather than resumed. A run recorded
-  before leases existed has none and counts as expired. An owner that finds its lease taken
-  stops its loop and writes nothing more; the store refuses its updates either way. Leases
-  compare wall clocks, so processes sharing the run store must agree on the time to well within
-  the lease.
+  iteration the dead owner was in the middle of counts as a failed one, and the failure streak
+  starts again from zero. Any other state is `409` (`GRAPH_006`): a run whose lease is still
+  alive (in any process), a draining run, or a run you drained on purpose, which is submitted
+  again rather than resumed. If the resume fails after taking the run over, it lets the lease
+  go, so the next attempt does not wait out the 30 seconds. A run recorded before leases existed
+  has none and counts as expired — **during an upgrade, stop every old process before resuming**,
+  or a run an old process is still driving is taken over under it. Starting a run under an id
+  whose record another process owns is `409` (`GRAPH_006`) rather than a run that stops at once.
+  The guarantee that one iteration never runs twice is **timing, not fencing**: checkpoint writes
+  carry no owner check. An owner that cannot renew stops itself, cancelling the iteration in
+  progress, one renewal period (10 seconds) **before** the expiry it wrote, while a successor can
+  take the run only **after** that expiry; an owner that finds its lease taken stops the same
+  way, and the run store refuses its record updates either way. That holds while the clocks of
+  the hosts sharing the run store differ by less than those 10 seconds, and while no owner's
+  event loop stalls for longer — outside that, an iteration can run twice.
 - **Mission runs** resume from the last checkpoint and carry **no state guard** — the
   checkpointer decides what continuing means, so resuming one that already finished re-drives
   it from that checkpoint. Without a durable checkpointer there is nothing to continue from

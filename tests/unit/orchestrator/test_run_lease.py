@@ -362,7 +362,7 @@ async def test_an_owner_that_lost_its_lease_stops_mid_iteration(path):
     owner, runtime = await died_mid_iteration(path, checkpointer, sleep=gate)
     task = owner.services["svc"]
     taker = process(path, Watcher(), checkpointer, owner="b", clock=Clock(AFTER_EXPIRY))
-    assert taker.manager.claim("svc") is True
+    assert taker.manager.claim("svc") is not None
 
     gate.opened.set()
     handle = await asyncio.wait_for(task, timeout=5)
@@ -429,3 +429,141 @@ def test_mission_records_carry_no_owner(store):
     assert store.get(handle.run_id).owner == ""
     assert manager.lease.owner == "a"
     assert RunStatus(store.get(handle.run_id).status) is RunStatus.RUNNING
+
+
+# --- 시간 여유 · 조용한 거절 · 임대 놓기 · 옛 DB 읽기 (qa 피드백) ----------------------------
+
+
+class RenewFails(SqliteRunStore):
+    """살아 있지만 임대를 미루지 못하는 소유자의 저장소 — 같은 파일을 다른 프로세스도 쓴다."""
+
+    def renew(self, run_id: str, owner: str, lease_until: float) -> bool:
+        raise AaestroError(category=ErrorCategory.STORAGE, code=ErrorCode.STOR_003, message="x")
+
+
+async def test_a_live_owner_that_cannot_renew_stops_before_anyone_can_claim(path, monkeypatch):
+    """옛 소유자가 살아 있는데 갱신만 못 하면 — 만료 margin 전에 멈춰 같은 회차를 두 벌 돌지 않는다.
+
+    회차 2 의 첫 checkpoint 를 쓰기 전에 멈춘 소유자가, 남이 가져간 뒤 풀려나 같은 thread 에
+    쓰던 결함 (qa R3) 의 재현이다.
+    """
+    from aaestro.orchestrator.builder import build_graph
+    from aaestro.orchestrator.run import ServiceRunner, iteration_thread
+
+    checkpointer = build_checkpointer("memory")
+    entered, original = asyncio.Event(), ServiceRunner._iterate
+
+    async def stalls_before_checkpoint(self, handle, state):
+        if handle.iteration == 2 and self._lease.owner == "a":
+            entered.set()
+            await asyncio.Event().wait()  # 경계 검사는 지났고 첫 checkpoint 는 아직이다
+        return await original(self, handle, state)
+
+    monkeypatch.setattr(ServiceRunner, "_iterate", stalls_before_checkpoint)
+    clock, gate = Clock(), Gate()
+    stalled = process(
+        path,
+        Watcher(),
+        checkpointer,
+        owner="a",
+        clock=clock,
+        sleep=gate,
+        store=RenewFails(path=path),
+    )
+    await stalled.start_service(topology(), {"query": "q"}, run_id="svc", sleep=no_sleep)
+    await entered.wait()
+
+    # 갱신 주기 두 번이 실패한 시각 — 만료 (T0+30) 보다 margin 만큼 이르다
+    clock.now = T0 + DEFAULT_RUN_LEASE_S - DEFAULT_RUN_LEASE_S / 3
+    gate.opened.set()
+    handle = await asyncio.wait_for(stalled.services["svc"], timeout=5)
+    assert handle.lease_lost
+
+    successor = process(path, Watcher(), checkpointer, owner="b", clock=Clock(AFTER_EXPIRY))
+    resumed = await successor.resume_service(topology(), "svc", max_iterations=3, sleep=no_sleep)
+    await successor.services["svc"]
+
+    graph = build_graph(topology(), Watcher(), checkpointer=checkpointer)
+    config = {"configurable": {"thread_id": iteration_thread("svc", 2)}}
+    inputs = [
+        h async for h in graph.aget_state_history(config) if h.metadata.get("source") == "input"
+    ]
+    assert resumed.iteration == 3
+    assert len(inputs) == 1  # 회차 2 를 쓴 것은 이어받은 쪽 하나뿐이다
+
+
+def test_a_record_without_an_owner_is_taken_over_by_the_first_owner(store):
+    """소유자 없이 먼저 생긴 기록 (control plane 의 공지) 도 구동하는 쪽이 소유자가 된다 (qa R2)."""
+    store.upsert(RunRecord(run_id="svc", graph="feed-monitor", mode="service", status="running"))
+    manager = RunManager(store=store, lease=RunLease(owner="a", clock=Clock()))
+
+    manager.acquire(topology(), run_id="svc")
+
+    assert store.get("svc").owner == "a"
+    assert store.get("svc").lease_until == T0 + DEFAULT_RUN_LEASE_S
+    assert store.renew("svc", "a", T0 + 99) is True
+
+
+async def test_starting_over_a_run_another_process_owns_is_refused(path):
+    """남이 끝낸 run id 로 시작하면 202 뒤 조용히 멈추지 않고 곧바로 GRAPH_006 (qa repro2)."""
+    first = process(path, Watcher(), build_checkpointer("memory"), owner="one", clock=Clock())
+    await first.start_service(
+        topology(), {"query": "q"}, run_id="svc", sleep=no_sleep, max_iterations=1
+    )
+    await first.services["svc"]
+    second = process(path, Watcher(), build_checkpointer("memory"), owner="two", clock=Clock())
+
+    with pytest.raises(AaestroError) as excinfo:
+        await second.start_service(topology(), {"query": "q"}, run_id="svc", sleep=no_sleep)
+
+    assert excinfo.value.code == ErrorCode.GRAPH_006
+    assert second.services == {}
+    assert second.manager.runs == {}
+    assert second.manager.store.get("svc").owner == "one"
+
+
+async def test_a_failed_resume_lets_go_of_the_lease(path):
+    """가져온 뒤 재개가 실패하면 임대를 놓는다 — 다음 재개가 임대 기간 내내 409 를 받지 않는다."""
+    SqliteRunStore(path=path).upsert(owned(lease_until=T0))  # checkpoint 없는 죽은 run
+    first = process(
+        path, Watcher(), build_checkpointer("memory"), owner="b", clock=Clock(AFTER_EXPIRY)
+    )
+
+    with pytest.raises(AaestroError) as excinfo:
+        await first.resume_service(topology(), "svc", max_iterations=1, sleep=no_sleep)
+    assert excinfo.value.code == ErrorCode.STOR_002
+    assert first.manager.store.get("svc").lease_until == 0
+
+    retry = process(
+        path, Watcher(), build_checkpointer("memory"), owner="c", clock=Clock(AFTER_EXPIRY)
+    )
+    with pytest.raises(AaestroError) as excinfo:
+        await retry.resume_service(topology(), "svc", max_iterations=1, sleep=no_sleep)
+    assert excinfo.value.code == ErrorCode.STOR_002  # 409 가 아니라 다시 가져가 같은 원인으로 실패
+
+
+def test_a_read_only_store_reads_a_database_from_before_the_added_columns(tmp_path):
+    """읽기 전용 저장소는 마이그레이션하지 않는다 — 없는 컬럼은 기본값으로 읽는다."""
+    path = tmp_path / "runs.db"
+    with sqlite3.connect(path) as old:
+        old.execute(
+            "CREATE TABLE runs (run_id TEXT PRIMARY KEY, graph TEXT NOT NULL, "
+            "mode TEXT NOT NULL, status TEXT NOT NULL, iteration INTEGER NOT NULL DEFAULT 0, "
+            "failure_streak INTEGER NOT NULL DEFAULT 0, drain INTEGER NOT NULL DEFAULT 0, "
+            "updated_at TEXT NOT NULL)"
+        )
+        old.execute(
+            "INSERT INTO runs VALUES (?,?,?,?,?,?,?,?)",
+            ("svc", "feed-monitor", "service", "running", 4, 0, 0, "t"),
+        )
+
+    store = SqliteRunStore(path=path, read_only=True)
+    try:
+        found = store.get("svc")
+        listed = store.list()
+    finally:
+        store.close()
+
+    assert (found.owner, found.lease_until, found.transitions, found.agents) == ("", 0, 0, ())
+    assert found.model_overrides == {}
+    assert [r.run_id for r in listed] == ["svc"]

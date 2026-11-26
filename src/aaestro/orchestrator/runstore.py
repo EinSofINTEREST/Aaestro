@@ -58,6 +58,16 @@ _ADDED_COLUMNS = {
 }
 """첫 스키마 이후 더해진 컬럼 — `_migrate` 가 옛 DB 에 채운다. 새로 더할 때 여기에도 적는다."""
 
+_ADDED_DEFAULTS: dict[str, Any] = {
+    "model_overrides": "{}",
+    "memory_spaces": "{}",
+    "agents": "[]",
+    "transitions": 0,
+    "owner": "",
+    "lease_until": 0.0,
+}
+"""`_ADDED_COLUMNS` 의 기본값 — 마이그레이션하지 않는 읽기 전용 저장소가 옛 DB 를 읽을 때 쓴다."""
+
 
 def _storage_error(message: str, **details: str) -> AaestroError:
     """Run 레지스트리 실패를 STORAGE 카테고리로 옮긴다."""
@@ -105,7 +115,8 @@ class RunRecord:
     owner: str = ""
     """run 을 구동하는 소유자 (``RunLease.owner``) — 빈 값은 소유자 없음 (mission · 옛 기록, #662).
 
-    처음 기록과 ``claim`` 만 정한다. 소유자가 있는 기록은 같은 소유자의 갱신만 받는다 — 임대를 잃은
+    소유자가 없는 기록에 소유자가 있는 갱신이 오면 그 소유자가 처음 소유자가 된다 (임대도 같이).
+    그 뒤로는 ``claim`` 만 바꾼다. 소유자가 있는 기록은 같은 소유자의 갱신만 받는다 — 임대를 잃은
     옛 소유자가 새 소유자의 기록을 덮지 못한다."""
     lease_until: float = 0.0
     """소유자의 임대 만료 시각 (epoch 초) — 소유자가 ``renew`` 로 미룬다. 이 시각이 지난 ``running``
@@ -154,8 +165,9 @@ class RunStore(Protocol):
     def upsert(self, record: RunRecord) -> bool:
         """run 기록을 남긴다 (없으면 생성, 있으면 갱신).
 
-        소유자가 있는 기록을 다른 소유자가 갱신하면 쓰지 않고 False — 소유자 · 임대는 처음
-        기록에서만 정해지고 갱신으로는 바뀌지 않는다 (``claim`` · ``renew`` 의 몫).
+        소유자가 있는 기록을 다른 소유자가 갱신하면 쓰지 않고 False — 호출자는 이것을 무시하지
+        않는다 (#662). 소유자 · 임대는 처음 기록 (또는 소유자 없는 기록을 넘겨받는 첫 갱신) 에서만
+        정해지고 그 뒤로는 ``claim`` · ``renew`` 가 바꾼다.
         """
         ...
 
@@ -169,6 +181,10 @@ class RunStore(Protocol):
 
     def renew(self, run_id: str, owner: str, lease_until: float) -> bool:
         """임대를 미룬다 — ``owner`` 가 아직 소유자일 때만. False 면 임대를 잃었다."""
+        ...
+
+    def release(self, run_id: str, owner: str) -> None:
+        """임대를 놓는다 (만료 0) — ``owner`` 가 아직 소유자일 때만. 곧바로 다시 가져갈 수 있다."""
         ...
 
     def get(self, run_id: str) -> RunRecord | None:
@@ -224,8 +240,13 @@ class InMemoryRunStore:
                 "memory_spaces": snapshot.memory_spaces,
                 "agents": snapshot.agents,
                 "transitions": transitions,
-                "owner": record.owner if existing is None else existing.owner,
-                "lease_until": record.lease_until if existing is None else existing.lease_until,
+                # 소유자 없는 기록은 처음 온 소유자가 넘겨받는다 — 그 뒤로는 claim 만 바꾼다
+                "owner": record.owner if existing is None or not existing.owner else existing.owner,
+                "lease_until": (
+                    record.lease_until
+                    if existing is None or not existing.owner
+                    else existing.lease_until
+                ),
                 "updated_at": _now(),
             }
         )
@@ -248,6 +269,10 @@ class InMemoryRunStore:
             return False
         self._records[run_id] = RunRecord(**{**existing.__dict__, "lease_until": lease_until})
         return True
+
+    def release(self, run_id: str, owner: str) -> None:
+        """임대를 놓는다 — 소유자일 때만."""
+        self.renew(run_id, owner, 0.0)
 
     def get(self, run_id: str) -> RunRecord | None:
         """기록 조회."""
@@ -334,7 +359,10 @@ class SqliteRunStore:
                     model_overrides = CASE WHEN excluded.model_overrides = '{}'
                         THEN runs.model_overrides ELSE excluded.model_overrides END,
                     -- memory_spaces · agents 는 갱신하지 않는다 — run 시작 때의 스냅샷이다.
-                    -- owner · lease_until 도 그렇다 — claim · renew 의 몫이다
+                    -- owner · lease_until 은 소유자 없는 기록만 넘겨받는다 (그 뒤는 claim · renew)
+                    owner = CASE WHEN runs.owner = '' THEN excluded.owner ELSE runs.owner END,
+                    lease_until = CASE WHEN runs.owner = ''
+                        THEN excluded.lease_until ELSE runs.lease_until END,
                     updated_at = excluded.updated_at
                 -- 임대를 잃은 옛 소유자의 갱신이 새 소유자의 기록을 덮지 않는다 (#662)
                 WHERE runs.owner = '' OR runs.owner = excluded.owner
@@ -385,6 +413,17 @@ class SqliteRunStore:
         except sqlite3.Error as err:
             raise _storage_error("run lease could not be renewed", run_id=run_id) from err
         return cursor.rowcount > 0
+
+    def release(self, run_id: str, owner: str) -> None:
+        """임대를 놓는다 — 소유자일 때만."""
+        try:
+            with self._lock:
+                self._conn.execute(
+                    "UPDATE runs SET lease_until = 0 WHERE run_id = ? AND owner = ?",
+                    (run_id, owner),
+                )
+        except sqlite3.Error as err:
+            raise _storage_error("run lease could not be released", run_id=run_id) from err
 
     def get(self, run_id: str) -> RunRecord | None:
         """기록 조회 — 다른 프로세스가 쓴 것도 보인다."""
@@ -450,7 +489,12 @@ class SqliteRunStore:
 
 
 def _record(row: sqlite3.Row) -> RunRecord:
-    """저장 행을 기록으로."""
+    """저장 행을 기록으로 — 마이그레이션 전 DB (읽기 전용) 의 없는 컬럼은 기본값으로 읽는다."""
+    present = set(row.keys())
+
+    def column(name: str) -> Any:
+        return row[name] if name in present else _ADDED_DEFAULTS[name]
+
     return RunRecord(
         run_id=row["run_id"],
         graph=row["graph"],
@@ -460,12 +504,12 @@ def _record(row: sqlite3.Row) -> RunRecord:
         failure_streak=row["failure_streak"],
         drain=bool(row["drain"]),
         updated_at=row["updated_at"],
-        model_overrides=json.loads(row["model_overrides"]),
-        memory_spaces=json.loads(row["memory_spaces"]),
-        agents=tuple(json.loads(row["agents"])),
-        transitions=row["transitions"],
-        owner=row["owner"],
-        lease_until=row["lease_until"],
+        model_overrides=json.loads(column("model_overrides")),
+        memory_spaces=json.loads(column("memory_spaces")),
+        agents=tuple(json.loads(column("agents"))),
+        transitions=column("transitions"),
+        owner=column("owner"),
+        lease_until=column("lease_until"),
     )
 
 

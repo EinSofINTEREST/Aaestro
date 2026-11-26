@@ -10,6 +10,7 @@ Run 슬롯은 ``RunManager`` 가 관리하며, **슬롯 반납을 finally 로 �
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -26,8 +27,10 @@ from aaestro.orchestrator.run import (
     RunManager,
     RunStatus,
     ServiceRunner,
+    hold_lease,
     iteration_thread,
     run_generations,
+    run_refused,
 )
 from aaestro.orchestrator.state import resolve_graph_state, validate_state
 
@@ -264,6 +267,7 @@ class RunSubmitter:
         start_iteration: int = 0,
         pending_boundary: int | None = None,
         resuming: bool = False,
+        lease_until: float = 0.0,
     ) -> RunHandle:
         """Start a service graph's perpetual loop.
 
@@ -285,6 +289,7 @@ class RunSubmitter:
                 its state compaction still has to be applied — resume 경로 전용.
             resuming: Reuse ``run_id`` of a run that already ended here — resume 경로 전용
                 (``RunManager.acquire``).
+            lease_until: The lease expiry ``RunManager.claim`` already wrote — resume 경로 전용.
 
         Returns:
             The run handle — drain 요청과 상태 조회 창구입니다.
@@ -306,7 +311,10 @@ class RunSubmitter:
         compactor = self._state_compactor(topology)
 
         handle = self.manager.acquire(
-            topology, run_id=run_id or f"svc-{uuid4().hex[:12]}", resuming=resuming
+            topology,
+            run_id=run_id or f"svc-{uuid4().hex[:12]}",
+            resuming=resuming,
+            lease_until=lease_until,
         )
         # 태스크가 돌기 전에 세워야 한다 — checkpoint thread_id 와 max_iterations
         # 판정이 둘 다 이 값을 본다
@@ -374,7 +382,10 @@ class RunSubmitter:
           죽었다는 판정입니다. 저장소의 조건부 갱신 (``RunManager.claim``) 으로 소유권을 가져온
           쪽만 같은 run id 로 잇고, 원 기록은 이 프로세스의 소유 · 임대로 넘어옵니다. 죽은
           소유자가 기록하지 못한 회차 (진행 중이던 것 · 실패한 것) 는 실패한 회차로 보고 그
-          다음부터 엽니다 — 같은 checkpoint thread 를 두 실행이 쓰지 않습니다.
+          다음부터 엽니다. 옛 소유자는 만료보다 ``RunLease.margin_s`` 먼저 스스로 멈추므로, 같은
+          회차가 두 벌 돌지 않는 것은 **호스트 간 시계 차이 < margin** 일 때다 — checkpoint
+          쓰기에는 소유자 확인이 없다 (`RunLease`). 실패 연속 횟수는 0 부터 다시 센다.
+          가져온 뒤 재개가 실패하면 임대를 놓는다 (다음 재개가 임대 기간을 기다리지 않게).
 
         Args:
             topology: The service topology this run belongs to.
@@ -404,12 +415,11 @@ class RunSubmitter:
             )
 
         previous = self.manager.get(run_id)
-        orphaned = (
-            previous.status is RunStatus.RUNNING
-            and run_id not in self.manager.runs
-            # 검사와 가져오기가 한 번의 조건부 갱신 — 임대가 살아 있거나 남이 먼저 가져갔으면 False
-            and self.manager.claim(run_id)
-        )
+        claimed: float | None = None
+        if previous.status is RunStatus.RUNNING and run_id not in self.manager.runs:
+            # 검사와 가져오기가 한 번의 조건부 갱신 — 임대가 살아 있거나 남이 먼저 가져갔으면 None
+            claimed = self.manager.claim(run_id)
+        orphaned = claimed is not None
         if previous.status is not RunStatus.HALTED and not orphaned:
             # 살아있는 run 은 같은 iteration 을 두 벌이 돌게 되고, drain 으로
             # 정상 정지한 run 은 재개가 아니라 새로 시작해야 한다
@@ -420,15 +430,67 @@ class RunSubmitter:
                 details={"run_id": run_id, "status": str(previous.status)},
             )
 
-        # checkpoint 가 정본이다 — 이 프로세스가 시작하지 않은 run 은 핸들에 state 가 없고
-        # (기록만 복원된다), 빈 state 로 시작하면 누적이 사라지거나 필수 필드가 없어
-        # GRAPH_003 으로 거부된다 (#310)
-        state, pending_boundary, next_iteration = await self._resume_point(topology, previous)
-        resumed = await self.start_service(
+        if claimed is not None:
+            previous.lease_until = claimed
+            try:
+                resumed = await self._continue(
+                    topology, previous, run_id, max_iterations, is_idle, sleep
+                )
+            except BaseException:
+                # 가져온 임대를 쥔 채 실패하면 다음 재개가 임대 기간 내내 409 다
+                self.manager.let_go(run_id)
+                raise
+        else:
+            resumed = await self._continue(
+                topology, previous, f"{run_id}{RESUMED_SUFFIX}", max_iterations, is_idle, sleep
+            )
+        log.info(
+            "service run resumed",
+            graph=topology.metadata.name,
+            run_id=resumed.run_id,
+            iteration=resumed.iteration,
+            orphaned=orphaned,
+        )
+        return resumed
+
+    async def _continue(
+        self,
+        topology: GraphTopology,
+        previous: RunHandle,
+        run_id: str,
+        max_iterations: int | None,
+        is_idle: Callable[[dict[str, Any]], bool] | None,
+        sleep: Callable[[float], Awaitable[None]] | None,
+    ) -> RunHandle:
+        """`resume_service` 의 나머지 — 이어갈 지점을 읽고 루프를 띄운다.
+
+        같은 id 로 잇는 (가져온) run 은 이어갈 지점을 읽는 동안에도 임대를 미룬다 — 준비가 길어도
+        다른 재개가 끼지 못하게. 그 사이 임대를 잃으면 띄우지 않고 ``GRAPH_006`` 이다.
+        """
+        orphaned = run_id == previous.run_id
+        store = self.manager.store
+        holder = (
+            asyncio.create_task(hold_lease(store, self.manager.lease, previous, lambda: None))
+            if orphaned and store is not None
+            else None
+        )
+        try:
+            # checkpoint 가 정본이다 — 이 프로세스가 시작하지 않은 run 은 핸들에 state 가 없고
+            # (기록만 복원된다), 빈 state 로 시작하면 누적이 사라지거나 필수 필드가 없어
+            # GRAPH_003 으로 거부된다 (#310)
+            state, pending_boundary, next_iteration = await self._resume_point(topology, previous)
+        finally:
+            if holder is not None:
+                holder.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await holder
+        if previous.lease_lost:
+            raise run_refused(run_id, topology.metadata.name)
+        return await self.start_service(
             topology,
             state,
             # 가져온 run 은 같은 기록을 잇는다 — 새 id 를 만들면 원 기록이 running 으로 남는다
-            run_id=run_id if orphaned else f"{run_id}{RESUMED_SUFFIX}",
+            run_id=run_id,
             max_iterations=max_iterations,
             is_idle=is_idle,
             sleep=sleep,
@@ -436,15 +498,8 @@ class RunSubmitter:
             start_iteration=next_iteration,
             pending_boundary=pending_boundary,
             resuming=orphaned,
+            lease_until=previous.lease_until if orphaned else 0.0,
         )
-        log.info(
-            "service run resumed",
-            graph=topology.metadata.name,
-            run_id=resumed.run_id,
-            iteration=next_iteration,
-            orphaned=orphaned,
-        )
-        return resumed
 
     async def _iteration_state(
         self, topology: GraphTopology, previous: RunHandle
