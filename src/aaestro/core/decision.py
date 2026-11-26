@@ -18,6 +18,11 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 MAX_OPTIONS = 10
 DEFAULT_ACT_AT = 0.8
 DEFAULT_REJECT_AT = 0.2
+LOCALE_PATTERN = r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$"
+"""질문 문구의 언어 태그 (``en`` · ``ko`` · ``pt-BR``).
+
+decisionset ``locale`` 과 provider ``locales`` 가 같은 규칙을 쓴다. 대소문자는 정규화하지
+않는다 — 두 선언이 같은 표기로 적어야 대조가 맞는다."""
 
 
 class Band(StrEnum):

@@ -58,8 +58,13 @@ def _url_port(parts: SplitResult) -> int | None:
         return INVALID_PORT
 
 
-def _require_http_url(value: str, what: str) -> None:
-    """스킴·호스트·유효한 포트가 있는 http(s) URL 인가 — 판정이 이 값을 풀다 터지지 않게."""
+def require_http_url(
+    value: str, what: str, *, credentials_hint: str = "use auth.token_env"
+) -> None:
+    """스킴·호스트·유효한 포트가 있는 http(s) URL 인가 — 판정이 이 값을 풀다 터지지 않게.
+
+    ``credentials_hint`` 는 자격증명이 실린 URL 을 거절할 때 대신 쓸 곳을 알리는 문구다.
+    """
     parts = split_url(value)
     if parts is None:
         raise ValueError(f"{what} must be a valid http(s) URL")
@@ -67,7 +72,7 @@ def _require_http_url(value: str, what: str) -> None:
     # 메시지에는 값을 싣지 않는다 (field_problems 가 가리지만 원인 쪽에서도 막는다)
     if parts.username is not None or parts.password is not None:
         # 자격증명은 auth.token_env 로만 — URL 에 실리면 로그·카드·에러 곳곳에 샌다
-        raise ValueError(f"{what} must not carry credentials; use auth.token_env")
+        raise ValueError(f"{what} must not carry credentials; {credentials_hint}")
     port = _url_port(parts)
     if port == INVALID_PORT:
         raise ValueError(f"{what} has an invalid port")
@@ -596,7 +601,7 @@ class McpServerSpec(BaseModel):
         if self.sidecar is not None and self.auth is not None:
             raise ValueError("sidecar servers must not declare 'auth' — url is runtime-injected")
         if self.url is not None:
-            _require_http_url(self.url, "mcp server url")
+            require_http_url(self.url, "mcp server url")
         return self
 
 

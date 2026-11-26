@@ -604,3 +604,50 @@ def test_invalid_decision_settings_are_cfg_001(tmp_path, needle, replacement):
     # 받은 값 (URL · kind) 은 싣지 않는다
     assert "unknown-kind" not in str(exc_info.value.details)
     assert "pw@" not in str(exc_info.value.details)
+
+
+@pytest.mark.parametrize(
+    ("base_url", "reason"),
+    [
+        ("https://secret-host-name:99999", "invalid port"),
+        ("https://secret-host-name:0", "with a host"),
+        ("https://secret-host-name:port", "invalid port"),
+        ("https://secret-host-name/v1", "before /v1"),
+        ("https://secret-host-name/prefix/v1/", "before /v1"),
+        ("https://secret-host-name/?token=x", "query or fragment"),
+    ],
+)
+def test_decision_base_url_port_and_path_are_checked(base_url, reason):
+    """포트 · `/v1` 경로는 설정에서 거른다 — 어댑터가 쓸 때 터지거나 `/v1/v1` 이 되지 않게."""
+    from aaestro.config import DecisionProviderConfig
+    from aaestro.core.errors import field_problems
+
+    with pytest.raises(ValidationError) as exc_info:
+        DecisionProviderConfig(kind="jev", base_url=base_url, locales=("en",))
+
+    problems = str(field_problems(exc_info.value))
+    assert reason in problems
+    assert "secret-host-name" not in problems
+
+
+def test_decision_base_url_may_carry_a_proxy_prefix():
+    from aaestro.config import DecisionProviderConfig
+
+    config = DecisionProviderConfig(
+        kind="jev", base_url="https://proxy:8443/decision/jev", locales=("en",)
+    )
+
+    assert config.base_url.endswith("/decision/jev")
+
+
+@pytest.mark.parametrize(
+    "locales", [("",), ("en", "en"), ("en", "secret locale"), ("en", "ko", "ko")]
+)
+def test_decision_locales_reject_blank_malformed_and_duplicate_entries(locales):
+    from aaestro.config import DecisionProviderConfig
+    from aaestro.core.errors import field_problems
+
+    with pytest.raises(ValidationError) as exc_info:
+        DecisionProviderConfig(kind="jev", base_url="https://h", locales=locales)
+
+    assert "secret locale" not in str(field_problems(exc_info.value))

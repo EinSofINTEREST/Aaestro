@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
+from aaestro.core.decision import LOCALE_PATTERN
 from aaestro.core.errors import (
     AaestroError,
     ErrorCategory,
@@ -21,7 +22,7 @@ from aaestro.core.errors import (
     raise_detached,
     repeated_positions,
 )
-from aaestro.core.manifest import ResourceSpec, split_url
+from aaestro.core.manifest import ResourceSpec, require_http_url, split_url
 from aaestro.core.yamlio import YamlReadError, load_yaml_file
 
 if TYPE_CHECKING:
@@ -500,10 +501,18 @@ class DecisionProviderConfig(BaseModel):
     kind: str = Field(min_length=1)
     base_url: str = Field(min_length=1)
     """provider 의 base URL — ``/v1`` 앞까지. 프록시가 종단하고 자격증명을 주입한다."""
-    locales: tuple[str, ...] = Field(min_length=1)
+    locales: tuple[Annotated[str, Field(pattern=LOCALE_PATTERN)], ...] = Field(min_length=1)
     """calibration 을 통과한 언어만 — decisionset 의 ``locale`` 과 대조한다 (06 Calibration 3)."""
     allow_plaintext: bool = False
     """``http`` base URL 을 받는다 — 테스트 대역 · 내부망 (03 Egress). 기본은 https 만."""
+
+    @field_validator("locales")
+    @classmethod
+    def _unique_locales(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        repeated = repeated_positions(value)
+        if repeated:
+            raise ValueError(f"decision provider locales has duplicates at index {repeated}")
+        return value
 
     @field_validator("kind")
     @classmethod
@@ -518,17 +527,15 @@ class DecisionProviderConfig(BaseModel):
 
     @model_validator(mode="after")
     def _plain_url(self) -> DecisionProviderConfig:
+        what = "decision provider base_url"
+        # 스킴 · 호스트 · 포트 · 자격은 MCP url 과 같은 검사 — 자격은 프록시가 주입한다
+        require_http_url(self.base_url, what, credentials_hint="the egress proxy injects them")
         parts = split_url(self.base_url)
-        if (
-            parts is None
-            or parts.scheme not in ("http", "https")
-            or not parts.hostname
-            or parts.username
-            or parts.password
-            or parts.query
-            or parts.fragment
-        ):
-            raise ValueError("decision provider base_url must be a plain http(s) URL")
+        if parts is None or parts.query or parts.fragment:  # None 은 위 검사가 이미 거절했다
+            raise ValueError(f"{what} must not carry a query or fragment")
+        # 어댑터가 /v1/... 을 붙인다 — 그 밖의 경로는 프록시 prefix 일 수 있어 둔다
+        if parts.path.rstrip("/").endswith("/v1"):
+            raise ValueError(f"{what} must stop before /v1; the adapter appends it")
         if parts.scheme == "http" and not self.allow_plaintext:
             raise ValueError("decision provider base_url must be https unless allow_plaintext")
         return self
@@ -539,6 +546,7 @@ class DecisionConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
+    # decision.client.DEFAULT_TIMEOUT_S 와 같은 값 — client 는 무거워 설정이 import 하지 않는다
     timeout_s: float = Field(default=5.0, gt=0)
     """결정 호출 전체 상한 — 재시도 대기 포함 (05 DECISION_RETRY)."""
     providers: dict[Annotated[str, Field(pattern=r"^[a-z][a-z0-9-]*$")], DecisionProviderConfig] = (
