@@ -13,7 +13,7 @@ import subprocess
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 
@@ -283,6 +283,10 @@ async def test_a_read_only_lock_file_still_locks_and_writes(tmp_path):
     assert list(access.stores[ArtifactScope.GROUP].stored_keys()) == ["a"]
 
 
+def _open_fds() -> int:
+    return len(list(Path("/proc/self/fd").iterdir()))
+
+
 async def test_a_cancelled_lock_wait_does_not_leak_the_lock(tmp_path):
     """잠금 대기 중 취소돼도 잡은 fd 가 남지 않아야 다음 쓰기가 막히지 않는다."""
     first = scoped(tmp_path, quotas={ArtifactScope.GROUP: 100})
@@ -291,42 +295,63 @@ async def test_a_cancelled_lock_wait_does_not_leak_the_lock(tmp_path):
     held = os.open(tmp_path / "research" / ".quota.lock", os.O_RDONLY | os.O_CREAT, 0o644)
     fcntl.flock(held, fcntl.LOCK_EX)
 
+    fds_before = _open_fds()
     put = asyncio.create_task(first.put("a", b"x" * 10, scope=ArtifactScope.GROUP))
     for _ in range(20):
         await asyncio.sleep(0.01)
+    assert _open_fds() == fds_before + 1  # 대기 중인 잠금 파일 fd
     for write in list(first._writes):
         write.cancel()  # 잠금 대기 중인 쓰기 태스크를 취소한다
     with pytest.raises(asyncio.CancelledError):
         await put
+    assert _open_fds() == fds_before  # 취소된 대기의 fd 는 닫혔다
     os.close(held)
 
     await asyncio.wait_for(second.put("b", b"y" * 10, scope=ArtifactScope.GROUP), timeout=10)
 
 
-async def test_lock_waiters_do_not_starve_the_executor(tmp_path):
-    """대기자가 기본 executor 워커를 쥐면 잠금을 쥔 쪽의 쓰기가 워커를 못 얻어 교착한다."""
-    loop = asyncio.get_running_loop()
-    executor = ThreadPoolExecutor(max_workers=2)
-    loop.set_default_executor(executor)
-    quotas = {ArtifactScope.GROUP: 100}
-    instances = [scoped(tmp_path, quotas=quotas) for _ in range(4)]
-    try:
-        results = await asyncio.wait_for(
-            asyncio.gather(
-                *(
-                    inst.put(f"k{i}", b"x" * 40, scope=ArtifactScope.GROUP)
-                    for i, inst in enumerate(instances)
-                ),
-                return_exceptions=True,
-            ),
-            timeout=15,
-        )
-    finally:
-        executor.shutdown(wait=False)
+_STARVE_CHILD = """
+import asyncio, sys
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from aaestro.artifacts.scope import ArtifactScope, ScopedArtifacts
+from aaestro.artifacts.store import FilesystemArtifactStore
+from aaestro.core.errors import AaestroError
 
-    failed = [r for r in results if isinstance(r, AaestroError)]
-    assert len(failed) == 2
-    assert {r.code for r in failed} == {ErrorCode.ART_002}
+async def main():
+    asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor(max_workers=2))
+    def make():
+        store = FilesystemArtifactStore(root=Path(sys.argv[1]), scope="research")
+        return ScopedArtifacts(
+            stores={ArtifactScope.GROUP: store}, quotas={ArtifactScope.GROUP: 100}
+        )
+    results = await asyncio.gather(
+        *(make().put(f"k{i}", b"x" * 40, scope=ArtifactScope.GROUP) for i in range(4)),
+        return_exceptions=True,
+    )
+    print(sorted(str(r.code) for r in results if isinstance(r, AaestroError)), flush=True)
+
+asyncio.run(main())
+"""
+
+
+def test_lock_waiters_do_not_starve_the_executor(tmp_path):
+    """대기자가 기본 executor 워커를 쥐면 잠금을 쥔 쪽의 쓰기가 워커를 못 얻어 교착한다.
+
+    교착하면 루프 종료도 막히므로 별도 프로세스로 돌리고 시간 상한에서 실패시킨다.
+    """
+    try:
+        done = subprocess.run(  # noqa: S603 — 고정 인자의 테스트용 자식 프로세스
+            [sys.executable, "-I", "-c", _STARVE_CHILD, str(tmp_path)],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail("lock waiters starved the default executor (deadlock)")
+
+    assert done.stdout.split("\n")[0] == "['ART_002', 'ART_002']", done.stderr
 
 
 _CHILD = """

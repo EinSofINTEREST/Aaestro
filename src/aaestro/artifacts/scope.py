@@ -79,7 +79,13 @@ def _open_lock_file(path: Path) -> int:
 
 LOCK_RETRY_MIN_S = 0.005
 LOCK_RETRY_MAX_S = 0.1
-"""잠금 재시도 간격의 범위 — 지수 backoff 이고 상한으로 루프를 과하게 깨우지 않는다."""
+"""잠금 재시도 간격의 범위 — 지수 backoff 이고 상한으로 루프를 과하게 깨우지 않는다.
+
+shortcut: 대기에 공정성이 없다 — 프로세스 사이에서는 기다리는 쪽이 최대
+``LOCK_RETRY_MAX_S`` 간격으로 다시 시도하므로, 연속으로 쓰는 상대가 있으면
+한 번의 쓰기가 0.2~0.5초까지 늦을 수 있다 (qa 측정 0.16~0.46s).
+지연이 문제가 되면 대기열이 있는 잠금 서비스로 올린다.
+"""
 
 
 async def _quota_flock(store: FilesystemArtifactStore) -> int:
@@ -193,7 +199,10 @@ class ScopedArtifacts:
             await self._check_quota(scope, store, len(data))
             return await store.put(key, data)
         finally:
-            os.close(fd)  # 닫으면 flock 이 풀린다
+            # 닫으면 flock 이 풀린다
+            # shortcut: 이 태스크 자체가 취소되면 (루프 종료) 쓰기 스레드가 끝나기 전에
+            # 잠금이 풀려 그 한 번의 쓰기는 quota 검사와 어긋날 수 있다 — 종료 중에만 생기므로 감수
+            os.close(fd)
 
     def _finish_write(self, write: asyncio.Future[str]) -> None:
         """쓰기 태스크의 소유자 — 락을 놓고, 호출자가 떠난 뒤의 실패도 남긴다."""
