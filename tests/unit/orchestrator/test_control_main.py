@@ -549,6 +549,7 @@ EGRESS = {
     "connect_url": "http://aaestro-egress:8080",
     "providers_url": "http://aaestro-egress:8081",
 }
+DECISION_PROVIDER = {"kind": "jev", "base_url": "https://posek.example.com", "locales": ["en"]}
 
 
 @pytest.mark.parametrize("container", [None, "aaestro-egress-1"])
@@ -573,6 +574,8 @@ def test_the_egress_proxy_reaches_deployments(tmp_path, monkeypatch, container):
                 {
                     "orchestrator": values,
                     "runtime": {"egress_proxy": {**EGRESS, "container": container}},
+                    # 결정 provider 도 프록시를 지난다 — kind · 상한이 배포로 간다 (#595)
+                    "decision": {"timeout_s": 2, "providers": {"posek": DECISION_PROVIDER}},
                 }
             ),
             encoding="utf-8",
@@ -584,7 +587,9 @@ def test_the_egress_proxy_reaches_deployments(tmp_path, monkeypatch, container):
     finally:
         globals()["write_config"] = original
 
-    assert deployments.egress == EgressEndpoints(**EGRESS)
+    assert deployments.egress == EgressEndpoints(
+        **EGRESS, decision_kinds={"posek": "jev"}, decision_timeout_s=2.0
+    )
     expected = ProxyAttachment(container, "aaestro-egress") if container else None
     assert deployments.sidecar_proxy == expected
 

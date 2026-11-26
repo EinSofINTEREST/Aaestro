@@ -48,8 +48,9 @@ REASON_TIMEOUT: Final = "timeout"
 REASON_ERROR: Final = "error"
 REASON_CIRCUIT_OPEN: Final = "circuit_open"
 
-# provider 장애가 아니라 요청이 한도를 넘은 것 — circuit 을 열 이유가 아니다
-_NOT_PROVIDER_FAULT: Final = frozenset({ErrorCode.DEC_003})
+# provider 장애가 아니다 — 요청이 한도를 넘었거나 (DEC_003) 이그레스 프록시가 권한으로 거절했다
+# (ACC_001 · ACC_002, #595). circuit 을 열면 권한을 되돌려도 reset 까지 원래 경로로만 간다
+_NOT_PROVIDER_FAULT: Final = frozenset({ErrorCode.DEC_003, ErrorCode.ACC_001, ErrorCode.ACC_002})
 
 
 @dataclass
