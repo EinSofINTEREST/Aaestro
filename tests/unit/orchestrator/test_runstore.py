@@ -462,7 +462,12 @@ async def test_iteration_progress_is_visible_to_another_process(tmp_path):
         manager = RunManager(store=driver)
         handle = manager.acquire(topology)
         runner = ServiceRunner(
-            topology, build_graph(topology, EchoRuntime()), sleep=_no_wait, store=driver
+            topology,
+            build_graph(topology, EchoRuntime()),
+            sleep=_no_wait,
+            store=driver,
+            # 기록의 소유자로 써야 저장소가 받는다 (#662)
+            lease=manager.lease,
         )
 
         await runner.run(handle, {"feeds": []}, max_iterations=3)

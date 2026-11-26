@@ -20,7 +20,7 @@ import structlog
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 from aaestro.core.topology import GraphMode
 from aaestro.orchestrator.models import with_recorded_overrides
-from aaestro.orchestrator.run import RunStatus
+from aaestro.orchestrator.run import RunStatus, run_refused
 from aaestro.orchestrator.runstore import RunRecord, participation
 from aaestro.resilience import cancel_all_and_wait
 from aaestro.runtime.deployments import DeploymentStatus
@@ -254,7 +254,7 @@ class RunService:
         model_overrides: Mapping[str, Mapping[str, Any]] | None = None,
     ) -> None:
         # 비워 보내도 저장소가 기존 override 를 보존한다 — resume 의 재공지가 지우지 않는다
-        self.store.upsert(
+        written = self.store.upsert(
             RunRecord(
                 run_id=run_id,
                 graph=topology.metadata.name,
@@ -266,6 +266,9 @@ class RunService:
                 **participation(topology),
             )
         )
+        if not written:
+            # 다른 프로세스가 소유한 run 기록이다 (같은 id 의 service run) — 202 를 내지 않는다
+            raise run_refused(run_id, topology.metadata.name)
 
     def _pin_models(
         self,
@@ -281,7 +284,7 @@ class RunService:
             # 슬롯이 다른 저장소를 보면 여기가 첫 기록이다 — 빠뜨리면 resume 이 manifest 모델로 돈다
             self._announce(run_id, topology, model_overrides=model_overrides)
             return
-        self.store.upsert(
+        pinned = self.store.upsert(
             RunRecord(
                 **{
                     **record.__dict__,
@@ -289,6 +292,14 @@ class RunService:
                 }
             )
         )
+        if not pinned:
+            # run 은 이미 떴다 — 그 사이 소유자가 바뀐 것이라 실패시키지 않고 남긴다
+            log.warning(
+                "run model overrides not recorded, owner changed",
+                graph=topology.metadata.name,
+                run_id=run_id,
+                error_code=ErrorCode.GRAPH_006,
+            )
 
     def _record(self, run_id: str, topology: GraphTopology) -> RunRecord:
         record = self.store.get(run_id)
@@ -308,9 +319,17 @@ class RunService:
         record = self.store.get(run_id)
         if record is None or record.status != str(RunStatus.RUNNING):
             return
-        self.store.upsert(
+        failed = self.store.upsert(
             RunRecord(**{**record.__dict__, "status": str(RunStatus.FAILED), "updated_at": _now()})
         )
+        if not failed:
+            # 정리 경로다 — 다른 소유자의 기록이면 그쪽 상태가 맞다
+            log.warning(
+                "run failure not recorded, owner changed",
+                graph=record.graph,
+                run_id=run_id,
+                error_code=ErrorCode.GRAPH_006,
+            )
         self.results.pop(run_id, None)
 
     def _drive(self, run_id: str, driver: Callable[[], Awaitable[RunResult]]) -> None:

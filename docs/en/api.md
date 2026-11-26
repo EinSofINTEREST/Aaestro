@@ -669,9 +669,34 @@ is how a service run is stopped — there is no kill.
 
 Continues a run from where it stopped. What that means differs by mode:
 
-- **Service runs** resume from their last iteration, and only from `halted` — the state a
-  service graph reaches after too many consecutive failures (`GRAPH_005`). Any other state is
-  `409` (`GRAPH_006`): a run you drained on purpose is submitted again, not resumed.
+- **Service runs** resume from their last iteration, and only from two states. `halted` — the
+  state a service graph reaches after too many consecutive failures (`GRAPH_005`) — continues
+  under a new run id (`<run_id>:resumed`); resuming the same halted run a second time is `409`
+  because that `:resumed` record already exists — resume the `:resumed` run instead. A run left `running` by a process that died continues
+  under **the same run id**, once its owner's lease has expired: the process driving a service
+  run records itself as the owner and keeps pushing a lease forward (30 seconds, renewed every
+  10), so a `running` run whose lease is past is one nobody is driving. The resume takes the run
+  over with a single conditional update — two resumes racing for it get one winner — and the
+  iteration the dead owner was in the middle of counts as a failed one, and the failure streak
+  starts again from zero. Any other state is `409` (`GRAPH_006`): a run whose lease is still
+  alive (in any process), a draining run, or a run you drained on purpose, which is submitted
+  again rather than resumed. If the resume fails after taking the run over, it lets the lease
+  go, so the next attempt does not wait out the 30 seconds. A run recorded before leases existed
+  has none and counts as expired — **during an upgrade, stop every old process before resuming**,
+  or a run an old process is still driving is taken over under it. Starting a service run under
+  an id that already has a record — owned by another process, or ownerless (a mission, or a run
+  from before leases) — is `409` (`GRAPH_006`) rather than a run that stops at once or takes the
+  record over; only resume takes a run over.
+  The guarantee that one iteration never runs twice is **timing, not fencing**: checkpoint writes
+  carry no owner check. An owner that cannot renew stops itself, cancelling the iteration in
+  progress, one renewal period (10 seconds) **before** the expiry it wrote, while a successor can
+  take the run only **after** that expiry; an owner that finds its lease taken stops the same
+  way, and the run store refuses its record updates either way. That holds while the clock
+  difference between the hosts sharing the run store, plus the delay of one run store call
+  (calls are synchronous and block the owner's event loop — a locked SQLite file waits up to
+  5 seconds), plus any other stall of that loop, stays under those 10 seconds — outside that, an
+  iteration can run twice. A run whose owner stopped itself this way still reads `running` (API,
+  UI, run space access, metrics) until someone resumes it.
 - **Mission runs** resume from the last checkpoint and carry **no state guard** — the
   checkpointer decides what continuing means, so resuming one that already finished re-drives
   it from that checkpoint. Without a durable checkpointer there is nothing to continue from

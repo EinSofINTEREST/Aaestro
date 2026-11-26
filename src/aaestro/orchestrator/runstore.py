@@ -40,18 +40,24 @@ CREATE TABLE IF NOT EXISTS runs (
     model_overrides TEXT NOT NULL DEFAULT '{}',
     memory_spaces  TEXT NOT NULL DEFAULT '{}',
     agents         TEXT NOT NULL DEFAULT '[]',
-    transitions    INTEGER NOT NULL DEFAULT 0
+    transitions    INTEGER NOT NULL DEFAULT 0,
+    owner          TEXT NOT NULL DEFAULT '',
+    lease_until    REAL NOT NULL DEFAULT 0
 );
 """
 
-_ADDED_COLUMNS = {
-    "model_overrides": "TEXT NOT NULL DEFAULT '{}'",
+_ADDED_COLUMNS: dict[str, tuple[str, Any]] = {
+    "model_overrides": ("TEXT NOT NULL DEFAULT '{}'", "{}"),
     # 이 컬럼이 없던 시절의 run 은 빈 스냅샷 — run space 가 없다 (#608)
-    "memory_spaces": "TEXT NOT NULL DEFAULT '{}'",
-    "agents": "TEXT NOT NULL DEFAULT '[]'",
-    "transitions": "INTEGER NOT NULL DEFAULT 0",
+    "memory_spaces": ("TEXT NOT NULL DEFAULT '{}'", "{}"),
+    "agents": ("TEXT NOT NULL DEFAULT '[]'", "[]"),
+    "transitions": ("INTEGER NOT NULL DEFAULT 0", 0),
+    # 임대가 없던 시절의 run 은 소유자 없음 · 만료된 임대 — running 이면 재개할 수 있다 (#662)
+    "owner": ("TEXT NOT NULL DEFAULT ''", ""),
+    "lease_until": ("REAL NOT NULL DEFAULT 0", 0.0),
 }
-"""첫 스키마 이후 더해진 컬럼 — `_migrate` 가 옛 DB 에 채운다. 새로 더할 때 여기에도 적는다."""
+"""첫 스키마 이후 더해진 컬럼 — 이름 → (선언, 그 기본값). `_migrate` 가 옛 DB 에 선언을 채우고,
+읽기 전용 저장소는 마이그레이션 없이 옛 DB 를 기본값으로 읽는다. 새로 더할 때 여기에도 적는다."""
 
 
 def _storage_error(message: str, **details: str) -> AaestroError:
@@ -97,11 +103,29 @@ class RunRecord:
     transitions: int = 0
     """상태가 바뀐 횟수 — 저장소가 센다 (쓰는 쪽이 준 값은 무시한다). 단조 증가라 한 폴링 주기
     안에 끝 → 재개 → 끝이 몰려도 ``liveness`` 가 달라진다 (#608)."""
+    owner: str = ""
+    """run 을 구동하는 소유자 (``RunLease.owner``) — 빈 값은 소유자 없음 (mission · 옛 기록, #662).
+
+    소유자가 없는 **service** 기록에 소유자가 있는 갱신이 오면 그 소유자가 처음 소유자가 된다
+    (임대도 같이 — mission 기록은 소유자를 갖지 않는다).
+    그 뒤로는 ``claim`` 만 바꾼다. 소유자가 있는 기록은 같은 소유자의 갱신만 받는다 — 임대를 잃은
+    옛 소유자가 새 소유자의 기록을 덮지 못한다."""
+    lease_until: float = 0.0
+    """소유자의 임대 만료 시각 (epoch 초) — 소유자가 ``renew`` 로 미룬다. 이 시각이 지난 ``running``
+    run 은 소유자가 죽은 것으로 보고 다른 프로세스가 ``claim`` 으로 가져갈 수 있다."""
 
     def __post_init__(self) -> None:
         # 스냅샷은 권한 판정의 근거다 — 넘겨준 dict 나 읽어 간 값을 바꿔 run space 가 늘면 안 된다
         object.__setattr__(self, "memory_spaces", MappingProxyType(dict(self.memory_spaces)))
         object.__setattr__(self, "agents", tuple(self.agents))
+
+    def orphaned(self, now: float) -> bool:
+        """소유자가 죽은 run 인가 — ``running`` 인데 임대가 ``now`` 에 만료됐다 (#662).
+
+        draining 은 대상이 아니다: 정지를 요청받은 run 이라 재개하지 않는다. 임대가 없는
+        옛 기록 (``lease_until`` 0) 은 만료로 본다.
+        """
+        return self.status == "running" and self.lease_until <= now
 
     @property
     def live(self) -> bool:
@@ -130,8 +154,29 @@ def participation(topology: GraphTopology) -> dict[str, Any]:
 class RunStore(Protocol):
     """Where run records live so other processes can reach them."""
 
-    def upsert(self, record: RunRecord) -> None:
-        """run 기록을 남긴다 (없으면 생성, 있으면 갱신)."""
+    def upsert(self, record: RunRecord) -> bool:
+        """run 기록을 남긴다 (없으면 생성, 있으면 갱신).
+
+        소유자가 있는 기록을 다른 소유자가 갱신하면 쓰지 않고 False — 호출자는 이것을 무시하지
+        않는다 (#662). 소유자 · 임대는 처음 기록 (또는 소유자 없는 기록을 넘겨받는 첫 갱신) 에서만
+        정해지고 그 뒤로는 ``claim`` · ``renew`` 가 바꾼다.
+        """
+        ...
+
+    def claim(self, run_id: str, owner: str, lease_until: float, *, now: float) -> bool:
+        """소유자가 죽은 run 을 가져온다 — 원자적 조건부 갱신 (compare-and-set).
+
+        ``RunRecord.orphaned(now)`` 일 때만 소유자와 임대를 바꾸고 True. 동시에 둘이 가져가려 해도
+        하나만 이긴다: 이긴 쪽의 임대가 진 쪽의 조건을 거짓으로 만든다.
+        """
+        ...
+
+    def renew(self, run_id: str, owner: str, lease_until: float) -> bool:
+        """임대를 미룬다 — ``owner`` 가 아직 소유자일 때만. False 면 임대를 잃었다."""
+        ...
+
+    def release(self, run_id: str, owner: str) -> None:
+        """임대를 놓는다 (만료 0) — ``owner`` 가 아직 소유자일 때만. 곧바로 다시 가져갈 수 있다."""
         ...
 
     def get(self, run_id: str) -> RunRecord | None:
@@ -166,9 +211,16 @@ class InMemoryRunStore:
 
     _records: dict[str, RunRecord] = field(default_factory=dict, init=False)
 
-    def upsert(self, record: RunRecord) -> None:
+    def upsert(self, record: RunRecord) -> bool:
         """기록을 남긴다 — drain 요청은 보존한다."""
         existing = self._records.get(record.run_id)
+        if existing is not None and (
+            existing.owner not in ("", record.owner) or existing.mode != record.mode
+        ):
+            return False
+        owner, lease_until = record.owner, record.lease_until
+        if existing is not None and (existing.owner or existing.mode != "service"):
+            owner, lease_until = existing.owner, existing.lease_until
         # 구동 프로세스의 갱신이 다른 프로세스의 drain 요청을 지우면
         # 그 요청은 영원히 전달되지 않는다
         drain = record.drain or (existing.drain if existing else False)
@@ -185,9 +237,35 @@ class InMemoryRunStore:
                 "memory_spaces": snapshot.memory_spaces,
                 "agents": snapshot.agents,
                 "transitions": transitions,
+                # 소유자 없는 service 기록만 처음 온 소유자가 넘겨받는다 — 그 뒤로는 claim 만 바꾼다
+                "owner": owner,
+                "lease_until": lease_until,
                 "updated_at": _now(),
             }
         )
+        return True
+
+    def claim(self, run_id: str, owner: str, lease_until: float, *, now: float) -> bool:
+        """소유자가 죽은 run 을 가져온다 — 한 프로세스 안이라 검사와 쓰기 사이에 끼어들 수 없다."""
+        existing = self._records.get(run_id)
+        if existing is None or not existing.orphaned(now):
+            return False
+        self._records[run_id] = RunRecord(
+            **{**existing.__dict__, "owner": owner, "lease_until": lease_until}
+        )
+        return True
+
+    def renew(self, run_id: str, owner: str, lease_until: float) -> bool:
+        """임대를 미룬다 — 소유자일 때만."""
+        existing = self._records.get(run_id)
+        if existing is None or existing.owner != owner:
+            return False
+        self._records[run_id] = RunRecord(**{**existing.__dict__, "lease_until": lease_until})
+        return True
+
+    def release(self, run_id: str, owner: str) -> None:
+        """임대를 놓는다 — 소유자일 때만."""
+        self.renew(run_id, owner, 0.0)
 
     def get(self, run_id: str) -> RunRecord | None:
         """기록 조회."""
@@ -250,16 +328,16 @@ class SqliteRunStore:
         except sqlite3.Error as err:
             raise _storage_error("run store could not be opened", path=str(self.path)) from err
 
-    def upsert(self, record: RunRecord) -> None:
+    def upsert(self, record: RunRecord) -> bool:
         """기록을 남긴다 — 기존 drain 요청은 보존한다."""
         try:
             with self._lock:
-                self._conn.execute(
+                cursor = self._conn.execute(
                     """
                 INSERT INTO runs (run_id, graph, mode, status, iteration,
                                   failure_streak, drain, updated_at, model_overrides,
-                                  memory_spaces, agents, transitions)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+                                  memory_spaces, agents, transitions, owner, lease_until)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
                 ON CONFLICT(run_id) DO UPDATE SET
                     -- 오른쪽은 갱신 전 행을 읽는다 — status 가 바뀐 갱신만 센다
                     transitions = runs.transitions + (runs.status <> excluded.status),
@@ -273,8 +351,17 @@ class SqliteRunStore:
                     -- resume 이 다른 모델로 이어진다
                     model_overrides = CASE WHEN excluded.model_overrides = '{}'
                         THEN runs.model_overrides ELSE excluded.model_overrides END,
-                    -- memory_spaces · agents 는 갱신하지 않는다 — run 시작 때의 스냅샷이다
+                    -- memory_spaces · agents 는 갱신하지 않는다 — run 시작 때의 스냅샷이다.
+                    -- owner · lease_until 은 소유자 없는 기록만 넘겨받는다 (그 뒤는 claim · renew)
+                    owner = CASE WHEN runs.owner = '' AND runs.mode = 'service'
+                        THEN excluded.owner ELSE runs.owner END,
+                    lease_until = CASE WHEN runs.owner = '' AND runs.mode = 'service'
+                        THEN excluded.lease_until ELSE runs.lease_until END,
                     updated_at = excluded.updated_at
+                -- 임대를 잃은 옛 소유자의 갱신이 새 소유자의 기록을 덮지 않는다 (#662)
+                -- mode 가 다른 갱신은 다른 run 이다 — 같은 id 를 먼저 쓴 mission 을 덮지 않는다
+                WHERE (runs.owner = '' OR runs.owner = excluded.owner)
+                    AND runs.mode = excluded.mode
                 """,
                     (
                         record.run_id,
@@ -288,10 +375,51 @@ class SqliteRunStore:
                         json.dumps(record.model_overrides),
                         json.dumps(dict(record.memory_spaces)),
                         json.dumps(list(record.agents)),
+                        record.owner,
+                        record.lease_until,
                     ),
                 )
         except sqlite3.Error as err:
             raise _storage_error("run record could not be stored", run_id=record.run_id) from err
+        return cursor.rowcount > 0
+
+    def claim(self, run_id: str, owner: str, lease_until: float, *, now: float) -> bool:
+        """소유자가 죽은 run 을 가져온다 — 조건과 쓰기가 한 UPDATE 라 프로세스 사이에도 원자적."""
+        try:
+            with self._lock:
+                cursor = self._conn.execute(
+                    """
+                UPDATE runs SET owner = ?, lease_until = ?, updated_at = ?
+                WHERE run_id = ? AND status = 'running' AND lease_until <= ?
+                """,
+                    (owner, lease_until, _now(), run_id, now),
+                )
+        except sqlite3.Error as err:
+            raise _storage_error("run could not be claimed", run_id=run_id) from err
+        return cursor.rowcount > 0
+
+    def renew(self, run_id: str, owner: str, lease_until: float) -> bool:
+        """임대를 미룬다 — 소유자일 때만. 갱신 순서 (``updated_at``) 는 건드리지 않는다."""
+        try:
+            with self._lock:
+                cursor = self._conn.execute(
+                    "UPDATE runs SET lease_until = ? WHERE run_id = ? AND owner = ?",
+                    (lease_until, run_id, owner),
+                )
+        except sqlite3.Error as err:
+            raise _storage_error("run lease could not be renewed", run_id=run_id) from err
+        return cursor.rowcount > 0
+
+    def release(self, run_id: str, owner: str) -> None:
+        """임대를 놓는다 — 소유자일 때만."""
+        try:
+            with self._lock:
+                self._conn.execute(
+                    "UPDATE runs SET lease_until = 0 WHERE run_id = ? AND owner = ?",
+                    (run_id, owner),
+                )
+        except sqlite3.Error as err:
+            raise _storage_error("run lease could not be released", run_id=run_id) from err
 
     def get(self, run_id: str) -> RunRecord | None:
         """기록 조회 — 다른 프로세스가 쓴 것도 보인다."""
@@ -357,7 +485,12 @@ class SqliteRunStore:
 
 
 def _record(row: sqlite3.Row) -> RunRecord:
-    """저장 행을 기록으로."""
+    """저장 행을 기록으로 — 마이그레이션 전 DB (읽기 전용) 의 없는 컬럼은 기본값으로 읽는다."""
+    present = set(row.keys())
+
+    def column(name: str) -> Any:
+        return row[name] if name in present else _ADDED_COLUMNS[name][1]
+
     return RunRecord(
         run_id=row["run_id"],
         graph=row["graph"],
@@ -367,16 +500,18 @@ def _record(row: sqlite3.Row) -> RunRecord:
         failure_streak=row["failure_streak"],
         drain=bool(row["drain"]),
         updated_at=row["updated_at"],
-        model_overrides=json.loads(row["model_overrides"]),
-        memory_spaces=json.loads(row["memory_spaces"]),
-        agents=tuple(json.loads(row["agents"])),
-        transitions=row["transitions"],
+        model_overrides=json.loads(column("model_overrides")),
+        memory_spaces=json.loads(column("memory_spaces")),
+        agents=tuple(json.loads(column("agents"))),
+        transitions=column("transitions"),
+        owner=column("owner"),
+        lease_until=column("lease_until"),
     )
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
     """있는 DB 에 빠진 컬럼을 더한다 — `CREATE TABLE IF NOT EXISTS` 는 그러지 않는다 (#254)."""
-    for name, declaration in _ADDED_COLUMNS.items():
+    for name, (declaration, _default) in _ADDED_COLUMNS.items():
         if name in _columns(conn):
             continue
         try:
