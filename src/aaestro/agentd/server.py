@@ -94,8 +94,9 @@ class AgentRuntime:
         # direct 요청과 그래프 태스크가 같은 큐를 공유한다 (02 Direct Request Rules 5)
         self.semaphore = asyncio.Semaphore(max_concurrent_tasks)
         self.draining = False
-        # 같은 키로 겹친 태스크는 등록 순서대로 쌓인다 — 취소 대상은 마지막 등록이고, 끝난 태스크는
-        # 자기 자리만 빠진다 (먼저 끝난 쪽이 남의 자리를 지우지 않게)
+        # 같은 키로 겹친 태스크는 등록 순서대로 쌓인다 — 취소는 전부에 닿고 (겹친 invoke 는 한
+        # 실행을 기다린다, #416), 끝난 태스크는 자기 자리만 빠진다 (먼저 끝난 쪽이 남의 자리를
+        # 지우지 않게)
         self._inflight: dict[TaskKey, list[asyncio.Task[Any]]] = {}
 
     def card(self) -> dict[str, Any]:
@@ -152,14 +153,36 @@ class AgentRuntime:
         tasks = self._inflight.get(TaskKey.from_control(task_id))
         if not tasks:
             return False
-        tasks[-1].cancel()
+        for task in list(tasks):
+            task.cancel()
         return True
+
+    async def run(self, task: TaskRequest) -> TaskResult:
+        """Run a task inside the shared concurrency cap, tracked for cancel and drain.
+
+        동시 실행 상한 안에서 추적된 채 태스크를 실행합니다. Control API 의 ``/invoke`` 와 A2A
+        수신 입구가 같이 쓴다 — 같은 큐 (02 Direct Request Rules 5). drain 중이면 실행하지 않고
+        ``RT_005`` (retryable) 실패로 답한다: A2A 는 실패를 결과로 돌려준다.
+        """
+        if self.draining:
+            return TaskResult.failed(task, _draining_error(self))
+        async with self.semaphore:
+            running = asyncio.create_task(self.executor.execute(task))
+            self.track(task.key, running)
+            try:
+                result: TaskResult = await running
+            except asyncio.CancelledError:
+                current = asyncio.current_task()
+                if current is not None and current.cancelling():
+                    raise  # 호출자가 떠났다 — 끊긴 것은 이쪽이다
+                return TaskResult.canceled(task)
+            return result
 
     async def steer(self, task_id: str, text: str, *, by: str) -> bool:
         """진행 중 태스크에 운영자 지시를 대기시킨다 — steer 를 모르는 실행기면 False.
 
-        진행 여부는 실행기가 안다: A2A 로 받은 태스크도 같은 루프를 돌기 때문에, 서버의 취소
-        추적표 (Control API 의 `/invoke` · `/stream` 만 등록) 로 판정하면 그것이 빠진다.
+        진행 여부는 실행기가 안다: 서버의 추적표는 대기 중인 호출 · 스트림 생산자를 쥐지, 실행기의
+        steer 창구가 열렸는지는 모른다.
         """
         steer = getattr(self.executor, "steer", None)
         if not callable(steer):
@@ -293,6 +316,8 @@ def create_app(runtime: AgentRuntime, *, token: str | None = None) -> FastAPI:
         openapi_url=None,
         redirect_slashes=False,
     )
+    # A2A 수신 입구가 같은 큐를 쓰도록 runtime 을 내보인다 (agentd ``_run``, #416)
+    app.state.runtime = runtime
     # 토큰은 본문을 읽기 전에 본다 — `Depends` 는 본문 파싱보다 늦다 (#462)
     check = require_token(token, realm="agent token")
     guarded = admit_first(check)
@@ -359,14 +384,7 @@ def create_app(runtime: AgentRuntime, *, token: str | None = None) -> FastAPI:
         _reject_when_draining(runtime)
         task = _unverified(task)
         _reject_bad_identifiers(task, runtime.agent)
-        async with runtime.semaphore:
-            running = asyncio.create_task(runtime.executor.execute(task))
-            runtime.track(task.key, running)
-            try:
-                result: TaskResult = await running
-            except asyncio.CancelledError:
-                return TaskResult.canceled(task)
-            return result
+        return await runtime.run(task)
 
     @router.post("/stream")
     async def stream(task: TaskRequest) -> StreamingResponse:
@@ -578,16 +596,20 @@ def create_app(runtime: AgentRuntime, *, token: str | None = None) -> FastAPI:
     return app
 
 
+def _draining_error(runtime: AgentRuntime) -> AaestroError:
+    return AaestroError(
+        category=ErrorCategory.RUNTIME,
+        code=ErrorCode.RT_005,
+        message="agent is draining and does not accept new tasks",
+        agent=runtime.agent,
+        retryable=True,
+    )
+
+
 def _reject_when_draining(runtime: AgentRuntime) -> None:
     """Drain 중에는 새 태스크를 받지 않는다."""
     if runtime.draining:
-        raise AaestroError(
-            category=ErrorCategory.RUNTIME,
-            code=ErrorCode.RT_005,
-            message="agent is draining and does not accept new tasks",
-            agent=runtime.agent,
-            retryable=True,
-        )
+        raise _draining_error(runtime)
 
 
 def _reject_bad_identifiers(task: TaskRequest, agent: str) -> None:

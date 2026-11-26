@@ -760,6 +760,78 @@ async def test_a_peer_task_does_not_take_the_place_of_an_inflight_node_task():
     peer_running.cancel()
 
 
+class GatedExecutor(FakeExecutor):
+    """문이 열릴 때까지 도는 invoke."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.gate = asyncio.Event()
+
+    async def execute(self, task):
+        self.calls.append(task.task_id)
+        self.running.set()
+        await self.gate.wait()
+        return TaskResult.completed(task, output={"content": "done"})
+
+
+async def test_a_peer_task_shares_the_concurrency_cap():
+    """A2A 로 받은 태스크도 같은 큐다 — peer 가 상한 없이 태스크를 쌓지 못한다 (#416)."""
+    executor = GatedExecutor()
+    runtime = AgentRuntime(agent="researcher", executor=executor, max_concurrent_tasks=1)
+    running = asyncio.create_task(runtime.run(make_task(caller="writer")))
+    await reached(executor.running, running)
+
+    assert runtime.semaphore.locked()
+    executor.gate.set()
+    assert (await running).status == TaskStatus.COMPLETED
+
+
+async def test_drain_waits_for_a_peer_task():
+    """drain 이 진행 중인 peer 태스크를 기다리지 않으면 정지가 그것을 끊는다 (#416)."""
+    executor = GatedExecutor()
+    runtime = AgentRuntime(agent="researcher", executor=executor)
+    running = asyncio.create_task(runtime.run(make_task(caller="writer")))
+    await reached(executor.running, running)
+
+    draining = asyncio.create_task(runtime.drain())
+    await spin(10)
+    assert not draining.done()
+    executor.gate.set()
+    await draining
+
+    assert running.done()
+
+
+async def test_a_draining_agent_refuses_a_peer_task_as_a_retryable_failure():
+    """drain 중의 새 peer 태스크는 실행하지 않고 RT_005 로 답한다 — 실패도 결과로 (A2A 응답)."""
+    executor = FakeExecutor()
+    runtime = AgentRuntime(agent="researcher", executor=executor)
+    await runtime.drain()
+
+    result = await runtime.run(make_task(caller="writer"))
+
+    assert result.status == TaskStatus.FAILED
+    assert result.error.code == "RT_005"
+    assert result.error.retryable is True
+    assert executor.calls == []
+
+
+async def test_cancel_stops_every_call_waiting_on_the_same_key():
+    """같은 키의 겹친 호출은 한 실행을 기다린다 — 마지막 것만 끊으면 실행은 그대로 돈다 (#416)."""
+    runtime = AgentRuntime(agent="researcher", executor=FakeExecutor())
+    key = make_task(task_id="t-dup").key
+    first = asyncio.create_task(asyncio.Event().wait())
+    second = asyncio.create_task(asyncio.Event().wait())
+    runtime.track(key, first)
+    runtime.track(key, second)
+
+    assert runtime.cancel("t-dup") is True
+
+    await asyncio.wait({first, second}, timeout=5)
+    assert first.cancelled()
+    assert second.cancelled()
+
+
 async def test_the_cancel_endpoint_stops_the_task_the_invoke_endpoint_is_running():
     """엔드포인트 둘이 같은 키를 써야 한다 — 한쪽만 바꾸면 취소가 조용히 아무것도 못 찾는다."""
     import httpx

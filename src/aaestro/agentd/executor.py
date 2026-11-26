@@ -81,7 +81,7 @@ log = structlog.get_logger(__name__)
 
 
 REMEMBERED_RESULTS: Final = 1024
-"""멱등 캐시가 기억하는 완료 결과 수 — 넘치면 오래된 것부터 잊는다.
+"""멱등 캐시가 호출자마다 기억하는 완료 결과 수 — 넘치면 그 호출자의 오래된 것부터 잊는다.
 
 상주 컨테이너는 수명이 길어 상한이 없으면 모든 태스크 결과(output 포함)를 끝까지 쥔다 (#315).
 재시도 창(05 NETWORK_RETRY: 최대 30s × 3)에 드는 태스크 수보다 넉넉하면 된다.
@@ -392,7 +392,11 @@ class Executor:
         # 멱등성: 완료된 태스크는 같은 결과를 돌려준다 (재시도/재개 시나리오).
         # 키는 id 만이 아니라 보낸 쪽까지다 — id 는 보낸 쪽이 고르므로, peer 가 남의 id 로
         # 남의 결과를 받거나 남의 재시도가 받을 결과를 먼저 심으면 안 된다 (#400)
-        self._completed: OrderedDict[TaskKey, TaskResult] = OrderedDict()
+        # 기억은 호출자마다 따로 센다 — 한 칸을 나누면 한 호출자가 보낸 태스크 수가 남의 결과를
+        # 밀어내 그 재시도가 다시 돈다 (#416). 호출자 수는 입구의 allowlist 가 묶는다
+        self._completed: dict[str | None, OrderedDict[TaskKey, TaskResult]] = {}
+        # 진행 중인 실행 — 같은 키의 동시 호출은 새로 돌지 않고 이것을 기다린다 (#416)
+        self._running: dict[TaskKey, asyncio.Future[TaskResult]] = {}
         # 진행 중 태스크의 steer 대기열. 키는 루프 진입 때 생기고 종료(완료·실패·취소·timeout) 때
         # 지워진다 — invoke 를 넘어 남는 상태가 아니다 (02 Statelessness). 락은 없다: 넣기와
         # 꺼내기 모두 await 없이 끝나므로 이벤트 루프 안에서 원자적이다.
@@ -484,10 +488,34 @@ class Executor:
         Returns:
             The task result, successful or failed.
         """
-        cached = self._completed.get(task.key)
+        key = task.key
+        while (running := self._running.get(key)) is not None:
+            try:
+                # 기다리는 쪽의 취소가 앞선 실행을 끊지 않게 — 그 실행은 자기 호출자의 것이다
+                return await asyncio.shield(running)
+            except asyncio.CancelledError:
+                current = asyncio.current_task()
+                if current is not None and current.cancelling():
+                    raise
+                # 앞선 실행이 취소됐다 — 취소를 물려받지 않고 다시 본다
+        remembered = self._completed.get(task.caller)
+        cached = remembered.get(key) if remembered is not None else None
         if cached is not None:
             return cached
 
+        owned: asyncio.Future[TaskResult] = asyncio.get_running_loop().create_future()
+        self._running[key] = owned
+        try:
+            result = await self._execute(task)
+        except BaseException:
+            owned.cancel()
+            raise
+        finally:
+            del self._running[key]
+        owned.set_result(result)
+        return result
+
+    async def _execute(self, task: TaskRequest) -> TaskResult:
         started = time.perf_counter()
         watch = _ModelWatch()
         tally = _UsageTally()
@@ -541,9 +569,10 @@ class Executor:
         return result
 
     def _remember(self, key: TaskKey, result: TaskResult) -> None:
-        self._completed[key] = result
-        while len(self._completed) > REMEMBERED_RESULTS:
-            self._completed.popitem(last=False)
+        remembered = self._completed.setdefault(key.caller, OrderedDict())
+        remembered[key] = result
+        while len(remembered) > REMEMBERED_RESULTS:
+            remembered.popitem(last=False)
 
     def _log_outcome(
         self,
