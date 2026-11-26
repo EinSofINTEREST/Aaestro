@@ -172,6 +172,7 @@ def test_instruction_bypasses_are_refused_with_the_start_line(text, line):
         _BASE + "# ADD https://x/y /z\nRUN echo hi # USER root\n",
         "# check=skip=JSONArgsRecommended\n" + _BASE,
         "FROM aaestro/agent-base:0.1.0@sha256:" + "a" * 64 + "\n",
+        _BASE + 'RUN grep -q "syntax" f\nENV MODE="escape"\n',
         "FROM aaestro/agent-base@sha256:" + "b" * 64 + "\n",
         "ARG T=1\nFROM aaestro/agent-base:${T}@sha256:" + "c" * 64 + "\n",
         _BASE.replace("\n", "\r\n") + "COPY src/ /app/src/\r\n",
@@ -272,7 +273,10 @@ def test_ambiguous_notations_fail_closed(text, line):
 
 
 def test_the_shipped_material_dockerfiles_still_pass():
-    for path in Path("examples/materials").glob("*/Dockerfile"):
+    root = Path(__file__).resolve().parents[3] / "examples" / "materials"
+    paths = list(root.glob("*/Dockerfile"))
+    assert paths
+    for path in paths:
         check_dockerfile(path.read_text(encoding="utf-8"))
 
 
@@ -489,6 +493,13 @@ def test_the_sqlite_store_overwrites_an_earlier_result(tmp_path):
         ("# check=skip=all\n# Syntax = MARKER/f:1\n" + _BASE, 2),
         (_BASE + "# escape=`\nRUN x\n", 2),
         ("//syntax=MARKER/f:1\n" + _BASE, 1),
+        (_BASE + "USER 1000\nRUN echo \\\\\nUSER root\n", 3),
+        (_BASE + "RUN echo \\\\ \nADD https://MARKER.example/x /x\n", 2),
+        ("FROM python:3.12 AS build\n" + _BASE + "ADD --from=build /o /o\n", 3),
+        ("FROM python:3.12 AS build\n" + _BASE + "COPY --from= ../MARKER /y\n", 3),
+        ("FROM python:3.12\n" + _BASE + "COPY --from= ../MARKER /y\n", 3),
+        ("FROM python:3.12 AS b\n" + _BASE + "COPY --from=\u00b2 /x /y\n", 3),
+        ("FROM python:3.12 AS b\n" + _BASE + "COPY --from=\u0660 /x /y\n", 3),
         ('{"syntax": "MARKER/f:1"}\n' + _BASE, 1),
         (_BASE + '{"Syntax":"MARKER"}\n', 2),
         (_BASE + "RUN true \\\n# syntax=MARKER\n  && true\n", 3),

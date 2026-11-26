@@ -65,7 +65,7 @@ _FLAG = re.compile(r"^--\S+")
 # `check` 는 lint 동작만 바꾸므로 허용한다
 # `//syntax=` 와 JSON 형태 `{"syntax": …}` 도 BuildKit 이 읽을 수 있다 (추정) — 같이 거절한다
 _REFUSED_DIRECTIVE = re.compile(
-    r"^(?:#|//)\s*(?:escape|syntax)\s*=|\"\s*(?:escape|syntax)\s*\"", re.IGNORECASE
+    r"^(?:#|//)\s*(?:escape|syntax)\s*=|^\{.*\"\s*(?:escape|syntax)\s*\"", re.IGNORECASE
 )
 _ASCII_SPACE = frozenset(" \t\n\v\f\r")
 # Docker 의 지시문 · 인자 구분과 이어 쓰기 (`\` 뒤 공백 허용) — `str.split()` 과 다르다
@@ -158,6 +158,9 @@ def _instructions(text: str) -> list[tuple[int, str, str]]:
         if buffer is None:
             start, buffer = number, ""
             raw = stripped  # 첫 줄만 앞 공백을 뗀다 — 이어 붙는 줄은 그대로 둔다
+        if raw.rstrip(" \t").endswith("\\\\"):
+            # BuildKit 은 `\\` 를 이스케이프된 백슬래시로 보아 이어 쓰기가 아니다 — 해석이 갈린다
+            raise _invalid("Dockerfile must not end a line with an escaped backslash", line=number)
         cont = _CONTINUATION.search(raw)
         buffer += raw[: cont.start()] if cont else raw
         if cont is None:
@@ -281,9 +284,13 @@ def _check_sources(instructions: list[tuple[int, str, str]]) -> None:
         if source_stage is not None:
             # --from 은 이미지 참조도 받는다 — 앞 스테이지가 아니면 굽는 시점에 외부 이미지를 당긴다
             earlier = names[:-1]  # 마지막은 지금 스테이지
-            if not _QUOTING.intersection(source_stage) and (
-                source_stage in earlier
-                or (source_stage.isdigit() and int(source_stage) < len(earlier))
+            if directive == "ADD":
+                raise _invalid("ADD does not support --from", line=line)
+            is_index = source_stage.isascii() and source_stage.isdigit()
+            if (
+                source_stage
+                and not _QUOTING.intersection(source_stage)
+                and (source_stage in earlier or (is_index and int(source_stage) < len(earlier)))
             ):
                 continue  # 다른 스테이지의 파일 — 컨텍스트 경로가 아니다
             raise _invalid(f"{directive} --from must name an earlier stage", line=line)
