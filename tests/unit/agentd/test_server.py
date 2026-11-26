@@ -854,6 +854,24 @@ async def test_calls_joined_on_the_same_key_hold_one_slot():
     assert executor.calls == ["t-dup"]
 
 
+async def test_a_joined_call_waits_only_until_its_own_deadline():
+    """긴 마감 실행에 합류한 짧은 마감 재시도는 자기 마감에 TO_001 — 첫 요청은 그대로 끝난다."""
+    executor = GatedExecutor()
+    runtime = AgentRuntime(agent="researcher", executor=executor)
+    task = make_task(task_id="t-dup", config=TaskConfig(timeout_s=30))
+    first = asyncio.create_task(runtime.run(task))
+    await reached(executor.running, first)
+    retry = task.model_copy(update={"config": TaskConfig(timeout_s=0.05)})
+
+    result = await asyncio.wait_for(runtime.run(retry), timeout=5)
+
+    assert result.status == TaskStatus.FAILED
+    assert result.error.code == "TO_001"
+    executor.gate.set()
+    assert (await first).status == TaskStatus.COMPLETED
+    assert executor.calls == ["t-dup"]
+
+
 async def test_drain_waits_for_a_queued_call_and_does_not_run_it():
     """칸을 기다리던 호출도 drain 이 본다 — drain 뒤에 칸을 얻으면 실행하지 않고 RT_005 (#416)."""
     executor = GatedExecutor()

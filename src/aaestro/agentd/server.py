@@ -183,12 +183,23 @@ class AgentRuntime:
         running = self._runs.get(key)
         # 끝났거나 (완료 콜백 전) 끊기는 중인 실행에는 잇지 않는다 — 새로 시작하면 실행기 층이
         # 앞선 실행 뒤에 세우고, 그것이 취소로 끝나면 처음부터 다시 실행한다
+        deadline = asyncio.get_running_loop().time() + task.config.timeout_s
+        joined = False
         if running is None or running.done() or running.cancelling():
-            deadline = asyncio.get_running_loop().time() + task.config.timeout_s
             running = self._start(key, self._admitted(task, deadline))
+        else:
+            joined = True
         self._waiters[running] = self._waiters.get(running, 0) + 1
         try:
-            return await asyncio.shield(running)
+            if not joined:
+                # 새 실행은 이 호출의 마감으로 돈다 — 그 TO_001 은 실행이 낸다
+                return await asyncio.shield(running)
+            # 합류한 호출은 자기 마감까지만 기다린다. 만료로 떠나도 대기자 수 규칙은 같다:
+            # 남은 대기자가 있으면 실행은 계속 돌고, 마지막이면 끊긴다 (결과를 받을 쪽이 없다)
+            async with asyncio.timeout_at(deadline):
+                return await asyncio.shield(running)
+        except TimeoutError:
+            return TaskResult.failed(task, _queued_timeout_error(self, task))
         except asyncio.CancelledError:
             current = asyncio.current_task()
             if current is not None and current.cancelling():
@@ -695,7 +706,7 @@ def _queued_timeout_error(runtime: AgentRuntime, task: TaskRequest) -> AaestroEr
     return AaestroError(
         category=ErrorCategory.TIMEOUT,
         code=ErrorCode.TO_001,
-        message="task timeout exceeded while waiting for a slot",
+        message="task timeout exceeded while waiting to run",
         agent=runtime.agent,
         task_id=task.task_id,
         retryable=True,
