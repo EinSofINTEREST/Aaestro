@@ -281,6 +281,9 @@ declarative 에이전트는 재료가 없고 굽지도 않는다 — base 이미
 `built` 가 아니거나 `built` 기록의 태그가 배포가 띄울 태그와 다른 커스텀 에이전트는 배포가
 **거절한다** (`409`, `RT_012`) — [`POST /v1/deployments`](#post-v1deployments) 참조.
 
+태스크 입력으로 직접 프롬프트를 만드는 커스텀 실행기는 promptset 렌더와 같이 그 입력을 경계로 감싸야 한다:
+`aaestro.modules.boundary.fence_input` (안내문 + untrusted-input 표시) 을 쓴다. 태스크 입력은 신뢰하지 않는 데이터다.
+
 ### `GET /v1/agents/{name}/materials`
 
 에이전트 **현재** 버전의 재료. 없는 것은 오류가 아니다:

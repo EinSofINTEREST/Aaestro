@@ -544,6 +544,8 @@ if pending_steers:                                   # 턴 경계 — tool 결�
 
 ### Decision Hooks — 루프 안의 결정 모델
 
+> **구현 상태**: 아래 결정 모델 훅 (회상 필터 · 입력 판별 `[untrusted: instructions detected]` · 도구 게이트) 은 아직 구현되지 않았다 — `spec.decision` 을 스키마가 받지 않는다.
+
 `spec.decision` 이 있으면 루프의 세 자리에서 결정 모델을 부른다. 셋 다 **원래 경로를 바꾸지
 않는 층**이다 — provider 가 없거나 `uncertain` 이면 결정 모델이 없을 때와 같이 동작한다
 ([01-architecture.md](01-architecture.md) Decision Models).

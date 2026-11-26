@@ -183,7 +183,8 @@ spec:
    **Untrusted Boundary**: 템플릿 변수는 전부 태스크 입력(앞 노드의 산출물 · direct 요청 본문)이므로
    전부 untrusted 다 — 렌더러가 출력되는 모든 표현식 값에 경계를 친다
    (`<<untrusted-input {id}>>…<<end-untrusted-input {id}>>`). 반복문 · 속성 접근 · 필터 · 결합으로
-   꺼낸 값도 같다
+   꺼낸 값도 같다. promptset 을 거치지 않는 커스텀 실행기는 태스크 입력을
+   `modules.boundary.fence_input` 으로 같은 경계에 놓는다
    - 신뢰 선언은 없다. 값의 출처는 모듈이 아니라 배선의 성질이다 — 신뢰 구분이 필요해지면 그래프
      `input_map` 쪽에서 다시 설계한다
    - 정확히 숫자 · 불리언 · null 타입인 값과 상수 표현식 (`{{ 'text' }}`) 만 경계 없이 쓴다

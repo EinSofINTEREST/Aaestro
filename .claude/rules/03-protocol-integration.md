@@ -229,7 +229,7 @@ spec:
      지우지 않는다 (`core/markers.py` `defang`.
      프레임워크 표기는 그 모듈에서만 정의한다). 도구 결과 · A2A 응답 · `memory_search` 결과는
      모두 `tool_outcome` 을 지난다 — 기본 실행기 기준이고, 커스텀 entrypoint 의 자체 루프는
-     `core.markers.defang` 을 직접 써야 한다. 진짜 표기만 그 모양을 갖는다. 결정 모델의 입력 판별
+     `core.markers.defang` 을 직접 써야 하고, 태스크 입력으로 프롬프트를 지으면 `modules.boundary.fence_input` 으로 경계를 친다. 진짜 표기만 그 모양을 갖는다. 결정 모델의 입력 판별
      ([02](02-agent-implementation.md) Decision Hooks) 은 이 경계 위의 **신호**다 —
      표시를 강화할 뿐, 경계 자체는 결정 모델 없이도 유지된다
 

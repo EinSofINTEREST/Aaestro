@@ -275,7 +275,7 @@ class Boundary:
                 OPEN_MARK.format(id=self.id)
                 # 값이 id 를 담고 있으면 (매크로가 돌려준 이미 감싼 출력, 파생 값) 그 표기를
                 # 무효로 만든다 — 값은 경계를 닫거나 새로 열 수 없다
-                + self._own_id.sub(NEUTRALIZED_ID, raw)
+                + self._neutralized(raw)
                 + CLOSE_MARK.format(id=self.id)
             )
         absorbed = self._absorbed(raw) if fenced else Counter()
@@ -292,6 +292,16 @@ class Boundary:
             self._standing[text] += 1
         return text
 
+    def _neutralized(self, raw: str) -> str:
+        """값 안의 이 렌더의 id 를 더 나타나지 않을 때까지 무효로 바꾼다.
+
+        한 번만 바꾸면 대체 문자열의 끝 글자가 뒤따르는 글과 이어져 id 가 다시 생길 수 있다
+        (id 가 ``d`` 로 시작할 때 ``invalid-id`` + 나머지). 대체는 매번 글을 줄이므로 끝난다.
+        """
+        while self._own_id.search(raw):
+            raw = self._own_id.sub(NEUTRALIZED_ID, raw)
+        return raw
+
     def _absorbed(self, raw: str) -> Counter[str]:
         """이 값이 통째로 담고 있는, 이미 센 조각들.
 
@@ -306,6 +316,24 @@ class Boundary:
     def notice(self) -> str:
         """경계의 뜻을 모델에게 알리는 고정 안내문."""
         return BOUNDARY_NOTICE.format(id=self.id)
+
+
+def fence_input(scope: str, values: Mapping[str, Any], text: str) -> str:
+    """Fence task input for a custom executor's own prompt.
+
+    커스텀 실행기 (``spec.entrypoint``) 가 태스크 입력으로 직접 프롬프트를 만들 때 쓰는 공개 헬퍼.
+    promptset 렌더와 같은 경계 안내문 + 경계 표시로 ``text`` 를 감싼다 —
+    ``values`` (태스크 입력) 에서 id 를 유도하고, ``text`` 안의 그 id 는 무효로 바꾼다
+    (03 MCP Rules 5, 04 Promptset Rules 2).
+    """
+    # id 는 text 도 함께 써서 유도한다 — text 가 values 밖의 글이어도 쓴 쪽이 id 를 미리 알 수 없다
+    boundary = Boundary(
+        scope, {"input": values, "text": text}, output_budget=len(text) + FENCE_COST
+    )
+    boundary.arm()
+    fenced = boundary(text)
+    # promptset 렌더와 같다: 경계를 친 경우에만 안내문, 안내문과 본문 사이는 빈 줄
+    return f"{boundary.notice()}\n\n{fenced}" if boundary.marked else fenced
 
 
 class GuardedEnvironment(ImmutableSandboxedEnvironment):
@@ -370,4 +398,5 @@ __all__ = [
     "UnsupportedSyntaxError",
     "boundary_id",
     "check_syntax",
+    "fence_input",
 ]
