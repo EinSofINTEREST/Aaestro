@@ -12,12 +12,15 @@ from __future__ import annotations
 import asyncio
 import json
 import multiprocessing
+import os
+import pickle
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import structlog
 
 from aaestro.core.errors import AaestroError, AaestroErrorPayload, ErrorCategory, ErrorCode
+from aaestro.modules.boundary import DEFAULT_RENDER_LIMIT
 from aaestro.modules.render_child import RenderLimits, run
 
 if TYPE_CHECKING:
@@ -31,6 +34,14 @@ RENDER_TIMEOUT_S = 2.0
 
 RENDER_MEMORY_HEADROOM = 64 << 20
 """자식이 시작할 때의 주소 공간 위로 렌더가 더 쓸 수 있는 바이트 — 넘으면 ``kind: memory``."""
+
+RENDER_INPUT_MAX_BYTES = 16 * DEFAULT_RENDER_LIMIT
+"""자식에게 보내는 직렬화한 태스크 입력의 상한 (약 4 MB) — 넘으면 자식을 띄우지 않고 ``VAL_002``
+(``kind: input``). 아래 근거: 렌더가 쓰는 입력은 입력 예산 (렌더 상한의 3/4, 192,000자) 이고
+그 밖은 잘린다 — 글자당 4바이트로 직렬화해도 768 KB 다. 렌더 상한의 16배는 그 다섯 배 남짓으로,
+잘릴 입력도 넉넉히 받아 렌더가 자르게 둔다 (04 Promptset Rules 2 의 "입력 탓으로 실패하지
+않는다" 의 예외는 이 상한뿐이다). 위로는 자식의 메모리 여유분 (``RENDER_MEMORY_HEADROOM``) 이 받은
+바이트와 풀어 놓은 객체를 함께 담아야 하고, 데몬도 직렬화 사본 하나를 이만큼 더 쥔다."""
 
 REPLY_OVERHEAD = 64 << 10
 """응답 상한에서 본문 밖의 몫 (JSON 틀 · 로그)."""
@@ -73,7 +84,11 @@ class RenderSandbox:
         self._context = multiprocessing.get_context("forkserver")
         # forkserver 가 이미 떠 있으면 효과가 없다 — 같은 목록이라 상관없다
         self._context.set_forkserver_preload(_PRELOAD)
-        self._limits = RenderLimits(timeout_s=timeout_s, memory_headroom=memory_headroom)
+        self._limits = RenderLimits(
+            timeout_s=timeout_s,
+            memory_headroom=memory_headroom,
+            input_max_bytes=RENDER_INPUT_MAX_BYTES,
+        )
         # 테스트가 자식 진입 직후를 흉내 내는 자리 (사망 · 큰 응답) — 모듈 최상위 함수여야 한다
         self._child_hook = child_hook
 
@@ -95,10 +110,30 @@ class RenderSandbox:
                 (``details.kind``), INTERNAL/``INTERNAL_001`` if the child died without a reply
                 or replied beyond the size limit, or the error the render raised.
         """
+        # 직렬화 · 시작 · 입력 전송 · 렌더가 한 마감이다 — 큰 입력이 마감 앞에서 루프를 쥐지 않게
+        try:
+            async with asyncio.timeout(self._limits.timeout_s):
+                payload = await asyncio.to_thread(_encode_input, variables)
+                if isinstance(payload, int):
+                    raise self._input_error(payload, promptset, template, agent, task_id)
+                raw = await self._run_child(payload, promptset, template, agent, task_id)
+        except TimeoutError:
+            raise self._limit_error("time", promptset, template, agent, task_id) from None
+        return self._reply(raw, promptset, template, agent, task_id)
+
+    async def _run_child(
+        self,
+        payload: bytes,
+        promptset: LoadedPromptset,
+        template: str,
+        agent: str,
+        task_id: str | None,
+    ) -> bytes:
         reader, writer = self._context.Pipe(duplex=False)
+        inputs, sender = self._context.Pipe(duplex=False)
         process = self._context.Process(
             target=run,
-            args=(writer, promptset, template, dict(variables), self._limits, self._child_hook),
+            args=(writer, inputs, promptset, template, self._limits, self._child_hook),
             daemon=True,
         )
         maxlength = REPLY_BYTES_PER_CHAR * promptset.render_limit + REPLY_OVERHEAD
@@ -106,10 +141,12 @@ class RenderSandbox:
         try:
             process.start()
             writer.close()
+            inputs.close()
+            await _send(sender, payload)
             raw = await self._receive(reader, maxlength)
             answered = True
         except TimeoutError:
-            raise self._limit_error("time", promptset, template, agent, task_id) from None
+            raise  # 마감은 render 가 VAL_002 로 바꾼다 — TimeoutError 도 OSError 다
         except (EOFError, OSError) as err:
             if process.pid is None:
                 raise  # 띄우지도 못했다 — 렌더의 결과가 아니다
@@ -138,26 +175,12 @@ class RenderSandbox:
                     process.kill()
                 process.join()
                 process.close()
-            writer.close()
-            reader.close()
-        return self._reply(raw, promptset, template, agent, task_id)
+            for conn in (writer, inputs, sender, reader):
+                conn.close()
+        return raw
 
     async def _receive(self, reader: Connection, maxlength: int) -> bytes:
-        # 스레드에서 poll 하면 취소된 뒤에도 스레드가 닫힌 fd 를 잡고 있다 — 이벤트 루프가 기다린다
-        loop = asyncio.get_running_loop()
-        ready: asyncio.Future[None] = loop.create_future()
-        fd = reader.fileno()
-
-        def readable() -> None:
-            if not ready.done():
-                ready.set_result(None)
-
-        loop.add_reader(fd, readable)
-        try:
-            async with asyncio.timeout(self._limits.timeout_s):
-                await ready
-        finally:
-            loop.remove_reader(fd)
+        await _ready(reader.fileno(), readable=True)
         return reader.recv_bytes(maxlength)
 
     def _reply(
@@ -190,6 +213,30 @@ class RenderSandbox:
             )
         text: str = reply["text"]
         return text
+
+    def _input_error(
+        self,
+        size: int,
+        promptset: LoadedPromptset,
+        template: str,
+        agent: str,
+        task_id: str | None,
+    ) -> AaestroError:
+        return AaestroError(
+            category=ErrorCategory.VALIDATION,
+            code=ErrorCode.VAL_002,
+            message="task input exceeds the render transfer limit",
+            agent=agent,
+            task_id=task_id,
+            # 크기는 직렬화한 길이 또는 멈춘 지점까지 센 하한이다 — 값은 싣지 않는다
+            details={
+                "kind": "input",
+                "size_bytes": size,
+                "limit_bytes": RENDER_INPUT_MAX_BYTES,
+                "promptset": promptset.ref,
+                "template": template,
+            },
+        )
 
     def _limit_error(
         self,
@@ -235,3 +282,86 @@ def warn_if_headroom_exceeds_memory(
             headroom_bytes=RENDER_MEMORY_HEADROOM,
             memory_max_bytes=limit,
         )
+
+
+def _encode_input(variables: Mapping[str, Any]) -> bytes | int:
+    """입력을 피클 바이트로 — 상한을 넘으면 그 크기 (또는 하한) 를 돌려준다. 스레드에서 돈다.
+
+    직렬화는 입력 전체를 훑고 같은 크기의 사본을 만든다. 먼저 싼 하한 (글자 · 원소 수) 을 세어
+    상한을 넘으면 직렬화 전에 멈춘다.
+    """
+    estimate = _size_lower_bound(variables, RENDER_INPUT_MAX_BYTES)
+    if estimate > RENDER_INPUT_MAX_BYTES:
+        return estimate
+    payload = pickle.dumps(dict(variables), protocol=pickle.HIGHEST_PROTOCOL)
+    return len(payload) if len(payload) > RENDER_INPUT_MAX_BYTES else payload
+
+
+def _size_lower_bound(value: Any, limit: int) -> int:
+    """직렬화 크기의 하한 — 문자열 · 바이트는 길이, 컨테이너는 원소 수. 상한을 넘으면 멈춘다."""
+    total = 0
+    stack = [value]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, str | bytes):
+            total += len(item)
+        elif isinstance(item, dict):
+            total += len(item)
+            if total > limit:
+                return total
+            stack.extend(item.keys())
+            stack.extend(item.values())
+        elif isinstance(item, list | tuple):
+            total += len(item)
+            if total > limit:
+                return total
+            stack.extend(item)
+        else:
+            total += 1
+        if total > limit:
+            return total
+    return total
+
+
+async def _send(sender: Connection, payload: bytes) -> None:
+    """입력을 자식에게 쓰고 닫는다 — 파이프가 차면 이벤트 루프가 기다린다 (블로킹 쓰기 없음).
+
+    스레드에서 쓰지 않는다: 마감 · 취소로 떠난 뒤에도 스레드가 fd 를 쥐고 쓰면 닫힌 fd 번호가
+    재사용될 때 엉뚱한 곳에 쓴다.
+    """
+    fd = sender.fileno()
+    os.set_blocking(fd, False)
+    view = memoryview(payload)
+    try:
+        while view:
+            try:
+                written = os.write(fd, view)
+            except BlockingIOError:
+                await _ready(fd, readable=False)
+                continue
+            view = view[written:]
+    except BrokenPipeError:
+        # 자식이 입력을 다 읽기 전에 끝났다 — 무엇이 일어났는지는 응답 (또는 EOF) 이 말한다
+        return
+    finally:
+        sender.close()
+
+
+async def _ready(fd: int, *, readable: bool) -> None:
+    """fd 가 읽기 · 쓰기 가능해질 때까지 이벤트 루프에서 기다린다."""
+    # 스레드에서 poll 하면 취소된 뒤에도 스레드가 닫힌 fd 를 잡고 있다 — 이벤트 루프가 기다린다
+    loop = asyncio.get_running_loop()
+    ready: asyncio.Future[None] = loop.create_future()
+
+    def wake() -> None:
+        if not ready.done():
+            ready.set_result(None)
+
+    add, remove = (
+        (loop.add_reader, loop.remove_reader) if readable else (loop.add_writer, loop.remove_writer)
+    )
+    add(fd, wake)
+    try:
+        await ready
+    finally:
+        remove(fd)

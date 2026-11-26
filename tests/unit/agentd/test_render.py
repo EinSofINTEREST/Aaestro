@@ -8,8 +8,11 @@
 from __future__ import annotations
 
 import asyncio
+import gc
+import json
 import multiprocessing
 import os
+import resource
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,7 +25,11 @@ from structlog.testing import capture_logs
 
 from aaestro.agentd import __main__ as agentd
 from aaestro.agentd.executor import Executor
-from aaestro.agentd.render import RenderSandbox, warn_if_headroom_exceeds_memory
+from aaestro.agentd.render import (
+    RENDER_INPUT_MAX_BYTES,
+    RenderSandbox,
+    warn_if_headroom_exceeds_memory,
+)
 from aaestro.core.agent import TaskStatus
 from aaestro.core.errors import AaestroError
 from aaestro.modules.promptset import PromptsetLoader
@@ -302,6 +309,98 @@ async def test_a_render_returns_the_same_text_as_in_process(registry):
     rendered = await RenderSandbox().render(loaded, "default", {"q": "x"}, agent="a")
 
     assert rendered == loaded.render("default", q="x")
+
+
+# --- 태스크 입력의 전송: 상한 안에서, 마감 안에서, 루프 밖에서 (#726 리뷰) --------------------
+
+MARKER = "input-marker-"
+
+
+def probe_before_input(conn: Connection) -> None:
+    """입력을 받기 전의 자식 — 주소 공간 상한이 걸렸는지, 입력이 벌써 메모리에 있는지 답한다."""
+    soft, _hard = resource.getrlimit(resource.RLIMIT_AS)
+    present = any(
+        isinstance(obj, list) and obj and isinstance(obj[0], str) and obj[0].startswith(MARKER)
+        for obj in gc.get_objects()
+    )
+    seen = {"limited": soft != resource.RLIM_INFINITY, "input_present": present}
+    conn.send_bytes(json.dumps({"text": json.dumps(seen), "logs": []}).encode())
+    os._exit(0)
+
+
+def slow_reader(conn: Connection) -> None:
+    time.sleep(2)
+
+
+async def test_the_child_limits_its_memory_before_it_receives_the_input(registry):
+    """입력이 Process 인자면 진입 전에 풀려 상한 밖에서 입력 크기만큼 메모리를 쓴다."""
+    seen = await RenderSandbox(child_hook=probe_before_input).render(
+        promptset(registry), "default", {"q": [MARKER + "x"] * 10}, agent="a"
+    )
+
+    assert json.loads(seen) == {"limited": True, "input_present": False}
+
+
+async def test_a_large_input_under_the_limit_renders_while_the_loop_keeps_running(registry):
+    ticks = 0
+
+    async def heartbeat() -> None:
+        nonlocal ticks
+        while True:
+            await asyncio.sleep(0.002)
+            ticks += 1
+
+    beat = asyncio.create_task(heartbeat())
+    try:
+        rendered = await RenderSandbox().render(
+            promptset(registry), "default", {"q": "y" * (RENDER_INPUT_MAX_BYTES - 1024)}, agent="a"
+        )
+    finally:
+        beat.cancel()
+
+    assert "hello" in rendered
+    # 직렬화 · 전송 · 렌더 동안 루프가 돌았다 — 회차 비율은 부하에 따라 흔들리므로 하한만 본다
+    assert ticks >= 5
+
+
+@pytest.mark.parametrize(
+    "variables",
+    [
+        {"q": "x" * (RENDER_INPUT_MAX_BYTES + 1)},  # 하한만 세어도 넘는다 — 직렬화 전에 멈춘다
+        {"q": list(range(1_000_000))},  # 하한은 안 넘고 직렬화한 크기가 넘는다
+    ],
+    ids=["estimate", "serialized"],
+)
+async def test_an_input_over_the_transfer_limit_is_refused_without_a_child(
+    registry, monkeypatch, variables
+):
+    sandbox = RenderSandbox()
+
+    def no_child(*args: object, **kwargs: object) -> None:
+        raise AssertionError("a child was started for an input over the limit")
+
+    monkeypatch.setattr(sandbox._context, "Process", no_child)
+
+    with pytest.raises(AaestroError) as exc_info:
+        await sandbox.render(promptset(registry), "default", variables, agent="a")
+
+    error = exc_info.value
+    assert (error.code, error.details["kind"]) == ("VAL_002", "input")
+    assert error.details["size_bytes"] > error.details["limit_bytes"] == RENDER_INPUT_MAX_BYTES
+    assert "xxxx" not in str(error.payload())
+
+
+async def test_sending_the_input_counts_against_the_render_deadline(registry):
+    """자식이 입력을 읽지 않으면 전송이 막힌다 — 그 시간도 렌더 마감 안이다."""
+    started = time.perf_counter()
+
+    with pytest.raises(AaestroError) as exc_info:
+        await RenderSandbox(timeout_s=FAST_TIMEOUT_S, child_hook=slow_reader).render(
+            promptset(registry), "default", {"q": "z" * (1 << 20)}, agent="a"
+        )
+
+    assert (exc_info.value.code, exc_info.value.details["kind"]) == ("VAL_002", "time")
+    assert time.perf_counter() - started < 1.5
 
 
 # --- 기동 경고 -------------------------------------------------------------------------

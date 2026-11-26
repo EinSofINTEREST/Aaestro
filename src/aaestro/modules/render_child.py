@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import pickle
 import resource
 from dataclasses import dataclass
 from pathlib import Path
@@ -41,17 +42,22 @@ class RenderLimits:
 
     timeout_s: float
     memory_headroom: int
+    input_max_bytes: int
+    """부모가 보내는 직렬화한 입력의 상한 — 부모가 먼저 거르고, 자식은 넘으면 읽기를 멈춘다."""
 
 
 def run(
     conn: Connection,
+    inputs: Connection,
     promptset: LoadedPromptset,
     template: str,
-    variables: dict[str, Any],
     limits: RenderLimits,
     hook: Callable[[Connection], None] | None,
 ) -> None:
-    """자식 진입점 — 상한을 건 뒤에야 템플릿을 읽고, 어떤 실패도 응답으로 돌려준다.
+    """자식 진입점 — 상한을 건 뒤에야 입력을 받고 템플릿을 읽는다. 어떤 실패도 응답으로 돌려준다.
+
+    태스크 입력은 Process 인자가 아니라 ``inputs`` 로 온다: 인자는 진입 전에 풀리므로 상한 밖에서
+    입력 크기만큼 메모리를 쓴다 (#726 리뷰).
 
     응답: ``{"text"}`` / ``{"error": payload}`` / ``{"limit": "memory"}`` /
     ``{"crash": 예외 종류 이름}`` — 모두 ``logs`` 를 싣는다.
@@ -63,6 +69,7 @@ def run(
         structlog.configure(processors=[_collector(logs)], cache_logger_on_first_use=False)
         if hook is not None:
             hook(conn)
+        variables = _receive_input(inputs, limits.input_max_bytes)
         reply = {"text": promptset.render(template, **variables)}
     except MemoryError:
         reply = {"limit": "memory"}
@@ -77,6 +84,19 @@ def run(
     except MemoryError:
         body = _MEMORY_REPLY
     conn.send_bytes(body)
+
+
+def _receive_input(inputs: Connection, max_bytes: int) -> dict[str, Any]:
+    """부모가 쓰고 닫을 때까지 읽는다 — 프레임 없이 피클 바이트 그대로."""
+    fd = inputs.fileno()
+    buffer = bytearray()
+    while chunk := os.read(fd, 1 << 16):
+        buffer += chunk
+        if len(buffer) > max_bytes:
+            raise ValueError("render input exceeds the transfer limit")
+    inputs.close()
+    variables: dict[str, Any] = pickle.loads(buffer)  # noqa: S301 — 부모가 만든 바이트다
+    return variables
 
 
 def confine(limits: RenderLimits) -> None:

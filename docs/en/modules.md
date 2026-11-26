@@ -334,7 +334,11 @@ Answer it.
   (`details.kind: memory | time`) while the daemon keeps answering health checks, cancellations
   and other tasks. A child that dies without replying, or replies beyond the size limit, is
   `INTERNAL_001`; a task deadline or cancellation stops the child and stays `TO_001` /
-  canceled. The task prompt and the `system` template both go this way. This isolates
+  canceled. The child receives the task input over a pipe only after its limits are set, and
+  serialising, starting, sending and rendering share one deadline. A serialised input larger than
+  `RENDER_INPUT_MAX_BYTES` (16 × the render limit, about 4 MB) is refused before any child starts
+  with `VAL_002` (`details.kind: input`, size and limit only) — a transfer limit, and the one
+  exception to "values are cut, not refused". The task prompt and the `system` template both go this way. This isolates
   resources, not permissions — the child runs as the same user on the same filesystem.
 
 These rules belong to the framework's renderer. Published modules are immutable and were not
