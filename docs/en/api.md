@@ -652,6 +652,10 @@ Refusals: `404` (`NF_001`) when the deployment is unknown or not `ready`; `400` 
 when the graph on disk has been edited to a different version than the one deployed —
 redeploy before running, or the run would drive containers built from another declaration.
 
+A `run_id` that already has a run record — finished or not, mission or service, in this process or
+left by an earlier one — is `409` (`GRAPH_006`): it would reuse the old checkpoint threads. Pick a new id,
+or resume the run (`POST /v1/runs/{run_id}/resume`).
+
 ### `GET /v1/runs`, `GET /v1/runs/{run_id}`
 
 The listing takes `?mode=mission|service`. A single run adds two fields once it has finished

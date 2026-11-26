@@ -254,7 +254,7 @@ async def test_a_new_submission_cannot_reuse_a_finished_run_id():
     with pytest.raises(AaestroError) as exc_info:
         await submit.submit(make_mission(), {"query": "q"}, run_id="run-done")
 
-    assert exc_info.value.code == "VAL_002"
+    assert exc_info.value.code == "GRAPH_006"
 
 
 # --- run 추적 정보 전파 ---------------------------------------------------------
