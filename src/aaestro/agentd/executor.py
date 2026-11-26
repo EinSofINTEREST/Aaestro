@@ -492,10 +492,17 @@ class Executor:
             The task result, successful or failed.
         """
         key = task.key
+        # 합류 대기도 태스크 마감 안이다 — 옛 실행의 정리 시간이 마감 밖에서 흐르지 않게 (#416)
+        deadline = asyncio.get_running_loop().time() + task.config.timeout_s
+        waited = False
         while (running := self._running.get(key)) is not None:
+            waited = True
             try:
                 # 기다리는 쪽의 취소가 앞선 실행을 끊지 않게 — 그 실행은 자기 호출자의 것이다
-                return await asyncio.shield(running)
+                async with asyncio.timeout_at(deadline):
+                    return await asyncio.shield(running)
+            except TimeoutError:
+                return TaskResult.failed(task, self._timeout_error(task))
             except asyncio.CancelledError:
                 current = asyncio.current_task()
                 if current is not None and current.cancelling():
@@ -506,6 +513,14 @@ class Executor:
         cached = remembered.get(key) if remembered is not None else None
         if cached is not None:
             return cached
+
+        if waited:
+            # 대기 뒤 실행은 남은 마감만 쓴다 — 합쳐서 config.timeout_s 다
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                return TaskResult.failed(task, self._timeout_error(task))
+            config = task.config.model_copy(update={"timeout_s": remaining})
+            task = task.model_copy(update={"config": config})
 
         owned: asyncio.Future[TaskResult] = asyncio.get_running_loop().create_future()
         self._running[key] = owned
@@ -538,18 +553,7 @@ class Executor:
                 if watch.cut:
                     # 모델이 태스크 마감까지 답하지 않았다 — health 가 그것을 봐야 한다
                     self.model_health.failed(ErrorCode.TO_001)
-                result = TaskResult.failed(
-                    task,
-                    AaestroError(
-                        category=ErrorCategory.TIMEOUT,
-                        code=ErrorCode.TO_001,
-                        message="task timeout exceeded",
-                        agent=self._agent,
-                        task_id=task.task_id,
-                        retryable=True,
-                    ),
-                    usage=tally.usage,
-                )
+                result = TaskResult.failed(task, self._timeout_error(task), usage=tally.usage)
         except asyncio.CancelledError:
             # 취소는 협조적 종료다 — 결과로 삼키지 않고 전파한다 (정리는 루프가 한 번 한다)
             raise
@@ -571,6 +575,16 @@ class Executor:
         if result.error is None or not result.error.retryable:
             self._remember(task.key, result)
         return result
+
+    def _timeout_error(self, task: TaskRequest) -> AaestroError:
+        return AaestroError(
+            category=ErrorCategory.TIMEOUT,
+            code=ErrorCode.TO_001,
+            message="task timeout exceeded",
+            agent=self._agent,
+            task_id=task.task_id,
+            retryable=True,
+        )
 
     def _remember(self, key: TaskKey, result: TaskResult) -> None:
         remembered = self._completed.setdefault(key.caller, OrderedDict())

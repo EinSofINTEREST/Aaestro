@@ -816,6 +816,51 @@ async def test_a_joined_call_runs_itself_when_the_first_is_canceled():
     assert model.turns == 2
 
 
+async def test_waiting_on_a_same_key_run_counts_against_the_deadline():
+    """합류 대기도 마감 안이다 — 앞선 실행이 끝나지 않으면 마감에 TO_001 로 답한다 (#416)."""
+    tools = GatedTools()
+    executor, model, _ = make_executor([calls("post"), text("done")], tools)
+    task = make_task(task_id="t-dup")
+    first = asyncio.create_task(executor.execute(task))
+    await until(lambda: tools.started == ["post"])
+
+    late = task.model_copy(update={"config": TaskConfig(timeout_s=0.05)})
+    result = await asyncio.wait_for(executor.execute(late), timeout=5)
+
+    assert result.status == TaskStatus.FAILED
+    assert result.error.code == "TO_001"
+    tools.gate.set()
+    assert (await first).status == TaskStatus.COMPLETED
+    assert model.turns == 2
+
+
+async def test_a_run_after_waiting_gets_only_the_remaining_deadline():
+    """대기 뒤 스스로 도는 실행은 남은 마감만 쓴다 — 합쳐서 config.timeout_s 다 (#416)."""
+    tools = GatedTools()
+    executor, _, _ = make_executor([calls("post"), text("done")], tools)
+    seen: list[float] = []
+    real = executor._execute
+
+    async def spy(task):
+        seen.append(task.config.timeout_s)
+        return await real(task)
+
+    executor._execute = spy
+    task = make_task(task_id="t-dup", config=TaskConfig(timeout_s=30))
+    first = asyncio.create_task(executor.execute(task))
+    await until(lambda: tools.started == ["post"])
+    second = asyncio.create_task(executor.execute(task))
+    await asyncio.sleep(0)
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    tools.gate.set()
+    await second
+
+    assert seen[0] == 30
+    assert seen[1] < 30
+
+
 async def test_canceling_a_joined_call_leaves_the_first_running():
     """겹친 쪽의 취소는 그쪽만 끝낸다 — 앞선 실행이 남의 취소로 끊기지 않는다."""
     tools = GatedTools()
