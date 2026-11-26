@@ -888,6 +888,95 @@ async def test_a_caller_leaving_raises_and_stops_the_execution_nobody_waits_for(
     await until(lambda: not runtime._inflight)  # gate 는 닫힌 채다 — 끝났다면 끊긴 것이다
 
 
+class CleansUpSlowly(FakeTools):
+    """첫 호출은 끝나지 않고, 취소되면 정리 문이 열릴 때까지 정리한다 — 둘째 호출은 바로 끝난다."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.cleaning = asyncio.Event()
+        self.cleaned = asyncio.Event()
+
+    async def call(self, name, arguments, ctx):
+        self.started.append(name)
+        if len(self.started) == 1:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.cleaning.set()
+                await self.cleaned.wait()
+                raise
+        self.calls.append(name)
+        return "ok"
+
+
+async def test_a_retry_right_after_the_last_caller_left_runs_instead_of_joining_the_dying_run():
+    """끊기는 중인 실행에 잇지 않는다 — 실행기 층이 뒤에 세우고, 취소로 끝나면 다시 돈다 (#416)."""
+    tools = CleansUpSlowly()
+    executor = Executor(
+        agent="researcher",
+        model=FakeModel([calls("post"), calls("post"), text("done")]),
+        tools=tools,
+        render=lambda task: "prompt",
+    )
+    runtime = AgentRuntime(agent="researcher", executor=executor)
+    task = make_task(task_id="t-retry")
+    first = asyncio.create_task(runtime.run(task))
+    await until(lambda: tools.started == ["post"])
+    first.cancel()  # 호출자가 떠난다 — 기다리는 쪽이 없으니 실행이 끊기기 시작한다
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    await until(tools.cleaning.is_set)
+
+    retry = asyncio.create_task(runtime.run(task))
+    await spin(10)
+    assert not retry.done()  # 앞선 실행의 정리가 끝나기를 기다린다
+    tools.cleaned.set()
+
+    assert (await asyncio.wait_for(retry, timeout=5)).status == TaskStatus.COMPLETED
+    assert tools.calls == ["post"]
+
+
+class HandsOverAtTheEnd(FakeExecutor):
+    """첫 실행이 끝나는 바로 그 단계에 콜백을 걸고, 뒤 실행은 문이 열릴 때까지 돈다."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.gate = asyncio.Event()
+        self.at_end = None
+
+    async def execute(self, task):
+        self.calls.append(task.task_id)
+        if len(self.calls) == 1:
+            # 실행 태스크의 완료 콜백보다 먼저 줄 선다 — 끝났지만 콜백 전인 창을 결정적으로 만든다
+            asyncio.get_running_loop().call_soon(self.at_end)
+            return TaskResult.completed(task, output={"run": 1})
+        self.running.set()
+        await self.gate.wait()
+        return TaskResult.completed(task, output={"run": len(self.calls)})
+
+
+async def test_a_late_done_callback_does_not_clear_the_newer_run():
+    """옛 실행의 늦은 완료 콜백이 새 실행 자리를 지우면 같은 키의 다음 호출이 또 돈다 (#416)."""
+    executor = HandsOverAtTheEnd()
+    runtime = AgentRuntime(agent="researcher", executor=executor)
+    task = make_task(task_id="t-late")
+    loop = asyncio.get_running_loop()
+    joined = []
+    # 끝난 옛 실행을 보고 새 실행을 세운다 — eager 라 콜백 전에 _runs 자리를 잡는다
+    executor.at_end = lambda: joined.append(asyncio.eager_task_factory(loop, runtime.run(task)))
+
+    await runtime.run(task)
+    (second,) = joined
+    await reached(executor.running, second)
+    third = asyncio.create_task(runtime.run(task))
+    await spin(10)
+    executor.gate.set()
+
+    results = await asyncio.gather(second, third)
+    assert executor.calls == ["t-late", "t-late"]  # 셋째는 둘째 실행에 잇는다
+    assert results[0] == results[1]
+
+
 async def test_cancel_stops_every_call_waiting_on_the_same_key():
     """같은 키의 겹친 호출은 한 실행을 기다린다 — 마지막 것만 끊으면 실행은 그대로 돈다 (#416)."""
     runtime = AgentRuntime(agent="researcher", executor=FakeExecutor())
@@ -1561,3 +1650,43 @@ async def test_only_the_first_terminal_event_is_kept_while_the_executor_keeps_en
     await asyncio.wait_for(call.running, timeout=5)
     assert kinds(call) == [("done", "completed")]
     assert call.frames[0]["output"] == {"content": "first"}
+
+
+# --- /stream 의 칸 대기 (#416) --------------------------------------------------
+
+
+async def test_a_stream_whose_deadline_passes_while_queued_ends_with_to_001():
+    """/stream 도 마감이 칸 대기를 포함한다 — 칸이 난 뒤에 실행하지 않고 TO_001 로 끝난다."""
+    executor = GatedExecutor()
+    runtime = AgentRuntime(agent="researcher", executor=executor, max_concurrent_tasks=1)
+    hog = asyncio.create_task(runtime.run(make_task(task_id="hog")))
+    await reached(executor.running, hog)
+
+    payload = task_payload(task_id="late", config=TaskConfig(timeout_s=0.05))
+    call = StreamCall(create_app(runtime, token=TOKEN), payload, hold=False)
+    await asyncio.wait_for(call.running, timeout=5)
+
+    assert [(f["type"], f["error"]["code"]) for f in call.frames] == [("error", "TO_001")]
+    executor.gate.set()
+    await hog
+    assert executor.calls == ["hog"]
+
+
+async def test_drain_waits_for_a_queued_stream_and_does_not_run_it():
+    """칸을 기다리는 스트림도 추적된다 — drain 이 기다리고, 칸을 얻으면 RT_005 로 끝난다."""
+    executor = GatedExecutor()
+    runtime = AgentRuntime(agent="researcher", executor=executor, max_concurrent_tasks=1)
+    hog = asyncio.create_task(runtime.run(make_task(task_id="hog")))
+    await reached(executor.running, hog)
+    call = StreamCall(create_app(runtime, token=TOKEN), task_payload(task_id="q"), hold=False)
+    await until(lambda: runtime._inflight.get(make_task(task_id="q").key))
+
+    draining = asyncio.create_task(runtime.drain())
+    await spin(10)
+    assert not draining.done()
+    executor.gate.set()
+    await draining
+    await asyncio.wait_for(call.running, timeout=5)
+
+    assert [(f["type"], f["error"]["code"]) for f in call.frames] == [("error", "RT_005")]
+    assert executor.calls == ["hog"]
