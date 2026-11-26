@@ -2923,6 +2923,45 @@ def test_a_remote_mcp_credential_stays_with_the_proxy(manager):
     assert proxied["LOCAL_TOKEN"] == "local", "stdio 서버의 자격은 컨테이너 안에서 쓴다"
 
 
+def test_agent_env_cannot_smuggle_a_proxy_held_credential(manager):
+    """agent_env 의 원격 MCP 토큰 이름도 프록시가 있으면 컨테이너 · 사이드카 env 로 안 나간다."""
+    from aaestro.core.manifest import AgentManifest
+    from aaestro.runtime.deployments import EgressEndpoints, Provision
+    from aaestro.runtime.sidecars import sidecar_env
+
+    doc = agent_doc("alpha")
+    doc["spec"]["runtime"] = {"env_allowlist": ["CORP_SEARCH_BEARER"]}
+    doc["spec"]["mcp"] = {
+        "servers": [
+            {
+                "name": "corp",
+                "transport": "streamable-http",
+                "url": "https://mcp.example.com/mcp",
+                "auth": {"type": "bearer", "token_env": "CORP_SEARCH_BEARER"},
+            },
+            {
+                "name": "browser",
+                "transport": "streamable-http",
+                "sidecar": {"image": "mcp/search:0.3.0"},
+                "env_allowlist": ["CORP_SEARCH_BEARER"],
+            },
+        ]
+    }
+    manifest = AgentManifest.model_validate(doc)
+    manager.agent_env = {"CORP_SEARCH_BEARER": "t", "OTHER_URL": "http://x"}
+    manager.secrets_env = {"CORP_SEARCH_BEARER": "t"}
+    manager.egress = EgressEndpoints(
+        connect_url="http://aaestro-egress:8080", providers_url="http://aaestro-egress:8081"
+    )
+    provision = Provision(env={}, mounts=(), a2a_port=None, image=None)
+
+    env = manager._env_for(manifest, provision)  # noqa: SLF001
+
+    assert "CORP_SEARCH_BEARER" not in env
+    assert env["OTHER_URL"] == "http://x"
+    assert "CORP_SEARCH_BEARER" not in sidecar_env(manifest.spec.mcp.servers[1], env)
+
+
 def test_the_proxy_wiring_points_remote_mcp_at_the_termination():
     from aaestro.protocols.mcp.transport import MCP_PROXY_URL_ENV
     from aaestro.runtime.deployments import EgressEndpoints

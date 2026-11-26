@@ -435,7 +435,9 @@ class DeploymentManager:
         agent_env: 모든 에이전트에 주입하는 **비밀이 아닌** 인프라 env (provider base
             URL 등). secrets 와 달리 allowlist 를 거치지 않는다 — 어디에 provider 가
             있는지는 자격증명이 아니라 배치다. 여기 secret 을 넣으면 allowlist 를 우회하는
-            것이므로, 이름이 secret 패턴이면 거부한다.
+            것이므로, 이름이 secret 패턴이거나 `AAESTRO_EGRESS_` 로 시작하면 거부한다.
+            프록시가 종단하는 자격 이름 (모델 키 · 원격 MCP 토큰) 은 프록시가 있으면
+            env 조립 때 거른다.
         memory_url / memory_tokens: Memory Service 주소와 에이전트별 토큰 파일 내용.
         ready_timeout_s / poll: health 대기. 06 — sleep 은 주입한다.
         images: 빌드 단계 (#266). 재료가 있는 에이전트는 그 버전이 `built` 여야 기동한다.
@@ -495,7 +497,10 @@ class DeploymentManager:
             raise AaestroError(
                 category=ErrorCategory.CONFIG,
                 code=ErrorCode.CFG_002,
-                message="agent_env must not carry secrets — those go through env_allowlist",
+                message=(
+                    "agent_env must not carry secrets or proxy-only keys"
+                    " — secrets go through env_allowlist"
+                ),
                 details={"keys": secretish},
             )
 
@@ -1625,11 +1630,21 @@ class DeploymentManager:
             group_values=self.secrets_env,
             global_values=self.secrets_env,
         ).env_for(tuple(manifest.spec.runtime.env_allowlist))
+        infra = self.agent_env
         if self.egress is not None:
-            # 프록시가 종단하는 서비스의 키는 에이전트에게 주지 않는다 — 프록시가 주입한다 (02)
+            # 프록시가 종단하는 서비스의 키는 에이전트에게 주지 않는다 — 프록시가 주입한다 (02).
+            # agent_env 도 같다: 매니페스트마다 달라 기동 시 검사가 아니라 여기서 거른다
             terminated = PROXY_TERMINATED_SECRETS | remote_mcp_credentials(manifest)
             scoped = {k: v for k, v in scoped.items() if k not in terminated}
-        return {**self.agent_env, **scoped, **provision.env}
+            dropped = sorted(k for k in infra if k in terminated)
+            if dropped:
+                log.warning(
+                    "agent_env keys held by the egress proxy were not injected",
+                    agent=manifest.name,
+                    keys=dropped,
+                )
+                infra = {k: v for k, v in infra.items() if k not in terminated}
+        return {**infra, **scoped, **provision.env}
 
     def _memory_for(self, manifest: AgentManifest, provision: Provision) -> MemoryEndpoint | None:
         """Memory Service 주소와 내밀 자격.
