@@ -207,7 +207,8 @@ class AgentRuntime:
         except TimeoutError:
             if not waiting.expired():
                 raise  # 실행이 던진 TimeoutError — 대기 마감이 아니다
-            return TaskResult.failed(task, _queued_timeout_error(self, task))
+            # 합류한 실행은 이미 시작했을 수 있다 — started 표시를 붙이지 않는다 (A2A_003)
+            return TaskResult.failed(task, _joined_timeout_error(self, task))
         except asyncio.CancelledError:
             current = asyncio.current_task()
             if current is not None and current.cancelling():
@@ -749,6 +750,17 @@ def _stream_timeout_error(runtime: AgentRuntime, task: TaskRequest) -> AaestroEr
         category=ErrorCategory.TIMEOUT,
         code=ErrorCode.TO_001,
         message="task timeout exceeded",
+        agent=runtime.agent,
+        task_id=task.task_id,
+        retryable=True,
+    )
+
+
+def _joined_timeout_error(runtime: AgentRuntime, task: TaskRequest) -> AaestroError:
+    return AaestroError(
+        category=ErrorCategory.TIMEOUT,
+        code=ErrorCode.TO_001,
+        message="task timeout exceeded while waiting for the same task",
         agent=runtime.agent,
         task_id=task.task_id,
         retryable=True,

@@ -67,3 +67,59 @@ async def test_lending_after_the_run_ended_does_nothing():
 
     assert semaphore._value == 2
     assert not slot.held
+
+
+async def _lent_while_full(limit_deadline_s: float):
+    """상한 1 · 짧은 마감: 실행이 칸을 빌려준 사이 다른 실행이 그 칸을 잡는다."""
+    semaphore = asyncio.Semaphore(1)
+    await semaphore.acquire()
+    slot = Slot(semaphore, asyncio.get_running_loop().time() + limit_deadline_s)
+    HELD_SLOT.set(slot)
+    return semaphore, slot
+
+
+async def test_canceling_a_lending_tool_propagates_at_once():
+    """빌려주는 중 취소되면 칸을 다시 기다리지 않는다 — 마감까지 늦거나 TO_001 로 덮이면 안 된다."""
+    semaphore, slot = await _lent_while_full(1.0)
+    lending = asyncio.Event()
+
+    async def tool() -> None:
+        async with lend_slot():
+            lending.set()
+            await asyncio.Event().wait()
+
+    running = asyncio.create_task(tool())
+    await lending.wait()
+    await semaphore.acquire()  # 다른 실행이 칸을 잡는다
+    running.cancel()
+
+    done, _ = await asyncio.wait({running}, timeout=0.5)
+    assert running in done and running.cancelled()
+    semaphore.release()
+    slot.release()
+    assert semaphore._value == 1
+
+
+async def test_canceling_while_taking_the_slot_back_propagates_at_once():
+    """재획득 대기 중 취소도 즉시 CancelledError — 살아 있는 재획득이 칸을 새게 두지 않는다."""
+    semaphore, slot = await _lent_while_full(1.0)
+    lending, answered = asyncio.Event(), asyncio.Event()
+
+    async def tool() -> None:
+        async with lend_slot():
+            lending.set()
+            await answered.wait()
+
+    running = asyncio.create_task(tool())
+    await lending.wait()
+    await semaphore.acquire()  # 다른 실행이 칸을 잡는다 — 재획득이 기다린다
+    answered.set()
+    await until(lambda: slot.taking is not None)
+    running.cancel()
+
+    done, _ = await asyncio.wait({running}, timeout=0.5)
+    assert running in done and running.cancelled()
+    semaphore.release()  # 살아 있는 재획득이 칸을 잡는다
+    await spin(10)
+    slot.release()
+    assert semaphore._value == 1

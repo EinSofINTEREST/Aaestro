@@ -102,6 +102,24 @@ def task_rejected(caller: str, callee: str, **details: Any) -> AaestroError:
     )
 
 
+def peer_failure(caller: str, callee: str, peer_error: Any, **details: Any) -> AaestroError:
+    """피호출자가 실패로 답한 태스크를 호출자 쪽 에러로 — SDK · transport 두 경로가 같이 쓴다.
+
+    실행을 시작하지 않은 재시도 가능 거절 (칸 대기 마감 · drain — ``details.started`` 가 false) 만
+    제출 실패 (``A2A_001``, retryable) 다. 실행 뒤의 실패는 retryable 이어도 부수효과가 났을 수 있어
+    ``A2A_003`` 이다. ``started`` 는 피호출자가 정한 값이라 신뢰할 수 없다 — 자동 재시도 계층이 이
+    값으로 판단하게 되면 다시 따진다.
+    """
+    if isinstance(peer_error, dict):
+        retryable, extra = peer_error.get("retryable"), peer_error.get("details")
+    else:
+        retryable = getattr(peer_error, "retryable", None)
+        extra = getattr(peer_error, "details", None)
+    if retryable is True and isinstance(extra, dict) and extra.get("started") is False:
+        return submit_failed(caller, callee, peer_error=peer_error, **details)
+    return task_rejected(caller, callee, peer_error=peer_error, **details)
+
+
 def _with_peer_reason(error: AaestroError, details: dict[str, Any]) -> AaestroError:
     """peer 가 준 사유를 원인 예외로 붙인다 — details 는 모델에 실리지 않는다."""
     reason = _peer_reason(details.get("peer_error"))

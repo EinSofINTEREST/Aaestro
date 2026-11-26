@@ -414,6 +414,31 @@ async def test_a_draining_peer_reaches_the_caller_as_retryable():
     assert error.retryable is True
 
 
+async def test_a_call_that_joined_a_running_task_and_gave_up_stays_a2a_003():
+    """같은 키로 이미 도는 실행에 합류한 호출의 마감 만료는 시작 전 거절이 아니다 (#416)."""
+    import asyncio
+
+    from aaestro.agentd.server import AgentRuntime
+    from aaestro.core.agent import TaskConfig
+
+    executor = _Gated()
+    runtime = AgentRuntime(agent=CALLEE, executor=executor)
+    first = asyncio.create_task(
+        runtime.run(make_task(task_id="hog", caller=CALLER, config=TaskConfig(timeout_s=30)))
+    )
+    await asyncio.wait_for(executor.started.wait(), timeout=5)
+
+    error = await _send_through_sdk(
+        runtime.run, make_task(task_id="hog", config=TaskConfig(timeout_s=0.05))
+    )
+    executor.gate.set()
+    await first
+
+    assert error.code == ErrorCode.A2A_003
+    assert error.details["peer_error"]["code"] == "TO_001"
+    assert executor.calls == ["hog"]  # 합류했다 — 새로 돌지 않았다
+
+
 async def test_a_retryable_failure_after_the_run_started_stays_a2a_003():
     """실행 뒤의 retryable 실패 (실행 마감 TO_001) 는 부수효과가 났을 수 있다 — A2A_003 그대로."""
     from aaestro.agentd.server import AgentRuntime

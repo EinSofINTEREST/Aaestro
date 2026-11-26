@@ -23,7 +23,7 @@ from aaestro.core.errors import (
     RetryPolicy,
 )
 from aaestro.observability.circuit import CircuitTelemetry
-from aaestro.protocols.a2a.errors import submit_failed, task_rejected, unreachable
+from aaestro.protocols.a2a.errors import peer_failure, submit_failed, unreachable
 from aaestro.protocols.telemetry import STATUS_COMPLETED, STATUS_FAILED, A2aTelemetry
 from aaestro.resilience import retrying
 
@@ -312,9 +312,7 @@ class A2AClient:
             raise submit_failed(self.agent, callee, reason=type(err).__name__) from err
 
         if result.status is TaskStatus.FAILED:
-            raise task_rejected(
-                self.agent, callee, a2a_task_id=task.task_id, peer_error=result.error
-            )
+            raise peer_failure(self.agent, callee, result.error, a2a_task_id=task.task_id)
         return result
 
 

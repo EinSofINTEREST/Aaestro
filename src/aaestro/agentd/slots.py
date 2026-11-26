@@ -86,11 +86,20 @@ async def lend_slot() -> AsyncIterator[None]:
     if slot.held:
         slot.held = False
         slot.semaphore.release()
+    canceled = False
     try:
         yield
+    except asyncio.CancelledError:
+        # 취소는 그대로 전파한다 — 칸을 다시 기다리면 /cancel · drain 이 마감까지 늦고 취소가
+        # TO_001 로 덮인다. 놓은 칸은 다른 빌려주기의 마지막 또는 실행의 release() 가 정리한다.
+        # shortcut: 도구 timeout (TO_002) 으로 취소돼도 실행이 계속 돌면 칸 없이 돈다
+        # (상한을 잠시 넘는다) — 진짜 취소와 가를 수 없어서다.
+        # 넘는 것이 문제가 되면 도구 경계에서 다시 잡게 바꾼다
+        canceled = True
+        raise
     finally:
         slot.lent -= 1
-        if not slot.lent and not slot.held and not slot.closed:
+        if not canceled and not slot.lent and not slot.held and not slot.closed:
             try:
                 await slot.take_back()
             except TimeoutError as err:
