@@ -12,7 +12,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
 import structlog
-from jinja2 import StrictUndefined, TemplateSyntaxError
+from jinja2 import StrictUndefined, TemplateSyntaxError, meta
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -514,13 +514,15 @@ class PromptsetLoader:
     def __init__(self, registry: ModuleRegistry) -> None:
         self._registry = registry
 
-    def load(self, ref: str) -> LoadedPromptset:
+    def load(self, ref: str, *, vet_names: bool = False) -> LoadedPromptset:
         """Load a promptset declaration.
 
         프롬프트셋을 로드합니다.
 
         Args:
             ref: Promptset reference (``promptsets/{name}@{version}``).
+            vet_names: 게시 검증용 — 템플릿을 렌더 환경으로 컴파일하고 선언 밖의 이름을 거절한다
+                (#716). agentd 기동은 켜지 않는다 (선언 밖 변수는 렌더의 ``MOD_004``, 04 Rules 1).
 
         Returns:
             The loaded promptset.
@@ -535,11 +537,13 @@ class PromptsetLoader:
         except ValidationError as err:
             reject_module(ref, err)
 
-        _check_template_files(manifest, path, ref)
+        _check_template_files(manifest, path, ref, vet_names=vet_names)
         return LoadedPromptset(ref=ref, manifest=manifest, root=path.root)
 
 
-def _check_template_files(manifest: PromptsetManifest, path: ModulePath, ref: str) -> None:
+def _check_template_files(
+    manifest: PromptsetManifest, path: ModulePath, ref: str, *, vet_names: bool = False
+) -> None:
     """선언된 템플릿 파일이 실재하고 경계를 우회하지 않는지 로드 시점에 확인한다.
 
     본문은 렌더할 때마다 다시 읽으므로 강제 지점은 렌더다 — 여기서는 같은 검사로 일찍 알린다.
@@ -575,6 +579,8 @@ def _check_template_files(manifest: PromptsetManifest, path: ModulePath, ref: st
                     details={"promptset": ref, "template": printable_label(name)},
                 ) from err
             _check_source(source, ref, name, ErrorCode.MOD_003)
+            if vet_names:
+                _check_compiles(source, ref, name, frozenset(spec.variables))
 
 
 def _inside_root(root: Path, candidate: Path) -> Path | None:
@@ -622,3 +628,32 @@ def _check_source(source: str, ref: str, template: str, code: ErrorCode) -> None
             message=f"template syntax is invalid: {template}",
             details={"promptset": ref, "template": template, "line": err.lineno},
         ) from err
+
+
+def _check_compiles(source: str, ref: str, template: str, declared: frozenset[str]) -> None:
+    """렌더 환경으로 컴파일하고, 선언 밖의 이름을 렌더 전에 거절한다 (#716).
+
+    ``check_syntax`` 는 파싱까지다 — 없는 필터 · 테스트는 컴파일에서, 제거된 전역 (``lipsum``) 과
+    선언하지 않은 변수는 이름 해석에서 드러난다. 렌더하지 않는다 (코드 실행 없음). 값은 싣지 않는다.
+    """
+    environment = GuardedEnvironment(
+        output_limit=DEFAULT_RENDER_LIMIT, autoescape=False, undefined=StrictUndefined
+    )
+    reason: str
+    try:
+        compiled_ast = environment.parse(source)
+        environment.compile(compiled_ast)
+    except TemplateSyntaxError as err:
+        # 없는 필터 · 테스트 — 컴파일이 던진다
+        reason = f"template syntax is invalid: {template} (line {err.lineno})"
+    else:
+        unknown = meta.find_undeclared_variables(compiled_ast) - declared - set(environment.globals)
+        if not unknown:
+            return
+        reason = f"template uses undeclared names: {template}"
+    raise AaestroError(
+        category=ErrorCategory.MODULE,
+        code=ErrorCode.MOD_003,
+        message=reason,
+        details={"promptset": ref, "template": printable_label(template)},
+    )

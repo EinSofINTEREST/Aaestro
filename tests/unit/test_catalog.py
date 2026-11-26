@@ -51,6 +51,9 @@ def workspace(tmp_path: Path) -> Path:
             },
         },
     )
+    (tmp_path / "modules" / "promptsets" / "solo" / "0.1.0" / "t.j2").write_text(
+        "ok\n", encoding="utf-8"
+    )
     (tmp_path / "graphs").mkdir()
     (tmp_path / "groups").mkdir()
     return tmp_path
@@ -149,6 +152,7 @@ def test_modules_group_versions_by_name(workspace):
             },
         },
     )
+    (workspace / "modules" / "promptsets" / "solo" / "0.2.0" / "t.j2").write_text("ok\n")
 
     assert Catalog.under(workspace).modules("promptsets").items == {"solo": ("0.1.0", "0.2.0")}
 
@@ -368,6 +372,7 @@ def test_a_module_with_an_outside_link_is_not_published(workspace, tmp_path):
     outside = tmp_path / "outside.j2"
     outside.write_text("outside\n", encoding="utf-8")
     module = workspace / "modules" / "promptsets" / "solo" / "0.1.0"
+    (module / "t.j2").unlink()  # fixture 가 둔 실제 파일을 링크로 바꾼다
     (module / "t.j2").symlink_to(outside)
 
     listed = Catalog.under(workspace).modules("promptsets")
