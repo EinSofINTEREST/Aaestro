@@ -399,6 +399,15 @@ Builder stages from other images are fine. `COPY --from=` must name an earlier s
 index); its sources are files of that stage and are not path-checked. Any other value — an image
 reference, a later stage, a variable — is refused, since it would pull an outside image at build time.
 
+**What the check does not govern.** It reads the `Dockerfile` text; it does not control what the build
+does. The build has no network restriction, so `RUN curl …` can fetch remote content; a builder stage
+(`FROM other/image AS b` + `COPY --from=b / /`) and `RUN --mount=…,from=<image>` (BuildKit) pull an outside image
+at build time and can replace the contents wholesale; and a `RUN` that adds a uid 0 account to `/etc/passwd`
+before `USER name` cannot be caught statically. Baking is a step where a trusted operator
+uploads the materials (`PUT /v1/agents/{name}/materials` sits behind the control token), and what runs
+afterwards is bounded elsewhere: the runtime starts the container as `1000:1000` and re-attachment checks
+it, and outbound calls at run time are decided by the egress proxy.
+
 What is refused before anything is built:
 
 - `404` (`NF_001`) — the agent is not declared.
