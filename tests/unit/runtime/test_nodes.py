@@ -15,20 +15,9 @@ from aaestro.core.agent import TaskResult, TaskStatus
 from aaestro.core.errors import AaestroError, ErrorCategory
 from aaestro.core.manifest import agent_name
 from aaestro.core.topology import NodeSpec
-from aaestro.runtime import nodes as nodes_module
 from aaestro.runtime.nodes import ControlNodeRuntime
 from tests.fixtures.builders import make_task
 from tests.fixtures.waiting import reached
-
-
-@pytest.fixture(autouse=True)
-def fresh_logger(monkeypatch):
-    """모듈 로거를 테스트마다 새로 물린다.
-
-    structlog 는 설정에 따라 로거를 첫 사용 때 굳힌다 (`cache_logger_on_first_use`). 앞선
-    테스트가 이 모듈의 로거를 굳혀 두면 `capture_logs` 가 보지 못한다 — 실행 순서에 기대지 않는다.
-    """
-    monkeypatch.setattr(nodes_module, "log", structlog.get_logger("test"))
 
 
 class FakeControlClient:

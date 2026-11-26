@@ -20,7 +20,6 @@ from aaestro.core.agent import TaskStatus
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 from aaestro.core.markers import STEER_HEADER
 from aaestro.core.topology import NodeSpec
-from aaestro.orchestrator import control as control_module
 from aaestro.orchestrator.control import create_app
 from aaestro.orchestrator.runs import RunService
 from aaestro.orchestrator.runstore import InMemoryRunStore, RunRecord
@@ -32,16 +31,6 @@ from tests.fixtures.fake_model import FakeModel, FakeTools, calls, text
 from tests.fixtures.waiting import reached
 
 AGENT_TOKEN = "agent-token"  # noqa: S105 — 테스트 값
-
-
-@pytest.fixture(autouse=True)
-def fresh_logger(monkeypatch):
-    """모듈 로거를 테스트마다 새로 물린다.
-
-    structlog 는 설정에 따라 로거를 첫 사용 때 굳힌다 (`cache_logger_on_first_use`). 앞선
-    테스트가 이 모듈의 로거를 굳혀 두면 `capture_logs` 가 보지 못한다 — 실행 순서에 기대지 않는다.
-    """
-    monkeypatch.setattr(control_module, "log", structlog.get_logger("test"))
 
 
 class FakeSteerer:
