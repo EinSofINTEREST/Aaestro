@@ -553,7 +553,7 @@ if pending_steers:                                   # 턴 경계 — tool 결�
 
 ### Decision Hooks — 루프 안의 결정 모델
 
-> **구현 상태**: 아래 결정 모델 훅 (회상 필터 · 입력 판별 `[untrusted: instructions detected]` · 도구 게이트) 은 아직 구현되지 않았다 — `spec.decision` 은 스키마와 배포 검증까지다 (#593). agentd 는 아직 쓰임을 부르지 않는다 (#596 · #597).
+> **구현 상태**: 아래 결정 모델 훅 (회상 필터 · 입력 판별 `[untrusted: instructions detected]` · 도구 게이트) 은 아직 구현되지 않았다 — `spec.decision` 은 스키마와 배포 검증까지다 (#593). agentd 는 provider 클라이언트를 만들어 두고 (프록시 창구 · 신원, #595) 아직 쓰임을 부르지 않는다 (#596 · #597).
 
 `spec.decision` 이 있으면 루프의 세 자리에서 결정 모델을 부른다. 셋 다 **원래 경로를 바꾸지
 않는 층**이다 — provider 가 없거나 `uncertain` 이면 결정 모델이 없을 때와 같이 동작한다

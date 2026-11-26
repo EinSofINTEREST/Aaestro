@@ -288,6 +288,17 @@ PROVIDER_HOSTS = {
 CONNECT 터널이 열리지 않는다. 판정 문자열일 뿐 어디서도 연결 대상으로 쓰지 않는다."""
 
 
+def decision_target(provider: str) -> str:
+    """결정 provider 호출의 판정 대상 — ``{provider}.decision.invalid`` (#595).
+
+    모델 API 와 같이 upstream 주소가 아니라 논리 이름으로 판정한다 — 운영자가 회수하는 것은
+    "그 결정 provider" 다. provider 는 설정 ``decision.providers`` 의 이름이고, 레지스트리는 설정을
+    읽지 않으므로 매니페스트의 ``spec.decision.provider`` 만으로 정해지는 이름이어야 한다.
+    ``.invalid`` 라 CONNECT 목적지로는 풀리지 않는다 (``openai-compat`` 과 같은 결).
+    """
+    return f"{provider}.decision.invalid"
+
+
 def egress_target(host: str, port: int = HTTPS_PORT) -> str:
     """판정 대상 이름 — 443 은 생략한다. 선언과 CONNECT 가 같은 이름을 쓰게 한 곳에서 정한다."""
     host = host.lower().rstrip(".")
@@ -305,6 +316,7 @@ class EgressBaseline:
 
     - 매니페스트 ``runtime.egress``
     - 모델 provider 의 논리 호스트 (프록시가 종단해 키를 주입하는 호출) — fallback 포함
+    - 결정 provider 의 논리 이름 (``spec.decision.provider`` — ``decision_target``)
     - external MCP 서버 ``url`` 의 호스트
 
     선언을 요청마다 읽는다 — 목적지 추가·삭제가 재시작 없이 다음 판정에 반영된다.
@@ -335,6 +347,8 @@ class EgressBaseline:
             host = PROVIDER_HOSTS.get(provider)
             if host is not None:
                 targets.add(host)
+        if manifest.spec.decision is not None:
+            targets.add(decision_target(manifest.spec.decision.provider))
         for server in manifest.spec.mcp.servers:
             target = url_target(server.url) if server.url is not None else None
             if target is not None:
@@ -417,6 +431,7 @@ __all__ = [
     "MemoryBaseline",
     "RunParticipation",
     "RunRecords",
+    "decision_target",
     "egress_target",
     "url_target",
 ]

@@ -8,6 +8,7 @@ healthy 로 답해, MCP 세션이 재연결을 소진해도 runtime 의 재시�
 
 - 필수 MCP 서버 세션이 재연결을 소진하면 **unhealthy** — 재시작이 세션을 다시 세운다
 - optional 서버의 실패는 **degraded** — 살아있고, 재시작 대상이 아니다
+- 결정 provider 는 circuit 이 열렸으면 **degraded** — 쓰임은 원래 경로로 간다 (#595)
 - 모델은 **최근 호출 기록**으로 본다. health 마다 provider 를 부르지 않는다. 실패는 degraded 까지만:
   provider 장애는 컨테이너를 재시작해도 낫지 않는다
 """
@@ -71,7 +72,17 @@ def agent_health(executor: Any) -> HealthStatus:
     model = getattr(executor, "model_health", None)
     if isinstance(model, ModelHealth):
         components["model"] = model.component()
+    decision = getattr(executor, "decision", None)
+    if decision is not None:
+        components["decision"] = _decision_component(decision)
     return HealthStatus.aggregate(components)
+
+
+def _decision_component(client: Any) -> ComponentHealth:
+    """circuit 이 열렸으면 degraded — provider 장애는 원래 경로로 가므로 unhealthy 가 아니다."""
+    if client.breaker.can_attempt():
+        return ComponentHealth(state=HealthState.HEALTHY)
+    return ComponentHealth(state=HealthState.DEGRADED, detail="decision provider circuit open")
 
 
 def _mcp_components(binding: Any) -> dict[str, ComponentHealth]:

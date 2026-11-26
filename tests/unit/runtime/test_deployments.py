@@ -835,7 +835,18 @@ async def test_the_sqlite_store_survives_a_reopen(tmp_path, manager):
 # --- agent_env 는 secret 을 우회하지 못한다 ------------------------------------------
 
 
-@pytest.mark.parametrize("key", ["ANTHROPIC_API_KEY", "DB_PASSWORD", "MY_SECRET", "X_TOKEN"])
+@pytest.mark.parametrize(
+    "key",
+    [
+        "ANTHROPIC_API_KEY",
+        "DB_PASSWORD",
+        "MY_SECRET",
+        "X_TOKEN",
+        # 이름이 비밀처럼 안 보여도 프록시 전용 키는 에이전트 env 에 못 들어간다
+        "AAESTRO_EGRESS_DECISION_KEY_JEV",
+        "AAESTRO_EGRESS_MODE",
+    ],
+)
 def test_agent_env_refuses_secret_looking_keys(workspace, docker, key):
     catalog = Catalog.under(workspace)
     with pytest.raises(AaestroError) as excinfo:
@@ -2912,6 +2923,45 @@ def test_a_remote_mcp_credential_stays_with_the_proxy(manager):
     assert proxied["LOCAL_TOKEN"] == "local", "stdio 서버의 자격은 컨테이너 안에서 쓴다"
 
 
+def test_agent_env_cannot_smuggle_a_proxy_held_credential(manager):
+    """agent_env 의 원격 MCP 토큰 이름도 프록시가 있으면 컨테이너 · 사이드카 env 로 안 나간다."""
+    from aaestro.core.manifest import AgentManifest
+    from aaestro.runtime.deployments import EgressEndpoints, Provision
+    from aaestro.runtime.sidecars import sidecar_env
+
+    doc = agent_doc("alpha")
+    doc["spec"]["runtime"] = {"env_allowlist": ["CORP_SEARCH_BEARER"]}
+    doc["spec"]["mcp"] = {
+        "servers": [
+            {
+                "name": "corp",
+                "transport": "streamable-http",
+                "url": "https://mcp.example.com/mcp",
+                "auth": {"type": "bearer", "token_env": "CORP_SEARCH_BEARER"},
+            },
+            {
+                "name": "browser",
+                "transport": "streamable-http",
+                "sidecar": {"image": "mcp/search:0.3.0"},
+                "env_allowlist": ["CORP_SEARCH_BEARER"],
+            },
+        ]
+    }
+    manifest = AgentManifest.model_validate(doc)
+    manager.agent_env = {"CORP_SEARCH_BEARER": "t", "OTHER_URL": "http://x"}
+    manager.secrets_env = {"CORP_SEARCH_BEARER": "t"}
+    manager.egress = EgressEndpoints(
+        connect_url="http://aaestro-egress:8080", providers_url="http://aaestro-egress:8081"
+    )
+    provision = Provision(env={}, mounts=(), a2a_port=None, image=None)
+
+    env = manager._env_for(manifest, provision)  # noqa: SLF001
+
+    assert "CORP_SEARCH_BEARER" not in env
+    assert env["OTHER_URL"] == "http://x"
+    assert "CORP_SEARCH_BEARER" not in sidecar_env(manifest.spec.mcp.servers[1], env)
+
+
 def test_the_proxy_wiring_points_remote_mcp_at_the_termination():
     from aaestro.protocols.mcp.transport import MCP_PROXY_URL_ENV
     from aaestro.runtime.deployments import EgressEndpoints
@@ -3694,3 +3744,35 @@ async def test_a_control_address_failure_loses_only_its_deployment(workspace, he
     assert "alpha (lookup RuntimeError)" in (touched[broken.deployment_id].error or "")
     assert touched[fine.deployment_id].status == DeploymentStatus.READY
     await second.launcher.stop_all()
+
+
+def test_a_decision_declaring_agent_reaches_its_provider_through_the_proxy(manager):
+    """#595 — 결정 provider 주소는 프록시 창구, kind · 상한은 설정에서. 자격은 신원 하나뿐이다."""
+    from aaestro.core.manifest import AgentManifest
+    from aaestro.decision import DECISION_KIND_ENV, DECISION_TIMEOUT_ENV, DECISION_URL_ENV
+    from aaestro.runtime.deployments import EgressEndpoints
+
+    doc = agent_doc("alpha")
+    doc["spec"]["decision"] = {
+        "provider": "posek",
+        "model": "jev-1.13",
+        "sets": [{"ref": "decisionsets/triage@0.1.0", "as": "triage"}],
+    }
+    deciding = AgentManifest.model_validate(doc)
+    plain = manager.catalog.agent("beta")
+    manager.egress = EgressEndpoints(
+        connect_url="http://aaestro-egress:8080",
+        providers_url="http://aaestro-egress:8081/",
+        decision_kinds={"posek": "jev"},
+        decision_timeout_s=3.0,
+    )
+    topology = manager.catalog.graph("two")
+
+    provisions = manager._provision(  # noqa: SLF001 — 배선 조립만 본다
+        topology, [deciding, plain], a2a_secret="s", credentials={"alpha": "c-a", "beta": "c-b"}
+    )
+
+    env = provisions["alpha"].env
+    assert env[DECISION_URL_ENV] == "http://aaestro-egress:8081/decision/posek"
+    assert (env[DECISION_KIND_ENV], env[DECISION_TIMEOUT_ENV]) == ("jev", "3.0")
+    assert DECISION_URL_ENV not in provisions["beta"].env, "선언하지 않은 에이전트에는 싣지 않는다"
