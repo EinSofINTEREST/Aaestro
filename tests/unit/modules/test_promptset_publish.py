@@ -127,6 +127,43 @@ def test_the_rejection_never_echoes_the_template_text(tmp_path):
     assert "secret_marker_xyz" not in repr(problem)
 
 
+@pytest.mark.parametrize("where", ["default", "locale"])
+def test_a_non_utf8_template_only_drops_that_promptset(tmp_path, where):
+    catalog = publish(tmp_path, "{{ query }}", locale_body="{{ query }}")
+    module = tmp_path / "modules" / "promptsets" / "solo" / "0.1.0"
+    bad = (
+        module / "templates" / "default.j2"
+        if where == "default"
+        else (module / "locales" / "ko" / "default.j2")
+    )
+    bad.write_bytes(b"\xff\xfe secret_marker_xyz")
+    good = tmp_path / "modules" / "promptsets" / "good" / "0.1.0"
+    good.mkdir(parents=True)
+    (good / "promptset.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "apiVersion": "aaestro/v1",
+                "kind": "Promptset",
+                "metadata": {"name": "good", "version": "0.1.0"},
+                "spec": {"engine": "jinja2", "templates": {"system": {"file": "s.j2"}}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (good / "s.j2").write_text("ok", encoding="utf-8")
+
+    listed = catalog.modules("promptsets")
+
+    assert listed.items == {"good": ("0.1.0",)}
+    assert [p.code for p in listed.problems] == [ErrorCode.MOD_003]
+    assert "secret_marker_xyz" not in repr(listed.problems[0])
+    with pytest.raises(AaestroError) as excinfo:
+        catalog.module("promptsets", "solo", "0.1.0")
+    assert excinfo.value.code == ErrorCode.MOD_003
+    assert excinfo.value.details["cause"] == "UnicodeDecodeError"
+    assert excinfo.value.__cause__ is None
+
+
 def test_every_promptset_in_the_repository_is_published():
     root = Path(__file__).resolve().parents[3]
 

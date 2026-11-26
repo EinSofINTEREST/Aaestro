@@ -499,6 +499,18 @@ class LoadedPromptset(BaseModel):
                     message="failed to read template file",
                     details={"promptset": self.ref, "template": template},
                 ) from err
+            except UnicodeDecodeError as err:
+                # 예외 문자열에 파일 바이트가 실리므로 원인 체인을 끊고 종류 이름만 싣는다
+                raise AaestroError(
+                    category=ErrorCategory.MODULE,
+                    code=ErrorCode.MOD_004,
+                    message="failed to read template file",
+                    details={
+                        "promptset": self.ref,
+                        "template": template,
+                        "cause": type(err).__name__,
+                    },
+                ) from None
 
         raise AaestroError(
             category=ErrorCategory.MODULE,
@@ -578,6 +590,18 @@ def _check_template_files(
                     message="failed to read template file",
                     details={"promptset": ref, "template": printable_label(name)},
                 ) from err
+            except UnicodeDecodeError as err:
+                # 예외 문자열에 파일 바이트가 실리므로 원인 체인을 끊고 종류 이름만 싣는다
+                raise AaestroError(
+                    category=ErrorCategory.MODULE,
+                    code=ErrorCode.MOD_003,
+                    message="failed to read template file",
+                    details={
+                        "promptset": ref,
+                        "template": printable_label(name),
+                        "cause": type(err).__name__,
+                    },
+                ) from None
             if vet_names:
                 locale = None if candidate is default else candidate.parent.name
                 _vet_template(source, ref, name, frozenset(spec.variables), locale)
