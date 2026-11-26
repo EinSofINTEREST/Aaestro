@@ -436,3 +436,39 @@ async def test_ticket_verdicts_are_cached_and_bounded_like_decisions(monkeypatch
     assert len(client._decisions_denied) == 4  # noqa: SLF001
     refused = await client.verify_ticket("never-seen")
     assert not refused.allowed and refused.source is DecisionSource.UNREACHABLE
+
+
+@pytest.mark.parametrize("removal", ["invalidate", "evict"])
+async def test_entry_removed_while_refetching_is_not_revived_by_an_outage(monkeypatch, removal):
+    """fetch 를 기다리는 사이 항목이 지워져도 장애 경로는 KeyError 없이 거부한다 (#698)."""
+    from aaestro.access import client as access_client
+    from aaestro.access.client import _UnreachableError
+
+    monkeypatch.setattr(access_client, "MAX_CACHED_DECISIONS", 2)
+    client = AccessClient(base_url="http://cp", enforcer_token="t", component="egress")
+    _registry(monkeypatch, client, down=[False])
+    await client.decide("A", ResourceKind.EGRESS, "h0")
+    client._feed_alive = False  # noqa: SLF001
+    client.recheck_s = -1  # 낡은 항목이라 다시 묻는다
+
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def stalled(path: str, body: dict) -> dict:
+        entered.set()
+        await release.wait()
+        raise _UnreachableError
+
+    monkeypatch.setattr(client, "_post", stalled)
+    task = asyncio.create_task(client.decide("A", ResourceKind.EGRESS, "h0"))
+    await entered.wait()
+    if removal == "invalidate":
+        client._invalidate(5)  # noqa: SLF001
+    else:
+        other = access_client._Cached(("a", True, "d"), 1, 0.0, None)  # noqa: SLF001
+        del client._decisions[next(iter(client._decisions))]  # noqa: SLF001  LRU 축출과 같은 결과
+        client._decisions[("x", "y", "h1", "")] = other  # noqa: SLF001
+    release.set()
+
+    verdict = await task
+    assert not verdict.allowed and verdict.source is DecisionSource.UNREACHABLE
+    assert not any(key[2] == "h0" for key in client._decisions)  # noqa: SLF001

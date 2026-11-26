@@ -292,7 +292,9 @@ class AccessClient:
             value, version, valid_until = await fetch()
         except _UnreachableError:
             self._reachable(False)
-            if entry is not None and not _expired(entry, now):
+            # fetch 를 기다리는 동안 축출 · 무효화가 그 항목을 지웠으면 캐시에 없는 판정이다 —
+            # 되살리지도 쓰지도 않는다 (무효화된 낡은 허용을 장애 중에 쓰면 회수가 뒤집힌다)
+            if entry is not None and home.get(key) is entry and not _expired(entry, now):
                 # 캐시에 있던 판정은 알림이 끊겨도 그대로 쓴다 (01 — 결정 D4)
                 home[key] = home.pop(key)
                 return entry.value, DecisionSource.CACHE
