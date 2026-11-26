@@ -222,8 +222,10 @@ spec:
      (Rules 4). 그래서 agentd 는 렌더마다 자식 프로세스 하나에서 돌린다 (`agentd/render.py`, #715):
      자식은 시작 때의 주소 공간 + `RENDER_MEMORY_HEADROOM` (64 MiB) 을 넘으면, 부모는 벽시계
      `RENDER_TIMEOUT_S` (2초) 를 넘으면 자식을 끝내고 `VAL_002` (`details.kind: memory | time`) 로
-     실패시킨다. 그 동안 이벤트 루프 (health · 취소 · 다른 태스크) 는 돈다. 응답 없이 죽은 자식과 상한을
-     넘는 응답은 `INTERNAL_001` (`retryable=False`), 태스크 마감 · 취소는 자식을 정리하고 그대로
+     실패시킨다 — 시간 초과는 `retryable` 이다 (CPU 기아 같은 일시 장애일 수 있다). 그 동안 이벤트 루프
+     (health · 취소 · 다른 태스크) 는 돈다. 자식 진입점은 agentd 밖 (`modules/render_child.py`) 이고
+     자식은 stderr 에 쓰지 않는다 — 그 밖의 예외는 종류 이름만 (`details.cause`) 실은 `INTERNAL_001`
+     이다. 응답 없이 죽은 자식과 상한을 넘는 응답도 `INTERNAL_001` (`retryable=False`), 태스크 마감 · 취소는 자식을 정리하고 그대로
      `TO_001` / 취소다. 태스크 렌더와 `system` 렌더 모두 이 길이다. 자원 격리이지 권한 경계가
      아니다 — 자식은 같은 사용자 · 같은 파일시스템이다. 반복문 안의 정적 글이 입력만큼 불어나거나, 같은 캡처를 최상위 출력과 섞어 여러 번
      출력하면 렌더 상한에서 `VAL_002` 로 잡힐 수 있다. 생략은 값만 비우고 주변 글은 남긴다

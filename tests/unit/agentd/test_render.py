@@ -11,6 +11,7 @@ import asyncio
 import multiprocessing
 import os
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -45,6 +46,11 @@ TEMPLATES = {
     "loop": (
         "{% for i in range(n) %}{% for j in range(n) %}{% endfor %}{% endfor %}done\n",
         {"n": {"type": "integer"}},
+    ),
+    # 반복문의 정적 글이 렌더 상한을 넘긴다 — 값은 그 전에 잘린다
+    "spill": (
+        "{{ q }}{% for i in range(n) %}xxxxxxxxxx{% endfor %}\n",
+        {"q": {"type": "string"}, "n": {"type": "integer"}},
     ),
 }
 MEMORY_BOMB = {"q": "a", "width": 300_000_000}
@@ -103,6 +109,7 @@ async def test_a_memory_bomb_template_fails_the_task_with_val_002_memory(registr
     assert result.status == TaskStatus.FAILED
     assert result.error is not None
     assert (result.error.code, result.error.details["kind"]) == ("VAL_002", "memory")
+    assert result.error.retryable is False
 
 
 async def test_a_time_bomb_fails_the_task_while_the_daemon_keeps_answering(registry):
@@ -135,6 +142,8 @@ async def test_a_time_bomb_fails_the_task_while_the_daemon_keeps_answering(regis
     assert result.error.code == "VAL_002"
     assert result.error.details["kind"] == "time"
     assert result.error.details["limit_s"] == FAST_TIMEOUT_S
+    # CPU 기아 같은 일시 장애일 수 있다 — 멱등 캐시에 영구 실패로 남지 않게
+    assert result.error.retryable is True
     assert ticks >= 10
 
 
@@ -167,6 +176,21 @@ def stall(conn: Connection) -> None:
     time.sleep(60)
 
 
+SECRET = "secret-value-from-task-input"
+
+
+@dataclass(frozen=True)
+class RaiseWithValue:
+    """stderr 를 파일로 돌린 뒤 값이 든 예외를 던진다 — 자식 stderr 는 forkserver 의 것이다."""
+
+    stderr_path: str
+
+    def __call__(self, conn: Connection) -> None:
+        fd = os.open(self.stderr_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        os.dup2(fd, 2)
+        raise ValueError(SECRET)
+
+
 async def test_a_child_that_dies_without_a_reply_is_internal_001(registry):
     with pytest.raises(AaestroError) as exc_info:
         await RenderSandbox(child_hook=die).render(
@@ -187,6 +211,39 @@ async def test_a_reply_beyond_the_size_limit_is_internal_001(registry):
         )
 
     assert exc_info.value.code == "INTERNAL_001"
+
+
+async def test_an_unexpected_child_error_is_internal_001_with_its_type_only(registry, tmp_path):
+    """multiprocessing 이 traceback 을 찍으면 예외 문자열의 입력 값이 컨테이너 로그로 샌다."""
+    stderr = tmp_path / "child-stderr"
+
+    with pytest.raises(AaestroError) as exc_info:
+        await RenderSandbox(child_hook=RaiseWithValue(str(stderr))).render(
+            promptset(registry), "default", {"q": "x"}, agent="a", task_id="t"
+        )
+
+    assert stderr.read_text(encoding="utf-8") == ""
+    error = exc_info.value
+    assert (error.code, error.details.get("cause"), error.retryable) == (
+        "INTERNAL_001",
+        "ValueError",
+        False,
+    )
+    assert SECRET not in str(error.payload())
+
+
+async def test_render_warnings_survive_a_failed_render(registry):
+    """잘림 WARN 뒤의 실패에서 WARN 이 버려지면 왜 실패했는지의 단서가 사라진다."""
+    loaded = promptset(registry).model_copy(update={"render_limit": 2000})
+
+    with capture_logs() as logs, pytest.raises(AaestroError) as exc_info:
+        await RenderSandbox().render(
+            loaded, "spill", {"q": "y" * 5000, "n": 1000}, agent="a", task_id="t-2"
+        )
+
+    assert exc_info.value.code == "VAL_002"
+    [warning] = [log for log in logs if log["event"] == "template variable truncated"]
+    assert (warning["agent"], warning["task_id"], warning["variable"]) == ("a", "t-2", "q")
 
 
 async def test_an_error_raised_in_the_render_comes_back_unchanged(registry):

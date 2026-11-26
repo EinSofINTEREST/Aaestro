@@ -11,17 +11,14 @@ from __future__ import annotations
 
 import asyncio
 import json
-import math
 import multiprocessing
-import os
-import resource
-from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import structlog
 
 from aaestro.core.errors import AaestroError, AaestroErrorPayload, ErrorCategory, ErrorCode
+from aaestro.modules.render_child import RenderLimits, run
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -35,33 +32,33 @@ RENDER_TIMEOUT_S = 2.0
 RENDER_MEMORY_HEADROOM = 64 << 20
 """자식이 시작할 때의 주소 공간 위로 렌더가 더 쓸 수 있는 바이트 — 넘으면 ``kind: memory``."""
 
-MAX_REPLAYED_LOGS = 64
-"""자식의 WARN 중 부모가 다시 내는 건수 상한."""
-
 REPLY_OVERHEAD = 64 << 10
 """응답 상한에서 본문 밖의 몫 (JSON 틀 · 로그)."""
+
+EXIT_GRACE_S = 0.5
+"""응답을 보낸 자식이 스스로 끝나기를 기다리는 상한 — 넘으면 그때 죽인다."""
 
 REPLY_BYTES_PER_CHAR = 6
 """JSON 이 글자 하나를 쓰는 최대 바이트 — 제어 문자는 ``\\u0000`` 여섯 바이트다."""
 
 CGROUP_MEMORY_MAX = Path("/sys/fs/cgroup/memory.max")
 
-_PRELOAD = ["aaestro.agentd.render", "aaestro.modules.promptset", "aaestro.modules.registry"]
-"""forkserver 가 미리 import 하는 모듈 — 렌더마다 import 하면 렌더당 수백 ms 다."""
+_PRELOAD = [
+    "aaestro.modules.render_child",
+    "aaestro.modules.promptset",
+    "aaestro.modules.registry",
+    "jinja2",
+]
+"""forkserver 가 미리 import 하는 모듈 — 렌더마다 import 하면 렌더당 수백 ms 다.
+자식 진입점은 agentd 밖에 있다: 여기 agentd 를 싣으면 fastapi · 실행기 · 서버가 함께 상주한다."""
 
 log = structlog.get_logger(__name__)
-
-
-@dataclass(frozen=True)
-class _Limits:
-    timeout_s: float
-    memory_headroom: int
 
 
 class RenderSandbox:
     """Renders promptset templates in a short-lived child process.
 
-    렌더마다 forkserver 에서 자식 하나를 띄워 렌더하고 응답을 받은 뒤 반드시 죽인다.
+    렌더마다 forkserver 에서 자식 하나를 띄워 렌더하고, 끝나면 자식을 남기지 않는다.
     상주 워커 · ProcessPoolExecutor 를 쓰지 않는 이유는 실행 중인 렌더를 그것만 죽일 수
     없어서다 (#715 설계 결정).
     """
@@ -76,7 +73,7 @@ class RenderSandbox:
         self._context = multiprocessing.get_context("forkserver")
         # forkserver 가 이미 떠 있으면 효과가 없다 — 같은 목록이라 상관없다
         self._context.set_forkserver_preload(_PRELOAD)
-        self._limits = _Limits(timeout_s=timeout_s, memory_headroom=memory_headroom)
+        self._limits = RenderLimits(timeout_s=timeout_s, memory_headroom=memory_headroom)
         # 테스트가 자식 진입 직후를 흉내 내는 자리 (사망 · 큰 응답) — 모듈 최상위 함수여야 한다
         self._child_hook = child_hook
 
@@ -100,23 +97,27 @@ class RenderSandbox:
         """
         reader, writer = self._context.Pipe(duplex=False)
         process = self._context.Process(
-            target=_child,
+            target=run,
             args=(writer, promptset, template, dict(variables), self._limits, self._child_hook),
             daemon=True,
         )
         maxlength = REPLY_BYTES_PER_CHAR * promptset.render_limit + REPLY_OVERHEAD
+        answered = False
         try:
             process.start()
             writer.close()
             raw = await self._receive(reader, maxlength)
+            answered = True
         except TimeoutError:
             raise self._limit_error("time", promptset, template, agent, task_id) from None
         except (EOFError, OSError) as err:
             if process.pid is None:
                 raise  # 띄우지도 못했다 — 렌더의 결과가 아니다
-            # 응답 없이 죽었거나 (EOF) 상한을 넘는 길이를 알렸다 (bad message length).
-            # 이미 죽은 자식에 kill 은 아무것도 하지 않아 exitcode 는 실제 종료 코드다
-            process.kill()
+            if isinstance(err, EOFError):
+                # 쓰는 쪽을 닫았으니 끝나는 중이다 — 실제 종료 코드를 기다린다
+                process.join(EXIT_GRACE_S)
+            if process.exitcode is None:
+                process.kill()  # 상한을 넘는 길이를 알리고 쓰기에서 멈춘 자식
             process.join()
             raise AaestroError(
                 category=ErrorCategory.INTERNAL,
@@ -128,9 +129,13 @@ class RenderSandbox:
                 details={"exitcode": process.exitcode, "promptset": promptset.ref},
             ) from err
         finally:
-            # 응답을 보낸 자식도, 취소 · 마감으로 떠나는 경우도 남기지 않는다
             if process.pid is not None:
-                process.kill()
+                if answered:
+                    # 응답을 보낸 자식은 스스로 끝난다 — 거둬진 pid 에 신호를 보내지 않게 기다린다
+                    process.join(EXIT_GRACE_S)
+                # 시간 초과 · 취소 · 응답 뒤에도 남은 자식은 여기서 끝낸다
+                if process.exitcode is None:
+                    process.kill()
                 process.join()
                 process.close()
             writer.close()
@@ -164,14 +169,25 @@ class RenderSandbox:
         task_id: str | None,
     ) -> str:
         reply = json.loads(raw.decode("utf-8", "surrogatepass"))
+        # 실패 응답에도 실린다 — 잘림 WARN 뒤의 실패에서 왜 잘렸는지가 사라지지 않게
+        for entry in reply["logs"]:
+            event = entry.pop("event", "render warning")
+            log.warning(event, **{**entry, "agent": agent, "task_id": task_id})
         if "error" in reply:
             payload = AaestroErrorPayload.model_validate(reply["error"])
             raise AaestroError.from_payload(payload)
         if "limit" in reply:
             raise self._limit_error(reply["limit"], promptset, template, agent, task_id)
-        for entry in reply["logs"]:
-            event = entry.pop("event", "render warning")
-            log.warning(event, **{**entry, "agent": agent, "task_id": task_id})
+        if "crash" in reply:
+            raise AaestroError(
+                category=ErrorCategory.INTERNAL,
+                code=ErrorCode.INTERNAL_001,
+                message="template render failed unexpectedly",
+                agent=agent,
+                task_id=task_id,
+                retryable=False,
+                details={"cause": reply["crash"], "promptset": promptset.ref},
+            )
         text: str = reply["text"]
         return text
 
@@ -192,6 +208,8 @@ class RenderSandbox:
             message=f"template render exceeded the {kind} limit",
             agent=agent,
             task_id=task_id,
+            # 시간 초과는 CPU 기아 같은 일시 장애일 수 있다 — 멱등 캐시에 영구 실패로 남기지 않는다
+            retryable=kind == "time",
             details=details,
         )
 
@@ -217,50 +235,3 @@ def warn_if_headroom_exceeds_memory(
             headroom_bytes=RENDER_MEMORY_HEADROOM,
             memory_max_bytes=limit,
         )
-
-
-def _child(
-    conn: Connection,
-    promptset: LoadedPromptset,
-    template: str,
-    variables: dict[str, Any],
-    limits: _Limits,
-    hook: Callable[[Connection], None] | None,
-) -> None:
-    """자식 진입점 — 상한을 건 뒤에야 템플릿을 읽는다."""
-    _confine(limits)
-    logs: list[dict[str, Any]] = []
-    structlog.configure(processors=[_collector(logs)], cache_logger_on_first_use=False)
-    if hook is not None:
-        hook(conn)
-    reply: dict[str, Any]
-    try:
-        reply = {"text": promptset.render(template, **variables), "logs": logs}
-    except MemoryError:
-        reply = {"limit": "memory"}
-    except AaestroError as err:
-        reply = {"error": err.payload().model_dump(mode="json")}
-    body = json.dumps(reply, ensure_ascii=False, default=str)
-    conn.send_bytes(body.encode("utf-8", "surrogatepass"))
-
-
-def _confine(limits: _Limits) -> None:
-    page = os.sysconf("SC_PAGE_SIZE")
-    size = int(Path("/proc/self/statm").read_text(encoding="utf-8").split()[0]) * page
-    address_space = size + limits.memory_headroom
-    resource.setrlimit(resource.RLIMIT_AS, (address_space, address_space))
-    # 벽시계 상한이 먼저 닿는다 — CPU 상한은 부모가 죽이지 못했을 때의 안전망이다
-    cpu = math.ceil(limits.timeout_s) + 1
-    resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu + 2))
-    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-
-
-def _collector(logs: list[dict[str, Any]]) -> Callable[..., Any]:
-    """자식의 로그를 모으고 버린다 — 자식 stdout 은 컨테이너 로그로 새지 않는다."""
-
-    def collect(_logger: Any, method_name: str, event_dict: dict[str, Any]) -> Any:
-        if method_name == "warning" and len(logs) < MAX_REPLAYED_LOGS:
-            logs.append(dict(event_dict))
-        raise structlog.DropEvent
-
-    return collect
