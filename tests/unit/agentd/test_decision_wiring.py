@@ -92,10 +92,13 @@ def test_decision_client_without_the_proxy_wiring_warns_and_takes_the_original_p
     ("dropped", "replaced"),
     [
         (ACCESS_CREDENTIAL_ENV, None),
+        (DECISION_URL_ENV, None),
         (DECISION_KIND_ENV, None),
         (DECISION_TIMEOUT_ENV, None),
         (DECISION_TIMEOUT_ENV, "soon"),
         (DECISION_TIMEOUT_ENV, "0"),
+        (DECISION_TIMEOUT_ENV, "inf"),
+        (DECISION_TIMEOUT_ENV, "nan"),
     ],
 )
 def test_decision_client_partial_wiring_raises_cfg_001(dropped, replaced):
@@ -111,6 +114,16 @@ def test_decision_client_partial_wiring_raises_cfg_001(dropped, replaced):
     assert exc.value.code == "CFG_001"
     assert exc.value.details["settings"] == [dropped]
     assert "cred-researcher" not in str(exc.value.details)
+
+
+@pytest.mark.parametrize("only", [DECISION_URL_ENV, DECISION_KIND_ENV, DECISION_TIMEOUT_ENV])
+def test_decision_client_one_of_three_settings_is_partial_not_unwired(only):
+    """셋 중 하나만 있어도 runtime 이 주입하다 만 것이다 — 조용히 원래 경로로 가지 않는다."""
+    with pytest.raises(AaestroError) as exc:
+        decision_client(deciding(), {only: WIRED[only], ACCESS_CREDENTIAL_ENV: "c"})
+
+    assert exc.value.code == "CFG_001"
+    assert only not in exc.value.details["settings"]
 
 
 def test_decision_health_is_degraded_while_the_circuit_is_open():

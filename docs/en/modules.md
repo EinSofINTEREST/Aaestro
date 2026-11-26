@@ -925,8 +925,12 @@ declaring agent `AAESTRO_DECISION_URL` (`<providers_url>/decision/<provider>`),
 proxy swaps it for the operator key (`AAESTRO_EGRESS_DECISION_KEY_<NAME>`, see the
 [egress proxy](api.md)). The registry decides the call as `egress` to `<provider>.decision.invalid`,
 which every agent declaring that provider holds; revoking it is `403` (`ACC_001`) on the next call.
-Without the proxy, agentd logs `decision provider not wired, uses take the original path` and builds no
-provider. The uses do not call it yet (#596 · #597); agent health reports a `decision` component,
+agentd tells a proxy refusal from a provider failure by the `x-aaestro-egress-error-code` header:
+it raises `ACC_001` / `ACC_002` (retried once), the use falls back to the original path, and the
+refusal does not count against the decision circuit — granting it back works on the next call.
+With none of the three settings (no proxy), agentd logs
+`decision provider not wired, uses take the original path` and builds no provider; with only some of
+them, or a timeout that is not a finite positive number, it refuses to start (`CFG_001`). The uses do not call it yet (#596 · #597); agent health reports a `decision` component,
 `degraded` while its circuit is open.
 
 Deployment validation (finding `decision`): a question whose alias is not in `sets` or that the

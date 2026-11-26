@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import math
 import re
 import unicodedata
 from dataclasses import dataclass, field
@@ -451,8 +452,8 @@ def decision_client(
     Models 2).
 
     Raises:
-        AaestroError: CONFIG/``CFG_001`` when the wiring is partial — 주소는 있는데 kind · 상한 ·
-            신원이 없거나 읽을 수 없다.
+        AaestroError: CONFIG/``CFG_001`` when the wiring is partial — 주소 · kind · 상한 중 일부만
+            있거나, 상한이 유한한 양수가 아니거나, 신원이 없다.
     """
     declared = manifest.spec.decision
     if declared is None:
@@ -460,20 +461,24 @@ def decision_client(
     from aaestro.access.model import ACCESS_CREDENTIAL_ENV
     from aaestro.decision import DECISION_KIND_ENV, DECISION_TIMEOUT_ENV, DECISION_URL_ENV
 
-    url = environ.get(DECISION_URL_ENV, "").strip()
-    if not url:
+    url, kind, timeout = (
+        environ.get(name, "").strip()
+        for name in (DECISION_URL_ENV, DECISION_KIND_ENV, DECISION_TIMEOUT_ENV)
+    )
+    if not (url or kind or timeout):
+        # 셋 다 없을 때만 "배선 없음" 이다 — 하나라도 있으면 runtime 이 주입하다 만 것이다
         log.warning(
             "decision provider not wired, uses take the original path",
             agent=manifest.name,
             provider=declared.provider,
         )
         return None
-    kind = environ.get(DECISION_KIND_ENV, "").strip()
     identity = environ.get(ACCESS_CREDENTIAL_ENV, "").strip()
-    timeout_s = _positive_float(environ.get(DECISION_TIMEOUT_ENV, ""))
+    timeout_s = _positive_float(timeout)
     missing = [
         name
         for name, ok in (
+            (DECISION_URL_ENV, url),
             (DECISION_KIND_ENV, kind),
             (DECISION_TIMEOUT_ENV, timeout_s),
             (ACCESS_CREDENTIAL_ENV, identity),
@@ -515,7 +520,8 @@ def _positive_float(raw: str) -> float | None:
         value = float(raw)
     except ValueError:
         return None
-    return value if value > 0 else None
+    # inf · nan 은 상한이 아니다 — asyncio.timeout 이 끝나지 않거나 비교가 늘 거짓이다
+    return value if math.isfinite(value) and value > 0 else None
 
 
 class Bootstrap:

@@ -52,6 +52,13 @@ HTTP_REDIRECT_FIRST: Final = 300
 HTTP_PAYLOAD_TOO_LARGE: Final = 413
 HTTP_RATE_LIMITED: Final = 429
 HTTP_SERVER_ERROR: Final = 500
+EGRESS_ERROR_CODE_HEADER: Final = "x-aaestro-egress-error-code"
+"""프록시가 **자기** 거절 (403 ``ACC_001`` · 503 ``ACC_002``) 에만 싣는 헤더 (#595).
+
+``egress/providers.py`` 와 같은 이름이어야 한다. 본문은 upstream 이 흉내 낼 수 있지만 이 헤더는
+프록시의 응답 허용 목록 밖이라 upstream 에서 오지 않는다. ``agentd/providers/egress_refusal.py``
+의 최소 복제다 — egress 프록시 프로세스가 이 모듈을 import 하므로 agentd 를 끌어올 수 없다.
+어긋나면 ``tests/unit/egress/test_decision.py`` 의 프록시 경유 테스트가 실패한다."""
 
 
 def _error(
@@ -197,6 +204,7 @@ class JevDecisionModel:
                 timeout=self._timeout,
                 follow_redirects=False,
             ) as response:
+                _raise_for_refusal(response.headers.get(EGRESS_ERROR_CODE_HEADER))
                 _raise_for_status(response.status_code)
                 body = bytearray()
                 async for chunk in response.aiter_bytes():
@@ -234,6 +242,25 @@ class JevDecisionModel:
                     cause=type(err).__name__,
                 )
             )
+
+
+def _raise_for_refusal(code: str | None) -> None:
+    """프록시의 권한 거절은 provider 고장이 아니다 — 그 코드로 올린다 (circuit 은 세지 않는다)."""
+    if code == ErrorCode.ACC_001:
+        raise _error(
+            ErrorCode.ACC_001,
+            "denied by the egress proxy",
+            retryable=False,
+            category=ErrorCategory.FORBIDDEN,
+        )
+    if code == ErrorCode.ACC_002:
+        # 레지스트리가 돌아오면 풀린다 — DECISION_RETRY 가 NETWORK 로 한 번 다시 두드린다
+        raise _error(
+            ErrorCode.ACC_002,
+            "egress proxy could not decide",
+            retryable=True,
+            category=ErrorCategory.NETWORK,
+        )
 
 
 def _raise_for_status(status: int) -> None:

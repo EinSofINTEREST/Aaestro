@@ -10,10 +10,12 @@ import json
 
 import httpx
 import pytest
+import structlog
 
 from aaestro.access.baselines import decision_target
 from aaestro.core.decision import Question, QuestionKind
 from aaestro.core.errors import AaestroError
+from aaestro.decision.client import DecisionClient
 from aaestro.decision.providers.jev import JevDecisionModel
 from aaestro.decision.providers.registry import ADAPTERS
 from aaestro.egress.__main__ import decision_upstreams, settings
@@ -22,6 +24,7 @@ from aaestro.egress.providers import (
     EGRESS_ERROR_CODE_HEADER,
     create_provider_app,
 )
+from aaestro.observability.metrics import Metrics
 from tests.unit.egress.test_connect import Registry
 
 REGISTRY = {"AAESTRO_ACCESS_URL": "http://control-plane:8700", "AAESTRO_ACCESS_ENFORCER_TOKEN": "e"}
@@ -123,7 +126,12 @@ async def test_decide_revoked_agent_is_acc_001_without_reaching_the_provider():
 
     assert response.status_code == 403
     assert response.headers[EGRESS_ERROR_CODE_HEADER] == "ACC_001"
-    assert exc.value.code == "DEC_001" and exc.value.retryable is False
+    # 프록시 자신의 거절은 provider 고장 (DEC_001) 이 아니다 — 헤더로 가른다
+    assert (exc.value.code, exc.value.category, exc.value.retryable) == (
+        "ACC_001",
+        "forbidden",
+        False,
+    )
     assert upstream.seen == []
 
 
@@ -141,8 +149,50 @@ async def test_decide_registry_down_is_acc_002_and_retryable_for_the_adapter():
 
     assert response.status_code == 503
     assert response.headers[EGRESS_ERROR_CODE_HEADER] == "ACC_002"
-    assert exc.value.retryable is True
+    assert (exc.value.code, exc.value.category, exc.value.retryable) == (
+        "ACC_002",
+        "network",
+        True,
+    )
     assert upstream.seen == []
+
+
+async def _no_sleep(_: float) -> None:
+    return None
+
+
+async def test_revoked_calls_do_not_open_the_circuit_and_a_regrant_works_at_once():
+    """회수된 에이전트의 거절이 circuit 을 열면 되돌려도 reset 까지 원래 경로로만 간다."""
+    registry, upstream = Registry(), Upstream()
+    metrics = Metrics()
+    async with proxy(registry, upstream, env({"jev": JEV})) as client:
+        decisions = DecisionClient(
+            provider=adapter(client),
+            agent="researcher",
+            provider_kind="jev",
+            model="jev-1.13",
+            metrics=metrics,
+            sleep=_no_sleep,
+        )
+        attempts = decisions.breaker.max_failures + 2
+        with structlog.testing.capture_logs() as logs:
+            for _ in range(attempts):
+                with pytest.raises(AaestroError) as exc:
+                    await decisions.decide("state", [QUESTION], task_id="t", use="recall_filter")
+                assert exc.value.code == "ACC_001"
+        assert decisions.breaker.can_attempt(), "프록시 거절이 circuit 을 열었다"
+
+        registry.allowed.add(TARGET)  # 재배포 없이 다시 부여
+        [decision] = await decisions.decide("state", [QUESTION], task_id="t", use="recall_filter")
+
+    assert decision.probability == pytest.approx(0.9) and len(upstream.seen) == 1
+    reasons = metrics.registry.get_sample_value(
+        "aaestro_decision_unavailable_total",
+        {"agent": "researcher", "provider": "jev", "reason": "error"},
+    )
+    assert reasons == attempts, "사유는 기존 어휘 (error) 다"
+    unavailable = [e for e in logs if e["event"].startswith("decision unavailable")]
+    assert {e["error_code"] for e in unavailable} == {"ACC_001"}
 
 
 @pytest.mark.parametrize(
