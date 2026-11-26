@@ -7,12 +7,15 @@ Docker 가 없으면 skip 한다 (게이트를 막지 않는다).
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
+import os
 import shutil
 import subprocess
 import time
 import urllib.error
 import urllib.request
+import uuid
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -34,7 +37,9 @@ pytestmark = pytest.mark.integration
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 ECHO_MANIFEST = REPO_ROOT / "agents" / "echo" / "manifest.yaml"
-TEST_NETWORK = "aaestro-net-lifecycle"
+# 동시 실행 (CI 두 잡 · 로컬 두 프로세스) 이 서로의 리소스를 지우지 않도록 실행마다 다른 접미사
+RUN = f"{os.getpid()}-{uuid.uuid4().hex[:6]}"
+TEST_NETWORK = f"aaestro-net-lifecycle-{RUN}"
 TOKEN = "integration-token"  # noqa: S105
 DOCKER_BIN = shutil.which("docker")
 STOP_AFTER_START_LIMIT_S = 10.0
@@ -307,7 +312,8 @@ def echo_spec(*, image: str | None = None, **overrides: Any):
         "network": TEST_NETWORK,
     }
     kwargs.update(overrides)
-    return build_container_spec(manifest, **kwargs)
+    spec = build_container_spec(manifest, **kwargs)
+    return dataclasses.replace(spec, name=f"{spec.name}-{RUN}")
 
 
 async def wait_ready(monitor: HealthMonitor, *, attempts: int = 60) -> AgentState:
