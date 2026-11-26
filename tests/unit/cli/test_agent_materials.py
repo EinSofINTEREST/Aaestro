@@ -86,7 +86,11 @@ def served(workspace, docker, monkeypatch):
         workspace=workspace.parent / "work",
     )
     app = create_app(InMemoryRunStore(), catalog=catalog, author=author, builder=builder)
-    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning"))
+    # 운영 진입점과 같이 log_config=None — 기본 설정은 uvicorn 로거의 propagate 를 끄고
+    # 프로세스에 남아 뒤 테스트의 로그 브리지를 비켜 간다 (#420)
+    server = uvicorn.Server(
+        uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning", log_config=None)
+    )
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
     try:
