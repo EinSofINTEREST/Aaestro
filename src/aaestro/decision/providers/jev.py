@@ -204,7 +204,9 @@ class JevDecisionModel:
                 timeout=self._timeout,
                 follow_redirects=False,
             ) as response:
-                _raise_for_refusal(response.headers.get(EGRESS_ERROR_CODE_HEADER))
+                _raise_for_refusal(
+                    response.headers.get(EGRESS_ERROR_CODE_HEADER), response.status_code
+                )
                 _raise_for_status(response.status_code)
                 body = bytearray()
                 async for chunk in response.aiter_bytes():
@@ -244,7 +246,7 @@ class JevDecisionModel:
             )
 
 
-def _raise_for_refusal(code: str | None) -> None:
+def _raise_for_refusal(code: str | None, status: int) -> None:
     """프록시의 권한 거절은 provider 고장이 아니다 — 그 코드로 올린다 (circuit 은 세지 않는다)."""
     if code == ErrorCode.ACC_001:
         raise _error(
@@ -252,6 +254,7 @@ def _raise_for_refusal(code: str | None) -> None:
             "denied by the egress proxy",
             retryable=False,
             category=ErrorCategory.FORBIDDEN,
+            cause=f"http_{status}",
         )
     if code == ErrorCode.ACC_002:
         # 레지스트리가 돌아오면 풀린다 — DECISION_RETRY 가 NETWORK 로 한 번 다시 두드린다
@@ -260,6 +263,7 @@ def _raise_for_refusal(code: str | None) -> None:
             "egress proxy could not decide",
             retryable=True,
             category=ErrorCategory.NETWORK,
+            cause=f"http_{status}",
         )
 
 

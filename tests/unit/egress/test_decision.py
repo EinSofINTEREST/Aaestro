@@ -132,6 +132,7 @@ async def test_decide_revoked_agent_is_acc_001_without_reaching_the_provider():
         "forbidden",
         False,
     )
+    assert exc.value.details["cause"] == "http_403"
     assert upstream.seen == []
 
 
@@ -154,6 +155,7 @@ async def test_decide_registry_down_is_acc_002_and_retryable_for_the_adapter():
         "network",
         True,
     )
+    assert exc.value.details["cause"] == "http_503"
     assert upstream.seen == []
 
 
