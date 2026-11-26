@@ -277,3 +277,21 @@ async def test_a_rejected_change_feed_drops_the_cache(client, registry):
         await decide(client)
         registry.status = 401
         await until(lambda: not client._decisions)  # noqa: SLF001
+
+
+async def test_run_participation_cache_is_bounded(monkeypatch):
+    """run id 는 요청 헤더가 고른다 — 서로 다른 run 을 물어도 캐시는 상한을 넘지 않는다 (#610)."""
+    from aaestro.access import client as access_client
+
+    monkeypatch.setattr(access_client, "MAX_CACHED_RUNS", 8)
+    client = AccessClient(base_url="http://cp", enforcer_token="t", component="memory")
+
+    async def answer(path: str, body: dict) -> dict:
+        return {"node": False, "spaces": {}, "version": 1}
+
+    monkeypatch.setattr(client, "_post", answer)
+    for i in range(50):
+        await client.run_participation("cred", f"run-{i}")
+
+    assert len(client._runs) == 8  # noqa: SLF001
+    assert "run-49" in {run for _, run in client._runs}, "가장 최근 것이 남는다"  # noqa: SLF001

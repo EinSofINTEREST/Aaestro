@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
@@ -36,6 +37,29 @@ ENFORCER = "enforcer-token"
 GRAPH = "research-pipeline"
 SCRATCH = {"ref": "memorysets/run-scratch@0.1.0", "as": "scratch"}
 RUN = "run-1"
+
+
+@dataclass
+class InRun:
+    """한 태스크의 run 을 매 호출 인자로 싣는 래퍼 — 클라이언트는 run 을 쥐지 않는다 (#610)."""
+
+    access: HttpMemoryAccess
+    run_id: str | None
+
+    async def append(self, space: str, **kwargs):
+        return await self.access.append(space, run_id=self.run_id, **kwargs)
+
+    async def search(self, query: str, **kwargs):
+        return await self.access.search(query, run_id=self.run_id, **kwargs)
+
+    async def read(self, space: str, **kwargs):
+        return await self.access.read(space, run_id=self.run_id, **kwargs)
+
+    async def latest(self, space: str, entry_id: str):
+        return await self.access.latest(space, entry_id, run_id=self.run_id)
+
+    async def spaces(self):
+        return await self.access.spaces(run_id=self.run_id)
 
 
 class Stack:
@@ -86,11 +110,10 @@ class Stack:
         self.manager.acquire(make_mission(memory={"spaces": [SCRATCH]}), run_id=run_id)
         return run_id
 
-    def agent(self, name: str, *, run_id: str | None = RUN, graph: str = GRAPH) -> HttpMemoryAccess:
+    def agent(self, name: str, *, run_id: str | None = RUN, graph: str = GRAPH) -> InRun:
         credential = self.registry.issue_identity(name, f"dep-{name}-{graph}", graph=graph)
-        return HttpMemoryAccess(
-            base_url="http://memory", token=credential, client=self.http, run_id=run_id
-        )
+        access = HttpMemoryAccess(base_url="http://memory", token=credential, client=self.http)
+        return InRun(access, run_id)
 
     async def settled(self) -> None:
         await until(lambda: self.client._version == self.registry.version())  # noqa: SLF001
@@ -271,6 +294,26 @@ async def test_a_non_participant_cannot_stamp_the_run_on_its_own_memory(stack):
     assert stored.source.run_id is None
 
 
+async def test_a_direct_run_header_is_not_looked_up(stack, monkeypatch):
+    """``direct-`` 헤더는 레지스트리에 묻지 않는다 — run 캐시가 direct 마다 자라지 않게 (#610)."""
+    asked: list[str] = []
+
+    async def counted(credential: str, run_id: str):
+        asked.append(run_id)
+        return False, {}, DecisionSource.FRESH
+
+    monkeypatch.setattr(stack.client, "run_participation", counted)
+    credential = stack.registry.issue_identity("planner", "dep-planner-direct", graph=GRAPH)
+
+    response = await stack.http.get(
+        "/v1/spaces",
+        headers={"authorization": f"Bearer {credential}", MEMORY_RUN_HEADER: "direct-7"},
+    )
+
+    assert response.status_code == 200
+    assert asked == []
+
+
 async def test_an_identity_deployed_for_another_graph_is_refused(stack):
     stack.start()
     await stack.settled()
@@ -373,15 +416,15 @@ async def test_token_mode_ignores_a_valid_header_and_still_checks_its_form():
     app = create_app(service, Recall(indexes=indexer.indexes, store=store), tokens)
     http = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://memory")
     try:
-        stored = await HttpMemoryAccess(
-            base_url="http://memory", token=secret, client=http, run_id=RUN
-        ).append("longterm", **fact())
+        stored = await HttpMemoryAccess(base_url="http://memory", token=secret, client=http).append(
+            "longterm", run_id=RUN, **fact()
+        )
         assert stored.source.run_id is None, "토큰 모드의 토큰은 run 을 모른다"
 
         error = await refused(
-            HttpMemoryAccess(
-                base_url="http://memory", token=secret, client=http, run_id="bad\nrun"
-            ).read("longterm")
+            HttpMemoryAccess(base_url="http://memory", token=secret, client=http).read(
+                "longterm", run_id="bad\nrun"
+            )
         )
         assert error.code == ErrorCode.VAL_002
         assert service.audit_log[-1]["op"] == "read"

@@ -40,6 +40,9 @@ RECHECK_S = 2.0
 REQUEST_TIMEOUT_S = 2.0
 FEED_WAIT_S = 25.0
 """변경 알림 긴 폴링 한 번의 대기 — 레지스트리 상한(30초)보다 짧게."""
+MAX_CACHED_RUNS = 1024
+"""run 참여 캐시의 상한 (LRU) — run id 는 요청 헤더가 고르므로 상한 없이는 요청 수만큼 자란다
+(#610). 값은 다른 기억 상한 (``REMEMBERED_RESULTS`` · ``REMEMBERED_ANSWERS``) 과 같다."""
 
 
 class DecisionSource(StrEnum):
@@ -171,7 +174,9 @@ class AccessClient:
             spaces = {str(alias): str(ref) for alias, ref in dict(body["spaces"]).items()}
             return (body["node"] is True, spaces), int(body["version"]), None
 
-        answer, source = await self._cached(self._runs, (_hash(credential), run_id), fetch)
+        answer, source = await self._cached(
+            self._runs, (_hash(credential), run_id), fetch, limit=MAX_CACHED_RUNS
+        )
         if answer is None:
             return False, {}, source
         return answer[0], dict(answer[1]), source
@@ -237,10 +242,14 @@ class AccessClient:
         cache: dict[Any, _Cached],
         key: Any,
         fetch: Callable[[], Awaitable[tuple[Any, int, float | None]]],
+        *,
+        limit: int | None = None,
     ) -> tuple[Any, DecisionSource]:
         now = self.clock()
         entry = cache.get(key)
         if entry is not None and self._usable(entry, now):
+            if limit is not None:
+                cache[key] = cache.pop(key)  # LRU — 최근에 쓴 것을 맨 뒤로
             return entry.value, DecisionSource.CACHE
         try:
             value, version, valid_until = await fetch()
@@ -257,7 +266,11 @@ class AccessClient:
         self._reachable(True)
         if version >= self._version:
             # 알림이 이미 더 새 버전을 알렸으면 이 답은 그 전의 것이다 — 캐시하지 않는다
+            cache.pop(key, None)
             cache[key] = _Cached(value, version, now, valid_until)
+            if limit is not None:
+                while len(cache) > limit:
+                    del cache[next(iter(cache))]
         return value, DecisionSource.FRESH
 
     def _usable(self, entry: _Cached, now: float) -> bool:

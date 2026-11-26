@@ -23,6 +23,7 @@ from pydantic import ValidationError
 
 from aaestro.access.client import DecisionSource
 from aaestro.access.model import Mode, ResourceKind
+from aaestro.core.agent import DIRECT_RUN_PREFIX
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 from aaestro.core.manifest import (
     RESERVED_GLOBAL_GROUP,
@@ -100,6 +101,9 @@ class RegistryGate:
             # 모르는 신원, 폐기된 신원, 판정 불가 모두 — 무엇이 없는지 알려주지 않는다
             raise unauthorized("memory token is not recognised")
         run_spaces: MemorySpec | None = None
+        if run_id is not None and run_id.startswith(DIRECT_RUN_PREFIX):
+            # direct 태스크에는 run 이 없다 — 조회하지 않는다 (run 캐시가 태스크마다 자라지 않게)
+            run_id = None
         if run_id is not None:
             # 후보는 레지스트리의 run 스냅샷이다 (#468 결정 a) — 노드가 아니면 (direct- ·
             # 모르는 run · 다른 그래프의 신원 포함) run 도 후보도 없다. 출처의 run 도 이 답이

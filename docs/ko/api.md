@@ -1025,7 +1025,7 @@ Memory Service 는 환경에 아래 둘이 **모두** 있으면 **레지스트�
   빠진다 (`MEM_001` 로 거부, 값 없이 경고 로그). 토큰 모드 Memory Service 는 헤더를
   무시한다 — run scope 를 싣지 않는다 (아래). agentd 는 태스크마다 그 태스크의 `run_id` 를 그 태스크의
   auto-recall 과 `memory_search` 호출에 싣는다 (#610) — 한 에이전트가 태스크를 동시에 처리하므로
-  클라이언트가 아니라 호출마다다. `direct-` run 도 그대로 싣고 run 없음으로 해석된다. A2A 로 위임받은
+  클라이언트가 아니라 호출마다다. `direct-` run 은 싣지 않고 (direct 태스크에는 run 이 없다), 서비스도 `direct-` 헤더는 레지스트리에 묻지 않고 run 없음으로 본다. A2A 로 위임받은
   태스크는 호출한 peer 가 고른 run id 를 싣는다 — 인증된 값이 아니지만, 이 에이전트가 노드인 run 의
   run space 만 열린다 (#468).
 

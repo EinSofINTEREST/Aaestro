@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Protocol
 from urllib.parse import urlsplit
 
 from aaestro.access.model import Mode
+from aaestro.core.agent import DIRECT_RUN_PREFIX
 from aaestro.core.errors import AaestroError, ErrorCode
 from aaestro.core.manifest import (
     MEMORY_ALIAS_CHARS,
@@ -41,9 +42,6 @@ run scope 는 여기 없다: run space 는 run 이 경계이고 선언이 아니
 RUN_SPACE_ID = re.compile(rf"^run:(?P<run>.+):(?P<alias>{MEMORY_ALIAS_CHARS})$")
 """run space id — ``run:<run_id>:<alias>``. 별칭은 마지막 조각이다: 재개한 service run 의 id 는
 ``:`` 를 품는다 (``x:resumed``)."""
-
-DIRECT_RUN_PREFIX = "direct-"
-"""direct 태스크의 ad-hoc run id 접두사 — direct 태스크에는 run space 가 없다 (09 Scope Rule 5)."""
 
 
 class RunParticipation(Protocol):

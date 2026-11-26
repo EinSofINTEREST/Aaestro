@@ -63,7 +63,7 @@ async def test_a_node_tasks_memory_search_reaches_its_runs_scratch():
 
         # agentd 의 클라이언트는 run 을 쥐지 않는다 — 태스크가 싣는다
         model = FakeModel([search_call(), text("done")])
-        shared = stack.agent("planner", run_id=None)
+        shared = stack.agent("planner", run_id=None).access
         result = await executor_for(shared, model).execute(make_task(run_id=run))
 
         assert result.status.value == "completed"
@@ -84,7 +84,7 @@ async def test_task_recall_carries_the_tasks_run():
 
         manifest = Catalog.under(REPO_ROOT).agent("planner")
         recall = _task_recall(
-            manifest, ModuleRegistry.under(REPO_ROOT), stack.agent("planner", run_id=None)
+            manifest, ModuleRegistry.under(REPO_ROOT), stack.agent("planner", run_id=None).access
         )
         assert recall is not None
 

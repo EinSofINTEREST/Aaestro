@@ -23,6 +23,8 @@ if TYPE_CHECKING:
 
 AGENT_TOKEN_ENV = "AAESTRO_AGENT_TOKEN"  # noqa: S105 — 값이 아니라 키 이름이다
 DEFAULT_TASK_TIMEOUT_S = 300.0
+DIRECT_RUN_PREFIX = "direct-"
+"""direct 태스크의 ad-hoc run id 접두사 — direct 태스크에는 run space 가 없다 (09 Scope Rule 5)."""
 DEFAULT_MAX_TURNS = 20
 DEFAULT_TOOL_TIMEOUT_S = 60.0
 DEFAULT_A2A_DEPTH_LIMIT = 3

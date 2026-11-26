@@ -56,7 +56,7 @@ class ServiceMemoryAccess:
         Returns:
             Scored entries, best-first.
         """
-        # run 은 토큰이 발급될 때 정해졌다 — 호출의 run (#610) 은 HTTP 클라이언트의 선택자다
+        # run 은 토큰이 정한다 (발급 때 고정) — 호출의 run 은 HTTP 클라이언트의 헤더용이라 버린다
         kwargs.pop("run_id", None)
         requested: Sequence[str] | None = kwargs.pop("spaces", None)
         if requested is None:

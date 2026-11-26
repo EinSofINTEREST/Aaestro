@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 from pydantic import ValidationError
 
+from aaestro.core.agent import DIRECT_RUN_PREFIX
 from aaestro.core.errors import AaestroError, AaestroErrorPayload, ErrorCategory, ErrorCode
 from aaestro.memory.entry import MemoryEntry, draft_from
 from aaestro.memory.recall import (
@@ -192,8 +193,6 @@ class HttpMemoryAccess:
     timeout_s: float = DEFAULT_TIMEOUT_S
     agent: str | None = None
     """이 클라이언트를 쓰는 에이전트 — 에러의 ``agent`` 에 싣는다 (응답 본문의 것은 쓰지 않는다)."""
-    run_id: str | None = None
-    """이 클라이언트의 요청이 속한 graph run — 있으면 ``X-Aaestro-Run`` 헤더로 싣는다."""
     _owned: httpx.AsyncClient | None = field(default=None, init=False, repr=False)
 
     def _http(self) -> httpx.AsyncClient:
@@ -229,10 +228,12 @@ class HttpMemoryAccess:
 
         모든 호출이 이 하나를 지납니다 — 메서드마다 따로 변환하면 한쪽이
         빠져 같은 장애가 어떤 창구를 썼는지에 따라 다른 타입으로 나옵니다.
-        ``run_id`` 는 이 요청만의 run 이고, 없으면 인스턴스의 것을 씁니다 (#610).
+        ``run_id`` 는 이 요청이 속한 태스크의 run 입니다 — 한 클라이언트를 동시 태스크가 함께 쓰므로
+        인스턴스가 아니라 호출이 싣습니다 (#610). ``direct-`` run 은 run 이 아니라 싣지 않습니다.
         """
         http = self._http()
-        run_id = run_id if run_id is not None else self.run_id
+        if run_id is not None and run_id.startswith(DIRECT_RUN_PREFIX):
+            run_id = None
         try:
             response = await http.request(
                 method,
@@ -328,7 +329,8 @@ class HttpMemoryAccess:
         Args:
             space: The space alias to write to.
             **kwargs: ``MemoryDraft`` 의 필드 — ``kind`` · ``content`` · ``tags`` ·
-                ``importance`` · ``supersedes`` · ``source`` (run · task · node).
+                ``importance`` · ``supersedes`` · ``source`` (run · task · node) — 와
+                ``run_id`` (요청 헤더로 실을 태스크의 run).
 
         Returns:
             The stored entry, with the id the service issued.
@@ -337,9 +339,10 @@ class HttpMemoryAccess:
             AaestroError: VALIDATION/``VAL_002`` before any request if a field is unknown
                 (``entry_id`` 포함) or malformed.
         """
+        run_id = kwargs.pop("run_id", None)
         draft = draft_from(kwargs, agent=self.agent)
         stored = await self._post(
-            "/v1/append", {"space": space, "entry": draft.model_dump(mode="json")}
+            "/v1/append", {"space": space, "entry": draft.model_dump(mode="json")}, run_id=run_id
         )
         return MemoryEntry.model_validate(stored)
 
@@ -350,7 +353,7 @@ class HttpMemoryAccess:
 
         Args:
             space: The space alias to read.
-            **kwargs: ``limit`` / ``kinds``.
+            **kwargs: ``limit`` / ``kinds`` / ``run_id``.
 
         Returns:
             Stored entries, newest first.
@@ -360,17 +363,21 @@ class HttpMemoryAccess:
             if kwargs.get(key) is not None:
                 payload[key] = kwargs[key]
 
-        found = await self._post("/v1/read", payload)
+        found = await self._post("/v1/read", payload, run_id=kwargs.get("run_id"))
         return [MemoryEntry.model_validate(item) for item in found]
 
-    async def latest(self, space: str, entry_id: str) -> MemoryEntry | None:
+    async def latest(
+        self, space: str, entry_id: str, *, run_id: str | None = None
+    ) -> MemoryEntry | None:
         """정정 체인의 최신 항목 — 대체된 기억을 그대로 읽지 않기 위해서."""
-        found = await self._post("/v1/latest", {"space": space, "entry_id": entry_id})
+        found = await self._post(
+            "/v1/latest", {"space": space, "entry_id": entry_id}, run_id=run_id
+        )
         return MemoryEntry.model_validate(found) if found is not None else None
 
-    async def spaces(self) -> Sequence[dict[str, str]]:
+    async def spaces(self, *, run_id: str | None = None) -> Sequence[dict[str, str]]:
         """이 에이전트가 닿을 수 있는 space — 자기 범위를 확인하는 창구."""
-        listed: list[dict[str, str]] = await self._request("GET", "/v1/spaces")
+        listed: list[dict[str, str]] = await self._request("GET", "/v1/spaces", run_id=run_id)
         return listed
 
 

@@ -1087,7 +1087,7 @@ In registry mode:
   warning without the value). A token-mode Memory Service
   ignores the header — it carries no run scope (below). agentd sends each task's own `run_id` on
   that task's auto-recall and `memory_search` calls (#610) — per call, not per client, because one
-  agent serves concurrent tasks. A `direct-` run is sent as is and resolves to no run. A task
+  agent serves concurrent tasks. A `direct-` run is not sent (a direct task has no run), and the service also treats a `direct-` header as no run without asking the registry. A task
   delegated over A2A carries the run id the calling peer chose; it is not authenticated, but it only
   opens the run spaces of runs this agent is a node of (#468).
 
