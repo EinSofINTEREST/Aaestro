@@ -60,7 +60,7 @@ def _coerce_k(value: object) -> int:
 
 
 async def run_memory_search(
-    memory: MemoryAccess, arguments: dict[str, Any]
+    memory: MemoryAccess, arguments: dict[str, Any], *, run_id: str | None = None
 ) -> list[dict[str, Any]]:
     """Execute the tool against the agent's memory.
 
@@ -70,6 +70,7 @@ async def run_memory_search(
     Args:
         memory: The agent's memory access.
         arguments: ``query`` and optional ``k``.
+        run_id: The calling task's run — 그 run 의 space 를 고른다 (모델 인자가 아니다, #610).
 
     Returns:
         Entries with their provenance — 모델이 기억과 현재 입력을 구분할 수
@@ -85,7 +86,7 @@ async def run_memory_search(
             details={"tool": MEMORY_SEARCH_TOOL},
         )
 
-    found = await memory.search(query, k=_coerce_k(arguments.get("k")))
+    found = await memory.search(query, k=_coerce_k(arguments.get("k")), run_id=run_id)
     return [
         {
             "content": scored.entry.content,

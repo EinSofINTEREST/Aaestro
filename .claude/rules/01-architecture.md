@@ -333,6 +333,10 @@ A2A 에서 피호출자는 통제받는 쪽이 아니라 **보호받는 쪽**이
    자기 상한을 바꾸지 못한다
 6. **에이전트 신원은 control plane 이 발급한다**: 강제 지점은 요청의 에이전트 신원으로
    판정한다. 신원은 control plane·Memory Service 재시작을 넘어 유지된다
+7. **run 은 신원이 아니라 선택자다**: run space 를 고르는 run id 는 agentd 가 태스크의 `run_id` 를
+   요청마다 싣는다 (`X-Aaestro-Run`, #609 · #610). A2A 위임 태스크의 run id 는 호출자가 보낸 값이라
+   인증된 것이 아니다 — 판정이 "이 신원이 그 run 의 노드인가" 이므로 닿는 것은 자기가 노드인 run 의
+   space 뿐이고, 노드인 다른 run 의 id 를 대는 위임은 감수한 한계다 (#468, 09 Access Enforcement 7)
 
 ### 판정 캐시와 장애 시 동작
 
