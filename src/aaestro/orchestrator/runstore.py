@@ -163,6 +163,14 @@ class RunStore(Protocol):
         """
         ...
 
+    def create(self, record: RunRecord) -> bool:
+        """새 run 의 기록을 만든다 — 같은 id 의 기록이 없을 때만 (insert-if-absent).
+
+        확인과 쓰기가 한 연산이라 프로세스 사이에도 원자적이다: 같은 id 로 동시에 만들면 하나만
+        True (#711). 새 제출은 ``get`` + ``upsert`` 가 아니라 이것으로 확인 + 기록한다.
+        """
+        ...
+
     def claim(self, run_id: str, owner: str, lease_until: float, *, now: float) -> bool:
         """소유자가 죽은 run 을 가져온다 — 원자적 조건부 갱신 (compare-and-set).
 
@@ -244,6 +252,12 @@ class InMemoryRunStore:
             }
         )
         return True
+
+    def create(self, record: RunRecord) -> bool:
+        """없을 때만 기록을 만든다."""
+        if record.run_id in self._records:
+            return False
+        return self.upsert(record)
 
     def claim(self, run_id: str, owner: str, lease_until: float, *, now: float) -> bool:
         """소유자가 죽은 run 을 가져온다 — 한 프로세스 안이라 검사와 쓰기 사이에 끼어들 수 없다."""
@@ -363,24 +377,28 @@ class SqliteRunStore:
                 WHERE (runs.owner = '' OR runs.owner = excluded.owner)
                     AND runs.mode = excluded.mode
                 """,
-                    (
-                        record.run_id,
-                        record.graph,
-                        record.mode,
-                        record.status,
-                        record.iteration,
-                        record.failure_streak,
-                        int(record.drain),
-                        _now(),
-                        json.dumps(record.model_overrides),
-                        json.dumps(dict(record.memory_spaces)),
-                        json.dumps(list(record.agents)),
-                        record.owner,
-                        record.lease_until,
-                    ),
+                    _row(record),
                 )
         except sqlite3.Error as err:
             raise _storage_error("run record could not be stored", run_id=record.run_id) from err
+        return cursor.rowcount > 0
+
+    def create(self, record: RunRecord) -> bool:
+        """없을 때만 기록을 만든다 — 한 INSERT 라 같은 파일을 여는 프로세스 사이에도 원자적."""
+        try:
+            with self._lock:
+                cursor = self._conn.execute(
+                    """
+                INSERT INTO runs (run_id, graph, mode, status, iteration,
+                                  failure_streak, drain, updated_at, model_overrides,
+                                  memory_spaces, agents, transitions, owner, lease_until)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+                ON CONFLICT(run_id) DO NOTHING
+                """,
+                    _row(record),
+                )
+        except sqlite3.Error as err:
+            raise _storage_error("run record could not be created", run_id=record.run_id) from err
         return cursor.rowcount > 0
 
     def claim(self, run_id: str, owner: str, lease_until: float, *, now: float) -> bool:
@@ -482,6 +500,25 @@ class SqliteRunStore:
             self._conn.close()
         except sqlite3.Error as err:
             raise _storage_error("run store could not be closed") from err
+
+
+def _row(record: RunRecord) -> tuple[Any, ...]:
+    """INSERT 의 값 — ``upsert`` 와 ``create`` 가 같은 열 순서를 쓴다."""
+    return (
+        record.run_id,
+        record.graph,
+        record.mode,
+        record.status,
+        record.iteration,
+        record.failure_streak,
+        int(record.drain),
+        _now(),
+        json.dumps(record.model_overrides),
+        json.dumps(dict(record.memory_spaces)),
+        json.dumps(list(record.agents)),
+        record.owner,
+        record.lease_until,
+    )
 
 
 def _record(row: sqlite3.Row) -> RunRecord:
