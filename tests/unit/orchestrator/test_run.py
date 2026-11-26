@@ -399,7 +399,7 @@ def test_duplicate_run_id_is_rejected():
     with pytest.raises(AaestroError) as exc_info:
         manager.acquire(make_mission(), run_id="run-dup")
 
-    assert exc_info.value.code == "VAL_002"
+    assert exc_info.value.code == "GRAPH_006"
     assert len(manager.runs) == 1
 
 

@@ -139,6 +139,7 @@ class RunSubmitter:
         initial_state: Mapping[str, Any],
         *,
         run_id: str | None = None,
+        announced: bool = False,
     ) -> RunResult:
         """Run a mission graph to completion.
 
@@ -148,6 +149,7 @@ class RunSubmitter:
             topology: The validated graph topology.
             initial_state: The starting state.
             run_id: Explicit run id; generated when omitted.
+            announced: 호출자가 기록 유무를 확인하고 기록을 먼저 써 둔 경우 (control plane).
 
         Returns:
             The run result — ``ok`` is False when the run failed.
@@ -170,7 +172,9 @@ class RunSubmitter:
         # 슬롯을 잡기 전에 만든다 — 선언이 틀렸으면 여기서 GRAPH_001 로 끝난다
         compactor = self._state_compactor(topology)
 
-        handle = self.manager.acquire(topology, run_id=run_id or f"run-{uuid4().hex[:12]}")
+        handle = self.manager.acquire(
+            topology, run_id=run_id or f"run-{uuid4().hex[:12]}", announced=announced
+        )
         return await self._drive(topology, handle, initial_state, compactor)
 
     def _state_compactor(self, topology: GraphTopology) -> StateCompactor | None:

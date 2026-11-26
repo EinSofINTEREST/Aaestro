@@ -389,3 +389,13 @@ async def test_the_assembled_server_does_not_redirect_or_serve_docs(path, inject
         transport=httpx.ASGITransport(app=app), base_url="http://agent.test"
     ) as http:
         assert (await http.get(path)).status_code == 404
+
+
+def test_peer_calls_lend_the_running_tasks_slot(registry_mode, monkeypatch):
+    """peer 를 기다리는 동안 칸을 놓아야 돌아오는 위임이 그 칸을 쓴다 (#416)."""
+    from aaestro.agentd.a2a_server import PEERS_ENV, build_peer_client
+    from aaestro.agentd.slots import lend_slot
+
+    monkeypatch.setenv(PEERS_ENV, "planner=aaestro-planner-0:9101")
+
+    assert build_peer_client(manifest("researcher")).while_waiting is lend_slot

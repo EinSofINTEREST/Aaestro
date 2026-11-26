@@ -618,6 +618,10 @@ curl -X POST -H "Authorization: Bearer $TOKEN" -H 'content-type: application/jso
 버전으로 편집됐으면 `400` (`VAL_002`) — 먼저 재배포한다. 그러지 않으면 다른 선언으로 만든
 컨테이너를 구동하게 된다.
 
+이미 run 기록이 있는 `run_id` 는 — 끝났든 아니든, mission 이든 service 든, 이 프로세스의 것이든 앞선
+프로세스가 남긴 것이든 — `409` (`GRAPH_006`) 다: 옛 checkpoint thread 를 다시 쓰게 된다. 새 id 를 쓰거나
+run 을 재개한다 (`POST /v1/runs/{run_id}/resume`).
+
 ### `GET /v1/runs`, `GET /v1/runs/{run_id}`
 
 목록은 `?mode=mission|service` 를 받는다. 단건 조회는 **이 프로세스에서** 완주한 run 에
@@ -1421,6 +1425,12 @@ runtime 이 에이전트보다 먼저 `aaestro-<agent>--mcp-<server>` 라는 이
 - **위임 태스크는 호출자가 기다리기를 멈추면 멈춘다.** 메시지는 호출자의 마감 (`config.timeout_s` —
   호출자의 A2A 호출 timeout, 기본 120초) 을 싣는다. 피호출자는 그것으로 자기 태스크 상한을 줄이기만 하고
   늘리지 않으며, 마감을 넘긴 태스크는 `TO_001` 로 실패한다. 양수가 아닌 마감은 `VAL_002` 다.
+- **위임 태스크는 피호출자의 동시 실행 상한을 함께 쓴다.** Control API 태스크처럼 `max_concurrent_tasks`
+  칸을 기다리고, drain 중인 에이전트는 시작하지 않는다. 시작 전에 거절된 태스크 — 칸을 기다리다 마감이
+  지남 (`TO_001`), drain 중 (`RT_005`) — 는 `details.started: false` 를 싣고, 호출자는 이를 `A2A_001`
+  (재시도 가능) 로 받는다. 시작한 뒤의 실패는 피호출자가 retryable 로 표시해도 `A2A_003` 그대로다 —
+  부수효과가 났을 수 있다. peer 를 기다리는 동안에는 칸을 놓으므로, 같은 에이전트로 되돌아오는 위임이
+  교착하지 않는다.
 - **기존 태스크에 메시지를 이을 수 없다.** `taskId` 를 지정한 send 도 같은 응답으로 거절한다. 위임은
   늘 새 태스크다.
 - **태스크 store 는 끝난 태스크를 쥐지 않는다.** 태스크를 실행 중에만 들고, 완료·실패·거부되면

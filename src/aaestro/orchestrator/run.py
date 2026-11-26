@@ -338,6 +338,7 @@ class RunManager:
         *,
         run_id: str | None = None,
         resuming: bool = False,
+        announced: bool = False,
         lease_until: float = 0.0,
         iteration: int = 0,
     ) -> RunHandle:
@@ -350,6 +351,8 @@ class RunManager:
             run_id: Optional run id; generated when omitted.
             resuming: 끝난 run 을 같은 id 로 다시 잡는다 — 재개 전용. 새 제출이 끝난 run 의
                 id 를 재사용하면 옛 checkpoint 위에 새 실행이 얹히므로 제출에는 열지 않는다.
+            announced: 호출자가 기록 유무를 먼저 확인하고 이 run 의 기록을 직접 써 둔 제출 —
+                control plane 의 mission 제출. 그 기록을 기존 기록으로 보지 않는다.
             lease_until: 이미 저장소에 쓴 임대 만료 (``claim``) — 재개 전용. 없으면 기록이 쓴다.
             iteration: 이어갈 회차 — 첫 기록부터 이 값이어야 한다. 0 으로 먼저 쓰면 첫 회차가
                 끝나기 전에 죽은 재개의 기록이 회차 0 을 가리켜, 다음 재개가 이어갈 thread 를
@@ -360,7 +363,7 @@ class RunManager:
 
         Raises:
             AaestroError: GRAPH/``GRAPH_001`` if the slot ceiling is reached.
-            AaestroError: GRAPH/``GRAPH_006`` if another owner holds the run record.
+            AaestroError: GRAPH/``GRAPH_006`` if the id is in use or already has a run record.
         """
         mode = topology.mode
         limit = self._max_service if mode is GraphMode.SERVICE else self._max_mission
@@ -377,22 +380,18 @@ class RunManager:
         resolved_id = run_id or f"run-{uuid.uuid4()}"
         existing = self._runs.get(resolved_id)
         if existing is not None and not (resuming and not self._is_live(existing)):
-            # 덮어쓰면 앞선 run 의 추적이 사라지고 슬롯 회계가 어긋난다
-            raise AaestroError(
-                category=ErrorCategory.VALIDATION,
-                code=ErrorCode.VAL_002,
-                message=f"run id already in use: {resolved_id}",
-                details={"run_id": resolved_id, "graph": topology.name},
-            )
+            # 덮어쓰면 앞선 run 의 추적이 사라지고 슬롯 회계가 어긋난다 — 형식이 아니라
+            # 상태 충돌이라 저장소 기록을 만났을 때와 같은 GRAPH_006 이다 (#663)
+            raise run_refused(resolved_id, topology.name)
 
         if (
-            mode is GraphMode.SERVICE
-            and not resuming
+            not (resuming or announced)
             and self._store is not None
             and self._store.get(resolved_id) is not None
         ):
-            # 새 제출이 이미 있는 기록을 만나면 넘겨받지 않는다 — 소유자 없는 기록은 다른
-            # 프로세스의 mission 이거나 #662 이전 바이너리가 구동 중인 run 일 수 있다
+            # 새 제출이 이미 있는 기록을 만나면 (끝난 run 포함, 두 모드 공통) 넘겨받지 않는다 —
+            # checkpoint thread · 압축 원문 key 가 겹친다. 소유자 없는 기록은 다른 프로세스의
+            # mission 이거나 #662 이전 바이너리가 구동 중인 run 일 수 있다
             raise run_refused(resolved_id, topology.name)
         handle = RunHandle(
             run_id=resolved_id,

@@ -57,7 +57,7 @@ class FakeSubmitter:
     gate: asyncio.Event = field(default_factory=asyncio.Event)
     stopped: bool = False
 
-    async def submit(self, topology, initial_state, *, run_id=None) -> RunResult:
+    async def submit(self, topology, initial_state, *, run_id=None, announced=False) -> RunResult:
         self.calls.append(("submit", run_id))
         self.store.upsert(
             RunRecord(run_id=run_id, graph=topology.metadata.name, mode="mission", status="running")
@@ -309,7 +309,7 @@ async def test_a_driver_that_raises_leaves_a_failed_record(parts):
     store, _, submitter, mission, _ = parts
     runs = service_for(parts, deployed(mission.metadata.name))
 
-    async def broken(topology, initial_state, *, run_id=None):
+    async def broken(topology, initial_state, *, run_id=None, announced=False):
         raise RuntimeError("driver exploded")
 
     submitter.submit = broken  # type: ignore[method-assign]
@@ -635,3 +635,18 @@ async def test_a_service_submission_pins_overrides_on_the_record_it_owns(parts):
     assert record.owner == manager.lease.owner
     assert store.get("svc-1").owner == manager.lease.owner
     assert store.get("svc-1").model_overrides == {node_id: {"name": "claude-haiku-4-5"}}
+
+
+async def test_submit_with_a_recorded_run_id_is_refused_before_it_overwrites_the_record(parts):
+    """끝난 run 의 id 를 mission 제출이 다시 쓰면 공지가 기록을 덮고 thread 가 겹친다 (#663)."""
+    store, _, _, mission, _ = parts
+    runs = real_runs(parts, RecordingRuntime(), {"dep-1": deployed(mission.metadata.name)})
+    await runs.submit("dep-1", {"query": "q"}, run_id="m-1")
+    await asyncio.gather(*runs.drivers.values())
+    before = store.get("m-1")
+
+    with pytest.raises(AaestroError) as exc_info:
+        await runs.submit("dep-1", {"query": "q"}, run_id="m-1")
+
+    assert exc_info.value.code == ErrorCode.GRAPH_006
+    assert store.get("m-1") == before
