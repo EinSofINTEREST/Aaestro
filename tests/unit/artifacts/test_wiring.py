@@ -12,7 +12,7 @@ import pytest
 
 from aaestro.agentd.executor import Executor, ExecutorServices
 from aaestro.artifacts import FilesystemArtifactStore
-from tests.fixtures.builders import make_task
+from tests.fixtures.builders import async_render, make_task
 from tests.fixtures.fake_model import FakeModel, FakeTools, calls, text
 
 TOOL = "search"
@@ -35,7 +35,7 @@ def executor_with(store, tools):
         agent="researcher",
         model=FakeModel([calls(TOOL), text("done")]),
         tools=tools,
-        render=lambda _task: "prompt",
+        render=async_render(lambda _task: "prompt"),
         services=ExecutorServices(artifacts=store),
     )
 

@@ -14,7 +14,7 @@ from aaestro.agentd.telemetry import ExecutorTelemetry, tool_source
 from aaestro.core.agent import TaskStatus, TraceContext
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 from aaestro.observability.metrics import Metrics
-from tests.fixtures.builders import make_task
+from tests.fixtures.builders import async_render, make_task
 from tests.fixtures.fake_model import FakeModel, FakeTools, calls, text
 
 
@@ -62,7 +62,7 @@ def make_executor(
         agent="researcher",
         model=FakeModel(responses),
         tools=registry,
-        render=lambda task: f"prompt:{task.template_name}",
+        render=async_render(lambda task: f"prompt:{task.template_name}"),
         config=ExecutorConfig(**config) if config else None,
         services=ExecutorServices(telemetry=telemetry),
     )

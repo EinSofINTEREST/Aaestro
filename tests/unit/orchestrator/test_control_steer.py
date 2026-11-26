@@ -26,7 +26,7 @@ from aaestro.orchestrator.runstore import InMemoryRunStore, RunRecord
 from aaestro.orchestrator.submit import RunSubmitter
 from aaestro.runtime.control import ControlClient
 from aaestro.runtime.nodes import ControlNodeRuntime, InflightTask, SteerReceipt
-from tests.fixtures.builders import make_task
+from tests.fixtures.builders import async_render, make_task
 from tests.fixtures.fake_model import FakeModel, FakeTools, calls, text
 from tests.fixtures.waiting import reached
 
@@ -298,7 +298,10 @@ class Stack:
         self.model = FakeModel([calls("search"), text("done")])
         self.tools = SteeringTools()
         self.executor = executor or Executor(
-            agent="planner", model=self.model, tools=self.tools, render=lambda task: "prompt"
+            agent="planner",
+            model=self.model,
+            tools=self.tools,
+            render=async_render(lambda task: "prompt"),
         )
         agent_app = create_agent_app(
             AgentRuntime(agent="planner", executor=self.executor), token=AGENT_TOKEN

@@ -30,7 +30,7 @@ from aaestro.core.events import DoneEvent, ErrorEvent
 from aaestro.core.manifest import CircuitDeclaration, ModelRetry, RetryDeclaration
 from aaestro.observability.metrics import Metrics
 from aaestro.runtime.control import ControlClient
-from tests.fixtures.builders import make_task
+from tests.fixtures.builders import async_render, make_task
 from tests.fixtures.fake_model import FakeModel, FakeTools, calls, text
 from tests.unit.agentd.test_model_fallback import (
     AGENT,
@@ -174,7 +174,7 @@ async def test_cancelling_during_the_fallback_call_propagates_and_cleans_up():
         agent=AGENT,
         model=chains.for_config(declared(backup("rate_limit"))),
         tools=FakeTools(),
-        render=lambda _task: "prompt",
+        render=async_render(lambda _task: "prompt"),
         config=ExecutorConfig(retry_sleep=sleep),
         services=ExecutorServices(on_cleanup=cleaned.set),
     )
@@ -222,7 +222,7 @@ async def test_a_serialized_declaration_drives_the_chain_inside_agentd():
         agent=AGENT,
         model=chains.for_config(declared(name="primary")),
         tools=FakeTools(),
-        render=lambda _task: "prompt",
+        render=async_render(lambda _task: "prompt"),
         config=ExecutorConfig(retry_sleep=sleep),
         services=ExecutorServices(chains=chains.for_config),
     )

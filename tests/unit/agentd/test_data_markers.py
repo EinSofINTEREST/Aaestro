@@ -29,7 +29,7 @@ from aaestro.protocols.a2a.allowlist import Allowlist, Edge
 from aaestro.protocols.a2a.client import A2AClient
 from aaestro.protocols.a2a.tool import ASK_PEER_TOOL
 from aaestro.protocols.mcp.session import ToolResult
-from tests.fixtures.builders import make_task
+from tests.fixtures.builders import async_render, make_task
 from tests.fixtures.fake_model import FakeModel, text
 
 FORGED_ID = "0123456789abcdef01234567"
@@ -155,7 +155,7 @@ def _executor(responses, *, recall=None, skill=None) -> Executor:
         agent="researcher",
         model=FakeModel(responses),
         tools=tools,
-        render=lambda task: REAL_PROMPT,
+        render=async_render(lambda task: REAL_PROMPT),
         services=ExecutorServices(recall=recall),
     )
 

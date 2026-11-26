@@ -15,6 +15,7 @@ from aaestro.observability.metrics import Metrics
 from aaestro.orchestrator.builder import build_graph
 from aaestro.orchestrator.checkpoint import guarded_restore, guarded_save
 from aaestro.orchestrator.run import RunManager, RunStatus, ServiceRunner
+from tests.fixtures.builders import async_render
 from tests.fixtures.topologies import make_mission, make_service
 
 GRAPH = "research-pipeline"
@@ -336,7 +337,7 @@ async def test_the_agent_metric_carries_the_real_graph_name():
                 agent="researcher",
                 model=FakeModel([text("done")]),
                 tools=FakeTools(),
-                render=lambda _t: "prompt",
+                render=async_render(lambda _t: "prompt"),
                 services=ExecutorServices(
                     telemetry=ExecutorTelemetry(metrics, agent="researcher", group="research")
                 ),

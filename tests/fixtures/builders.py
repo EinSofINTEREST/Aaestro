@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from aaestro.core.agent import TaskConfig, TaskRequest, TraceContext
@@ -63,3 +64,12 @@ def make_task(**overrides: Any) -> TaskRequest:
     }
     base.update(overrides)
     return TaskRequest.model_validate(base)
+
+
+def async_render(render: Callable[[TaskRequest], str]) -> Callable[[TaskRequest], Awaitable[str]]:
+    """동기 렌더 대역을 실행기의 비동기 렌더 계약으로 (#715 — 렌더는 자식 프로세스에서 기다린다)."""
+
+    async def rendered(task: TaskRequest) -> str:
+        return render(task)
+
+    return rendered

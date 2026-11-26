@@ -326,8 +326,16 @@ Answer it.
 - Omission empties values only; the template text around them stays.
 - Only `*` and `**` are refused before computing. Other operations — widths (`center`, `ljust`,
   `format`), `join`, `replace('', …)`, accumulating concatenation, nested loops with no body —
-  still spend memory and CPU on intermediate results. Templates do not use a value as a width,
-  a separator or a repeat count (Promptset rule "No Logic in Templates").
+  are not bounded by the renderer itself. Templates do not use a value as a width,
+  a separator or a repeat count (Promptset rule "No Logic in Templates"). agentd therefore renders
+  each template in a child process of its own (`agentd/render.py`): the child may use 64 MiB of
+  address space beyond what it started with (`RENDER_MEMORY_HEADROOM`) and the parent stops it
+  after 2 seconds of wall time (`RENDER_TIMEOUT_S`). Either limit fails the task with `VAL_002`
+  (`details.kind: memory | time`) while the daemon keeps answering health checks, cancellations
+  and other tasks. A child that dies without replying, or replies beyond the size limit, is
+  `INTERNAL_001`; a task deadline or cancellation stops the child and stays `TO_001` /
+  canceled. The task prompt and the `system` template both go this way. This isolates
+  resources, not permissions — the child runs as the same user on the same filesystem.
 
 These rules belong to the framework's renderer. Published modules are immutable and were not
 changed, but the prompt they effectively produce did change without a module version bump:

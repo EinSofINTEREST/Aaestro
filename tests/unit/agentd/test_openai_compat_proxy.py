@@ -46,7 +46,7 @@ from aaestro.egress.providers import (
     Upstream,
     create_provider_app,
 )
-from tests.fixtures.builders import make_task
+from tests.fixtures.builders import async_render, make_task
 from tests.fixtures.fake_model import FakeTools
 from tests.unit.agentd.providers.test_anthropic import Block, api_error
 from tests.unit.agentd.providers.test_anthropic import Message as AnthropicMessage
@@ -211,7 +211,7 @@ class Stack:
             agent=AGENT,
             model=self.chain,
             tools=self.tools,
-            render=lambda _task: "what is aaestro?",
+            render=async_render(lambda _task: "what is aaestro?"),
             tool_schemas=[LOOKUP],
             config=ExecutorConfig(retry_sleep=sleep),
             services=ExecutorServices(chains=chains.for_config),

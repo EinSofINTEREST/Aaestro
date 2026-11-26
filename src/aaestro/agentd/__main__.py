@@ -53,6 +53,7 @@ if TYPE_CHECKING:
 
     from fastapi import FastAPI
 
+    from aaestro.agentd.render import RenderSandbox
     from aaestro.core.agent import TaskRequest, TaskResult
 
 CONTROL_PORT = 8080
@@ -301,7 +302,9 @@ async def _standard_executor(
     from aaestro.agentd.bootstrap import model_factory
     from aaestro.agentd.executor import Executor, ExecutorServices
     from aaestro.agentd.models import ModelChains
+    from aaestro.agentd.render import warn_if_headroom_exceeds_memory
 
+    warn_if_headroom_exceeds_memory(manifest.name, manifest.spec.runtime.max_concurrent_tasks)
     binding = await load_modules(
         manifest,
         registry,
@@ -348,6 +351,7 @@ async def load_modules(
     peers: Any,
     mcp: Any = None,
     generation: int = 0,
+    sandbox: RenderSandbox | None = None,
 ) -> Any:
     """Load the promptset and skillsets a manifest declares into one binding.
 
@@ -360,6 +364,7 @@ async def load_modules(
     """
     from aaestro.agentd.bootstrap import Bootstrap
     from aaestro.agentd.executor import ModuleBinding
+    from aaestro.agentd.render import RenderSandbox
     from aaestro.modules.promptset import PromptsetLoader
     from aaestro.modules.skillset import SkillsetLoader
 
@@ -370,15 +375,18 @@ async def load_modules(
         # 리로드도 같은 클라이언트를 넘긴다 — 떠 있는 세션은 다시 띄우지 않고 그 도구를 보고한다
         mcp_launcher=mcp,
     ).run()
+    # 렌더는 자식 프로세스에서 — 템플릿 하나가 이벤트 루프와 데몬의 메모리를 쥐지 못하게 (#715)
+    renderer = sandbox or RenderSandbox()
+    system = await _system(manifest, result, renderer)
     tools = AgentToolRegistry(
         agent=manifest.name, skillsets=result.skillsets, memory=memory, peers=peers, mcp=mcp
     )
     return ModuleBinding(
         tools=tools,
-        render=lambda task: _render(result, task),
+        render=lambda task: _render(manifest.name, result, task, renderer),
         tool_schemas=tuple(_executable_schemas(result, tools)),
         output_keys=lambda task: _template_output_keys(result, task),
-        system=_system(manifest, result),
+        system=system,
         degraded=result.degraded,
     )
 
@@ -611,7 +619,7 @@ def _template_output_keys(result: Any, task: Any) -> tuple[str, ...]:
     return () if template is None else template.output_keys
 
 
-def _system(manifest: AgentManifest, result: Any) -> str:
+async def _system(manifest: AgentManifest, result: Any, renderer: RenderSandbox) -> str:
     """시스템 자리의 글 — 프레임워크 지시 + promptset ``system``. 없거나 비면 기동을 거절한다.
 
     빈 지시로 조용히 뜨면 도구 결과를 믿지 말라는 운영자 지시가 모델에 닿지 않는다 (#445).
@@ -635,7 +643,7 @@ def _system(manifest: AgentManifest, result: Any) -> str:
     if result.promptset is None:
         check_system_template(manifest.name, manifest.spec.promptset.ref, ())
     check_system_template(manifest.name, result.promptset.ref, result.promptset.template_names)
-    rendered: str = result.promptset.render(SYSTEM_TEMPLATE)
+    rendered = await renderer.render(result.promptset, SYSTEM_TEMPLATE, {}, agent=manifest.name)
     system = rendered.strip()
     if not system:
         raise AaestroError(
@@ -648,7 +656,7 @@ def _system(manifest: AgentManifest, result: Any) -> str:
     return f"{FRAMEWORK_INSTRUCTIONS}\n\n{system}"
 
 
-def _render(result: Any, task: Any) -> str:
+async def _render(agent: str, result: Any, task: Any, renderer: RenderSandbox) -> str:
     """promptset 으로 태스크 프롬프트를 렌더링한다.
 
     ``node_id`` 가 없는 direct 요청은 ``default`` 템플릿을 쓴다
@@ -660,8 +668,9 @@ def _render(result: Any, task: Any) -> str:
             code=ErrorCode.MOD_003,
             message="agent has no promptset to render with",
         )
-    rendered: str = result.promptset.render(task.template_name, **task.input)
-    return rendered
+    return await renderer.render(
+        result.promptset, task.template_name, task.input, agent=agent, task_id=task.task_id
+    )
 
 
 def _configure_logging() -> None:

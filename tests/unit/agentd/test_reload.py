@@ -27,7 +27,7 @@ from aaestro.core.manifest import AgentManifest
 from aaestro.core.skill import SkillContext
 from aaestro.modules.boundary import BOUNDARY_NOTICE, FRAMEWORK_INSTRUCTIONS
 from aaestro.observability.metrics import Metrics
-from tests.fixtures.builders import make_task
+from tests.fixtures.builders import async_render, make_task
 from tests.fixtures.fake_model import FakeModel, FakeTools, calls, text
 from tests.fixtures.waiting import until
 
@@ -40,7 +40,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 def binding(label: str, tools: FakeTools) -> ModuleBinding:
     return ModuleBinding(
         tools=tools,
-        render=lambda task: f"{label} prompt",
+        render=async_render(lambda task: f"{label} prompt"),
         tool_schemas=(f"{label}-tool",),
     )
 
@@ -146,11 +146,11 @@ async def test_reload_picks_up_a_changed_declaration(root):
     declare_fresh_template(root)
 
     with pytest.raises(AaestroError):
-        executor.binding.render(make_task(**FRESH))  # 리로드 전: 기동 때의 선언에 없다
+        await executor.binding.render(make_task(**FRESH))  # 리로드 전: 기동 때의 선언에 없다
 
     card = await reload()
 
-    assert FRESH_BODY.search(executor.binding.render(make_task(**FRESH)))
+    assert FRESH_BODY.search(await executor.binding.render(make_task(**FRESH)))
     assert card["name"] == "planner"
 
 
@@ -173,14 +173,17 @@ async def test_reload_keeps_the_wiring_it_did_not_load(monkeypatch):
     memory, peers, mcp = object(), object(), None
     tools = agentd.AgentToolRegistry(agent="planner", memory=memory, peers=peers, mcp=mcp)
     executor = Executor(
-        agent="planner", model=FakeModel([text("x")]), tools=tools, render=lambda t: ""
+        agent="planner",
+        model=FakeModel([text("x")]),
+        tools=tools,
+        render=async_render(lambda t: ""),
     )
 
     captured = {}
 
     async def fake_load(manifest, registry, **wiring):
         captured.update(wiring)
-        return ModuleBinding(tools=tools, render=lambda t: "")
+        return ModuleBinding(tools=tools, render=async_render(lambda t: ""))
 
     monkeypatch.setattr(agentd, "load_modules", fake_load)
     await agentd.build_reload(planner(), executor)()
@@ -217,7 +220,8 @@ def test_the_served_app_reloads_the_standard_executor(root, tmp_path, monkeypatc
     )
 
     assert response.json()["status"] == "reloaded"
-    assert FRESH_BODY.search(served["executor"].binding.render(make_task(**FRESH)))
+    rendered = asyncio.run(served["executor"].binding.render(make_task(**FRESH)))
+    assert FRESH_BODY.search(rendered)
 
 
 # --- #274 리뷰: 스킬 코드 리로드, 커스텀 entrypoint -------------------------------------
@@ -275,7 +279,9 @@ def test_a_custom_entrypoint_is_not_given_the_standard_reload(root, tmp_path, mo
     monkeypatch.setenv(agentd.AGENT_TOKEN_ENV, "agent-token")
     monkeypatch.setattr(agentd, "_setup_observability", Metrics)
     monkeypatch.setattr(agentd, "_configure_logging", lambda: None)
-    custom = Executor(agent="planner", model=FakeModel([text("x")]), tools=FakeTools(), render=str)
+    custom = Executor(
+        agent="planner", model=FakeModel([text("x")]), tools=FakeTools(), render=async_render(str)
+    )
 
     async def build(manifest, **kwargs):
         return custom
@@ -307,7 +313,7 @@ async def test_the_system_template_reaches_the_model_on_its_own(root):
     executor = await agentd.build_executor(planner())
 
     assert executor.binding.system == f"{FRAMEWORK_INSTRUCTIONS}\n\nOPERATOR RULES"
-    assert "OPERATOR RULES" not in executor.binding.render(make_task(**DIRECT))
+    assert "OPERATOR RULES" not in await executor.binding.render(make_task(**DIRECT))
 
 
 PLANNER_PROMPTSET = "planner/0.3.0"

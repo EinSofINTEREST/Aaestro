@@ -36,7 +36,7 @@ from aaestro.core.events import (
     ToolResultEvent,
 )
 from aaestro.core.markers import STEER_HEADER
-from tests.fixtures.builders import make_task
+from tests.fixtures.builders import async_render, make_task
 from tests.fixtures.fake_model import FakeModel, FakeTools, calls, text
 from tests.fixtures.waiting import reached
 
@@ -79,7 +79,7 @@ def make_executor(responses, **config) -> tuple[Executor, HookedModel, HookedToo
         agent="researcher",
         model=model,
         tools=tools,
-        render=lambda task: f"prompt:{task.template_name}",
+        render=async_render(lambda task: f"prompt:{task.template_name}"),
         config=ExecutorConfig(**config) if config else None,
         system="be careful",
     )
@@ -520,7 +520,7 @@ class Overlap:
             agent="researcher",
             model=SimpleNamespace(run=by_prompt),
             tools=self.tools,
-            render=lambda task: task.input["who"],
+            render=async_render(lambda task: task.input["who"]),
         )
 
     async def _hold(self) -> None:
