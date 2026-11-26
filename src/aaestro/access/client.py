@@ -112,9 +112,16 @@ class AccessClient:
     feed_wait_s: float = FEED_WAIT_S
     _version: int = field(default=-1, init=False)
     _feed_alive: bool = field(default=False, init=False)
+    # 허용 · 거부를 따로 쥔다 — 호출자가 고르는 키로 거부가 범람해도 허용 캐시는 밀리지 않는다
+    # (01 Access Control 2 — 이미 허용된 판정은 장애 중에도 그대로 쓴다). 각자 LRU 상한이 있다
     _identities: dict[str, _Cached] = field(default_factory=dict, init=False)
+    _identities_denied: dict[str, _Cached] = field(default_factory=dict, init=False)
     _decisions: dict[tuple[str, str, str, str], _Cached] = field(default_factory=dict, init=False)
+    _decisions_denied: dict[tuple[str, str, str, str], _Cached] = field(
+        default_factory=dict, init=False
+    )
     _runs: dict[tuple[str, str], _Cached] = field(default_factory=dict, init=False)
+    _runs_denied: dict[tuple[str, str], _Cached] = field(default_factory=dict, init=False)
 
     # --- 판정 ---------------------------------------------------------------
 
@@ -127,7 +134,11 @@ class AccessClient:
             return body["agent"], int(body["version"]), None
 
         agent, source = await self._cached(
-            self._identities, key, fetch, limit=MAX_CACHED_IDENTITIES
+            (self._identities, self._identities_denied),
+            key,
+            fetch,
+            limit=MAX_CACHED_IDENTITIES,
+            allowed=lambda value: value is not None,
         )
         return agent, source
 
@@ -149,7 +160,13 @@ class AccessClient:
             answer = (body["agent"], body["decision"] == "allow", body["decided_by"])
             return answer, int(body["version"]), body.get("valid_until")
 
-        answer, source = await self._cached(self._decisions, key, fetch, limit=MAX_CACHED_DECISIONS)
+        answer, source = await self._cached(
+            (self._decisions, self._decisions_denied),
+            key,
+            fetch,
+            limit=MAX_CACHED_DECISIONS,
+            allowed=lambda value: value[1],
+        )
         if answer is None:
             verdict = Verdict(None, False, "unreachable", source)
         else:
@@ -181,7 +198,11 @@ class AccessClient:
             return (body["node"] is True, spaces), int(body["version"]), None
 
         answer, source = await self._cached(
-            self._runs, (_hash(credential), run_id), fetch, limit=MAX_CACHED_RUNS
+            (self._runs, self._runs_denied),
+            (_hash(credential), run_id),
+            fetch,
+            limit=MAX_CACHED_RUNS,
+            allowed=lambda value: value[0],
         )
         if answer is None:
             return False, {}, source
@@ -195,16 +216,16 @@ class AccessClient:
             answer = (body["agent"], body["decision"] == "allow", body["decided_by"])
             return answer, int(body["version"]), body.get("valid_until")
 
-        answer, source = await self._cached(
-            self._decisions,
-            ("ticket", _hash(ticket), "", ""),
-            fetch,
-            limit=MAX_CACHED_DECISIONS,
-        )
-        if answer is None:
-            verdict = Verdict(None, False, "unreachable", source)
+        # 티켓은 호출마다 새로 발급돼 다시 오지 않는다 — 캐시하면 1회용 키만 쌓인다.
+        # 장애 시에는 캐시가 없으므로 거부다 (캐시에 없는 판정은 거부 — 01)
+        try:
+            answer, _, _ = await fetch()
+        except (_UnreachableError, _RejectedError):
+            self._reachable(False)
+            verdict = Verdict(None, False, "unreachable", DecisionSource.UNREACHABLE)
         else:
-            verdict = Verdict(answer[0], answer[1], answer[2], source)
+            self._reachable(True)
+            verdict = Verdict(answer[0], answer[1], answer[2], DecisionSource.FRESH)
         self._count(ResourceKind.A2A, verdict)
         return verdict
 
@@ -248,17 +269,22 @@ class AccessClient:
 
     async def _cached(
         self,
-        cache: dict[Any, _Cached],
+        caches: tuple[dict[Any, _Cached], dict[Any, _Cached]],
         key: Any,
         fetch: Callable[[], Awaitable[tuple[Any, int, float | None]]],
         *,
-        limit: int | None = None,
+        limit: int,
+        allowed: Callable[[Any], bool],
     ) -> tuple[Any, DecisionSource]:
+        """``caches`` 는 (허용, 거부) 쌍이다 — ``allowed`` 가 답을 어느 쪽에 넣을지 정한다."""
         now = self.clock()
-        entry = cache.get(key)
+        entry, home = None, caches[0]
+        for cache in caches:
+            if (entry := cache.get(key)) is not None:
+                home = cache
+                break
         if entry is not None and self._usable(entry, now):
-            if limit is not None:
-                cache[key] = cache.pop(key)  # LRU — 최근에 쓴 것을 맨 뒤로
+            home[key] = home.pop(key)  # LRU — 최근에 쓴 것을 맨 뒤로
             return entry.value, DecisionSource.CACHE
         try:
             value, version, valid_until = await fetch()
@@ -266,20 +292,23 @@ class AccessClient:
             self._reachable(False)
             if entry is not None and not _expired(entry, now):
                 # 캐시에 있던 판정은 알림이 끊겨도 그대로 쓴다 (01 — 결정 D4)
+                home[key] = home.pop(key)
                 return entry.value, DecisionSource.CACHE
             return None, DecisionSource.UNREACHABLE
         except _RejectedError:
             self._reachable(False)
-            cache.pop(key, None)
+            for cache in caches:
+                cache.pop(key, None)
             return None, DecisionSource.UNREACHABLE
         self._reachable(True)
         if version >= self._version:
             # 알림이 이미 더 새 버전을 알렸으면 이 답은 그 전의 것이다 — 캐시하지 않는다
-            cache.pop(key, None)
-            cache[key] = _Cached(value, version, now, valid_until)
-            if limit is not None:
-                while len(cache) > limit:
-                    del cache[next(iter(cache))]
+            for cache in caches:
+                cache.pop(key, None)
+            target = caches[0] if allowed(value) else caches[1]
+            target[key] = _Cached(value, version, now, valid_until)
+            while len(target) > limit:
+                del target[next(iter(target))]
         return value, DecisionSource.FRESH
 
     def _usable(self, entry: _Cached, now: float) -> bool:
@@ -292,11 +321,18 @@ class AccessClient:
         self._drop_cache()
 
     def _drop_cache(self) -> None:
-        if not (self._identities or self._decisions or self._runs):
+        caches = (
+            self._identities,
+            self._identities_denied,
+            self._decisions,
+            self._decisions_denied,
+            self._runs,
+            self._runs_denied,
+        )
+        if not any(caches):
             return
-        self._identities.clear()
-        self._decisions.clear()
-        self._runs.clear()
+        for cache in caches:
+            cache.clear()
         if self.metrics is not None:
             self.metrics.counter("aaestro_access_cache_invalidations_total").labels(
                 component=self.component

@@ -293,8 +293,9 @@ async def test_run_participation_cache_is_bounded(monkeypatch):
     for i in range(50):
         await client.run_participation("cred", f"run-{i}")
 
-    assert len(client._runs) == 8  # noqa: SLF001
-    assert "run-49" in {run for _, run in client._runs}, "가장 최근 것이 남는다"  # noqa: SLF001
+    # 노드가 아닌 답은 거부 쪽 캐시에 든다 (#698)
+    assert len(client._runs_denied) == 8  # noqa: SLF001
+    assert "run-49" in {run for _, run in client._runs_denied}, "가장 최근 것이 남는다"  # noqa: SLF001
 
 
 async def test_decision_and_identity_caches_are_bounded(monkeypatch):
@@ -316,3 +317,109 @@ async def test_decision_and_identity_caches_are_bounded(monkeypatch):
     assert len(client._decisions) == 8  # noqa: SLF001
     assert "space-49" in {key[2] for key in client._decisions}, "가장 최근 것이 남는다"  # noqa: SLF001
     assert len(client._identities) == 8  # noqa: SLF001
+
+
+def _registry(monkeypatch, client, *, down: list[bool]):
+    """자격 "A" 만 허용하는 레지스트리 대역 — ``down[0]`` 이 참이면 닿지 않는다."""
+    from aaestro.access.client import _UnreachableError
+
+    async def post(path: str, body: dict) -> dict:
+        if down[0]:
+            raise _UnreachableError
+        known = body.get("credential") == "A"
+        agent = "a" if known else None
+        if path.endswith("identities"):
+            return {"agent": agent, "version": 1}
+        if path.endswith("runs"):
+            return {"node": known, "spaces": {}, "version": 1}
+        return {
+            "agent": agent,
+            "decision": "allow" if known else "deny",
+            "decided_by": "declaration",
+            "version": 1,
+        }
+
+    monkeypatch.setattr(client, "_post", post)
+    client._feed_alive = True  # noqa: SLF001
+    client._version = 1  # noqa: SLF001
+
+
+async def test_flooding_denials_does_not_evict_allowed_answers_during_an_outage(monkeypatch):
+    """모르는 자격으로 서로 다른 대상을 물어도 허용 캐시는 밀리지 않는다 (#698)."""
+    from aaestro.access import client as access_client
+
+    for name in ("MAX_CACHED_DECISIONS", "MAX_CACHED_IDENTITIES", "MAX_CACHED_RUNS"):
+        monkeypatch.setattr(access_client, name, 8)
+    client = AccessClient(base_url="http://cp", enforcer_token="t", component="egress")
+    down = [False]
+    _registry(monkeypatch, client, down=down)
+
+    await client.decide("A", ResourceKind.EGRESS, "api.good:443")
+    await client.identify("A")
+    await client.run_participation("A", "run-1")
+    for i in range(50):
+        await client.decide("junk", ResourceKind.EGRESS, f"h{i}.example:443")
+        await client.identify(f"junk-{i}")
+        await client.run_participation("junk", f"run-{i}")
+    down[0] = True
+
+    verdict = await client.decide("A", ResourceKind.EGRESS, "api.good:443")
+    assert (verdict.allowed, verdict.source) == (True, DecisionSource.CACHE)
+    assert await client.identify("A") == ("a", DecisionSource.CACHE)
+    node, _, source = await client.run_participation("A", "run-1")
+    assert (node, source) == (True, DecisionSource.CACHE)
+
+
+async def test_cache_hit_refreshes_lru_order(monkeypatch):
+    """적중한 오래된 항목은 축출되지 않는다 — 허용 캐시 기준 (#698)."""
+    from aaestro.access import client as access_client
+
+    monkeypatch.setattr(access_client, "MAX_CACHED_DECISIONS", 4)
+    client = AccessClient(base_url="http://cp", enforcer_token="t", component="egress")
+    _registry(monkeypatch, client, down=[False])
+
+    for i in range(4):
+        await client.decide("A", ResourceKind.EGRESS, f"h{i}")
+    await client.decide("A", ResourceKind.EGRESS, "h0")  # 가장 오래된 것을 적중
+    await client.decide("A", ResourceKind.EGRESS, "h4")  # 넘치면 h1 이 나간다
+
+    assert {key[2] for key in client._decisions} == {"h0", "h2", "h3", "h4"}  # noqa: SLF001
+
+
+async def test_cache_hit_during_an_outage_refreshes_lru_order(monkeypatch):
+    from aaestro.access import client as access_client
+
+    monkeypatch.setattr(access_client, "MAX_CACHED_DECISIONS", 4)
+    client = AccessClient(base_url="http://cp", enforcer_token="t", component="egress")
+    down = [False]
+    _registry(monkeypatch, client, down=down)
+
+    for i in range(4):
+        await client.decide("A", ResourceKind.EGRESS, f"h{i}")
+    client._feed_alive = False  # noqa: SLF001  재확인 주기를 넘기면 장애 경로로 적중한다
+    client.recheck_s = -1
+    down[0] = True
+    await client.decide("A", ResourceKind.EGRESS, "h0")
+    assert next(reversed(client._decisions))[2] == "h0"  # noqa: SLF001
+
+
+async def test_ticket_verdicts_are_not_cached(monkeypatch):
+    """티켓은 호출마다 새로 발급된다 — 캐시에 남지 않고, 장애 중에는 거부다 (#698)."""
+    from aaestro.access.client import _UnreachableError
+
+    client = AccessClient(base_url="http://cp", enforcer_token="t", component="a2a")
+    down = [False]
+
+    async def post(path: str, body: dict) -> dict:
+        if down[0]:
+            raise _UnreachableError
+        return {"agent": "a", "decision": "allow", "decided_by": "declaration", "version": 1}
+
+    monkeypatch.setattr(client, "_post", post)
+    first = await client.verify_ticket("t1")
+    assert first.allowed and first.source is DecisionSource.FRESH
+    assert not client._decisions and not client._decisions_denied  # noqa: SLF001
+
+    down[0] = True
+    refused = await client.verify_ticket("t1")
+    assert not refused.allowed and refused.source is DecisionSource.UNREACHABLE
