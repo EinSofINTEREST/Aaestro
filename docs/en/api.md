@@ -660,9 +660,20 @@ is how a service run is stopped — there is no kill.
 
 Continues a run from where it stopped. What that means differs by mode:
 
-- **Service runs** resume from their last iteration, and only from `halted` — the state a
-  service graph reaches after too many consecutive failures (`GRAPH_005`). Any other state is
-  `409` (`GRAPH_006`): a run you drained on purpose is submitted again, not resumed.
+- **Service runs** resume from their last iteration, and only from two states. `halted` — the
+  state a service graph reaches after too many consecutive failures (`GRAPH_005`) — continues
+  under a new run id (`<run_id>:resumed`). A run left `running` by a process that died continues
+  under **the same run id**, once its owner's lease has expired: the process driving a service
+  run records itself as the owner and keeps pushing a lease forward (30 seconds, renewed every
+  10), so a `running` run whose lease is past is one nobody is driving. The resume takes the run
+  over with a single conditional update — two resumes racing for it get one winner — and the
+  iteration the dead owner was in the middle of counts as a failed one. Any other state is
+  `409` (`GRAPH_006`): a run whose lease is still alive (in any process), a draining run, or a
+  run you drained on purpose, which is submitted again rather than resumed. A run recorded
+  before leases existed has none and counts as expired. An owner that finds its lease taken
+  stops its loop and writes nothing more; the store refuses its updates either way. Leases
+  compare wall clocks, so processes sharing the run store must agree on the time to well within
+  the lease.
 - **Mission runs** resume from the last checkpoint and carry **no state guard** — the
   checkpointer decides what continuing means, so resuming one that already finished re-drives
   it from that checkpoint. Without a durable checkpointer there is nothing to continue from

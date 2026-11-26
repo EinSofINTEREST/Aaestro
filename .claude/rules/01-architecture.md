@@ -175,7 +175,13 @@
    - **한 iteration = `START → ... → END` 한 바퀴**. 반복은 그래프 안의 순환이 아니라
      `ServiceRunner` 가 소유한다 — 그래프가 스스로 순환하면 한 번의 실행이 끝나지 않아
      iteration 경계 자체가 성립하지 않는다
-   - Iteration 마다 checkpoint — 프로세스/호스트 재시작 시 마지막 iteration 에서 재개
+   - Iteration 마다 checkpoint — 프로세스/호스트 재시작 시 마지막 iteration 에서 재개.
+     기동 시 자동 재개는 없고 명시적 resume 이다. 죽은 run 의 판정은 **임대** 다 (#662): run 저장소는
+     control plane · CLI · 여러 orchestrator 인스턴스가 함께 쓰므로 "이 프로세스가 모른다" 로는 죽은
+     run 과 남이 구동 중인 run 을 가르지 못한다. 구동하는 소유자가 기록의 임대 (`RunLease`, 기본
+     30초) 를 별도 태스크로 계속 미루고, 임대가 지난 `running` run 만 재개가 조건부 갱신
+     (compare-and-set) 으로 가져가 같은 run id 로 잇는다. 임대를 잃은 소유자는 루프를 멈추고,
+     저장소는 소유자가 아닌 쪽의 기록 갱신을 받지 않는다
    - 누적하는 리스트 state 는 그래프의 `state.compaction` 선언으로 **iteration 사이에서만**
      압축한다 — 끝난 iteration 의 state 를 압축한 것이 다음 iteration 의 입력이고, 끝난
      iteration 의 checkpoint 는 고치지 않는다

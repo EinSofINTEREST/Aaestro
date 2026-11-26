@@ -9,6 +9,7 @@ dict 만 봐서 재시작을 넘는 재개가 `NF_001` 로 실패했다 (#186).
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import pytest
@@ -203,10 +204,15 @@ async def test_a_run_that_left_no_checkpoint_cannot_resume(store_path):
 
 
 async def test_resume_still_refuses_a_run_that_is_not_halted(store_path):
-    """살아있는 run 을 재개하면 같은 iteration 을 두 벌이 돈다."""
+    """살아있는 run 을 재개하면 같은 iteration 을 두 벌이 돈다 — 임대가 살아 있는 run (#662)."""
     SqliteRunStore(path=store_path).upsert(
         RunRecord(
-            run_id="live", graph="feed-monitor", mode="service", status=str(RunStatus.RUNNING)
+            run_id="live",
+            graph="feed-monitor",
+            mode="service",
+            status=str(RunStatus.RUNNING),
+            owner="elsewhere",
+            lease_until=time.time() + 3600,
         )
     )
 

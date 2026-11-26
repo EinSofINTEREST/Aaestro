@@ -195,7 +195,9 @@ GRAPH_002: Node 실행 실패 (에이전트 에러 wrapping)
 GRAPH_003: State schema 불일치 / 병합 실패
 GRAPH_004: Max iterations 초과 (mission)
 GRAPH_005: Service iteration 연속 실패 임계 초과 — run 정지
-GRAPH_006: Run 상태가 요청한 조작과 맞지 않음 (상태 충돌, HTTP 409)
+GRAPH_006: Run 상태가 요청한 조작과 맞지 않음 (상태 충돌, HTTP 409) — service run 재개는 `halted` 와
+           소유자의 임대가 만료된 `running` 만 받는다 (임대가 살아 있는 run · draining · stopped · 다른
+           재개가 먼저 가져간 run 은 이 코드, 01 Mode Rules 2)
 
 MOD_001: 모듈 ref 해석 실패
 MOD_002: 모듈 버전/의존성 충돌 / 에이전트 ↔ promptset 조합 불일치 (노드 · `default` · `system` 템플릿 부재)

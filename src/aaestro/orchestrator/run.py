@@ -9,10 +9,15 @@ Service 루프의 시간 의존 동작(idle backoff)은 주입된 sleep/clock �
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import time
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
+
+import structlog
 
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 from aaestro.core.topology import GraphMode, GraphTopology
@@ -24,14 +29,17 @@ from aaestro.orchestrator.telemetry import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
-
     from aaestro.observability.metrics import Metrics
     from aaestro.orchestrator.compactor import StateCompactor
     from aaestro.orchestrator.runstore import RunStore
 
 DEFAULT_MAX_CONCURRENT_RUNS = 10
 DEFAULT_MAX_SERVICE_RUNS = 5
+DEFAULT_RUN_LEASE_S = 30.0
+"""service run 소유자의 임대 기간 (#662). 갱신은 이 1/3 마다 별도 태스크가 한다 — iteration ·
+idle backoff 길이와 무관하다. 소유자가 죽으면 재개는 최대 이만큼 기다린다 (409)."""
+
+log = structlog.get_logger(__name__)
 
 _RUN_ID_KEY = "_run_id"
 _TRACE_ID_KEY = "_trace_id"
@@ -66,6 +74,8 @@ class RunHandle:
     failure_streak: int = 0
     state: dict[str, Any] = field(default_factory=dict)
     error: AaestroError | None = None
+    lease_lost: bool = False
+    """임대를 잃어 루프가 스스로 멈췄는가 — 그 뒤의 기록은 새 소유자의 것이다 (#662)."""
 
     _drain: bool = field(default=False, init=False)
 
@@ -89,6 +99,34 @@ async def _no_sleep(_seconds: float) -> None:
     await asyncio.sleep(_seconds)
 
 
+def _new_owner() -> str:
+    return f"owner-{uuid.uuid4().hex}"
+
+
+@dataclass(frozen=True)
+class RunLease:
+    """Who drives service runs from this process, and for how long a silence means death.
+
+    service run 소유권의 임대 (#662). run 저장소는 control plane 과 CLI 가 같이 쓰고 orchestrator
+    인스턴스는 여럿일 수 있어, "이 프로세스가 모른다" 로는 죽은 run 과 다른 프로세스가 구동 중인
+    run 을 가르지 못한다. 그래서 소유자가 기록의 임대 (``lease_until``) 를 계속 미루고, 임대가
+    지난 ``running`` run 만 죽은 것으로 본다.
+
+    시각은 ``clock`` 의 epoch 초다 — 저장소를 공유하는 프로세스들의 시계가 임대 기간보다 크게
+    어긋나지 않아야 한다. ``sleep`` 은 갱신 간격에만 쓴다 (idle backoff 의 sleep 과 별개 —
+    테스트가 그것을 즉시 통과시켜도 갱신 루프가 돌지 않게).
+    """
+
+    owner: str = field(default_factory=_new_owner)
+    duration_s: float = DEFAULT_RUN_LEASE_S
+    clock: Callable[[], float] = time.time
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
+
+    def until(self) -> float:
+        """지금 잡거나 미루면 임대가 끝나는 시각."""
+        return self.clock() + self.duration_s
+
+
 class RunManager:
     """Tracks run slots for mission and service graphs.
 
@@ -103,12 +141,15 @@ class RunManager:
         max_service_runs: int = DEFAULT_MAX_SERVICE_RUNS,
         metrics: Metrics | None = None,
         store: RunStore | None = None,
+        lease: RunLease | None = None,
     ) -> None:
         self._max_mission = max_concurrent_runs
         self._max_service = max_service_runs
         self._runs: dict[str, RunHandle] = {}
         self._metrics = metrics
         self._store = store
+        self.lease = lease or RunLease()
+        """이 manager 가 service run 을 구동할 때의 소유자 · 임대."""
 
     @property
     def store(self) -> RunStore | None:
@@ -124,6 +165,8 @@ class RunManager:
         """
         if self._store is None:
             return
+        # mission 재개는 임대를 보지 않는다 — 소유자를 두면 다른 프로세스의 공지가 막힌다
+        service = handle.mode is GraphMode.SERVICE
         self._store.upsert(
             RunRecord(
                 run_id=handle.run_id,
@@ -133,8 +176,23 @@ class RunManager:
                 iteration=handle.iteration,
                 failure_streak=handle.failure_streak,
                 drain=handle.drain_requested,
+                owner=self.lease.owner if service else "",
+                lease_until=self.lease.until() if service else 0.0,
                 **(participation(topology) if topology is not None else {}),
             )
+        )
+
+    def claim(self, run_id: str) -> bool:
+        """Take over a service run whose owner's lease expired.
+
+        소유자의 임대가 만료된 ``running`` run 을 이 manager 의 소유로 가져옵니다 — 저장소의
+        조건부 갱신이라 다른 프로세스와 동시에 시도해도 하나만 이깁니다 (#662). 저장소가 없으면
+        다른 소유자를 알 길이 없으므로 가져오지 않습니다.
+        """
+        if self._store is None:
+            return False
+        return self._store.claim(
+            run_id, self.lease.owner, self.lease.until(), now=self.lease.clock()
         )
 
     def sync_drain(self, handle: RunHandle) -> bool:
@@ -333,6 +391,7 @@ class ServiceRunner:
         metrics: Metrics | None = None,
         store: RunStore | None = None,
         compactor: StateCompactor | None = None,
+        lease: RunLease | None = None,
     ) -> None:
         if topology.mode is not GraphMode.SERVICE:
             raise AaestroError(
@@ -354,6 +413,8 @@ class ServiceRunner:
         self._graph = graph
         self._sleep = sleep or _no_sleep
         self._store = store
+        # 저장소가 없으면 다른 프로세스가 볼 기록도 없다 — 임대를 들 곳이 없다
+        self._lease = lease if store is not None else None
         # 선언이 없는 그래프는 None 이다 — 그 그래프의 루프는 압축 경로에 들어가지 않는다
         self._compactor = compactor
         self.delays: list[float] = []
@@ -373,7 +434,64 @@ class ServiceRunner:
             record = self._store.get(handle.run_id)
             if record is not None and record.drain:
                 handle.request_drain()
-        return handle.drain_requested
+            if self._lost_to(record):
+                # 다음 iteration 을 열지 않는다 — 같은 회차를 새 소유자와 두 벌 돌게 된다
+                self._lose(handle)
+        return handle.drain_requested or handle.lease_lost
+
+    def _lost_to(self, record: RunRecord | None) -> bool:
+        """기록의 소유자가 이제 다른 프로세스인가."""
+        return (
+            self._lease is not None
+            and record is not None
+            and record.owner not in ("", self._lease.owner)
+        )
+
+    def _lose(self, handle: RunHandle) -> None:
+        if not handle.lease_lost:
+            handle.lease_lost = True
+            log.error(
+                "service run lease lost, stopping",
+                graph=handle.graph,
+                run_id=handle.run_id,
+                iteration=handle.iteration,
+                error_code=ErrorCode.GRAPH_006,
+            )
+
+    async def _hold_lease(self, handle: RunHandle, loop: asyncio.Task[Any]) -> None:
+        """Renew the run's lease until cancelled; stop the loop once it is lost.
+
+        임대를 계속 미룬다. 저장소가 소유자가 아니라고 답하거나 (남이 가져갔다), 갱신이 실패한
+        채 임대가 끝나면 (남이 곧 가져갈 수 있다) 루프를 취소한다 — 진행 중인 iteration 도 끊어
+        더는 checkpoint 를 남기지 않는다. 기록은 저장소가 소유자 조건으로 막는다.
+        """
+        assert self._lease is not None and self._store is not None  # noqa: S101 — 호출자가 확인
+        lease, store = self._lease, self._store
+        held_until = lease.until()
+        while True:
+            await lease.sleep(lease.duration_s / 3)
+            now = lease.clock()
+            try:
+                renewed: bool | None = store.renew(
+                    handle.run_id, lease.owner, now + lease.duration_s
+                )
+            except AaestroError as err:
+                # 일시 장애일 수 있다 — 임대가 남은 동안은 다음 주기에 다시 미룬다
+                log.warning(
+                    "service run lease renewal failed",
+                    graph=handle.graph,
+                    run_id=handle.run_id,
+                    iteration=handle.iteration,
+                    error_code=err.code,
+                )
+                renewed = None
+            if renewed:
+                held_until = now + lease.duration_s
+                continue
+            if renewed is False or now >= held_until:
+                self._lose(handle)
+                loop.cancel()
+                return
 
     def _publish(self, handle: RunHandle) -> None:
         """iteration 진행을 프로세스 밖에서 볼 수 있게 남긴다."""
@@ -388,6 +506,7 @@ class ServiceRunner:
                 iteration=handle.iteration,
                 failure_streak=handle.failure_streak,
                 drain=handle.drain_requested,
+                owner=self._lease.owner if self._lease is not None else "",
             )
         )
 
@@ -422,6 +541,38 @@ class ServiceRunner:
         Returns:
             The same handle, with terminal status recorded.
         """
+        loop = asyncio.current_task()
+        if self._lease is None or loop is None:
+            return await self._loop(
+                handle, initial_state, max_iterations, is_idle, pending_boundary
+            )
+        holder = asyncio.create_task(
+            self._hold_lease(handle, loop), name=f"run-lease:{handle.run_id}"
+        )
+        try:
+            return await self._loop(
+                handle, initial_state, max_iterations, is_idle, pending_boundary
+            )
+        except asyncio.CancelledError:
+            # 임대 갱신이 건 취소만 삼킨다 — 바깥의 취소 (drain · 종료) 가 겹쳤으면 그대로 올린다
+            if not handle.lease_lost or loop.cancelling() > 1:
+                raise
+            loop.uncancel()
+            return handle
+        finally:
+            holder.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await holder
+
+    async def _loop(
+        self,
+        handle: RunHandle,
+        initial_state: dict[str, Any],
+        max_iterations: int | None,
+        is_idle: Callable[[dict[str, Any]], bool] | None,
+        pending_boundary: int | None,
+    ) -> RunHandle:
+        """`run` 의 iteration 루프 — 임대 갱신과 분리해 그 취소를 한 곳에서 가른다."""
         state = dict(initial_state)
         state.setdefault(_RUN_ID_KEY, handle.run_id)
         state.setdefault(_TRACE_ID_KEY, handle.run_id)
