@@ -19,7 +19,7 @@ import structlog
 
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode
 from aaestro.memory.embedding import HashEmbedder, cosine, tokenize
-from aaestro.memory.telemetry import IndexTelemetry, space_label
+from aaestro.memory.telemetry import IndexTelemetry
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
@@ -444,19 +444,11 @@ class IndexRegistry:
         if self.metrics is None:
             return
 
-        telemetry = IndexTelemetry(self.metrics)
-        lag = self.queue.lag_seconds(now=now)
-        # run space 는 라벨 하나로 접힌다 — 게이지가 덮어쓰이지 않게 크기는 합, 지연은 최댓값
-        sizes: dict[str, int] = {}
-        lags: dict[str, float] = {}
-        for space, index in self.indexes.items():
-            label = space_label(space)
-            sizes[label] = sizes.get(label, 0) + len(index.metadata)
-            # 큐가 빈 space 는 지연이 0 이다 — 값을 남겨두면 해소된 지연이 계속 보인다
-            lags[label] = max(lags.get(label, 0.0), lag.get(space, 0.0))
-        for label, count in sizes.items():
-            telemetry.entries(space=label, count=count)
-            telemetry.index_lag(space=label, seconds=lags[label])
+        # 큐가 빈 space 는 지연이 0 이다 — 값을 남겨두면 해소된 지연이 계속 보인다
+        IndexTelemetry(self.metrics).space_gauges(
+            sizes={space: len(index.metadata) for space, index in self.indexes.items()},
+            lags=self.queue.lag_seconds(now=now),
+        )
 
     def reindex(
         self, space: str, entries: Iterable[MemoryEntry], spec: ChunkSpec, *, embedder: Embedder

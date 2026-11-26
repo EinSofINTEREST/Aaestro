@@ -7,7 +7,10 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Final
+
+from aaestro.core.manifest import MEMORY_ALIAS_CHARS
 
 if TYPE_CHECKING:
     from aaestro.observability.metrics import Metrics
@@ -17,11 +20,14 @@ OP_RECALL: Final = "recall"
 STATUS_OK: Final = "ok"
 STATUS_FAILED: Final = "failed"
 UNDECLARED_SPACE_LABEL: Final = "undeclared"
+"""space 로 해석되지 않은 접근의 메트릭 ``space`` 라벨.
+
+호출자가 고른 별칭을 라벨로 쓰면 시계열 수를 호출자가 정한다 — 해석되지 않은 것은 한 값으로 센다."""
 
 
 # 별칭은 마지막 조각이다 — run id 는 ``:`` 를 품을 수 있다.
 # access/baselines.py 의 RUN_SPACE_ID 와 같은 모양 — agentd 는 access 를 import 하지 못한다
-_RUN_SPACE_ID = re.compile(r"^run:.+:(?P<alias>[^:]+)$")
+_RUN_SPACE_ID = re.compile(rf"run:(?P<run>.+):(?P<alias>{MEMORY_ALIAS_CHARS})")
 
 
 def space_label(space_id: str) -> str:
@@ -29,7 +35,7 @@ def space_label(space_id: str) -> str:
 
     run id 가 라벨에 들면 run 마다 새 시계열이 생겨 카디널리티가 끝없이 자란다.
     """
-    match = _RUN_SPACE_ID.match(space_id)
+    match = _RUN_SPACE_ID.fullmatch(space_id)
     return f"run:{match['alias']}" if match else space_id
 
 
@@ -60,19 +66,24 @@ class IndexTelemetry:
             space=space_label(space)
         ).observe(duration_s)
 
-    def entries(self, *, space: str, count: int) -> None:
-        """space 가 담고 있는 항목 수 — 무한 성장은 검색 품질과 비용을 함께 망친다."""
-        self._metrics.gauge("aaestro_memory_entries").labels(space=space_label(space)).set(count)
+    def space_gauges(self, *, sizes: Mapping[str, int], lags: Mapping[str, float]) -> None:
+        """space 별 항목 수와 인덱싱 지연 — 키는 원 space id 다.
 
-    def index_lag(self, *, space: str, seconds: float) -> None:
-        """가장 오래된 미색인 항목의 나이.
-
-        09 는 eventual consistency 를 계약으로 두되 목표 지연(``index_lag_target_s``)
-        을 둔다 — 그 목표를 지키는지 보려면 개수가 아니라 **시간**이어야 한다.
+        라벨로 접히는 space 들은 여기서 한 번에 모은다: 항목 수는 합, 지연은 최댓값 —
+        접힌 라벨에 ``set`` 을 되풀이하면 마지막 space 만 남는다. 지연은 가장 오래된 미색인
+        항목의 나이다 (09 의 목표 지연 ``index_lag_target_s`` 와 같은 단위 — 시간).
         """
-        self._metrics.gauge("aaestro_memory_index_lag_seconds").labels(
-            space=space_label(space)
-        ).set(seconds)
+        total: dict[str, int] = {}
+        worst: dict[str, float] = {}
+        for space, count in sizes.items():
+            label = space_label(space)
+            total[label] = total.get(label, 0) + count
+            worst[label] = max(worst.get(label, 0.0), lags.get(space, 0.0))
+        for label, count in total.items():
+            self._metrics.gauge("aaestro_memory_entries").labels(space=label).set(count)
+            self._metrics.gauge("aaestro_memory_index_lag_seconds").labels(space=label).set(
+                worst[label]
+            )
 
 
-__all__ = ["IndexTelemetry"]
+__all__ = ["UNDECLARED_SPACE_LABEL", "IndexTelemetry", "space_label"]
