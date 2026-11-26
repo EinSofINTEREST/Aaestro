@@ -254,6 +254,10 @@ spec:
      굽히는 것은 마지막 스테이지다: `FROM aaestro/agent-base:<tag>` (태그 자리의 `${NAME}` 만 변수 허용, `@sha256:` 다이제스트 고정 허용) 로
      별칭을 거쳐 닿아야 하고 (빌더 스테이지는 자유), 그 스테이지의 마지막 `USER` 의 user 쪽이 `root`/`0`
      이면 거절. `--from=` 은 앞 스테이지 (이름 · 인덱스) 만 허용 — 이미지 참조 · 뒤 스테이지 · 변수는 거절
+     이 검사는 Dockerfile 글만 읽는다 — **굽는 시점의 동작은 통제하지 않는다** (알려진 위험, #694): `RUN` 의 네트워크 (`RUN curl …` 로 원격 내용),
+     빌더 스테이지 이미지 (`FROM x AS b` + `COPY --from=b / /` 로 내용 교체), `RUN --mount=…,from=<이미지>` (BuildKit), `RUN` 으로 만든
+     uid 0 계정을 이름으로 `USER` 지정 (정적으로 막을 수 없다). 굽기는 control token 뒤의 신뢰하는 운영자가 재료를 올리는 단계라는 전제이고, 실행 시점은
+     런타임이 `1000:1000` (`HARDENED_USER`) 으로 띄우고 재부착이 대조하며 외부 호출은 이그레스 판정이 쥔다
    - MUST run as non-root user
    - MUST NOT bake secrets into images (빌드 arg 로도 금지)
    - SHOULD use read-only root filesystem + 명시적 writable volume (`/workspace`, `/tmp`)
