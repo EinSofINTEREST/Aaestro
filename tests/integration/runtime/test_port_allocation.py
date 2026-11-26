@@ -22,6 +22,7 @@ from aaestro.runtime.launcher import AgentLauncher
 from aaestro.runtime.ports import A2APortAllocator
 from aaestro.runtime.spec import A2A_PORT_ENV
 from tests.integration.runtime.test_docker_lifecycle import (
+    RUN,
     CliDockerClient,
     docker,
     requires_docker,
@@ -30,14 +31,14 @@ from tests.integration.runtime.test_docker_lifecycle import (
 pytestmark = pytest.mark.integration
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-TEST_NETWORK = "aaestro-net-ports"
+TEST_NETWORK = f"aaestro-net-ports-{RUN}"
 PORT_RANGE = (9300, 9399)
 
 
 def a2a_manifest(name: str) -> AgentManifest:
     """A2A 를 켠 manifest — 포트를 받아야 하는 조건이다."""
     raw = yaml.safe_load((REPO_ROOT / "agents" / "echo" / "manifest.yaml").read_text("utf-8"))
-    raw["metadata"]["name"] = name
+    raw["metadata"]["name"] = f"{name}-{RUN}"
     raw["spec"]["a2a"]["enabled"] = True
     return AgentManifest.model_validate(raw)
 
@@ -93,7 +94,7 @@ async def test_a_stopped_agent_returns_its_port(launcher):
     """회수하지 않으면 재기동을 반복하는 운영에서 범위가 조용히 마른다."""
     launched = await launcher.start(a2a_manifest("ports-recycle"))
     taken = injected_port(launched.handle.container_id)
-    await launcher.stop("ports-recycle")
+    await launcher.stop(f"ports-recycle-{RUN}")
 
     again = await launcher.start(a2a_manifest("ports-recycle"))
 
@@ -126,7 +127,7 @@ async def test_an_exhausted_range_fails_loudly(echo_image):
 async def test_an_agent_without_a2a_consumes_no_port(launcher):
     """A2A 를 안 쓰는 에이전트가 범위를 소비하면 수용량 검증이 어긋난다."""
     raw = yaml.safe_load((REPO_ROOT / "agents" / "echo" / "manifest.yaml").read_text("utf-8"))
-    raw["metadata"]["name"] = "ports-quiet"
+    raw["metadata"]["name"] = f"ports-quiet-{RUN}"
     manifest = AgentManifest.model_validate(raw)
 
     launched = await launcher.start(manifest)
