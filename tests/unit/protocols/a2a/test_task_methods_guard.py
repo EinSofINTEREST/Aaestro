@@ -121,6 +121,9 @@ class StubGuard:
             raise not_allowed("unknown", CALLEE, owner=CALLEE, reason="no ticket")
         return CALLER
 
+    def refused(self, reason: Any) -> None:
+        pass
+
 
 @pytest.fixture
 def reached(monkeypatch) -> list[str]:
@@ -236,6 +239,7 @@ def serve_open(guard: InboundGuard, handle: Any = plan) -> FastAPI:
     )
     app = FastAPI()
     app.state.task_store = handler.task_store
+    app.state.handler = handler
     add_a2a_routes_to_fastapi(
         app,
         agent_card_routes=create_agent_card_routes(card),
@@ -416,6 +420,40 @@ async def test_a_refusal_log_carries_nothing_the_request_sent(method):
                 )
 
 
+@pytest.fixture
+def json_logging():
+    """프로세스 로깅을 운영과 같이 설정한다 — stdlib 브리지까지 (#420)."""
+    import logging
+
+    import structlog
+
+    from aaestro.observability.logging import configure
+
+    configure(level="INFO", json_output=True)
+    yield
+    structlog.reset_defaults()
+    root = logging.getLogger()
+    for handler in [h for h in root.handlers if type(h).__name__ == "_StdlibBridge"]:
+        root.removeHandler(handler)
+
+
+async def test_the_sdks_own_error_log_cannot_split_a_line(json_logging, capsys):
+    """SDK 는 스트리밍 메서드 거절에서 요청의 JSON-RPC id 를 원문으로 적는다 — 개행이 든 id 가
+    줄을 위조하지 못한다."""
+    http, task_id = await token_mode_task()
+    capsys.readouterr()
+    forged = 'x\n{"event": "forged", "level": "critical"}'
+
+    await rpc(http, "SubscribeToTask", REQUESTS["SubscribeToTask"](task_id), {}, forged)
+
+    lines = capsys.readouterr().out.splitlines()
+    records = [json.loads(line) for line in lines]
+    assert all(record.get("event") != "forged" for record in records)
+    (sdk,) = [record for record in records if record.get("logger", "").startswith("a2a.")]
+    assert sdk["level"] == "warning"
+    assert "Request Error" in sdk["event"]
+
+
 # 끝난 태스크를 남기지 않는다 ---------------------------------------------------------
 
 SENDS = 5
@@ -455,6 +493,67 @@ async def test_a_finished_task_is_not_kept(method, handle, params):
         assert answered.status_code == 200 and answered.text
 
     assert len(app.state.task_store) == 0
+
+
+async def cancelled(task):
+    raise asyncio.CancelledError
+
+
+def active_tasks(app: FastAPI) -> int:
+    """SDK 의 활성 태스크 레지스트리 — 요청 본문을 든 ``ActiveTask`` 가 여기 남으면 쌓인다."""
+    return len(app.state.handler._active_task_registry._active_tasks)  # noqa: SLF001
+
+
+@pytest.mark.parametrize("method", ["SendMessage", "SendStreamingMessage"])
+async def test_an_agent_run_that_ends_in_cancellation_leaves_nothing_in_the_sdk(method):
+    """에이전트 안에서 새어 나온 취소를 SDK producer 가 삼키면 종결 상태 없이 끝나 태스크가
+    활성 레지스트리에 남고 비스트리밍 호출자는 답을 받지 못한다 (#420)."""
+    app = serve_open(guard_for((CALLER, CALLEE)), cancelled)
+    http = wire(app)
+
+    for _ in range(SENDS):
+        answered = await asyncio.wait_for(post(http, method, new_task(), valid_headers()), 5)
+        assert "TASK_STATE_CANCELED" in answered.text
+    for _ in range(100):
+        # 레지스트리는 응답 뒤에 정리를 예약한다 — 상한 있는 기다림
+        if active_tasks(app) == 0:
+            break
+        await asyncio.sleep(0.01)
+
+    assert active_tasks(app) == 0
+    assert len(app.state.task_store) == 0
+
+
+async def test_a_cancellation_of_the_executor_itself_still_propagates():
+    """SDK 가 실행을 끊는 취소 (레지스트리 종료) 는 삼키지 않는다 — 그쪽이 정리를 기다린다."""
+    started = asyncio.Event()
+
+    async def blocked(task):
+        started.set()
+        await asyncio.Event().wait()
+
+    guard = guard_for((CALLER, CALLEE))
+    executor = GuardedExecutor(guard, blocked)
+    queue = SimpleNamespace(enqueued=[])
+
+    async def enqueue_event(event):  # pragma: no cover - 닿으면 안 된다
+        queue.enqueued.append(event)
+
+    queue.enqueue_event = enqueue_event
+    message = build_message(make_task())
+    context = SimpleNamespace(
+        call_context=SimpleNamespace(state={"headers": valid_headers()}),
+        get_user_input=lambda: message.parts[0].text,
+        task_id="task",
+        context_id="context",
+    )
+    running = asyncio.create_task(executor.execute(context, queue))
+    await started.wait()
+    running.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await running
+    assert queue.enqueued == []
 
 
 def test_the_handler_does_not_take_a_task_store():

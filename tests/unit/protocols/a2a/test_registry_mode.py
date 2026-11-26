@@ -67,6 +67,7 @@ class Stack:
         guard = InboundGuard(
             server=A2AServer(agent="planner", allowlist=_allowlist()), verifier=self.verifier
         )
+        self.guard = guard
 
         self.callers: list[str | None] = []
         self.keys: list[TaskKey] = []
@@ -159,6 +160,35 @@ async def test_an_undeclared_caller_that_skips_its_own_check_is_refused_by_the_c
     err = await refused(stack.caller("writer").call("planner", make_task()))
 
     assert err.code == ErrorCode.A2A_004
+
+
+async def test_a_registry_denial_is_logged_and_counted_without_the_header_claim(stack):
+    """거부된 표의 호출자 이름은 헤더의 주장일 뿐이다 — ``a2a_caller`` 로도, 어느 필드로도 남기지
+    않는다 (#420). 거절은 사유별 메트릭으로 센다 (호출자는 라벨이 아니다)."""
+    from structlog.testing import capture_logs
+
+    from aaestro.observability.metrics import Metrics
+    from aaestro.protocols.telemetry import A2aInboundTelemetry
+
+    metrics = Metrics()
+    guard = stack.guard
+    guard.telemetry = A2aInboundTelemetry(metrics, callee="planner")
+    writer = stack.caller("writer")
+    writer.transport.agent = "name-only-a-header-claimed"
+
+    with capture_logs() as logs:
+        assert (await refused(writer.call("planner", make_task()))).code == ErrorCode.A2A_004
+
+    (denial,) = [entry for entry in logs if entry["event"] == "a2a inbound denied by registry"]
+    assert "a2a_caller" not in denial
+    assert denial["a2a_callee"] == "planner"
+    assert "name-only-a-header-claimed" not in str(denial)
+    assert (
+        metrics.registry.get_sample_value(
+            "aaestro_a2a_refusals_total", {"callee": "planner", "reason": "denied"}
+        )
+        == 1.0
+    )
 
 
 async def test_claiming_another_callers_name_with_your_own_ticket_is_refused(stack):

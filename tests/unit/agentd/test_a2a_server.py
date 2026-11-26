@@ -399,3 +399,89 @@ def test_peer_calls_lend_the_running_tasks_slot(registry_mode, monkeypatch):
     monkeypatch.setenv(PEERS_ENV, "planner=aaestro-planner-0:9101")
 
     assert build_peer_client(manifest("researcher")).while_waiting is lend_slot
+
+
+# --- 거절 메트릭 (#420) -----------------------------------------------------------
+
+
+def _sent(task) -> dict:
+    from a2a.types import a2a_pb2 as pb
+    from google.protobuf.json_format import MessageToDict
+
+    from aaestro.protocols.a2a.sdk import build_message
+
+    return MessageToDict(pb.SendMessageRequest(message=build_message(task)))
+
+
+def _malformed_body() -> dict:
+    from a2a.types import a2a_pb2 as pb
+    from google.protobuf.json_format import MessageToDict
+
+    message = pb.Message(message_id="m", role=pb.Role.ROLE_USER, parts=[pb.Part(text="{")])
+    return MessageToDict(pb.SendMessageRequest(message=message))
+
+
+async def test_the_assembled_server_counts_every_refusal_by_reason(injected):
+    """거절은 호출자 쪽 ``aaestro_a2a_calls_total`` 에 잡히지 않는다 — 피호출자가 사유별로 센다.
+
+    호출자 이름은 라벨이 아니다: 확인되지 않은 값이라 위조되고 요청마다 새 시계열이 생긴다.
+    """
+    from aaestro.core.agent import TraceContext
+    from aaestro.observability.metrics import Metrics
+    from aaestro.protocols.a2a.allowlist import issue_token
+    from aaestro.protocols.a2a.sdk import CALLER_HEADER, TOKEN_HEADER
+    from tests.fixtures.builders import make_task
+
+    metrics = Metrics()
+    app = build_a2a_app(manifest("planner"), invoke, metrics=metrics)
+    token = issue_token(b"runtime-signing-secret", Edge(caller="researcher", callee="planner"))
+    valid = {CALLER_HEADER: "researcher", TOKEN_HEADER: token}
+    deep = make_task().model_copy(update={"trace": TraceContext(trace_id="t", depth=99)})
+
+    await _post(app, "SendMessage", _new_task())
+    await _post(app, "SendMessage", _new_task(), {CALLER_HEADER: "forged-name", TOKEN_HEADER: "x"})
+    await _post(app, "GetTask", {"id": "any-task"}, valid)
+    await _post(app, "SendMessage", _sent(deep), valid)
+    await _post(app, "SendMessage", _malformed_body(), valid)
+
+    def counted(reason: str) -> float | None:
+        return metrics.registry.get_sample_value(
+            "aaestro_a2a_refusals_total", {"callee": "planner", "reason": reason}
+        )
+
+    assert {
+        reason: counted(reason)
+        for reason in ("no_credential", "denied", "unsupported", "too_deep", "malformed")
+    } == dict.fromkeys(("no_credential", "denied", "unsupported", "too_deep", "malformed"), 1.0)
+    labels = [
+        sample.labels
+        for family in metrics.registry.collect()
+        if family.name == "aaestro_a2a_refusals"
+        for sample in family.samples
+    ]
+    assert labels and "forged-name" not in str(labels)
+
+
+# --- 두 카드의 광고 (#420) --------------------------------------------------------
+
+
+@pytest.mark.parametrize("push", [True, False])
+@pytest.mark.parametrize("streaming", [True, False])
+def test_both_cards_advertise_what_the_a2a_server_answers(push, streaming):
+    """Control ``/v1/card`` 와 A2A 카드가 같은 capability 를 광고한다 — push 설정은 전부 거절하므로
+    manifest 가 선언해도 둘 다 광고하지 않는다."""
+    from aaestro.agentd.a2a_server import _protobuf_card
+    from aaestro.protocols.a2a.card import build_card
+
+    declared = manifest("researcher")
+    capabilities = declared.spec.a2a.capabilities.model_copy(
+        update={"push_notifications": push, "streaming": streaming}
+    )
+    a2a = declared.spec.a2a.model_copy(update={"capabilities": capabilities})
+    declared = declared.model_copy(update={"spec": declared.spec.model_copy(update={"a2a": a2a})})
+
+    control = build_card(declared).capabilities
+    peer = _protobuf_card(declared).capabilities
+
+    assert control == {"streaming": streaming, "push_notifications": False}
+    assert (peer.streaming, peer.push_notifications) == (streaming, False)

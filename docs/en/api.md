@@ -1542,8 +1542,13 @@ With or without a registry, an agent's A2A port answers two things only: the age
   the same way; every delegation is a new task.
 - **The task store keeps no finished task.** It holds a task only while it runs; once the task
   completes, fails or is refused, the store drops it — the result travels in the response and
-  nowhere else. Known limit: a task whose agent run ends by cancellation can stay in the SDK's
-  internal registry of active tasks (SDK behaviour, tracked separately).
+  nowhere else. An agent run that ends by cancellation from inside the agent is answered as a
+  `canceled` task, so the SDK's internal registry of active tasks lets it go too (#420).
+- **Refusals are counted on the callee.** `aaestro_a2a_refusals_total{callee, reason}` counts every
+  request the server turned away — `no_credential`, `denied`, `malformed`, `too_deep`,
+  `unsupported`. The caller's name is not a label: it is an unverified claim. The agent card on
+  both the Control API and the A2A port advertises no push notifications, since the server refuses
+  every push configuration request.
 
 ### `POST /v1/access/a2a/tickets` — any agent
 
