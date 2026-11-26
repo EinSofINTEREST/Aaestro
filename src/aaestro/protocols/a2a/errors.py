@@ -49,14 +49,21 @@ def a2a_error(
 
 
 def submit_failed(caller: str, callee: str, **details: Any) -> AaestroError:
-    """태스크 제출 실패 — 일시적일 수 있으므로 retryable."""
-    return a2a_error(
-        ErrorCode.A2A_001,
-        f"a2a task submission failed: {callee}",
-        caller=caller,
-        callee=callee,
-        retryable=True,
-        **details,
+    """태스크 제출 실패 — 일시적일 수 있으므로 retryable.
+
+    피호출자가 재시도 가능한 사유 (칸 대기 마감 ``TO_001`` · drain ``RT_005`` 등) 로 답한 실패도
+    여기다 — 그 사유 (``peer_error``) 를 원인으로 붙인다.
+    """
+    return _with_peer_reason(
+        a2a_error(
+            ErrorCode.A2A_001,
+            f"a2a task submission failed: {callee}",
+            caller=caller,
+            callee=callee,
+            retryable=True,
+            **details,
+        ),
+        details,
     )
 
 
@@ -83,13 +90,20 @@ def task_rejected(caller: str, callee: str, **details: Any) -> AaestroError:
     거부) — 를 원인 예외로 붙인다. details 는 모델에 실리지 않으므로, 원인이 없으면 호출자
     (ask_peer 를 부른 모델) 가 peer 의 실패 사유를 받지 못한다.
     """
-    error = a2a_error(
-        ErrorCode.A2A_003,
-        f"a2a task failed on peer: {callee}",
-        caller=caller,
-        callee=callee,
-        **details,
+    return _with_peer_reason(
+        a2a_error(
+            ErrorCode.A2A_003,
+            f"a2a task failed on peer: {callee}",
+            caller=caller,
+            callee=callee,
+            **details,
+        ),
+        details,
     )
+
+
+def _with_peer_reason(error: AaestroError, details: dict[str, Any]) -> AaestroError:
+    """peer 가 준 사유를 원인 예외로 붙인다 — details 는 모델에 실리지 않는다."""
     reason = _peer_reason(details.get("peer_error"))
     if not reason and isinstance(details.get("reason"), str):
         reason = details["reason"]

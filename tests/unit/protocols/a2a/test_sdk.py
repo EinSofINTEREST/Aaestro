@@ -344,6 +344,37 @@ async def test_a_peer_failure_carries_its_structured_reason_to_the_caller():
     assert exc_info.value.details["peer_error"]["message"] == "beyond the ceiling"
 
 
+@pytest.mark.parametrize("code", ["TO_001", "RT_005"])
+async def test_a_retryable_peer_failure_reaches_the_caller_as_retryable(code):
+    """피호출자가 칸 대기 마감 · drain 으로 받지 못한 태스크는 다시 보내면 된다 (#416) —
+    비재시도 A2A_003 으로 접으면 호출자의 재시도가 걸리지 않는다."""
+    from aaestro.core.errors import ErrorCategory
+
+    async def handler(task):
+        return TaskResult.failed(
+            task,
+            AaestroError(
+                category=ErrorCategory.TIMEOUT, code=code, message="not taken", retryable=True
+            ),
+        )
+
+    app = serve(guard_for((CALLER, CALLEE)), handler)
+    transport = transport_to(app)
+
+    with pytest.raises(AaestroError) as exc_info:
+        await transport.send(
+            callee=CALLEE,
+            task=make_task(),
+            token=issue_token(SECRET, Edge(caller=CALLER, callee=CALLEE)),
+            headers={},
+        )
+
+    assert exc_info.value.code == ErrorCode.A2A_001
+    assert exc_info.value.retryable is True
+    assert exc_info.value.details["peer_error"]["code"] == code
+    assert code in str(exc_info.value.__cause__)
+
+
 def test_a_peer_refusal_text_becomes_the_cause():
     """SDK 는 원격 거부를 문자열로만 실어 온다 — details 에만 두면 모델이 사유를 받지 못한다."""
     from a2a.utils.errors import A2AError

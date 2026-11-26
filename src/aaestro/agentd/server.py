@@ -21,6 +21,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from aaestro.agentd.slots import HELD_SLOT, Slot
 from aaestro.core.agent import (
     HealthState,
     HealthStatus,
@@ -157,7 +158,9 @@ class AgentRuntime:
         if not tasks:
             return False
         for task in list(tasks):
-            task.cancel()
+            # 이미 끊기는 중인 실행 (마지막 호출자가 떠남 등) 에 다시 걸면 정리 단계가 잘린다
+            if not task.cancelling():
+                task.cancel()
         return True
 
     async def run(self, task: TaskRequest) -> TaskResult:
@@ -185,20 +188,25 @@ class AgentRuntime:
         # 앞선 실행 뒤에 세우고, 그것이 취소로 끝나면 처음부터 다시 실행한다
         deadline = asyncio.get_running_loop().time() + task.config.timeout_s
         joined = False
-        if running is None or running.done() or running.cancelling():
+        if running is None or running.done():
             running = self._start(key, self._admitted(task, deadline))
+        elif running.cancelling():
+            # 끊기는 중인 실행이 정리하며 칸을 쥔 동안 칸을 하나 더 잡지 않는다 — 대체 실행은
+            # 그것이 끝난 뒤에 칸을 잡고, 그 사이 들어온 재시도는 이 대체 실행에 합류한다
+            running = self._start(key, self._admitted(task, deadline, after=running))
         else:
             joined = True
         self._waiters[running] = self._waiters.get(running, 0) + 1
+        # 합류한 호출만 자기 마감까지 기다린다 — 새 실행은 이 호출의 마감으로 돌고 TO_001 을
+        # 실행이 낸다. 만료로 떠나도 대기자 수 규칙은 같다: 남은 대기자가 있으면 실행은 계속
+        # 돌고, 마지막이면 끊긴다 (결과를 받을 쪽이 없다)
+        waiting = asyncio.timeout_at(deadline if joined else None)
         try:
-            if not joined:
-                # 새 실행은 이 호출의 마감으로 돈다 — 그 TO_001 은 실행이 낸다
-                return await asyncio.shield(running)
-            # 합류한 호출은 자기 마감까지만 기다린다. 만료로 떠나도 대기자 수 규칙은 같다:
-            # 남은 대기자가 있으면 실행은 계속 돌고, 마지막이면 끊긴다 (결과를 받을 쪽이 없다)
-            async with asyncio.timeout_at(deadline):
+            async with waiting:
                 return await asyncio.shield(running)
         except TimeoutError:
+            if not waiting.expired():
+                raise  # 실행이 던진 TimeoutError — 대기 마감이 아니다
             return TaskResult.failed(task, _queued_timeout_error(self, task))
         except asyncio.CancelledError:
             current = asyncio.current_task()
@@ -226,16 +234,30 @@ class AgentRuntime:
         self.track(key, running)
         return running
 
-    async def _admitted(self, task: TaskRequest, deadline: float) -> TaskResult:
-        """칸을 얻으면 남은 마감으로 실행한다."""
+    async def _admitted(
+        self,
+        task: TaskRequest,
+        deadline: float,
+        *,
+        after: asyncio.Task[TaskResult] | None = None,
+    ) -> TaskResult:
+        """칸을 얻으면 남은 마감으로 실행한다 — ``after`` 가 있으면 그것이 끝난 뒤에 칸을 잡는다."""
+        if after is not None:
+            try:
+                async with asyncio.timeout_at(deadline):
+                    await asyncio.wait({after})
+            except TimeoutError:
+                return TaskResult.failed(task, _queued_timeout_error(self, task))
         admitted = await self.take_slot(task, deadline)
         if isinstance(admitted, AaestroError):
             return TaskResult.failed(task, admitted)
+        slot = Slot(self.semaphore, deadline)
+        HELD_SLOT.set(slot)  # 이 실행 태스크의 문맥 — peer 를 기다리는 동안 빌려준다
         try:
             result: TaskResult = await self.executor.execute(admitted)
             return result
         finally:
-            self.semaphore.release()
+            slot.release()
 
     async def take_slot(self, task: TaskRequest, deadline: float) -> TaskRequest | AaestroError:
         """칸을 얻어 남은 마감을 실은 태스크를 돌려준다 — 성공하면 호출자가 칸을 놓는다.
@@ -496,10 +518,12 @@ def create_app(runtime: AgentRuntime, *, token: str | None = None) -> FastAPI:
                     terminal.append(refused)
                     await relay.put(refused)
                     return
+                slot = Slot(runtime.semaphore, deadline)
+                HELD_SLOT.set(slot)  # producer 태스크의 문맥 — peer 를 기다리는 동안 빌려준다
                 try:
                     await relay_stream(admitted)
                 finally:
-                    runtime.semaphore.release()
+                    slot.release()
 
             async def relay_stream(admitted: TaskRequest) -> None:
                 source = runtime.executor.stream(admitted)
@@ -508,7 +532,20 @@ def create_app(runtime: AgentRuntime, *, token: str | None = None) -> FastAPI:
                         # 응답은 첫 종료 이벤트만 쓴다 — 뒤의 것은 쌓지 않는다 (#639)
                         if isinstance(produced, DoneEvent | ErrorEvent) and not terminal:
                             terminal.append(produced)
-                        await relay.put(produced)
+                        try:
+                            # 읽지 않는 소비자가 칸을 마감 너머까지 붙잡지 못하게 — 만료면 소스를
+                            # 닫고 (finally) 칸을 놓는다. 종료 이벤트는 응답이 마지막에 낸다
+                            async with asyncio.timeout_at(deadline):
+                                await relay.put(produced)
+                        except TimeoutError:
+                            if not terminal:
+                                terminal.append(
+                                    ErrorEvent(
+                                        task_id=task.task_id,
+                                        error=_stream_timeout_error(runtime, task).payload(),
+                                    )
+                                )
+                            return
                 finally:
                     # put 에서 끊기면 생성기는 yield 에 멈춘 채 남는다 — 닫아야 실행기의 정리
                     # (steer 창구 등) 가 GC 를 기다리지 않는다. aclose 없는 반복자도 받는다
@@ -572,6 +609,9 @@ def create_app(runtime: AgentRuntime, *, token: str | None = None) -> FastAPI:
                         collected = True
                         if not ended:
                             producer.result()  # 실행기의 예외는 응답이 거둔다
+                            # 큐에 넣지 못한 종료 이벤트 (마감에 끊긴 느린 소비자) — 여기서 낸다
+                            if terminal and (frame := _sse_frame(terminal[0], runtime.agent)):
+                                yield frame
                         elif (err := producer.exception()) is not None:
                             # 종료 이벤트를 이미 냈다 — 끝난 응답을 예외로 깨지 않는다 (#639)
                             log.warning(
@@ -698,6 +738,17 @@ def _draining_error(runtime: AgentRuntime) -> AaestroError:
         code=ErrorCode.RT_005,
         message="agent is draining and does not accept new tasks",
         agent=runtime.agent,
+        retryable=True,
+    )
+
+
+def _stream_timeout_error(runtime: AgentRuntime, task: TaskRequest) -> AaestroError:
+    return AaestroError(
+        category=ErrorCategory.TIMEOUT,
+        code=ErrorCode.TO_001,
+        message="task timeout exceeded",
+        agent=runtime.agent,
+        task_id=task.task_id,
         retryable=True,
     )
 

@@ -160,6 +160,7 @@ def build_peer_client(manifest: AgentManifest) -> Any:
         # 서명 키가 없으면 callee 가 거부한다
         return None
 
+    from aaestro.agentd.slots import lend_slot
     from aaestro.protocols.a2a.client import A2AClient
     from aaestro.protocols.a2a.sdk import SdkPeerTransport
     from aaestro.protocols.a2a.tickets import TicketSource
@@ -173,6 +174,8 @@ def build_peer_client(manifest: AgentManifest) -> Any:
         ),
         transport=SdkPeerTransport(agent=manifest.name, addresses=reachable),
         reachable=tuple(sorted(reachable)),
+        # peer 를 기다리는 동안 칸을 놓는다 — 돌아오는 위임이 그 칸을 쓸 수 있게 (#416)
+        while_waiting=lend_slot,
         tickets=(
             TicketSource(agent=manifest.name, base_url=registry[0], credential=registry[1])
             if registry

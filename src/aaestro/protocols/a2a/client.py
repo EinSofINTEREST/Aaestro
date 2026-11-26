@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
@@ -28,6 +29,7 @@ from aaestro.resilience import retrying
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping
+    from contextlib import AbstractAsyncContextManager
 
     from aaestro.core.agent import TaskRequest, TaskResult
     from aaestro.observability.metrics import Metrics
@@ -114,6 +116,9 @@ class A2AClient:
     reachable: tuple[str, ...] | None = None
     """실제로 보낼 수 있는 peer (연결이 선언되고 주소가 주입된 것) — 조립하는 쪽이 계산해 넘긴다.
     None 이면 연결 선언 전체다 (주소 표가 없는 대역용)."""
+    while_waiting: Callable[[], AbstractAsyncContextManager[None]] | None = None
+    """peer 의 답을 기다리는 동안 감쌀 문맥 — agentd 는 여기서 실행 칸을 빌려준다 (#416).
+    칸을 쥔 채 기다리면 양방향 위임 (A → B → A) 이 서로의 칸을 기다리다 교착한다."""
     _telemetry: A2aTelemetry | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
@@ -162,6 +167,11 @@ class A2AClient:
                 ``A2A_005`` if the chain is too deep, ``A2A_002`` if the peer is
                 unreachable, ``A2A_003`` if the peer rejected the task.
         """
+        # 칸을 다시 잡지 못한 마감 초과 (TO_001) 가 peer 의 실패로 세지지 않게 바깥에서 감싼다
+        async with self.while_waiting() if self.while_waiting else nullcontext():
+            return await self._call(callee, task)
+
+    async def _call(self, callee: str, task: TaskRequest) -> TaskResult:
         # caller 측 방어 — 선언과 깊이를 먼저 본다.
         # 거부도 호출 시도다: 카운터에서 빼면 allowlist 위반이 관측되지 않는다
         try:
