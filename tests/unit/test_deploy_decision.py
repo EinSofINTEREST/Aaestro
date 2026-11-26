@@ -226,3 +226,26 @@ def test_authoring_supplies_the_configured_providers(tmp_path):
 
     assert authored(root, {}) == [ErrorCode.VAL_002]
     assert authored(root, {"jev": frozenset({"ko"})}) == [ErrorCode.MOD_003]
+
+
+def test_a_decision_without_a_proxy_warns_and_does_not_reject():
+    """프록시가 없으면 결정 호출이 닿지 않는다 — 거절이 아니라 경고 하나 (#713)."""
+    report = validate(decision())
+
+    assert report.ok, report.findings
+    (warning,) = report.warnings
+    assert warning.check == "decision"
+    assert warning.details == {"agent": "planner", "provider": "jev"}
+
+
+def test_no_decision_declaration_means_no_warning():
+    loaded = DecisionsetLoader(ModuleRegistry.under(REPO_ROOT)).load(SET_REF)
+    report = validate_deployment(
+        [],
+        manifests={"planner": agent(None)},
+        resolvable_refs={PROMPTSET_REF},
+        decisionsets={SET_REF: loaded},
+        decision_providers=PROVIDERS,
+    )
+
+    assert report.warnings == ()

@@ -3331,13 +3331,17 @@ async def test_a_rollback_that_leaves_a_replica_keeps_its_port_and_can_be_torn_d
 # --- 프록시에 실제 upstream 이 있는가 (#644) --------------------------------------------
 
 
-def proxy_answering(*providers: str, seen: list[str] | None = None) -> httpx.MockTransport:
+def proxy_answering(
+    *providers: str, seen: list[str] | None = None, decisions: tuple[str, ...] = ()
+) -> httpx.MockTransport:
     """프록시의 provider 목록 대역 — 묻는 URL 을 ``seen`` 에 남긴다."""
 
     def handle(request: httpx.Request) -> httpx.Response:
         if seen is not None:
             seen.append(str(request.url))
-        return httpx.Response(200, json={"providers": sorted(providers)})
+        return httpx.Response(
+            200, json={"providers": sorted(providers), "decision_providers": sorted(decisions)}
+        )
 
     return proxy_failing(handle)
 
@@ -3383,6 +3387,47 @@ async def test_a_provider_without_a_proxy_upstream_launches_nothing(manager, doc
     assert err.details == {"agent": "alpha", "provider": "anthropic"}
     assert "no upstream on the egress proxy" in err.message
     assert docker.created == [] and manager.deployments() == []
+
+
+def _deciding_manifest(provider: str):
+    from aaestro.core.manifest import AgentManifest
+
+    doc = agent_doc("alpha")
+    doc["spec"]["decision"] = {
+        "provider": provider,
+        "model": "jev-1.13",
+        "sets": [{"ref": "decisionsets/triage@0.1.0", "as": "triage"}],
+    }
+    return AgentManifest.model_validate(doc)
+
+
+async def test_a_decision_provider_without_a_proxy_upstream_is_val_002(manager):
+    """프록시가 결정 upstream 을 답하지 않으면 기동 전 거절 — 모델 목록에 있어도 (#713)."""
+    from aaestro.runtime.deployments import _check_proxy_upstreams
+
+    proxied(manager, proxy_answering("anthropic", decisions=("jev",)))
+    relayed = await manager._relayed_providers()  # noqa: SLF001
+    assert relayed == (frozenset({"anthropic"}), frozenset({"jev"}))
+    topology = manager.catalog.graph("two")
+
+    _check_proxy_upstreams(topology, [_deciding_manifest("jev")], relayed)  # 있으면 통과
+    with pytest.raises(AaestroError) as caught:
+        _check_proxy_upstreams(topology, [_deciding_manifest("posek")], relayed)
+
+    assert (caught.value.category, caught.value.code) == (
+        ErrorCategory.VALIDATION,
+        ErrorCode.VAL_002,
+    )
+    assert caught.value.details == {"agent": "alpha", "provider": "posek"}
+    assert "decision provider has no upstream" in caught.value.message
+
+
+async def test_an_old_proxy_without_the_decision_key_relays_no_decision_provider(manager):
+    proxied(
+        manager, proxy_failing(lambda r: httpx.Response(200, json={"providers": ["anthropic"]}))
+    )
+
+    assert await manager._relayed_providers() == (frozenset({"anthropic"}), frozenset())  # noqa: SLF001
 
 
 async def test_providers_the_proxy_relays_deploy_and_are_asked_once_per_deploy(manager, docker):

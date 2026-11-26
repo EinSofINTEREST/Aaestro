@@ -820,7 +820,9 @@ observability:
     프록시를 쓰면 `runtime.egress_proxy.providers` 에 있으며, override 의 provider 는 manifest 가
     선언한 집합 안인가. 프록시를 쓰면 그 provider 에 프록시의 **실제 upstream** 이 있는가 — 배포마다
     프록시의 `GET /v1/providers` (`runtime.egress_proxy.control_url`, 없으면 `providers_url`) 에 묻고, 없으면 `VAL_002`, 답하지 못하면 `NET_001` / `NET_002` 로
-    거절한다 (설정 목록으로 물러나지 않는다, #644)
+    거절한다 (설정 목록으로 물러나지 않는다, #644). 같은 조회의 `decision_providers` 로
+    `spec.decision.provider` 도 대조한다 (9 — 없으면 `VAL_002`, #713). 프록시가 없는 배포의
+    `spec.decision` 은 거절이 아니라 배포 검증 경고다 — 결정 모델 없이 원래 경로로 돈다 (원칙 2)
 11. `spec.entrypoint` 없는 에이전트(기본 LLM 루프 — echo 이미지처럼 모델을 부르지 않는 실행기도
     배포 검증은 알 수 없어 포함된다)의 promptset 이 `system` 템플릿을 선언하는가 (`MOD_002`).
     템플릿 본문은 읽지 않는다 — 빈 렌더는 agentd 기동이 거절한다 (`MOD_003`)

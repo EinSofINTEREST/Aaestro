@@ -215,6 +215,7 @@ class DeployValidator:
             findings.extend(self._check_node_templates(topology))
             findings.extend(self._check_state_compaction(topology))
             warnings.extend(self._warn_unbounded_state(topology))
+        warnings.extend(self._warn_decision_without_proxy())
 
         findings.extend(self._check_module_refs())
         findings.extend(self._check_memory_attachments(topologies))
@@ -477,6 +478,24 @@ class DeployValidator:
                 f"the output key {SUMMARIZE_OUTPUT_KEY!r}",
             )
         return []
+
+    def _warn_decision_without_proxy(self) -> list[Finding]:
+        """프록시 없이 결정 모델을 선언하면 경고한다 — 원래 경로로 돈다 (#713).
+
+        거절하지 않는다: 결정 모델은 비용 · 지연을 줄이는 층이다 (01 Decision Models 2).
+        """
+        if self.providers is not None:
+            return []
+        return [
+            Finding(
+                check="decision",
+                code=ErrorCode.VAL_002,
+                message="decision model declared without an egress proxy; the original path runs",
+                details={"agent": name, "provider": m.spec.decision.provider},
+            )
+            for name, m in self.manifests.items()
+            if m.spec.decision is not None
+        ]
 
     def _warn_unbounded_state(self, topology: GraphTopology) -> list[Finding]:
         """상주 그래프에서 자랄 수 있는 리스트 필드에 압축 선언이 없으면 경고한다 — 거절은 아니다.

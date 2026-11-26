@@ -269,7 +269,9 @@ Network). 외부로 나가는 호출은 전부 **egress proxy** 를 거치고, �
 | 그 밖의 외부 HTTPS | CONNECT 터널 | 목적지 호스트 (`egress`) |
 
 0. **중계 목록**: provider 창구의 `GET /v1/providers` (무인증) 는 upstream (키) 이 있는 provider 이름만
-   정렬해 답한다 — 배포가 기동 전에 대조한다 (01 Contract Validation 10, #644). catch-all 보다 먼저 붙는다
+   정렬해 `providers` 로 답하고, 결정 provider 의 실제 upstream 은 별도 키 `decision_providers` 로 더한다
+   (하위 호환 — #713) — 배포가 기동 전에 한 번 묻고 둘 다 대조한다 (01 Contract Validation 9 · 10, #644).
+   catch-all 보다 먼저 붙는다
 1. **TLS 가로채기는 하지 않는다**: 종단하지 않는 HTTPS 는 CONNECT 목적지까지만 본다.
    에이전트에 프록시 CA 를 심지 않는다
 2. **자격증명은 프록시가 주입한다**: 종단하는 서비스의 키는 에이전트 env 에 없다
