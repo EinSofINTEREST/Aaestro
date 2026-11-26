@@ -12,6 +12,7 @@ import fcntl
 import os
 from dataclasses import dataclass, field
 from enum import StrEnum
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import structlog
@@ -68,6 +69,14 @@ QUOTA_LOCK_NAME = ".quota.lock"
 """스코프 디렉토리의 잠금 파일 — 점으로 시작해 key · 목록 · 사용량 계산과 섞이지 않는다."""
 
 
+def _open_lock_file(path: Path) -> int:
+    """읽기 전용 fd 로 연다 — flock 은 읽기 전용에서도 되고, 다른 uid 가 만든 파일도 열린다."""
+    try:
+        return os.open(path, os.O_RDONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+    except FileExistsError:
+        return os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+
+
 def _quota_flock(store: FilesystemArtifactStore) -> int:
     """스코프 디렉토리의 잠금 파일에 배타 flock 을 걸고 fd 를 돌려준다 (블로킹 — 스레드에서).
 
@@ -77,7 +86,7 @@ def _quota_flock(store: FilesystemArtifactStore) -> int:
     base = store.root / store.scope
     try:
         base.mkdir(parents=True, exist_ok=True)
-        fd = os.open(base / QUOTA_LOCK_NAME, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        fd = _open_lock_file(base / QUOTA_LOCK_NAME)
     except OSError as err:
         raise storage_error("artifact scope lock failed", cause=type(err).__name__) from err
     try:
@@ -86,6 +95,12 @@ def _quota_flock(store: FilesystemArtifactStore) -> int:
         os.close(fd)
         raise storage_error("artifact scope lock failed", cause=type(err).__name__) from err
     return fd
+
+
+def _close_acquired(acquire: asyncio.Future[int]) -> None:
+    """취소로 버려진 잠금 획득의 fd 를 닫는다."""
+    if not acquire.cancelled() and acquire.exception() is None:
+        os.close(acquire.result())
 
 
 @dataclass
@@ -163,7 +178,13 @@ class ScopedArtifacts:
         """quota 검사와 쓰기 — quota 가 있으면 스코프 디렉토리의 flock 안에서."""
         if self.quotas.get(scope) is None:
             return await store.put(key, data)
-        fd = await asyncio.to_thread(_quota_flock, store)
+        acquire = asyncio.ensure_future(asyncio.to_thread(_quota_flock, store))
+        try:
+            fd = await asyncio.shield(acquire)
+        except BaseException:
+            # 취소돼도 스레드는 계속 돌아 잠금을 쥔 fd 를 돌려준다 — 받아서 닫는다
+            acquire.add_done_callback(_close_acquired)
+            raise
         try:
             await self._check_quota(scope, store, len(data))
             return await store.put(key, data)

@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import asyncio
+import fcntl
+import os
 import subprocess
 import sys
 import threading
@@ -267,6 +269,39 @@ async def test_a_lock_failure_is_a_typed_error_and_nothing_is_written(tmp_path):
     assert list(access.stores[ArtifactScope.GROUP].stored_keys()) == []
 
 
+async def test_a_read_only_lock_file_still_locks_and_writes(tmp_path):
+    """다른 uid 가 만든 잠금 파일은 쓰기 권한이 없다 — flock 은 읽기 전용 fd 로 건다."""
+    access = scoped(tmp_path, quotas={ArtifactScope.GROUP: 100})
+    (tmp_path / "research").mkdir()
+    lock = tmp_path / "research" / ".quota.lock"
+    lock.touch()
+    lock.chmod(0o444)
+
+    await access.put("a", b"x" * 10, scope=ArtifactScope.GROUP)
+
+    assert list(access.stores[ArtifactScope.GROUP].stored_keys()) == ["a"]
+
+
+async def test_a_cancelled_lock_wait_does_not_leak_the_lock(tmp_path):
+    """잠금 대기 중 취소돼도 스레드가 나중에 잡은 fd 는 닫혀야 다음 쓰기가 막히지 않는다."""
+    first = scoped(tmp_path, quotas={ArtifactScope.GROUP: 100})
+    second = scoped(tmp_path, quotas={ArtifactScope.GROUP: 100})
+    (tmp_path / "research").mkdir()
+    held = os.open(tmp_path / "research" / ".quota.lock", os.O_RDONLY | os.O_CREAT, 0o644)
+    fcntl.flock(held, fcntl.LOCK_EX)
+
+    put = asyncio.create_task(first.put("a", b"x" * 10, scope=ArtifactScope.GROUP))
+    for _ in range(20):
+        await asyncio.sleep(0.01)
+    for write in list(first._writes):
+        write.cancel()  # 잠금 대기 중인 쓰기 태스크를 취소한다
+    with pytest.raises(asyncio.CancelledError):
+        await put
+    os.close(held)  # 대기하던 스레드가 이제 잠금을 얻는다
+
+    await asyncio.wait_for(second.put("b", b"y" * 10, scope=ArtifactScope.GROUP), timeout=10)
+
+
 _CHILD = """
 import asyncio, sys, time
 from pathlib import Path
@@ -307,7 +342,12 @@ def test_two_processes_cannot_both_pass_the_group_quota(tmp_path):
         for name in ("a", "b")
     ]
     try:
+        deadline = time.monotonic() + 30
         while not all((tmp_path / f"ready-{n}").exists() for n in ("a", "b")):
+            if time.monotonic() > deadline:
+                for p in procs:
+                    p.kill()
+                pytest.fail(f"children not ready: {[p.communicate()[0] for p in procs]}")
             time.sleep(0.01)
         for r in range(rounds):
             (tmp_path / f"go-{r}").touch()
