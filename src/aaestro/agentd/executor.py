@@ -482,6 +482,9 @@ class Executor:
         태스크를 완수합니다. 실패는 예외가 아니라 ``TaskResult`` 로 보고하므로
         데몬이 죽지 않습니다 — 단 취소는 그대로 전파됩니다.
 
+        같은 키로 진행 중인 실행이 있으면 그 결과를 기다립니다. 그 실행이 이유와 무관하게 취소되면
+        기다리던 쪽은 처음부터 다시 실행합니다 (의도된 동작, #416).
+
         Args:
             task: The task to run.
 
@@ -497,7 +500,8 @@ class Executor:
                 current = asyncio.current_task()
                 if current is not None and current.cancelling():
                     raise
-                # 앞선 실행이 취소됐다 — 취소를 물려받지 않고 다시 본다
+                # 앞선 실행이 취소됐다 — 취소를 물려받지 않고 다시 본다. 이유가 /cancel 이 아니어도
+                # (앞선 호출자가 떠남) 같다: 이쪽은 처음부터 다시 실행한다 (#416 의도된 동작)
         remembered = self._completed.get(task.caller)
         cached = remembered.get(key) if remembered is not None else None
         if cached is not None:

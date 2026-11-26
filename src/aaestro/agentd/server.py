@@ -98,6 +98,9 @@ class AgentRuntime:
         # 실행을 기다린다, #416), 끝난 태스크는 자기 자리만 빠진다 (먼저 끝난 쪽이 남의 자리를
         # 지우지 않게)
         self._inflight: dict[TaskKey, list[asyncio.Task[Any]]] = {}
+        # ``run`` 의 진행 중 실행과 그것을 기다리는 호출 수 — 같은 키는 칸을 하나만 쓴다 (#416)
+        self._runs: dict[TaskKey, asyncio.Task[TaskResult]] = {}
+        self._waiters: dict[TaskKey, int] = {}
 
     def card(self) -> dict[str, Any]:
         """A2A AgentCard."""
@@ -161,22 +164,67 @@ class AgentRuntime:
         """Run a task inside the shared concurrency cap, tracked for cancel and drain.
 
         동시 실행 상한 안에서 추적된 채 태스크를 실행합니다. Control API 의 ``/invoke`` 와 A2A
-        수신 입구가 같이 쓴다 — 같은 큐 (02 Direct Request Rules 5). drain 중이면 실행하지 않고
-        ``RT_005`` (retryable) 실패로 답한다: A2A 는 실패를 결과로 돌려준다.
+        수신 입구가 같이 쓴다 — 같은 큐 (02 Direct Request Rules 5).
+
+        - 같은 키로 진행 중인 실행이 있으면 칸을 잡지 않고 그 결과를 기다린다. 기다리는 쪽이 모두
+          떠나면 실행을 끊는다
+        - 태스크 마감 (``config.timeout_s``) 은 칸 대기를 포함한다 — 대기 중 지나면 실행하지 않고
+          ``TO_001`` 실패로 답한다 (호출자가 포기한 태스크가 돌지 않게, 03 A2A Client Rules 4)
+        - drain 중이면 실행하지 않고 ``RT_005`` (retryable) 실패로 답한다: A2A 는 실패를 결과로
+          돌려준다. 대기 중인 실행도 추적되므로 drain 이 기다린다
+
+        Raises:
+            asyncio.CancelledError: 이 호출이 취소됐을 때 — ``/cancel`` 로 실행이 끊긴 것은
+                ``canceled`` 결과다.
         """
         if self.draining:
             return TaskResult.failed(task, _draining_error(self))
-        async with self.semaphore:
-            running = asyncio.create_task(self.executor.execute(task))
-            self.track(task.key, running)
-            try:
-                result: TaskResult = await running
-            except asyncio.CancelledError:
-                current = asyncio.current_task()
-                if current is not None and current.cancelling():
-                    raise  # 호출자가 떠났다 — 끊긴 것은 이쪽이다
-                return TaskResult.canceled(task)
+        key = task.key
+        running = self._runs.get(key)
+        if running is None or running.done():  # 끝난 것은 완료 콜백 전이라도 잇지 않는다
+            deadline = asyncio.get_running_loop().time() + task.config.timeout_s
+            running = asyncio.create_task(self._admitted(task, deadline))
+            self._runs[key] = running
+            running.add_done_callback(lambda _: self._runs.pop(key, None))
+            self.track(key, running)
+        self._waiters[key] = self._waiters.get(key, 0) + 1
+        try:
+            return await asyncio.shield(running)
+        except asyncio.CancelledError:
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                raise  # 호출자가 떠났다 — 끊긴 것은 이쪽이다
+            return TaskResult.canceled(task)
+        finally:
+            self._waiters[key] -= 1
+            if not self._waiters[key]:
+                del self._waiters[key]
+                running.cancel()  # 아무도 기다리지 않는 실행은 돌릴 이유가 없다 (끝났으면 무시)
+
+    async def _admitted(self, task: TaskRequest, deadline: float) -> TaskResult:
+        """칸을 얻으면 남은 마감으로 실행한다.
+
+        대기가 마감을 넘거나 그 사이 drain 이 시작되면 실행하지 않는다.
+        """
+        try:
+            async with asyncio.timeout_at(deadline):
+                await self.semaphore.acquire()
+        except TimeoutError:
+            return TaskResult.failed(task, _queued_timeout_error(self, task))
+        try:
+            if self.draining:
+                return TaskResult.failed(task, _draining_error(self))
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                return TaskResult.failed(task, _queued_timeout_error(self, task))
+            # 실행기의 마감은 대기에 쓴 만큼 줄어든다 — 합쳐서 config.timeout_s 다
+            config = task.config.model_copy(update={"timeout_s": remaining})
+            result: TaskResult = await self.executor.execute(
+                task.model_copy(update={"config": config})
+            )
             return result
+        finally:
+            self.semaphore.release()
 
     async def steer(self, task_id: str, text: str, *, by: str) -> bool:
         """진행 중 태스크에 운영자 지시를 대기시킨다 — steer 를 모르는 실행기면 False.
@@ -602,6 +650,17 @@ def _draining_error(runtime: AgentRuntime) -> AaestroError:
         code=ErrorCode.RT_005,
         message="agent is draining and does not accept new tasks",
         agent=runtime.agent,
+        retryable=True,
+    )
+
+
+def _queued_timeout_error(runtime: AgentRuntime, task: TaskRequest) -> AaestroError:
+    return AaestroError(
+        category=ErrorCategory.TIMEOUT,
+        code=ErrorCode.TO_001,
+        message="task timeout exceeded while waiting for a slot",
+        agent=runtime.agent,
+        task_id=task.task_id,
         retryable=True,
     )
 

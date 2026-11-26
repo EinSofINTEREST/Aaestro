@@ -24,6 +24,7 @@ from aaestro.core.agent import (
     HealthState,
     HealthStatus,
     ModelUsage,
+    TaskConfig,
     TaskResult,
     TaskStatus,
 )
@@ -814,6 +815,77 @@ async def test_a_draining_agent_refuses_a_peer_task_as_a_retryable_failure():
     assert result.error.code == "RT_005"
     assert result.error.retryable is True
     assert executor.calls == []
+
+
+async def test_a_task_whose_deadline_passes_while_queued_does_not_run():
+    """마감은 칸 대기를 포함한다 — 호출자가 포기한 태스크가 칸이 난 뒤에 돌지 않는다 (#416)."""
+    executor = GatedExecutor()
+    runtime = AgentRuntime(agent="researcher", executor=executor, max_concurrent_tasks=1)
+    hog = asyncio.create_task(runtime.run(make_task(task_id="hog")))
+    await reached(executor.running, hog)
+    late = make_task(task_id="late", caller="writer", config=TaskConfig(timeout_s=0.05))
+
+    result = await asyncio.wait_for(
+        runtime.run(late), timeout=5
+    )  # 마감이 대기를 못 끊으면 여기서 실패
+
+    assert result.status == TaskStatus.FAILED
+    assert result.error.code == "TO_001"
+    assert result.error.retryable is True
+    executor.gate.set()
+    await hog
+    assert executor.calls == ["hog"]
+
+
+async def test_calls_joined_on_the_same_key_hold_one_slot():
+    """같은 키의 겹친 호출은 칸을 잡지 않고 진행 중인 실행을 기다린다 (#416)."""
+    executor = GatedExecutor()
+    runtime = AgentRuntime(agent="researcher", executor=executor, max_concurrent_tasks=2)
+    task = make_task(task_id="t-dup")
+    first = asyncio.create_task(runtime.run(task))
+    await reached(executor.running, first)
+    second = asyncio.create_task(runtime.run(task))
+    await spin(10)
+
+    assert runtime.semaphore._value == 1
+    executor.gate.set()
+    results = await asyncio.gather(first, second)
+    assert results[0] == results[1]
+    assert executor.calls == ["t-dup"]
+
+
+async def test_drain_waits_for_a_queued_call_and_does_not_run_it():
+    """칸을 기다리던 호출도 drain 이 본다 — drain 뒤에 칸을 얻으면 실행하지 않고 RT_005 (#416)."""
+    executor = GatedExecutor()
+    runtime = AgentRuntime(agent="researcher", executor=executor, max_concurrent_tasks=1)
+    hog = asyncio.create_task(runtime.run(make_task(task_id="hog")))
+    await reached(executor.running, hog)
+    queued = asyncio.create_task(runtime.run(make_task(task_id="queued", caller="writer")))
+    await spin(10)
+
+    draining = asyncio.create_task(runtime.drain())
+    await spin(10)
+    assert not draining.done()
+    executor.gate.set()
+    await draining
+
+    assert queued.done()
+    assert queued.result().error.code == "RT_005"
+    assert executor.calls == ["hog"]
+
+
+async def test_a_caller_leaving_raises_and_stops_the_execution_nobody_waits_for():
+    """바깥 요청이 취소되면 CancelledError 가 그대로 올라가고, 기다리는 쪽이 없는 실행은 끊긴다."""
+    executor = GatedExecutor()
+    runtime = AgentRuntime(agent="researcher", executor=executor)
+    calling = asyncio.create_task(runtime.run(make_task(task_id="t-leave")))
+    await reached(executor.running, calling)
+
+    calling.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await calling
+    await until(lambda: not runtime._inflight)  # gate 는 닫힌 채다 — 끝났다면 끊긴 것이다
 
 
 async def test_cancel_stops_every_call_waiting_on_the_same_key():
