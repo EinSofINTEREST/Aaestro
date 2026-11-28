@@ -7,6 +7,8 @@
      "targets": [{"expr": "sum by (caller, callee) (rate(aaestro_a2a_calls_total[5m]))"}]},
     {"title": "A2A failures", "type": "timeseries",
      "targets": [{"expr": "sum by (caller, callee) (rate(aaestro_a2a_calls_total{status=\"failed\"}[5m]))"}]},
+    {"title": "A2A inbound refusals (callee x reason)", "type": "timeseries",
+     "targets": [{"expr": "sum by (callee, reason) (rate(aaestro_a2a_refusals_total[5m]))"}]},
     {"title": "MCP tool calls by server", "type": "timeseries",
      "targets": [{"expr": "sum by (server, status) (rate(aaestro_mcp_tool_calls_total[5m]))"}]},
     {"title": "MCP tool failure rate", "type": "timeseries",

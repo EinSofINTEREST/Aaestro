@@ -652,6 +652,16 @@ class A2ACapabilities(BaseModel):
 
     streaming: bool = False
     push_notifications: bool = False
+    """push 알림은 지원하지 않는다 — A2A 서버가 push 설정 요청을 전부 거절하므로 ``true`` 는
+    거절하고 두 카드 모두 광고하지 않는다 (#420). ``false`` 는 옛 선언과의 호환으로 받는다."""
+
+    @field_validator("push_notifications")
+    @classmethod
+    def _push_is_unsupported(cls, value: bool) -> bool:
+        if value:
+            # 조용히 무시하면 선언한 쪽은 push 가 켜진 줄 안다
+            raise ValueError("push notifications are not supported")
+        return value
 
 
 class A2ASpec(BaseModel):

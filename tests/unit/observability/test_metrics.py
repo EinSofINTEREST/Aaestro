@@ -119,6 +119,7 @@ def test_metric_contract_snapshot():
             "kind": "counter",
             "labels": ["caller", "callee", "status"],
         },
+        "aaestro_a2a_refusals_total": {"kind": "counter", "labels": ["callee", "reason"]},
         "aaestro_containers_running": {"kind": "gauge", "labels": ["agent"]},
         "aaestro_container_restarts_total": {
             "kind": "counter",

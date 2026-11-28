@@ -169,9 +169,13 @@ class FilesystemArtifactStore:
             AaestroError: VALIDATION/``VAL_002`` for an unsafe key,
                 STORAGE/``STOR_003`` if the write fails.
         """
+        return await asyncio.to_thread(self.put_blocking, key, data)
+
+    def put_blocking(self, key: str, data: bytes) -> str:
+        """``put`` 의 동기 핵심 — 스레드 안에서 잠금을 쥔 채 쓰려는 호출자가 쓴다."""
         key = validate_key(key, for_write=True)
         try:
-            await asyncio.to_thread(self._write_atomic, key, data)
+            self._write_atomic(key, data)
         except OSError as err:
             raise storage_error(
                 "artifact could not be stored", key=key, cause=type(err).__name__

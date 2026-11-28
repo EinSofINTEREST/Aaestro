@@ -1204,8 +1204,10 @@ class DeploymentManager:
                 allowed=self.allow_token_mode, component="deployments", graph=topology.metadata.name
             )
 
-    async def _relayed_providers(self) -> frozenset[str] | None:
-        """프록시가 지금 중계하는 provider — 프록시가 없으면 None (묻지 않는다).
+    async def _relayed_providers(self) -> tuple[frozenset[str], frozenset[str] | None] | None:
+        """프록시가 지금 중계하는 (모델, 결정) provider — 프록시가 없으면 None (묻지 않는다).
+
+        결정 목록 키가 없는 옛 프록시는 결정 목록이 None 이다 (중계하지 않는 것으로 본다).
 
         배포마다 묻는다 — 프록시의 키는 control plane 재시작 없이 바뀐다. 답하지 못하면 거절한다
         (설정 목록으로 물러나지 않는다).
@@ -1231,10 +1233,15 @@ class DeploymentManager:
             names = json.loads(body)
         except (ValueError, RecursionError) as err:  # 상한 안에서도 깊은 중첩은 재귀 한도를 넘는다
             raise _malformed(details) from err
-        names = names.get("providers") if isinstance(names, dict) else None
-        if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
+        if not isinstance(names, dict):
             raise _malformed(details)
-        return frozenset(names)
+        lists = [names.get("providers"), names.get("decision_providers", ...)]
+        for listed in lists:
+            if listed is ...:
+                continue
+            if not isinstance(listed, list) or not all(isinstance(n, str) for n in listed):
+                raise _malformed(details)
+        return frozenset(lists[0]), (None if lists[1] is ... else frozenset(lists[1]))
 
     async def _read_proxy_answer(self, url: str, details: dict[str, Any]) -> bytes:
         """상한까지만 읽는다 — 넘으면 거기서 멈춘다."""
@@ -1914,17 +1921,38 @@ def _providers_of(
 def _check_proxy_upstreams(
     topology: GraphTopology,
     manifests: Sequence[AgentManifest],
-    relayed: frozenset[str] | None,
+    relayed: tuple[frozenset[str], frozenset[str] | None] | None,
 ) -> None:
-    """배포가 쓰는 provider 가 프록시에 upstream 으로 있는지 — 동기 대조만 (조회는 선언 읽기 전에).
+    """배포가 쓰는 모델 · 결정 provider 가 프록시에 upstream 으로 있는지 — 동기 대조만.
+
+    조회는 선언 읽기 전에 한 번 했다 (#644, #713).
 
     Raises:
         AaestroError: VALIDATION/``VAL_002`` if a provider has no upstream on the proxy.
     """
     if relayed is None:
         return
+    models, reported = relayed
+    decisions_reported = reported is not None
+    decisions = reported or frozenset()
+    for manifest in sorted(manifests, key=lambda m: m.name):
+        declared = manifest.spec.decision
+        if declared is not None and declared.provider not in decisions:
+            # 키가 없으면 옛 프록시일 수 있다 — 운영자가 provider 설정이 아니라 프록시를 보게 한다
+            reason = (
+                f"decision provider has no upstream on the egress proxy: {declared.provider}"
+                if decisions_reported
+                else "the egress proxy does not report decision upstreams (older proxy?): "
+                f"{declared.provider}"
+            )
+            raise AaestroError(
+                category=ErrorCategory.VALIDATION,
+                code=ErrorCode.VAL_002,
+                message=reason,
+                details={"agent": manifest.name, "provider": declared.provider},
+            )
     for agent, provider in sorted(_providers_of(topology, manifests)):
-        if provider not in relayed:
+        if provider not in models:
             raise AaestroError(
                 category=ErrorCategory.VALIDATION,
                 code=ErrorCode.VAL_002,

@@ -58,8 +58,10 @@ class TwoStepRuns:
 def served_with_runs():
     store = InMemoryRunStore()
     runs = TwoStepRuns(store)
+    # 운영 진입점과 같이 log_config=None — 기본 설정은 uvicorn 로거의 propagate 를 끄고
+    # 프로세스에 남아 뒤 테스트의 로그 브리지를 비켜 간다 (#420)
     config = uvicorn.Config(
-        create_app(store, runs=runs), host="127.0.0.1", port=0, log_level="warning"
+        create_app(store, runs=runs), host="127.0.0.1", port=0, log_level="warning", log_config=None
     )
     server = uvicorn.Server(config)
     thread = threading.Thread(target=server.run, daemon=True)

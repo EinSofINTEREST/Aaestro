@@ -215,6 +215,7 @@ class DeployValidator:
             findings.extend(self._check_node_templates(topology))
             findings.extend(self._check_state_compaction(topology))
             warnings.extend(self._warn_unbounded_state(topology))
+        warnings.extend(self._warn_decision_without_proxy(topologies))
 
         findings.extend(self._check_module_refs())
         findings.extend(self._check_memory_attachments(topologies))
@@ -477,6 +478,28 @@ class DeployValidator:
                 f"the output key {SUMMARIZE_OUTPUT_KEY!r}",
             )
         return []
+
+    def _warn_decision_without_proxy(self, topologies: Sequence[GraphTopology]) -> list[Finding]:
+        """프록시 없이 결정 모델을 선언하면 경고한다 — 원래 경로로 돈다 (#713).
+
+        거절하지 않는다: 결정 모델은 비용 · 지연을 줄이는 층이다 (01 Decision Models 2).
+        그래프를 주면 그 노드 에이전트만 본다 — 배포하지 않는 에이전트의 경고는 소음이다
+        (형제 ``_check_decisions`` 는 전체 manifest 를 보지만 그것은 거절이라 범위를 좁히지 않는다).
+        그래프가 없으면 (전체 검증) 전체다.
+        """
+        if self.providers is not None:
+            return []
+        scope = {agent_name(node.agent) for t in topologies for node in t.spec.nodes if node.agent}
+        return [
+            Finding(
+                check="decision",
+                code=ErrorCode.VAL_002,
+                message="decision model declared without an egress proxy; the original path runs",
+                details={"agent": name, "provider": m.spec.decision.provider},
+            )
+            for name, m in self.manifests.items()
+            if m.spec.decision is not None and (not topologies or name in scope)
+        ]
 
     def _warn_unbounded_state(self, topology: GraphTopology) -> list[Finding]:
         """상주 그래프에서 자랄 수 있는 리스트 필드에 압축 선언이 없으면 경고한다 — 거절은 아니다.

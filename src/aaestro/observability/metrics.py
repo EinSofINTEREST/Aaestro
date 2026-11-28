@@ -112,6 +112,12 @@ METRIC_SPECS: Final[tuple[MetricSpec, ...]] = (
         ("caller", "callee", "status"),
         "A2A peer calls by status",
     ),
+    MetricSpec(
+        "aaestro_a2a_refusals_total",
+        "counter",
+        ("callee", "reason"),
+        "Inbound A2A requests the callee refused, by reason",
+    ),
     # Runtime
     MetricSpec("aaestro_containers_running", "gauge", ("agent",), "Running agent containers"),
     MetricSpec(

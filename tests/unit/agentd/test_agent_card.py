@@ -48,7 +48,8 @@ async def test_card_carries_declared_capabilities(served):
     capabilities = client.get("/v1/card").json()["capabilities"]
 
     assert capabilities["streaming"] is True
-    assert "push_notifications" in capabilities
+    # A2A 서버가 push 설정을 전부 거절하므로 광고하지 않는다 (#420)
+    assert capabilities["push_notifications"] is False
 
 
 async def test_well_known_matches_the_control_api(served):

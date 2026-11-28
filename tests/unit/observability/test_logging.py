@@ -227,6 +227,14 @@ def _reset_structlog():
     """테스트 간 전역 설정이 새지 않도록 초기화."""
     yield
     structlog.reset_defaults()
+    unbridge_stdlib()
+
+
+def unbridge_stdlib() -> None:
+    """configure 가 root 에 단 브리지를 뗀다 — 다른 테스트의 stdout 에 새지 않게."""
+    root = logging.getLogger()
+    for handler in [h for h in root.handlers if type(h).__name__ == "_StdlibBridge"]:
+        root.removeHandler(handler)
 
 
 def bound_fields(logger) -> dict:
@@ -444,3 +452,44 @@ def test_a_third_party_registered_level_does_not_become_valid():
         with logging._lock:  # noqa: SLF001 — 공개 제거 API 가 없다
             logging._nameToLevel.pop("TRACE", None)  # noqa: SLF001
             logging._levelToName.pop(5, None)  # noqa: SLF001
+
+
+# --- stdlib 브리지 (#420) ---------------------------------------------------
+
+
+def test_stdlib_records_go_through_masking_as_one_json_line(capsys):
+    """SDK · uvicorn 의 stdlib 로그도 마스킹 · JSON 을 지난다.
+
+    요청 값의 개행이 줄을 나누지 못한다."""
+    configure(level="INFO", json_output=True)
+
+    logging.getLogger("a2a.server").warning("Request Error (ID: %s) token=%s", "x\n{}", SECRET)
+
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) == 1
+    payload = json.loads(lines[0])
+    assert payload["event"] == "Request Error (ID: x\n{}) token=***"
+    assert payload["logger"] == "a2a.server"
+    assert payload["level"] == "warning"
+    assert SECRET not in lines[0]
+
+
+def test_stdlib_info_from_third_parties_stays_out(capsys):
+    """서드파티의 INFO · DEBUG 는 요청 본문 · 접근 로그를 싣는다.
+
+    프레임워크 레벨과 무관하게 막는다."""
+    configure(level="DEBUG", json_output=True)
+
+    logging.getLogger("a2a.server").info("TASK (start): %s", "body")
+    logging.getLogger("uvicorn.access").info("GET /v1/health")
+
+    assert capsys.readouterr().out == ""
+
+
+def test_reconfiguring_keeps_one_bridge(capsys):
+    configure(level="INFO", json_output=True)
+    configure(level="INFO", json_output=True)
+
+    logging.getLogger("uvicorn.error").error("once")
+
+    assert len(capsys.readouterr().out.splitlines()) == 1

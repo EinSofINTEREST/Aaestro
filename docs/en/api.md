@@ -1249,10 +1249,12 @@ runtime:
 Deployment validation refuses a model provider (primary or fallback) that is not in `providers`
 (`400 VAL_001`, finding `model_providers`). That list is what you declare; it does not prove the proxy
 holds a key for each provider. So every deploy also asks the proxy itself: `GET /v1/providers` on
-`control_url` (or `providers_url` when it is not set) answers `{"providers": [...]}` — the providers that have an upstream (a key) right now,
-sorted. It needs no identity and names no keys. A provider the deployment uses — primary, fallback,
+`control_url` (or `providers_url` when it is not set) answers `{"providers": [...], "decision_providers": [...]}` — the model providers and the decision providers that have an upstream (a key) right now,
+each sorted. It needs no identity and names no keys. A provider the deployment uses — primary, fallback,
 node `model` or a deploy `model_overrides` — that is not in that answer refuses the deploy before any
-container starts (`400 VAL_002`, `details.agent` · `details.provider`). If the proxy does not answer,
+container starts (`400 VAL_002`, `details.agent` · `details.provider`). An agent whose `spec.decision.provider` is not in `decision_providers` is refused the same way
+(`400 VAL_002`); an older proxy that lacks the `decision_providers` key is treated as relaying none, and the message says the proxy does not report decision upstreams. Without a proxy a `spec.decision` is not refused: validation warns and the agent runs its original path.
+If the proxy does not answer,
 the deploy is refused too — it never falls back to the declared list: connection refused `503 NET_001`
 and timeout `503 NET_002` (both retryable — the whole query has a 5-second deadline), a `5xx`
 `503 NET_001` (retryable), and any other status or a body of the wrong shape, over 64 KiB or compressed (the
@@ -1546,8 +1548,15 @@ With or without a registry, an agent's A2A port answers two things only: the age
   the same way; every delegation is a new task.
 - **The task store keeps no finished task.** It holds a task only while it runs; once the task
   completes, fails or is refused, the store drops it — the result travels in the response and
-  nowhere else. Known limit: a task whose agent run ends by cancellation can stay in the SDK's
-  internal registry of active tasks (SDK behaviour, tracked separately).
+  nowhere else. An agent run that ends by cancellation from inside the agent is answered as a
+  `canceled` task, so the SDK's internal registry of active tasks lets it go too (#420).
+- **Refusals are counted on the callee.** `aaestro_a2a_refusals_total{callee, reason}` counts the
+  requests the framework's guard turned away — `no_credential`, `denied`, `unreachable`
+  (the registry could not be reached), `malformed`, `too_deep`, `unsupported`. Requests the SDK
+  rejects before the guard sees them (unparseable JSON, an unknown method, invalid params, a wrong
+  `A2A-Version`) are not counted. The caller's name is not a label: it is an unverified claim. The agent card on
+  both the Control API and the A2A port advertises no push notifications, since the server refuses
+  every push configuration request.
 
 ### `POST /v1/access/a2a/tickets` — any agent
 

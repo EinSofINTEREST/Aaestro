@@ -226,3 +226,55 @@ def test_authoring_supplies_the_configured_providers(tmp_path):
 
     assert authored(root, {}) == [ErrorCode.VAL_002]
     assert authored(root, {"jev": frozenset({"ko"})}) == [ErrorCode.MOD_003]
+
+
+def test_a_decision_without_a_proxy_warns_and_does_not_reject():
+    """프록시가 없으면 결정 호출이 닿지 않는다 — 거절이 아니라 경고 하나 (#713)."""
+    report = validate(decision())
+
+    assert report.ok, report.findings
+    (warning,) = report.warnings
+    assert warning.check == "decision"
+    assert warning.details == {"agent": "planner", "provider": "jev"}
+
+
+def test_no_decision_declaration_means_no_warning():
+    loaded = DecisionsetLoader(ModuleRegistry.under(REPO_ROOT)).load(SET_REF)
+    report = validate_deployment(
+        [],
+        manifests={"planner": agent(None)},
+        resolvable_refs={PROMPTSET_REF},
+        decisionsets={SET_REF: loaded},
+        decision_providers=PROVIDERS,
+    )
+
+    assert report.warnings == ()
+
+
+def test_the_warning_covers_only_the_graph_being_validated():
+    """배포하지 않는 에이전트의 경고는 소음이다 — 그래프를 주면 그 노드 에이전트만 (#713)."""
+    from aaestro.core.topology import GraphTopology
+
+    topology = GraphTopology.model_validate(
+        {
+            "apiVersion": "aaestro/v1",
+            "kind": "Graph",
+            "metadata": {"name": "other", "version": "0.1.0"},
+            "spec": {
+                "goal": "g",
+                "state": {"fields": {"q": {"type": "string"}}},
+                "nodes": [{"id": "n", "agent": "agents/someone@0.1.0"}],
+                "edges": [{"from": "START", "to": "n"}, {"from": "n", "to": "END"}],
+            },
+        }
+    )
+    loaded = DecisionsetLoader(ModuleRegistry.under(REPO_ROOT)).load(SET_REF)
+    report = validate_deployment(
+        [topology],
+        manifests={"planner": agent(decision())},
+        resolvable_refs={PROMPTSET_REF, SET_REF},
+        decisionsets={SET_REF: loaded},
+        decision_providers=PROVIDERS,
+    )
+
+    assert not [w for w in report.warnings if w.check == "decision"]

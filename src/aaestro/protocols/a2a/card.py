@@ -79,7 +79,9 @@ def build_card(
         description=manifest.metadata.description or "",
         capabilities={
             "streaming": manifest.spec.a2a.capabilities.streaming,
-            "push_notifications": manifest.spec.a2a.capabilities.push_notifications,
+            # A2A 서버는 push 설정 요청을 전부 거절한다 — 선언과 무관하게 광고하지 않는다 (#420).
+            # A2A 포트의 카드 (``agentd.a2a_server._protobuf_card``) 도 광고하지 않는다
+            "push_notifications": False,
         },
         skills=skills,
     )

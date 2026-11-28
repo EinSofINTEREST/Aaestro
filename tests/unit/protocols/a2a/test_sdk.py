@@ -473,3 +473,28 @@ def test_a_peer_refusal_text_becomes_the_cause():
 
     assert error.code == ErrorCode.A2A_003
     assert str(error.__cause__) == "request must name a goal"
+
+
+async def test_a_peer_run_that_ended_canceled_reaches_the_caller_as_a2a_003():
+    """SDK 경로도 transport 경로와 같이 분류한다.
+
+    피호출자 실행이 취소로 끝난 위임은 실패다 (#420)."""
+    import asyncio
+
+    from aaestro.protocols.a2a.client import A2AClient
+
+    async def cancelled(task):
+        raise asyncio.CancelledError
+
+    client = A2AClient(
+        agent=CALLER,
+        allowlist=allowlist((CALLER, CALLEE)),
+        transport=transport_to(serve(guard_for((CALLER, CALLEE)), cancelled)),
+    )
+
+    with pytest.raises(AaestroError) as exc_info:
+        await client.call(CALLEE, make_task())
+
+    assert exc_info.value.code == ErrorCode.A2A_003
+    assert exc_info.value.retryable is False
+    assert exc_info.value.details["state"] == "canceled"
