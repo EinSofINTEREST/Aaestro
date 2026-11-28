@@ -104,11 +104,12 @@ STANDARD_FIELDS: Final[frozenset[str]] = frozenset(
 """표준 필드 이름 집합 — 컴포넌트가 임의 키를 만들지 않았는지 검증할 때 쓴다."""
 
 
+# secret 으로 보는 이름 — 키 이름 판정과 문자열 속 `name=value` 판정이 같은 목록을 쓴다
+_SECRET_NAMES: Final = r"secret|token|password|passwd|api[_-]?key|credential|private[_-]?key|ticket"  # noqa: S105 — 이름 목록이지 비밀값이 아니다
+
 # 값이 secret 인 것으로 간주할 키 패턴 — 이름으로 판정해 값 형태에 의존하지 않는다
-_SECRET_KEY_PATTERN: Final = re.compile(
-    r"(secret|token|password|passwd|api_?key|credential|authorization|private_?key)",
-    re.IGNORECASE,
-)
+# (`authorization` 은 값이 `Bearer …` 라 문자열 쪽은 아래 _BEARER_PATTERN 이 맡는다)
+_SECRET_KEY_PATTERN: Final = re.compile(rf"({_SECRET_NAMES}|authorization)", re.IGNORECASE)
 
 _MAX_REDACT_DEPTH: Final = 6
 
@@ -116,20 +117,33 @@ _MAX_REDACT_DEPTH: Final = 6
 # 형태를 값째로 가린다. 예외 메시지/트레이스백은 키 이름이 없는 자유 문자열이라
 # 이름 기반 판정만으로는 잡히지 않는다.
 _SECRET_VALUE_PATTERN: Final = re.compile(
-    r"""
+    rf"""
     (?P<prefix>
-        (?:secret|token|password|passwd|api[_-]?key|credential|private[_-]?key)
+        (?:{_SECRET_NAMES})
         ["']?            # JSON 형태의 닫는 따옴표: "password":
         \s* [=:] \s*
         ["']?            # 값을 여는 따옴표
     )
-    (?P<value>[^\s"',;)}\]]+)
+    (?P<value>[^\s"',;)}}\]]+)
     """,
     re.IGNORECASE | re.VERBOSE,
 )
 _BEARER_PATTERN: Final = re.compile(
     r"\b(?P<scheme>bearer|basic)\s+(?P<value>[A-Za-z0-9._\-+/=]+)",
     re.IGNORECASE,
+)
+
+# provider 키 형태 — 키 이름이 없는 자유 문자열 (예외 메시지 · traceback) 에서도 가린다.
+# 알려진 접두사는 앞 문자를 보지 않는다 (`MY_sk-ant-…` · `key-sk-proj-…`). 접두사 없는 일반
+# `sk-` 만 앞 경계를 둔다 — 영숫자 · `_` · `-` 가 아닌 문자 또는 repr 이스케이프 (`\n` `\t` `\r`
+# `\\`) 뒤. 뒤 20자 이상이라 `sk-learn` · `sk-abc` 는 건드리지 않는다.
+# shortcut: 과잉 — `sk-` 로 시작하는 20자 이상 slug 도 가린다 / 누락 — 줄바꿈으로 잘린 키 꼬리,
+#   대문자 `SK-`, `%2D` · base64 인코딩, 19자 이하, scheme 없는 Authorization 값.
+#   새 provider 접두사나
+#   오탐 보고가 생기면 이 패턴만 고친다.
+_PROVIDER_KEY_PATTERN: Final = re.compile(
+    r"sk-(?:ant|proj|svcacct|admin)-[A-Za-z0-9_-]{20,}"
+    r"|(?:(?<![A-Za-z0-9_-])|(?<=\\[ntr\\]))sk-[A-Za-z0-9_-]{20,}"
 )
 
 
@@ -145,7 +159,8 @@ def _redact_text(text: str) -> str:
     잡히지 않는다 — 값 패턴으로 한 번 더 훑는다.
     """
     redacted = _SECRET_VALUE_PATTERN.sub(lambda m: f"{m.group('prefix')}{REDACTED}", text)
-    return _BEARER_PATTERN.sub(lambda m: f"{m.group('scheme')} {REDACTED}", redacted)
+    redacted = _BEARER_PATTERN.sub(lambda m: f"{m.group('scheme')} {REDACTED}", redacted)
+    return _PROVIDER_KEY_PATTERN.sub(REDACTED, redacted)
 
 
 def _redact(value: Any, depth: int = 0) -> Any:
@@ -168,7 +183,15 @@ def _redact(value: Any, depth: int = 0) -> Any:
         return [_redact(item, depth + 1) for item in value]
     if isinstance(value, tuple):
         return tuple(_redact(item, depth + 1) for item in value)
-    return value
+    if value is None or isinstance(value, bool | int | float):
+        return value
+    # 그 밖의 값 (bytes · set · 예외 · 임의 객체) 은 렌더러의 repr fallback 이 마스킹을 건너뛰어
+    # 원문을 내므로 여기서 문자열로 바꿔 지나게 한다
+    if isinstance(value, bytes | bytearray):
+        return _redact_text(bytes(value).decode(errors="replace"))
+    if isinstance(value, set | frozenset):
+        return [_redact(item, depth + 1) for item in value]
+    return _redact_text(str(value))
 
 
 def mask_secrets(
