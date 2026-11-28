@@ -82,6 +82,7 @@ def workspace(tmp_path: Path) -> Path:
             }
         )
     )
+    (tmp_path / "modules" / "promptsets" / "solo" / "0.1.0" / "t.j2").write_text("ok\n")
     (tmp_path / "agents" / "solo" / "manifest.yaml").write_text(yaml.safe_dump(agent_doc([REF])))
     (tmp_path / "groups" / "global.yaml").write_text(
         yaml.safe_dump(

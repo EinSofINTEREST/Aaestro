@@ -12,7 +12,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
 import structlog
-from jinja2 import StrictUndefined, TemplateSyntaxError
+from jinja2 import StrictUndefined, TemplateSyntaxError, meta, nodes
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -499,6 +499,18 @@ class LoadedPromptset(BaseModel):
                     message="failed to read template file",
                     details={"promptset": self.ref, "template": template},
                 ) from err
+            except UnicodeDecodeError as err:
+                # 예외 문자열에 파일 바이트가 실리므로 원인 체인을 끊고 종류 이름만 싣는다
+                raise AaestroError(
+                    category=ErrorCategory.MODULE,
+                    code=ErrorCode.MOD_004,
+                    message="failed to read template file",
+                    details={
+                        "promptset": self.ref,
+                        "template": template,
+                        "cause": type(err).__name__,
+                    },
+                ) from None
 
         raise AaestroError(
             category=ErrorCategory.MODULE,
@@ -514,13 +526,15 @@ class PromptsetLoader:
     def __init__(self, registry: ModuleRegistry) -> None:
         self._registry = registry
 
-    def load(self, ref: str) -> LoadedPromptset:
+    def load(self, ref: str, *, vet_names: bool = False) -> LoadedPromptset:
         """Load a promptset declaration.
 
         프롬프트셋을 로드합니다.
 
         Args:
             ref: Promptset reference (``promptsets/{name}@{version}``).
+            vet_names: 게시 검증용 — 템플릿을 렌더 환경으로 컴파일하고 선언 밖의 이름을 거절한다
+                (#716). agentd 기동은 켜지 않는다 (선언 밖 변수는 렌더의 ``MOD_004``, 04 Rules 1).
 
         Returns:
             The loaded promptset.
@@ -535,11 +549,13 @@ class PromptsetLoader:
         except ValidationError as err:
             reject_module(ref, err)
 
-        _check_template_files(manifest, path, ref)
+        _check_template_files(manifest, path, ref, vet_names=vet_names)
         return LoadedPromptset(ref=ref, manifest=manifest, root=path.root)
 
 
-def _check_template_files(manifest: PromptsetManifest, path: ModulePath, ref: str) -> None:
+def _check_template_files(
+    manifest: PromptsetManifest, path: ModulePath, ref: str, *, vet_names: bool = False
+) -> None:
     """선언된 템플릿 파일이 실재하고 경계를 우회하지 않는지 로드 시점에 확인한다.
 
     본문은 렌더할 때마다 다시 읽으므로 강제 지점은 렌더다 — 여기서는 같은 검사로 일찍 알린다.
@@ -574,7 +590,23 @@ def _check_template_files(manifest: PromptsetManifest, path: ModulePath, ref: st
                     message="failed to read template file",
                     details={"promptset": ref, "template": printable_label(name)},
                 ) from err
-            _check_source(source, ref, name, ErrorCode.MOD_003)
+            except UnicodeDecodeError as err:
+                # 예외 문자열에 파일 바이트가 실리므로 원인 체인을 끊고 종류 이름만 싣는다
+                raise AaestroError(
+                    category=ErrorCategory.MODULE,
+                    code=ErrorCode.MOD_003,
+                    message="failed to read template file",
+                    details={
+                        "promptset": ref,
+                        "template": printable_label(name),
+                        "cause": type(err).__name__,
+                    },
+                ) from None
+            if vet_names:
+                locale = None if candidate is default else candidate.parent.name
+                _vet_template(source, ref, name, frozenset(spec.variables), locale)
+            else:
+                _check_source(source, ref, name, ErrorCode.MOD_003)
 
 
 def _inside_root(root: Path, candidate: Path) -> Path | None:
@@ -622,3 +654,77 @@ def _check_source(source: str, ref: str, template: str, code: ErrorCode) -> None
             message=f"template syntax is invalid: {template}",
             details={"promptset": ref, "template": template, "line": err.lineno},
         ) from err
+
+
+MAX_REPORTED_NAMES = 10
+"""거절 사유에 싣는 이름의 상한 — 템플릿이 만든 이름이라 개수와 길이를 묶는다."""
+
+
+def _vet_template(
+    source: str, ref: str, template: str, declared: frozenset[str], locale: str | None
+) -> None:
+    """게시 검증 — 구문 검사에 더해 렌더 환경으로 컴파일하고 선언 밖의 이름을 거절한다 (#716).
+
+    ``check_syntax`` 는 파싱까지다 — 없는 필터 · 테스트와 제거된 전역 (``lipsum``) · 선언하지 않은
+    변수는 이름 해석에서 드러난다. 렌더하지 않는다 (코드 실행 없음). 값 · 원문은 싣지 않는다.
+    """
+    environment = GuardedEnvironment(
+        output_limit=DEFAULT_RENDER_LIMIT, autoescape=False, undefined=StrictUndefined
+    )
+    # 사유 · details 에 실리는 이름은 모두 정제한다 — 선언의 키는 제어 문자를 담을 수 있다
+    label = printable_label(template)
+    locale_details: dict[str, Any] = {} if locale is None else {"locale": printable_label(locale)}
+    names: list[str] = []
+    cause: str | None = None
+    try:
+        _check_source(source, ref, label, ErrorCode.MOD_003)
+        tree = environment.parse(source)
+        environment.compile(tree)
+        # 컴파일은 조건 자리의 없는 test 를 지나친다 — AST 의 이름을 환경과 직접 대조한다
+        names = [
+            node.name
+            for node in tree.find_all((nodes.Filter, nodes.Test))
+            if node.name
+            not in (environment.filters if isinstance(node, nodes.Filter) else environment.tests)
+        ]
+        if names:
+            reason = f"template uses unknown filters or tests: {label}"
+        else:
+            names = sorted(
+                meta.find_undeclared_variables(tree) - declared - set(environment.globals)
+            )
+            reason = f"template uses undeclared names: {label}"
+    except AaestroError as err:
+        # 구문 거절 — 다른 게시 거절과 같이 locale 을 싣고 원인 (파서 예외) 은 끊는다
+        raise AaestroError(
+            category=err.category,
+            code=err.code,
+            message=err.message,
+            details={**err.details, **locale_details},
+        ) from None
+    except TemplateSyntaxError as err:
+        reason = f"template syntax is invalid: {label} (line {err.lineno})"
+    except RecursionError:
+        # 깊은 중첩 — 파서 · 컴파일러가 던진다. 한 promptset 의 문제로 가둔다 (원인 체인은 끊는다)
+        reason = f"template nesting is too deep: {label}"
+    except SyntaxError:
+        # 컴파일러가 만든 파이썬 코드가 언어 한도 (정적 중첩 블록 20) 를 넘는다
+        reason = f"template is too complex to compile: {label}"
+    except MemoryError:
+        raise
+    except Exception as err:
+        # 파서 · 컴파일러가 던지는 그 밖의 예외 (정수 리터럴 한도의 ValueError 등) — 한 promptset 의
+        # 문제로 가둔다. 예외 문자열에 템플릿 조각이 실릴 수 있어 종류 이름만 싣고 체인은 끊는다
+        reason = f"template could not be compiled: {label}"
+        cause = type(err).__name__
+    else:
+        if not names:
+            return
+    details: dict[str, Any] = {"promptset": ref, "template": label, **locale_details}
+    if cause is not None:
+        details["cause"] = cause
+    if names:
+        details["names"] = [printable_label(n) for n in sorted(set(names))[:MAX_REPORTED_NAMES]]
+    raise AaestroError(
+        category=ErrorCategory.MODULE, code=ErrorCode.MOD_003, message=reason, details=details
+    ) from None
