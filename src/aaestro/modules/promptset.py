@@ -12,7 +12,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
 import structlog
-from jinja2 import StrictUndefined, TemplateSyntaxError, meta, nodes
+from jinja2 import StrictUndefined, TemplateAssertionError, TemplateSyntaxError, meta, nodes
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -646,21 +646,22 @@ def _check_source(source: str, ref: str, template: str, code: ErrorCode) -> None
 
     같은 검사를 로드 (``MOD_003`` — 모듈이 잘못 게시됐다) 와 렌더 (``MOD_004``) 가 쓴다.
     """
+    label = printable_label(template)
     try:
         check_syntax(source)
     except UnsupportedSyntaxError as err:
         raise AaestroError(
             category=ErrorCategory.MODULE,
             code=code,
-            message=f"template uses unsupported syntax: {template}",
-            details={"promptset": ref, "template": template, "node": err.kind, "line": err.line},
+            message=f"template uses unsupported syntax: {label}",
+            details={"promptset": ref, "template": label, "node": err.kind, "line": err.line},
         ) from err
     except TemplateSyntaxError as err:
         raise AaestroError(
             category=ErrorCategory.MODULE,
             code=code,
-            message=f"template syntax is invalid: {template}",
-            details={"promptset": ref, "template": template, "line": err.lineno},
+            message=f"template syntax is invalid: {label}",
+            details={"promptset": ref, "template": label, "line": err.lineno},
         ) from err
     except MemoryError:
         raise
@@ -673,6 +674,9 @@ def _uncompilable_reason(err: Exception, label: str) -> tuple[str, str | None]:
 
     예외 문자열에 템플릿 조각이 실릴 수 있어 종류 이름만 싣는다.
     """
+    if isinstance(err, TemplateAssertionError):
+        # 컴파일이 이름을 해석하다 만난 없는 필터 · test — 구문 오류가 아니다
+        return f"template uses unknown filters or tests: {label}", None
     if isinstance(err, TemplateSyntaxError):
         return f"template syntax is invalid: {label} (line {err.lineno})", None
     if isinstance(err, RecursionError):

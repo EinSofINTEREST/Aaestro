@@ -50,8 +50,7 @@ if TYPE_CHECKING:
 PROMPTSET = "promptsets/test@0.1.0"
 TEMPLATES = {
     "system": ("You plan.\n", {}),
-    # 파싱은 통과하고 컴파일이 파이썬 한도 (정적 중첩 블록 20) 에서 실패한다 (#732)
-    "uncompilable": ("{% for i in range(1) %}" * 21 + "{% endfor %}" * 21, {}),
+    "late": ("fine\n", {}),  # 테스트가 로드 뒤에 본문을 바꾼다 (#732)
     "default": ("hello {{ q }}\n", {"q": {"type": "string"}}),
     "center": (
         "{{ q | center(width) | length }}\n",
@@ -128,10 +127,24 @@ async def test_a_memory_bomb_template_fails_the_task_with_val_002_memory(registr
     assert result.error.retryable is False
 
 
-async def test_an_uncompilable_template_is_mod_004_not_internal_through_the_sandbox(registry):
-    executor = await standard_executor(registry, RenderSandbox())
+LATE_BODIES = {
+    # 로드 (`vet_names=False`) 는 파싱까지 — 렌더 시점 `_check_source` 가 RecursionError 를 만난다
+    "nesting": "{{ " + "(" * 80 + "1" + ")" * 80 + " }}",
+    # 파싱은 통과하고 컴파일에서 RecursionError 가 난다
+    "long-sum": "{{ " + "+".join(["1"] * 3000) + " }}",
+    # 파이썬 컴파일러 한도 (정적 중첩 블록 20)
+    "static-blocks": "{% for i in range(1) %}" * 21 + "{% endfor %}" * 21,
+}
 
-    result = await executor.execute(make_task(node_id="uncompilable", input={}))
+
+@pytest.mark.parametrize("body", LATE_BODIES.values(), ids=LATE_BODIES)
+async def test_a_template_rewritten_after_load_is_mod_004_not_internal(registry, tmp_path, body):
+    """본문은 렌더할 때마다 읽는다 — 로드를 통과한 뒤 깨진 본문이 자식을 crash 시키지 않는다."""
+    executor = await standard_executor(registry, RenderSandbox())
+    root = tmp_path / "modules" / "promptsets" / "test" / "0.1.0" / "templates"
+    (root / "late.j2").write_text(body, encoding="utf-8")
+
+    result = await executor.execute(make_task(node_id="late", input={}))
 
     assert result.status == TaskStatus.FAILED
     assert result.error is not None

@@ -1302,6 +1302,16 @@ def test_static_block_overflow_is_mod_004_at_render(tmp_path):
     assert err.__cause__ is None
 
 
+def test_unknown_filter_is_named_as_such_at_render(tmp_path):
+    promptset = promptset_of(tmp_path, "{{ 1 | nosuchfilter }}", {})
+
+    with pytest.raises(AaestroError) as exc_info:
+        promptset.render("t")
+
+    assert exc_info.value.code == "MOD_004"
+    assert "unknown filters or tests" in exc_info.value.message
+
+
 def test_static_block_overflow_is_not_blamed_on_truncated_input(tmp_path):
     """입력이 잘린 렌더에서도 컴파일 실패는 본문 탓이다 — VAL_002 (입력 탓) 가 아니다."""
     promptset = promptset_of(tmp_path, STATIC_BLOCKS, {"q": STRING})
