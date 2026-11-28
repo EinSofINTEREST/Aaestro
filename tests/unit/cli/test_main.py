@@ -55,6 +55,7 @@ def workspace(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
 
+    (solo / "t.j2").write_text("ok\n", encoding="utf-8")
     (tmp_path / "agents" / "solo" / "manifest.yaml").write_text(
         yaml.safe_dump(
             {
