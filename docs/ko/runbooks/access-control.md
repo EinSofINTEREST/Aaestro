@@ -121,6 +121,15 @@ reachable from isolated agents through the network gateway`). 루프백에 바�
 - 상한의 `egress` 에 `api.anthropic.com` / `openai-compat.invalid` 가 있으면, CONNECT 터널을 뜻한 것이 아니라면
   지운다 — 이제 모델 접근과 무관하다.
 
+이것은 `api.anthropic.com` · `openai-compat.invalid` 에 대한 `egress` 회수라면 **만든 시점과 무관하다** —
+업그레이드 전이든 뒤든 그 provider 의 `model` 판정도 막는다. 터널만 막는 회수는 없다. 터널만 막으려면
+그 호스트를 에이전트의 `runtime.egress` 에서 빼고 (선언 변경) 그 호스트에 대한 부여를 되돌린다 — 모델은
+건드리지 않는다.
+
+모델 호출이 거부돼 원인을 찾을 때: **최근 거부** / `denials` 에는 kind `model`, target 은 provider 이름,
+`decided_by: operator` 로 뜨지만 `rules` 에는 `model` 기록이 없다 — 회수는 provider 의 옛 호스트에 대한
+`egress` 기록이다.
+
 기록 찾기: `GET /v1/access/agents/{name}` 의 `rules` 에서 kind 가 `egress` 이고 target 이 두 호스트 중 하나인 것.
 
 ## 권한을 넓힐 때

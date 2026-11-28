@@ -22,7 +22,7 @@ from aaestro.egress.providers import create_provider_app
 from aaestro.orchestrator.__main__ import _access_registry
 from aaestro.orchestrator.control import create_app as control_app
 from aaestro.orchestrator.runstore import InMemoryRunStore
-from tests.fixtures.access import agent, write
+from tests.fixtures.access import STEWARD, agent, group, write
 from tests.unit.egress.test_connect import basic, connect, running
 
 ENFORCER = "enforcer-token"
@@ -38,8 +38,17 @@ class Stack:
         sneaky["spec"]["runtime"] = {"egress": ["api.anthropic.com"]}
         write(root / "agents" / "sneaky" / "manifest.yaml", sneaky)
         write(root / "agents" / "worker" / "manifest.yaml", agent("worker"))
+        # anthropic 을 선언하지 않은 그룹 멤버 — #399 전 관행대로 상한 egress 에 provider 호스트
+        plain = agent("plain", "research")
+        plain["spec"]["model"] = {"provider": "openai-compat", "name": "gpt-5-mini"}
+        write(root / "agents" / "plain" / "manifest.yaml", plain)
+        write(root / "agents" / STEWARD / "manifest.yaml", agent(STEWARD))
+        ceiling = {"max_ttl_s": 600, "egress": ["api.anthropic.com"]}
+        write(
+            root / "groups" / "research.yaml", group("research", {"access": {"ceiling": ceiling}})
+        )
         catalog = Catalog.under(root)
-        settings = SimpleNamespace(access_store=root / "access.db", access_stewards=[])
+        settings = SimpleNamespace(access_store=root / "access.db", access_stewards=[STEWARD])
         self.registry = _access_registry(settings, catalog)
         control = control_app(
             InMemoryRunStore(),
@@ -148,3 +157,19 @@ async def test_a_revocation_left_on_the_old_egress_host_still_cuts_the_model(sta
 
     stack.registry.lift(rule.rule_id)
     assert (await stack.call("worker")).status_code == 200
+
+
+async def test_an_old_style_egress_grant_does_not_open_the_model(stack):
+    """상한 egress 의 provider 호스트로 받은 부여는 터널만 연다 — 운영자 키는 아니다 (#399)."""
+    steward = stack.registry.issue_identity(STEWARD, "dep-steward")
+    stack.registry.grant(
+        steward, "plain", ResourceKind.EGRESS, "api.anthropic.com",
+        ttl_s=60, reason="r", requested_by="plain",
+    )  # fmt: skip
+
+    assert stack.registry.decide("plain", ResourceKind.EGRESS, "api.anthropic.com").allowed
+    assert not stack.registry.decide("plain", ResourceKind.MODEL, "anthropic").allowed
+    answer = await stack.call("plain")
+    assert answer.status_code == 403
+    assert answer.json()["error"]["code"] == "ACC_001"
+    assert stack.upstream_seen == []

@@ -8,6 +8,7 @@ import json
 import httpx
 import pytest
 
+from aaestro.access.model import ResourceKind
 from aaestro.egress.connect import EgressMode
 from aaestro.egress.providers import (
     ANTHROPIC_ENDPOINTS,
@@ -40,14 +41,14 @@ class Provider:
 
 
 def app_for(registry: Registry, provider: Provider, mode: EgressMode = EgressMode.ENFORCE):
-    registry.allowed.add("api.anthropic.com")
+    registry.allowed.add("anthropic")
     upstream = httpx.AsyncClient(transport=httpx.MockTransport(provider.handle))
     app = create_provider_app(
         registry,
         {
             "anthropic": Upstream(
                 base_url="https://api.anthropic.com",
-                target="api.anthropic.com",
+                target="anthropic",
                 api_key=KEY,
                 endpoints=ANTHROPIC_ENDPOINTS,
                 request_headers=ANTHROPIC_REQUEST_HEADERS,
@@ -71,11 +72,14 @@ async def call(client: httpx.AsyncClient, *, key: str | None = "cred-researcher"
 
 async def test_the_agent_identity_is_swapped_for_the_provider_key():
     """에이전트는 키를 모른다 — 신원을 떼고 진짜 키를 붙여 보낸다."""
-    provider = Provider()
-    async with app_for(Registry(), provider) as client:
+    provider, registry = Provider(), Registry()
+    async with app_for(registry, provider) as client:
         response = await call(client, authorization="Bearer should-be-dropped")
 
     assert response.status_code == 200
+    # 모델 종단은 egress 가 아니라 model 을 provider 이름으로 묻는다 (#399)
+    assert registry.kinds == [ResourceKind.MODEL]
+    assert registry.asked == [("cred-researcher", "anthropic")]
     assert response.text.startswith("event: message_start")
     [sent] = provider.seen
     assert sent.headers["x-api-key"] == KEY
@@ -97,7 +101,7 @@ async def test_a_revoked_model_api_is_refused_without_reaching_the_provider():
     registry = Registry()
     provider = Provider()
     async with app_for(registry, provider) as client:
-        registry.allowed.discard("api.anthropic.com")
+        registry.allowed.discard("anthropic")
         response = await call(client)
 
     assert response.status_code == 403
@@ -109,7 +113,7 @@ async def test_record_mode_forwards_a_denied_call():
     registry = Registry()
     provider = Provider()
     async with app_for(registry, provider, EgressMode.RECORD) as client:
-        registry.allowed.discard("api.anthropic.com")
+        registry.allowed.discard("anthropic")
         response = await call(client)
 
     assert response.status_code == 200 and len(provider.seen) == 1
@@ -169,7 +173,7 @@ async def test_counting_tokens_and_listing_models_are_model_api_calls():
 
 def plaintext_app(provider: Provider, addresses: list[str]):
     registry = Registry()
-    registry.allowed.add("api.anthropic.com")
+    registry.allowed.add("anthropic")
 
     async def resolver(host, port):
         return addresses
@@ -179,7 +183,7 @@ def plaintext_app(provider: Provider, addresses: list[str]):
         {
             "anthropic": Upstream(
                 base_url="http://fake-provider:8000",
-                target="api.anthropic.com",
+                target="anthropic",
                 api_key=KEY,
                 endpoints=ANTHROPIC_ENDPOINTS,
                 request_headers=ANTHROPIC_REQUEST_HEADERS,
@@ -220,14 +224,14 @@ COMPAT_KEY = "sk-compat-provider-key"
 
 
 def compat_asgi(registry: Registry, provider: Provider):
-    registry.allowed.add(COMPAT_HOST)
+    registry.allowed.add("openai-compat")
     upstream = httpx.AsyncClient(transport=httpx.MockTransport(provider.handle))
     return create_provider_app(
         registry,
         {
             "openai-compat": Upstream(
                 base_url=f"https://{COMPAT_HOST}",
-                target=COMPAT_HOST,
+                target="openai-compat",
                 api_key=COMPAT_KEY,
                 key_header=OPENAI_COMPAT_KEY_HEADER,
                 key_scheme=OPENAI_COMPAT_KEY_SCHEME,
@@ -318,7 +322,7 @@ async def test_the_provider_key_is_not_returned_to_the_agent_on_a_refusal():
     registry = Registry()
     provider = Provider()
     async with compat_app(registry, provider) as client:
-        registry.allowed.discard(COMPAT_HOST)
+        registry.allowed.discard("openai-compat")
         response = await client.post(
             "/openai-compat/v1/chat/completions", json={}, headers=IDENTITY
         )
@@ -451,13 +455,13 @@ async def test_an_upstream_cookie_is_not_carried_into_another_agents_call():
     upstream = httpx.AsyncClient(transport=httpx.MockTransport(provider.handle))
     # 주입한 클라이언트가 이미 쿠키를 쥐고 있어도 실리지 않아야 한다
     upstream.cookies.set("session", "PRELOADED", domain=COMPAT_HOST)
-    registry.allowed.add(COMPAT_HOST)
+    registry.allowed.add("openai-compat")
     app = create_provider_app(
         registry,
         {
             "openai-compat": Upstream(
                 base_url=f"https://{COMPAT_HOST}",
-                target=COMPAT_HOST,
+                target="openai-compat",
                 api_key=COMPAT_KEY,
                 key_header=OPENAI_COMPAT_KEY_HEADER,
                 key_scheme=OPENAI_COMPAT_KEY_SCHEME,
@@ -589,13 +593,13 @@ async def test_the_proxys_own_refusals_carry_its_error_code_header():
     """에이전트는 본문이 아니라 이 헤더로 프록시의 거절을 provider 실패와 가른다."""
     registry = Registry()
     async with app_for(registry, Provider()) as client:
-        registry.allowed.discard("api.anthropic.com")
+        registry.allowed.discard("anthropic")
         denied = await call(client)
         registry.down = True
         undecided = await call(client)
         # 신원 판정이 엔드포인트 검사보다 먼저 (#495) — 막힌 엔드포인트 403 은 허용 판정 뒤에만 난다
         registry.down = False
-        registry.allowed.add("api.anthropic.com")
+        registry.allowed.add("anthropic")
         endpoint = await client.post(
             "/anthropic/v1/files", headers={"x-api-key": "cred-researcher"}
         )
@@ -655,7 +659,7 @@ async def test_the_provider_list_names_only_providers_with_an_upstream():
 
 async def test_the_provider_list_names_decision_upstreams_under_their_own_key():
     """결정 목록은 별도 키 — 기존 소비자가 읽는 ``providers`` 는 모델만 그대로다 (#713)."""
-    model = Upstream(base_url="https://api.anthropic.com", target="api.anthropic.com", api_key=KEY)
+    model = Upstream(base_url="https://api.anthropic.com", target="anthropic", api_key=KEY)
     decision = Upstream(base_url="https://jev.example", target="decision:jev", api_key=KEY)
     app = create_provider_app(
         Registry(), {"anthropic": model}, decision_upstreams={"posek": decision, "jev": decision}
@@ -670,9 +674,7 @@ async def test_the_provider_list_names_decision_upstreams_under_their_own_key():
 
 async def test_the_provider_list_is_routed_before_the_provider_catch_all():
     """catch-all 이 먼저 잡으면 ``v1`` 이라는 provider 의 404 가 된다."""
-    upstream = Upstream(
-        base_url="https://api.anthropic.com", target="api.anthropic.com", api_key=KEY
-    )
+    upstream = Upstream(base_url="https://api.anthropic.com", target="anthropic", api_key=KEY)
     app = create_provider_app(Registry(), {"openai-compat": upstream, "anthropic": upstream})
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://egress"

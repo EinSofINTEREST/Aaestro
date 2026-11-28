@@ -129,6 +129,15 @@ the access store are not rewritten:
 - Remove `api.anthropic.com` / `openai-compat.invalid` from a ceiling's `egress` unless the CONNECT
   tunnel is what you mean — it no longer has anything to do with model access.
 
+This holds for an `egress` revocation on `api.anthropic.com` or `openai-compat.invalid` **whenever it
+was made**, before or after the upgrade: it also cuts that provider's `model` decision. There is no
+revocation that cuts only the tunnel. To stop just the tunnel, take the host out of the agent's
+`runtime.egress` (a declaration change) and lift any grant of it — and leave the model alone.
+
+When a model call is refused and you look for the cause: **최근 거부** / `denials` show kind `model`,
+target the provider name, `decided_by: operator`, but `rules` has no `model` record — the revocation
+is the `egress` record on the provider's old host.
+
 To find the records: `GET /v1/access/agents/{name}` → `rules`, kind `egress`, target one of the two hosts.
 
 ## Widening a Permission

@@ -285,10 +285,11 @@ LEGACY_PROVIDER_HOSTS = {
     "anthropic": "api.anthropic.com",
     "openai-compat": "openai-compat.invalid",
 }
-"""#399 전에 모델 API 종단을 판정하던 ``egress`` 대상 — 그때 남긴 운영자 회수를 잇는 데만 쓴다.
+"""#399 전에 모델 API 종단을 판정하던 ``egress`` 대상 — 그 이름의 운영자 회수를 잇는 데만 쓴다.
 
-그 이름으로 남은 ``egress`` 회수는 ``model`` 판정에서도 거부로 센다 (업그레이드가 회수를 조용히 풀지
-않게). 부여는 잇지 않는다 — ``egress`` 부여로 모델 키를 쓰게 되는 것이 #399 의 결함이다."""
+그 이름에 대한 ``egress`` 회수는 만든 시점과 무관하게 ``model`` 판정에서도 거부로 센다 (업그레이드가
+회수를 조용히 풀지 않게 — 시점을 가르지 않으므로 터널만 막는 회수는 없다). 부여는 잇지 않는다 —
+``egress`` 부여로 모델 키를 쓰게 되는 것이 #399 의 결함이다."""
 
 
 def decision_target(provider: str) -> str:
