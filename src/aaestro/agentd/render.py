@@ -12,9 +12,9 @@ from __future__ import annotations
 import asyncio
 import json
 import multiprocessing
-import multiprocessing.forkserver
 import os
 import pickle
+import struct
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -22,11 +22,12 @@ import structlog
 
 from aaestro.core.errors import AaestroError, AaestroErrorPayload, ErrorCategory, ErrorCode
 from aaestro.modules.boundary import DEFAULT_RENDER_LIMIT
-from aaestro.modules.render_child import RenderLimits, run
+from aaestro.modules.render_child import RenderLimits, ready, run
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
     from multiprocessing.connection import Connection
+    from multiprocessing.process import BaseProcess
 
     from aaestro.modules.promptset import LoadedPromptset
 
@@ -45,6 +46,8 @@ RENDER_INPUT_MAX_BYTES = 16 * DEFAULT_RENDER_LIMIT
 바이트와 풀어 놓은 객체를 함께 담아야 하고, 데몬도 직렬화 사본 하나를 이만큼 더 쥔다.
 
 직렬화는 이 상한에서 멈춘다 (``_BoundedWriter``) — 상한을 넘는 입력도 상한 남짓까지만 만든다.
+글자 수가 상한을 넘는 문자열 하나는 직렬화 전에 거절한다 — pickler 가 그 UTF-8 버퍼를 통째로 만든
+뒤에 넘기므로, 순간 메모리는 문자열 하나당 4 × 상한 + 상한이다 (``_encode_input``).
 직렬화는 스레드에서 돌지만 C pickler 는 내장 타입을 쓰는 동안 GIL 을 놓지 않아 그동안 이벤트
 루프도 선다. 그 정지는 이 상한만큼 만드는 시간에 묶인다 (실측은 PR #726)."""
 
@@ -102,9 +105,16 @@ class RenderSandbox:
 
         forkserver 를 첫 렌더 전에 띄운다 — 띄우는 데 수백 ms 가 들고 ``Process.start`` 가 그것을
         동기로 기다리므로, 첫 렌더 (agentd 기동의 ``system`` 렌더) 의 마감을 먹지 않게 마감 밖에서.
-        컨텍스트의 forkserver 는 모듈 전역 하나라 ``ensure_running`` 이 같은 것을 띄운다.
+        서버를 띄우기만 하면 preload import 가 끝나기 전에 돌아올 수 있다 — 빈 자식 하나를 띄워 거둬
+        준비 왕복까지 끝낸다 (``start`` 는 서버가 preload 를 마치고 fork 한 뒤에 돌아온다).
         """
-        await asyncio.to_thread(multiprocessing.forkserver.ensure_running)
+        await asyncio.to_thread(self._round_trip)
+
+    def _round_trip(self) -> None:
+        process = self._context.Process(target=ready, daemon=True)
+        process.start()
+        process.join()
+        process.close()
 
     async def render(
         self,
@@ -158,19 +168,15 @@ class RenderSandbox:
             writer.close()
             inputs.close()
             await _send(sender, payload)
-            raw = await self._receive(reader, maxlength)
+            raw = await _receive(reader, maxlength)
             answered = True
         except TimeoutError:
             raise  # 마감은 render 가 VAL_002 로 바꾼다 — TimeoutError 도 OSError 다
         except (EOFError, OSError) as err:
             if process.pid is None:
                 raise  # 띄우지도 못했다 — 렌더의 결과가 아니다
-            if isinstance(err, EOFError):
-                # 쓰는 쪽을 닫았으니 끝나는 중이다 — 실제 종료 코드를 기다린다
-                process.join(EXIT_GRACE_S)
-            if process.exitcode is None:
-                process.kill()  # 상한을 넘는 길이를 알리고 쓰기에서 멈춘 자식
-            process.join()
+            # 응답 없이 끝났거나 (EOF — 종료 코드를 기다린다) 상한을 넘는 길이를 알렸다 (곧 kill)
+            await _reap(process, grace_s=EXIT_GRACE_S if isinstance(err, EOFError) else 0.0)
             raise AaestroError(
                 category=ErrorCategory.INTERNAL,
                 code=ErrorCode.INTERNAL_001,
@@ -182,21 +188,13 @@ class RenderSandbox:
             ) from err
         finally:
             if process.pid is not None:
-                if answered:
-                    # 응답을 보낸 자식은 스스로 끝난다 — 거둬진 pid 에 신호를 보내지 않게 기다린다
-                    process.join(EXIT_GRACE_S)
-                # 시간 초과 · 취소 · 응답 뒤에도 남은 자식은 여기서 끝낸다
-                if process.exitcode is None:
-                    process.kill()
-                process.join()
+                # 응답을 보낸 자식은 스스로 끝난다 — 거둬진 pid 에 신호를 보내지 않게 기다린다.
+                # 시간 초과 · 취소는 기다리지 않고 끝낸다
+                await _reap(process, grace_s=EXIT_GRACE_S if answered else 0.0)
                 process.close()
             for conn in (writer, inputs, sender, reader):
                 conn.close()
         return raw
-
-    async def _receive(self, reader: Connection, maxlength: int) -> bytes:
-        await _ready(reader.fileno(), readable=True)
-        return reader.recv_bytes(maxlength)
 
     def _reply(
         self,
@@ -243,7 +241,7 @@ class RenderSandbox:
             message="task input exceeds the render transfer limit",
             agent=agent,
             task_id=task_id,
-            # 크기는 상한을 넘은 시점까지 쓴 바이트 — 실제 직렬화 크기의 하한이다. 값은 싣지 않는다
+            # 크기는 넘은 시점까지 쓴 바이트 또는 긴 문자열의 글자 수 — 실제 크기의 하한. 값은 없다
             details={
                 "kind": "input",
                 "size_bytes": size,
@@ -326,16 +324,96 @@ class _BoundedWriter:
 
 
 def _encode_input(variables: Mapping[str, Any]) -> bytearray | int:
-    """입력을 피클 바이트로 — 상한을 넘으면 그 시점까지 쓴 바이트 수 (실제 크기의 하한) 를 돌려준다.
+    """입력을 피클 바이트로 — 상한을 넘으면 실제 크기의 하한을 돌려준다. 스레드에서 돈다.
 
-    스레드에서 돈다. 상한에서 멈추므로 상한을 넘는 입력도 상한 남짓까지만 만든다.
+    누적은 writer 가 상한에서 멈춘다. 그러나 C pickler 는 비ASCII 문자열 하나의 UTF-8 버퍼를 통째로
+    만든 뒤에 writer 에 넘긴다 — 그래서 상한보다 긴 (글자 수) 문자열은 직렬화 전에 거절한다. 순간
+    메모리는 문자열 하나당 4 × 상한 (UTF-8 버퍼) + 상한 (writer) 에 묶인다.
     """
+    longest = _longest_string(variables, RENDER_INPUT_MAX_BYTES)
+    if longest > RENDER_INPUT_MAX_BYTES:
+        return longest  # UTF-8 바이트 수 ≥ 글자 수 — 하한이다
     writer = _BoundedWriter(RENDER_INPUT_MAX_BYTES)
     try:
         pickle.Pickler(writer, protocol=pickle.HIGHEST_PROTOCOL).dump(dict(variables))
     except _InputTooLargeError as err:
         return err.written
     return writer.buffer  # 복사하지 않는다 — 데몬이 쥐는 사본은 이것 하나다
+
+
+def _longest_string(value: Any, limit: int) -> int:
+    """상한을 넘는 문자열의 글자 수, 없으면 0 — 합산하지 않는다 (공유 · memo 로 과대 계산된다).
+
+    반복문으로 훑고 컨테이너는 id 로 한 번만 본다 — 깊이 · 공유 구조와 무관하게 원소 수만큼만 돈다.
+    """
+    seen: set[int] = set()
+    stack = [value]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, str):
+            if len(item) > limit:
+                return len(item)
+        elif isinstance(item, dict | list | tuple) and id(item) not in seen:
+            seen.add(id(item))
+            if isinstance(item, dict):
+                stack.extend(item.keys())
+                stack.extend(item.values())
+            else:
+                stack.extend(item)
+    return 0
+
+
+async def _receive(reader: Connection, maxlength: int) -> bytes:
+    """응답 프레임 하나를 루프에서 읽는다 — 읽기 가능은 첫 바이트뿐이라 ``recv_bytes`` 는 막힌다.
+
+    프레임은 ``multiprocessing.connection`` 의 것이다 (4바이트 big-endian 길이, -1 이면 뒤에 8바이트
+    길이). 길이가 상한을 넘으면 본문을 읽기 전에 ``OSError``, 중간에 끝나면 ``EOFError``.
+    """
+    fd = reader.fileno()
+    os.set_blocking(fd, False)
+    (size,) = struct.unpack("!i", await _read_exact(fd, 4))
+    if size == -1:
+        (size,) = struct.unpack("!Q", await _read_exact(fd, 8))
+    if size > maxlength:
+        raise OSError("bad message length")
+    return bytes(await _read_exact(fd, size))
+
+
+async def _read_exact(fd: int, size: int) -> bytearray:
+    buffer = bytearray()
+    while len(buffer) < size:
+        try:
+            chunk = os.read(fd, min(size - len(buffer), 1 << 16))
+        except BlockingIOError:
+            await _ready(fd, readable=True)
+            continue
+        if not chunk:
+            raise EOFError
+        buffer += chunk
+    return buffer
+
+
+async def _reap(process: BaseProcess, *, grace_s: float) -> None:
+    """자식을 거둔다 — 종료는 sentinel 을 루프에서 기다린다 (``join`` 은 루프를 막는다).
+
+    ``grace_s`` 동안 스스로 끝나기를 기다리고, 넘으면 kill 한 뒤 다시 기다린다. 대기 중에 취소가
+    와도 ``finally`` 가 kill 하고 동기로 거둔다 — SIGKILL 된 자식은 막을 수 없이 곧 끝나므로 그
+    ``join`` 은 커널이 거두는 시간뿐이다.
+    """
+    try:
+        if grace_s and process.exitcode is None:
+            try:
+                async with asyncio.timeout(grace_s):
+                    await _ready(process.sentinel, readable=True)
+            except TimeoutError:
+                pass
+        if process.exitcode is None:
+            process.kill()
+            await _ready(process.sentinel, readable=True)
+    finally:
+        if process.exitcode is None:
+            process.kill()
+        process.join()
 
 
 async def _send(sender: Connection, payload: bytearray) -> None:

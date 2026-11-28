@@ -99,6 +99,10 @@ def _receive_input(inputs: Connection, max_bytes: int) -> dict[str, Any]:
     return variables
 
 
+def ready() -> None:
+    """준비 왕복용 빈 자식 — forkserver 가 preload 를 마치고 fork 했다는 것만 알린다 (``warm``)."""
+
+
 def confine(limits: RenderLimits) -> None:
     """주소 공간 · CPU · core 상한을 건다 — 지금의 주소 공간 위로 여유분만큼만."""
     page = os.sysconf("SC_PAGE_SIZE")

@@ -338,8 +338,11 @@ Answer it.
   serialising, starting, sending and rendering share one deadline. A serialised input larger than
   `RENDER_INPUT_MAX_BYTES` (16 × the render limit, about 4 MB) is refused before any child starts
   with `VAL_002` (`details.kind: input`, size and limit only; the size is the bytes written up to
-  the point the limit was crossed, a lower bound of the real size) — a transfer limit, and the one
-  exception to "values are cut, not refused". Serialising stops at that limit. It runs in a thread,
+  the point the limit was crossed, or the character count of a string longer than the limit —
+  either way a lower bound of the real size) — a transfer limit, and the one exception to "values
+  are cut, not refused". Serialising stops at that limit, and a single string with more characters
+  than the limit is refused before serialising: the C pickler builds a string's whole UTF-8 buffer
+  before handing it over, so transient memory is at most 4 × the limit per string plus the limit. It runs in a thread,
   but the C pickler keeps the GIL while it writes built-in types, so the event loop stands still
   meanwhile — for at most the time it takes to produce the limit. agentd starts the fork server
   before the first render, outside any render deadline. The task prompt and the `system` template both go this way. This isolates

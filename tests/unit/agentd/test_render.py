@@ -13,6 +13,7 @@ import json
 import multiprocessing
 import os
 import resource
+import struct
 import threading
 import time
 from dataclasses import dataclass
@@ -37,8 +38,10 @@ from aaestro.core.agent import TaskStatus
 from aaestro.core.errors import AaestroError
 from aaestro.modules.promptset import PromptsetLoader
 from aaestro.modules.registry import ModuleRegistry
+from aaestro.modules.render_child import ready
 from tests.fixtures.builders import make_manifest, make_task
 from tests.fixtures.fake_model import FakeModel, text
+from tests.fixtures.render_hooks import header_only, reply_then_linger
 from tests.fixtures.waiting import until
 
 if TYPE_CHECKING:
@@ -66,6 +69,7 @@ TEMPLATES = {
 MEMORY_BOMB = {"q": "a", "width": 300_000_000}
 TIME_BOMB = {"n": 5000}
 FAST_TIMEOUT_S = 0.2
+HEADER_TIMEOUT_S = 1.0  # 자식이 머리를 쓸 시간은 넉넉히, 멈춘 3초보다는 짧게
 
 
 @pytest.fixture
@@ -447,6 +451,24 @@ async def test_a_render_after_warm_reuses_the_running_fork_server(registry):
     assert forkserver._forkserver._forkserver_pid == server
 
 
+async def test_warm_completes_a_round_trip_through_a_child(monkeypatch):
+    """서버만 띄우면 preload 가 끝나기 전에 돌아와 첫 렌더의 start 가 마감 안에서 기다린다."""
+    sandbox = RenderSandbox()
+    spawned: list[Any] = []
+    real = sandbox._context.Process
+
+    def recording(*args: Any, **kwargs: Any) -> Any:
+        spawned.append(kwargs.get("target"))  # start() 가 부모 쪽 _target 을 지운다
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(sandbox._context, "Process", recording)
+
+    await sandbox.warm()
+
+    assert spawned == [ready]
+    assert multiprocessing.active_children() == []
+
+
 class RecordingSandbox(RenderSandbox):
     def __init__(self) -> None:
         super().__init__()
@@ -467,6 +489,150 @@ async def test_agentd_warms_the_fork_server_before_the_system_render(registry):
     await agentd.load_modules(make_manifest(), registry, memory=None, peers=None, sandbox=sandbox)
 
     assert sandbox.calls[:2] == ["warm", "render"]
+
+
+# --- 루프를 막지 않는다: 응답 읽기 · 자식 거두기 ------------------------------------------
+
+
+async def max_loop_gap(work: Any) -> tuple[Any, float]:
+    """``work`` 를 기다리는 동안 이벤트 루프 회차 사이의 가장 긴 틈 (초)."""
+    stamps: list[float] = []
+
+    async def heartbeat() -> None:
+        while True:
+            stamps.append(time.perf_counter())
+            await asyncio.sleep(0.005)
+
+    beat = asyncio.create_task(heartbeat())
+    await asyncio.sleep(0)  # 첫 회차를 먼저 남긴다 — work 의 첫 단계에서 막혀도 틈으로 잡힌다
+    try:
+        result = await work
+    finally:
+        stamps.append(time.perf_counter())  # 끝에서 막힌 시간도 잡는다
+        beat.cancel()
+    gaps = [later - earlier for earlier, later in zip(stamps, stamps[1:], strict=False)]
+    return result, max(gaps, default=0.0)
+
+
+async def test_a_child_that_lingers_after_its_reply_is_killed_after_the_grace(registry):
+    sandbox = RenderSandbox(child_hook=reply_then_linger)
+
+    started = time.perf_counter()
+    rendered = await sandbox.render(promptset(registry), "default", {"q": "x"}, agent="a")
+
+    assert rendered == "lingered"
+    assert time.perf_counter() - started < 2.0  # 유예 (0.5초) 뒤 죽였다 — 3초를 다 기다리지 않는다
+    assert multiprocessing.active_children() == []
+
+
+async def test_a_reply_that_stops_after_its_header_ends_at_the_deadline(registry):
+    """읽기 가능은 첫 바이트뿐이다 — 본문을 막혀 읽으면 마감도 health 도 돌지 않는다."""
+    sandbox = RenderSandbox(timeout_s=HEADER_TIMEOUT_S, child_hook=header_only)
+
+    with pytest.raises(AaestroError) as exc_info:
+        await sandbox.render(promptset(registry), "default", {"q": "x"}, agent="a")
+
+    assert (exc_info.value.code, exc_info.value.details["kind"]) == ("VAL_002", "time")
+
+
+async def test_reading_a_reply_frame_does_not_block_the_loop():
+    """읽기 가능은 첫 바이트뿐이다 — 머리 뒤에서 멈춘 쓰기를 막혀 기다리면 마감 · 루프가 선다."""
+    reader, writer = multiprocessing.Pipe(duplex=False)
+    os.write(writer.fileno(), struct.pack("!i", 100))
+    closer = threading.Timer(1.0, writer.close)  # 막혀 읽는다면 여기서야 풀린다 (EOF)
+    closer.start()
+
+    async def receive() -> None:
+        with pytest.raises(TimeoutError):
+            async with asyncio.timeout(0.3):
+                await render_module._receive(reader, 1000)
+
+    try:
+        _, gap = await max_loop_gap(receive())
+    finally:
+        closer.join()
+        reader.close()
+
+    assert gap < 0.2, gap
+
+
+async def test_a_reply_frame_is_read_whole_or_refused():
+    reader, writer = multiprocessing.Pipe(duplex=False)
+    writer.send_bytes(b"hello")
+    assert await render_module._receive(reader, 1000) == b"hello"
+
+    writer.send_bytes(b"x" * 2000)
+    with pytest.raises(OSError, match="bad message length"):
+        await render_module._receive(reader, 1000)  # 본문을 읽기 전에 거절한다
+
+    reader, writer = multiprocessing.Pipe(duplex=False)
+    os.write(writer.fileno(), struct.pack("!i", 10) + b"abc")
+    writer.close()
+    with pytest.raises(EOFError):
+        await render_module._receive(reader, 1000)
+
+
+def lingering_child() -> Any:
+    process = multiprocessing.get_context("forkserver").Process(
+        target=time.sleep, args=(3,), daemon=True
+    )
+    process.start()
+    return process
+
+
+async def test_reaping_a_lingering_child_does_not_block_the_loop():
+    process = lingering_child()
+    started = time.perf_counter()
+
+    _, gap = await max_loop_gap(render_module._reap(process, grace_s=0.5))
+
+    assert process.exitcode is not None  # 유예 뒤 죽여 거뒀다
+    assert time.perf_counter() - started < 1.5
+    assert gap < 0.2, gap
+    process.close()
+
+
+async def test_canceling_a_reap_still_kills_and_reaps_the_child():
+    process = lingering_child()
+    reaping = asyncio.create_task(render_module._reap(process, grace_s=5.0))
+    await asyncio.sleep(0.05)
+
+    reaping.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await reaping
+
+    assert process.exitcode is not None
+    process.close()
+
+
+# --- 문자열 하나가 상한을 넘으면 직렬화하지 않는다 ------------------------------------------
+
+
+async def test_a_string_longer_than_the_limit_is_refused_before_pickling(registry, monkeypatch):
+    """C pickler 는 비ASCII 문자열의 UTF-8 버퍼를 통째로 만든 뒤 writer 에 넘긴다 (약 2 × 상한)."""
+
+    class NoPickler:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            raise AssertionError("pickled a string longer than the transfer limit")
+
+    monkeypatch.setattr(render_module.pickle, "Pickler", NoPickler)
+    shared = "é" * (RENDER_INPUT_MAX_BYTES + 1)
+
+    with pytest.raises(AaestroError) as exc_info:
+        await RenderSandbox().render(
+            promptset(registry), "default", {"q": [shared, shared], "r": {"s": shared}}, agent="a"
+        )
+
+    assert (exc_info.value.code, exc_info.value.details["kind"]) == ("VAL_002", "input")
+    assert exc_info.value.details["size_bytes"] == RENDER_INPUT_MAX_BYTES + 1
+
+
+async def test_a_non_ascii_input_under_the_limit_renders_as_before(registry):
+    loaded = promptset(registry)
+
+    rendered = await RenderSandbox().render(loaded, "default", {"q": "éü한글"}, agent="a")
+
+    assert rendered == loaded.render("default", q="éü한글")
 
 
 # --- 기동 경고 -------------------------------------------------------------------------
