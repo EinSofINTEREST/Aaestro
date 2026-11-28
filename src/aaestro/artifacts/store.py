@@ -351,11 +351,20 @@ class FilesystemArtifactStore:
         # 지우지 않는다, 잔재가 문제 되면 오래된 .tmp- 를 정리하는 유지보수 경로를 둔다
         # 임시 파일은 센 적 없다 — 쓰다 죽은 프로세스의 잔재가 한도를 갉지 않게 (지우지는 않는다:
         # 다른 프로세스가 지금 쓰는 중일 수 있다)
-        return sum(
-            path.stat().st_size
-            for path in base.rglob("*")
-            if path.is_file() and not path.name.startswith(TEMP_PREFIX)
-        )
+        total = 0
+        try:
+            for path in base.rglob("*"):
+                if path.name.startswith(TEMP_PREFIX) or not path.is_file():
+                    continue
+                try:
+                    total += path.stat().st_size
+                except FileNotFoundError:
+                    continue  # quota 잠금 밖의 delete 가 세는 사이 지웠다 — 없는 파일은 0
+        except OSError as err:
+            raise storage_error(
+                "artifact usage could not be measured", cause=type(err).__name__
+            ) from err
+        return total
 
     def size_of(self, key: str) -> int:
         """key 가 이미 저장돼 있으면 그 크기, 없으면 0 — 덮어쓰기가 비우는 몫이다."""
@@ -363,6 +372,8 @@ class FilesystemArtifactStore:
         try:
             path = self._plain_path(key)
             return 0 if path is None else path.stat().st_size
+        except FileNotFoundError:
+            return 0  # 확인한 뒤 quota 잠금 밖의 delete 가 지웠다 — 없는 key 와 같다
         except OSError as err:  # 중간 조각이 파일 (NotADirectoryError) 이거나 권한 문제
             raise _write_failure(key, err) from err
 
