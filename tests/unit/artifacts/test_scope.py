@@ -144,6 +144,31 @@ async def test_quota_counts_what_is_already_stored(tmp_path):
     assert exc_info.value.details["used_bytes"] == "100"
 
 
+async def test_overwriting_a_key_frees_its_old_size(tmp_path):
+    """한도 100 에 80바이트 key 를 90바이트로 덮어쓰면 순증은 10 이다."""
+    access = scoped(tmp_path, quotas={ArtifactScope.LOCAL: 100})
+    await access.put("k", b"x" * 80)
+
+    ref = await access.put("k", b"y" * 90)
+
+    assert await access.get(ref) == b"y" * 90
+    with pytest.raises(AaestroError) as exc_info:
+        await access.put("other", b"z" * 90)
+    assert exc_info.value.code == ErrorCode.ART_002
+
+
+async def test_leftover_temp_files_do_not_count_toward_quota(tmp_path):
+    """쓰다 죽은 프로세스의 `.tmp-` 잔재가 한도를 갉지 않는다."""
+    access = scoped(tmp_path, quotas={ArtifactScope.LOCAL: 100})
+    scope_dir = tmp_path / "researcher"
+    scope_dir.mkdir(parents=True, exist_ok=True)
+    (scope_dir / ".tmp-dead").write_bytes(b"x" * 100)
+
+    ref = await access.put("k", b"y" * 100)
+
+    assert await access.get(ref) == b"y" * 100
+
+
 async def test_no_quota_means_no_limit(tmp_path):
     access = scoped(tmp_path)
 

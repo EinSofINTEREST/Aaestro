@@ -344,7 +344,18 @@ class FilesystemArtifactStore:
         base = self.root / self.scope
         if not base.exists():
             return 0
-        return sum(path.stat().st_size for path in base.rglob("*") if path.is_file())
+        # 임시 파일은 센 적 없다 — 쓰다 죽은 프로세스의 잔재가 한도를 갉지 않게 (지우지는 않는다:
+        # 다른 프로세스가 지금 쓰는 중일 수 있다)
+        return sum(
+            path.stat().st_size
+            for path in base.rglob("*")
+            if path.is_file() and not path.name.startswith(TEMP_PREFIX)
+        )
+
+    def size_of(self, key: str) -> int:
+        """key 가 이미 저장돼 있으면 그 크기, 없으면 0 — 덮어쓰기가 비우는 몫이다."""
+        path = self._plain_path(validate_key(key, for_write=True))
+        return 0 if path is None else path.stat().st_size
 
 
 def digest_key(prefix: str, data: bytes) -> str:
