@@ -78,7 +78,7 @@ class RunHandle:
     """임대를 잃어 루프가 스스로 멈췄는가 — 그 뒤의 기록은 새 소유자의 것이다 (#662)."""
     lease_until: float = 0.0
     """이 프로세스가 저장소에 **실제로 쓴** 임대 만료 시각 — 갱신이 실패하는 동안의 정지 시각을
-    여기서 잰다 (`hold_lease`). service run 만 쓴다."""
+    여기서 잰다 (`hold_lease`). mission · service 가 같이 쓴다 (#723)."""
 
     _drain: bool = field(default=False, init=False)
 
@@ -156,7 +156,7 @@ def _mark_lost(handle: RunHandle) -> None:
     if not handle.lease_lost:
         handle.lease_lost = True
         log.error(
-            "service run lease lost, stopping",
+            "run lease lost, stopping",
             graph=handle.graph,
             run_id=handle.run_id,
             iteration=handle.iteration,
@@ -174,8 +174,7 @@ async def hold_lease(
     margin_s`` 에 닿으면 (곧 남이 가져갈 수 있다) 잃은 것으로 보고 멈춘다. 시각은 갱신 호출이
     끝난 뒤 다시 잰다 — 저장소 호출이 동기라 그 지연 (sqlite 잠금 대기 등) 이 여유를 먹는다.
     정지 시각 직전에 시작한 호출이 늦으면 그만큼 늦게 멈추므로, 여유는 시계 차이 + 저장소 호출
-    지연을 덮어야 한다. 재개 준비 (`resume_service`) 와 루프 (`ServiceRunner`)
-    가 같이 쓴다.
+    지연을 덮어야 한다. 재개 준비 (`resume_service`) 와 구동 (`leased`) 이 같이 쓴다.
     """
     while True:
         started = lease.clock()
@@ -191,7 +190,7 @@ async def hold_lease(
         except AaestroError as err:
             # 일시 장애일 수 있다 — 정지 시각 전까지는 다음 주기에 다시 미룬다
             log.warning(
-                "service run lease renewal failed",
+                "run lease renewal failed",
                 graph=handle.graph,
                 run_id=handle.run_id,
                 iteration=handle.iteration,
@@ -208,6 +207,42 @@ async def hold_lease(
             on_lost()
             return
         await lease.sleep(min(lease.margin_s, stop_at - now))
+
+
+async def leased[T](
+    store: RunStore, lease: RunLease, handle: RunHandle, work: Callable[[], Awaitable[T]]
+) -> T | None:
+    """Run ``work`` while holding the run's lease; ``None`` means the lease was lost and it stopped.
+
+    구동하는 동안 임대를 미룬다 (`hold_lease`). 임대를 잃으면 ``work`` 를 취소하고 None 을
+    돌려준다 — mission 구동과 service 루프가 같이 쓴다 (#723). 바깥의 취소 (drain · 종료) 가
+    겹치면 그대로 올린다.
+    """
+    task = asyncio.current_task()
+    if task is None:  # pragma: no cover - 이벤트 루프 밖에서는 부를 수 없다
+        return await work()
+    stopped_by_lease = False
+
+    def stop() -> None:
+        nonlocal stopped_by_lease
+        stopped_by_lease = True
+        task.cancel()
+
+    holder = asyncio.create_task(
+        hold_lease(store, lease, handle, stop), name=f"run-lease:{handle.run_id}"
+    )
+    try:
+        return await work()
+    except asyncio.CancelledError:
+        # 임대 갱신이 건 취소만 삼킨다
+        if not stopped_by_lease or task.cancelling() > 1:
+            raise
+        task.uncancel()
+        return None
+    finally:
+        holder.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await holder
 
 
 class RunManager:
@@ -232,7 +267,7 @@ class RunManager:
         self._metrics = metrics
         self._store = store
         self.lease = lease or RunLease()
-        """이 manager 가 service run 을 구동할 때의 소유자 · 임대."""
+        """이 manager 가 run 을 구동할 때의 소유자 · 임대 (mission · service, #723)."""
 
     @property
     def store(self) -> RunStore | None:
@@ -256,10 +291,8 @@ class RunManager:
         return self._store.upsert(self._record_of(handle, topology))
 
     def _record_of(self, handle: RunHandle, topology: GraphTopology | None) -> RunRecord:
-        """핸들의 저장소 기록 — service 면 이 manager 의 소유 · 임대를 싣는다."""
-        # mission 재개는 임대를 보지 않는다 — 소유자를 두면 다른 프로세스의 공지가 막힌다
-        service = handle.mode is GraphMode.SERVICE
-        if service and not handle.lease_until:
+        """핸들의 저장소 기록 — 이 manager 의 소유 · 임대를 싣는다."""
+        if not handle.lease_until:
             handle.lease_until = self.lease.until()
         return RunRecord(
             run_id=handle.run_id,
@@ -269,8 +302,8 @@ class RunManager:
             iteration=handle.iteration,
             failure_streak=handle.failure_streak,
             drain=handle.drain_requested,
-            owner=self.lease.owner if service else "",
-            lease_until=handle.lease_until if service else 0.0,
+            owner=self.lease.owner,
+            lease_until=handle.lease_until,
             **(participation(topology) if topology is not None else {}),
         )
 
@@ -353,6 +386,8 @@ class RunManager:
             run_id: Optional run id; generated when omitted.
             resuming: 끝난 run 을 같은 id 로 다시 잡는다 — 재개 전용. 새 제출이 끝난 run 의
                 id 를 재사용하면 옛 checkpoint 위에 새 실행이 얹히므로 제출에는 열지 않는다.
+                기록의 임대를 먼저 이 manager 의 소유로 가져와야 한다 (mission ``reopen`` ·
+                service ``claim``) — 남의 기록이면 갱신이 거절돼 ``GRAPH_006`` 이다.
             announced: 호출자가 이 run 의 기록을 원자적 생성 (``RunStore.create``) 으로 먼저
                 만들어 둔 제출 — control plane 의 mission 제출. 그 기록을 자기 것으로 보고 갱신한다.
             lease_until: 이미 저장소에 쓴 임대 만료 (``claim``) — 재개 전용. 없으면 기록이 쓴다.
@@ -476,7 +511,18 @@ class RunManager:
 
         run.status = status
         # 거절은 임대를 잃은 뒤의 반납뿐이다 — 기록은 새 소유자의 것이라 쓰지 않는 것이 맞다
-        self.publish(run)
+        if self.publish(run):
+            # 끝난 run 의 임대를 놓는다 — 소유자일 때만이라 새 소유자의 임대는 건드리지 않는다.
+            # 놓지 못해도 끝난 run 이다: 재개는 끝난 run 의 임대를 보지 않고, 임대는 만료로 풀린다
+            try:
+                self.let_go(run_id)
+            except AaestroError as err:
+                log.warning(
+                    "finished run lease not released",
+                    graph=run.graph,
+                    run_id=run_id,
+                    error_code=err.code,
+                )
         telemetry = self._telemetry(run)
         if telemetry is not None:
             telemetry.run_finished(status=status.value)
@@ -630,36 +676,14 @@ class ServiceRunner:
         Returns:
             The same handle, with terminal status recorded.
         """
-        loop = asyncio.current_task()
-        if self._lease is None or self._store is None or loop is None:
-            return await self._loop(
-                handle, initial_state, max_iterations, is_idle, pending_boundary
-            )
-        stopped_by_lease = False
 
-        def stop() -> None:
-            nonlocal stopped_by_lease
-            stopped_by_lease = True
-            loop.cancel()
+        def work() -> Awaitable[RunHandle]:
+            return self._loop(handle, initial_state, max_iterations, is_idle, pending_boundary)
 
-        holder = asyncio.create_task(
-            hold_lease(self._store, self._lease, handle, stop),
-            name=f"run-lease:{handle.run_id}",
-        )
-        try:
-            return await self._loop(
-                handle, initial_state, max_iterations, is_idle, pending_boundary
-            )
-        except asyncio.CancelledError:
-            # 임대 갱신이 건 취소만 삼킨다 — 바깥의 취소 (drain · 종료) 가 겹쳤으면 그대로 올린다
-            if not stopped_by_lease or loop.cancelling() > 1:
-                raise
-            loop.uncancel()
-            return handle
-        finally:
-            holder.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await holder
+        if self._lease is None or self._store is None:
+            return await work()
+        await leased(self._store, self._lease, handle, work)
+        return handle
 
     async def _loop(
         self,

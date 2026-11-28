@@ -29,13 +29,14 @@ from aaestro.orchestrator.run import (
     ServiceRunner,
     hold_lease,
     iteration_thread,
+    leased,
     run_generations,
     run_refused,
 )
 from aaestro.orchestrator.state import resolve_graph_state, validate_state
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Mapping
+    from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 
     from langchain_core.runnables import RunnableConfig
     from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -140,6 +141,7 @@ class RunSubmitter:
         *,
         run_id: str | None = None,
         announced: bool = False,
+        lease_until: float = 0.0,
     ) -> RunResult:
         """Run a mission graph to completion.
 
@@ -151,6 +153,7 @@ class RunSubmitter:
             run_id: Explicit run id; generated when omitted.
             announced: 호출자가 원자적 생성 (``RunStore.create``) 으로 먼저 만들어 둔 기록
                 (control plane) — 그 기록을 자기 것으로 보고 갱신한다.
+            lease_until: 그 기록에 이미 쓴 임대 만료 — 핸들이 저장소와 같은 정지 시각을 잰다.
 
         Returns:
             The run result — ``ok`` is False when the run failed.
@@ -174,7 +177,10 @@ class RunSubmitter:
         compactor = self._state_compactor(topology)
 
         handle = self.manager.acquire(
-            topology, run_id=run_id or f"run-{uuid4().hex[:12]}", announced=announced
+            topology,
+            run_id=run_id or f"run-{uuid4().hex[:12]}",
+            announced=announced,
+            lease_until=lease_until,
         )
         return await self._drive(topology, handle, initial_state, compactor)
 
@@ -214,7 +220,9 @@ class RunSubmitter:
         schema = resolve_graph_state(topology.spec.state, graph=topology.metadata.name)
         validate_state(schema, dict(initial_state))
 
-    async def resume(self, topology: GraphTopology, run_id: str) -> RunResult:
+    async def resume(
+        self, topology: GraphTopology, run_id: str, *, lease_until: float = 0.0
+    ) -> RunResult:
         """Continue a run from its last checkpoint.
 
         마지막 checkpoint 에서 run 을 이어갑니다. 완료된 노드는 다시 돌지 않고 실패한
@@ -222,10 +230,21 @@ class RunSubmitter:
         지점에서 잇습니다. 입력을 넘기면 채널은 남지만 START 부터 새 실행이 시작돼, 앞선
         노드의 부수효과가 두 번 일어납니다 (#309).
 
+        **전제**: 기록의 임대를 먼저 이 manager 의 소유로 가져와야 한다 — ``RunStore.reopen``
+        (control plane 은 ``RunService.resume`` 이 한다, #723). 가져오지 않은 남의 기록이면 임대를
+        미루지 못해 ``GRAPH_006`` 이다. 이어갈 지점을 읽는 동안에도 임대를 미루고, 구동을 띄우기
+        전에 실패하면 임대를 놓는다.
+
+        Args:
+            topology: The mission topology.
+            run_id: The run to continue.
+            lease_until: The lease expiry ``reopen`` already wrote — 핸들이 같은 값을 잰다.
+
         Raises:
             AaestroError: STORAGE/``STOR_002`` when no checkpointer is attached or
                 the run left no checkpoint to continue from.
-            AaestroError: GRAPH/``GRAPH_006`` if the run is still running (HTTP 409).
+            AaestroError: GRAPH/``GRAPH_006`` if the run is still running here or its lease
+                is not this process's (HTTP 409).
         """
         if self.checkpointer is None:
             raise AaestroError(
@@ -244,21 +263,62 @@ class RunSubmitter:
                 details={"run_id": run_id, "status": str(live.status)},
             )
 
-        if await self.checkpointer.aget_tuple(_thread_config(run_id)) is None:
-            # 이어갈 지점이 없는데 입력 없이 들어가면 LangGraph 는 아무것도 하지 않고 끝난다 —
-            # "재개 성공" 으로 보이는 빈 결과를 내느니 거부한다
-            raise AaestroError(
-                category=ErrorCategory.STORAGE,
-                code=ErrorCode.STOR_002,
-                message="run has no checkpoint to resume from",
-                details={"run_id": run_id, "graph": topology.metadata.name},
+        held = RunHandle(
+            run_id=run_id, graph=topology.metadata.name, mode=topology.mode, lease_until=lease_until
+        )
+        try:
+            async with self._lease_held(held):
+                checkpoint = await self.checkpointer.aget_tuple(_thread_config(run_id))
+            if held.lease_lost:
+                # 읽는 사이 임대를 잃었다 — 다른 프로세스가 가져갔을 수 있다
+                raise run_refused(run_id, topology.metadata.name)
+            if checkpoint is None:
+                # 이어갈 지점이 없는데 입력 없이 들어가면 LangGraph 는 아무것도 하지 않고 끝난다 —
+                # "재개 성공" 으로 보이는 빈 결과를 내느니 거부한다
+                raise AaestroError(
+                    category=ErrorCategory.STORAGE,
+                    code=ErrorCode.STOR_002,
+                    message="run has no checkpoint to resume from",
+                    details={"run_id": run_id, "graph": topology.metadata.name},
+                )
+            compactor = self._state_compactor(topology)
+            # 이 프로세스가 끝까지 지켜본 run(실패한 run 을 UI 에서 재개)도 이어갈 수 있어야 한다 —
+            # 재시작한 프로세스만 재개할 수 있으면 재개 버튼이 같은 프로세스에서 409 로 막힌다
+            handle = self.manager.acquire(
+                topology, run_id=run_id, resuming=True, lease_until=held.lease_until
             )
-
-        compactor = self._state_compactor(topology)
-        # 이 프로세스가 끝까지 지켜본 run(실패한 run 을 UI 에서 재개)도 이어갈 수 있어야 한다 —
-        # 재시작한 프로세스만 재개할 수 있으면 재개 버튼이 같은 프로세스에서 409 로 막힌다
-        handle = self.manager.acquire(topology, run_id=run_id, resuming=True)
+        except BaseException:
+            # 가져온 임대를 쥔 채 실패하면 다음 재개가 임대 기간 내내 409 다
+            self._let_go(topology, run_id)
+            raise
         return await self._drive(topology, handle, None, compactor)
+
+    @contextlib.asynccontextmanager
+    async def _lease_held(self, handle: RunHandle) -> AsyncIterator[None]:
+        """구동을 띄우기 전의 준비 동안 임대를 미룬다 — 잃으면 ``handle.lease_lost`` 가 선다."""
+        store = self.manager.store
+        if store is None:
+            yield
+            return
+        holder = asyncio.create_task(hold_lease(store, self.manager.lease, handle, lambda: None))
+        try:
+            yield
+        finally:
+            holder.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await holder
+
+    def _let_go(self, topology: GraphTopology, run_id: str) -> None:
+        """가져온 임대를 놓는다 — 놓지 못해도 실패의 원인을 가리지 않는다 (만료로 풀린다)."""
+        try:
+            self.manager.let_go(run_id)
+        except AaestroError as err:
+            log.warning(
+                "claimed run lease not released",
+                graph=topology.metadata.name,
+                run_id=run_id,
+                error_code=err.code,
+            )
 
     async def start_service(
         self,
@@ -448,16 +508,7 @@ class RunSubmitter:
                 )
             except BaseException:
                 # 가져온 임대를 쥔 채 실패하면 다음 재개가 임대 기간 내내 409 다
-                try:
-                    self.manager.let_go(run_id)
-                except AaestroError as err:
-                    # 놓지 못한 것이 재개 실패의 원인을 가리지 않게 — 임대는 만료로 풀린다
-                    log.warning(
-                        "claimed run lease not released",
-                        graph=topology.metadata.name,
-                        run_id=run_id,
-                        error_code=err.code,
-                    )
+                self._let_go(topology, run_id)
                 raise
         else:
             resumed = await self._continue(
@@ -487,22 +538,11 @@ class RunSubmitter:
         다른 재개가 끼지 못하게. 그 사이 임대를 잃으면 띄우지 않고 ``GRAPH_006`` 이다.
         """
         orphaned = run_id == previous.run_id
-        store = self.manager.store
-        holder = (
-            asyncio.create_task(hold_lease(store, self.manager.lease, previous, lambda: None))
-            if orphaned and store is not None
-            else None
-        )
-        try:
+        async with self._lease_held(previous) if orphaned else contextlib.nullcontext():
             # checkpoint 가 정본이다 — 이 프로세스가 시작하지 않은 run 은 핸들에 state 가 없고
             # (기록만 복원된다), 빈 state 로 시작하면 누적이 사라지거나 필수 필드가 없어
             # GRAPH_003 으로 거부된다 (#310)
             state, pending_boundary, next_iteration = await self._resume_point(topology, previous)
-        finally:
-            if holder is not None:
-                holder.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await holder
         if previous.lease_lost:
             raise run_refused(run_id, topology.metadata.name)
         return await self.start_service(
@@ -633,7 +673,22 @@ class RunSubmitter:
             payload = (
                 None if initial_state is None else seed_state(initial_state, run_id=handle.run_id)
             )
-            final = await graph.ainvoke(payload, config=_thread_config(handle.run_id))
+            config = _thread_config(handle.run_id)
+            store = self.manager.store
+            if store is None:
+                final = await graph.ainvoke(payload, config=config)
+            else:
+                # 구동하는 동안 임대를 미룬다 — 소유자가 죽으면 다른 프로세스가 재개한다 (#723)
+                held = await leased(
+                    store,
+                    self.manager.lease,
+                    handle,
+                    lambda: graph.ainvoke(payload, config=config),
+                )
+                if held is None:
+                    # 임대를 잃었다 — 기록은 새 소유자의 것이라 쓰지 않는다 (release 가 거절한다)
+                    raise run_refused(handle.run_id, topology.metadata.name)
+                final = held
         except AaestroError as err:
             # GRAPH_003 은 어느 edge 의 조건인지가 원인 추적의 전부다 (#412) — 값은 노드 id 다
             edge = (

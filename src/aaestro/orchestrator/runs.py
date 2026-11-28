@@ -138,11 +138,11 @@ class RunService:
             # 남기기 전이라도 **여기서** 먼저 쓴다 (read-your-writes). 기록이 이미 있으면
             # (끝난 run 포함) checkpoint thread 가 겹친다 — 없을 때만 만드는 한 연산이라
             # 다른 프로세스의 같은 id 제출과 경합해도 하나만 이긴다 (#711)
-            self._announce(run_id, topology, model_overrides=overrides, create=True)
+            until = self._announce(run_id, topology, model_overrides=overrides, create=True)
             self._drive(
                 run_id,
                 lambda: self.submitter.submit(
-                    topology, initial_state, run_id=run_id, announced=True
+                    topology, initial_state, run_id=run_id, announced=True, lease_until=until
                 ),
             )
         bound.info("run submitted", deployment_id=deployment.deployment_id)
@@ -164,9 +164,20 @@ class RunService:
             # 재개된 run 은 새 id 다 — 그것을 다시 재개할 때도 같은 모델이어야 한다
             self._pin_models(resumed.run_id, topology, record.model_overrides)
         else:
+            # 재개 시작은 임대를 가져오는 조건부 갱신이다 — 끝난 run 이거나 소유자의 임대가 만료된
+            # run 만 가져오고, 동시에 재개해도 가져온 쪽만 구동한다. 같은 checkpoint thread 를
+            # 둘이 이어 쓰면 뒤엉킨다 (#723)
+            lease = self.submitter.manager.lease
+            until = lease.until()
+            if not self.store.reopen(run_id, lease.owner, until, now=lease.clock()):
+                raise AaestroError(
+                    category=ErrorCategory.GRAPH,
+                    code=ErrorCode.GRAPH_006,
+                    message="run is still running under a live lease",
+                    details={"run_id": run_id, "graph": record.graph},
+                )
             self.results.pop(run_id, None)
-            self._announce(run_id, topology)
-            self._drive(run_id, lambda: self.submitter.resume(topology, run_id))
+            self._drive(run_id, lambda: self.submitter.resume(topology, run_id, lease_until=until))
         log.info("run resumed", graph=record.graph, run_id=run_id, mode=record.mode)
         return self._record(run_id, topology)
 
@@ -258,9 +269,14 @@ class RunService:
         *,
         model_overrides: Mapping[str, Mapping[str, Any]] | None = None,
         create: bool = False,
-    ) -> None:
+    ) -> float:
+        """run 기록을 이 프로세스의 소유 · 임대로 남기고, 쓴 임대 만료를 돌려준다."""
         # 비워 보내도 저장소가 기존 override 를 보존한다 — resume 의 재공지가 지우지 않는다
         write = self.store.create if create else self.store.upsert
+        # 새 기록은 처음부터 이 프로세스의 임대를 쥔다 — 소유자 없는 running 은 만료로 보여
+        # 드라이버가 뜨기 전에 다른 프로세스의 재개가 가져갈 수 있다 (#723)
+        lease = self.submitter.manager.lease
+        until = lease.until()
         written = write(
             RunRecord(
                 run_id=run_id,
@@ -269,6 +285,8 @@ class RunService:
                 status=str(RunStatus.RUNNING),
                 updated_at=_now(),
                 model_overrides={k: dict(v) for k, v in (model_overrides or {}).items()},
+                owner=lease.owner,
+                lease_until=until,
                 # 저장소는 처음 기록에서만 받는다 — resume 의 재공지가 현재 그래프로 덮지 않는다
                 **participation(topology),
             )
@@ -277,6 +295,7 @@ class RunService:
             # 새 제출이면 같은 id 의 기록이 이미 있고, 재공지면 다른 프로세스가 소유한 run
             # 기록이다 (같은 id 의 service run) — 202 를 내지 않는다
             raise run_refused(run_id, topology.metadata.name)
+        return until
 
     def _pin_models(
         self,
@@ -296,6 +315,8 @@ class RunService:
             RunRecord(
                 **{
                     **record.__dict__,
+                    # 이 프로세스의 이름으로 쓴다 — 기록의 소유자를 실으면 남의 기록도 통과한다
+                    "owner": self.submitter.manager.lease.owner,
                     "model_overrides": {k: dict(v) for k, v in model_overrides.items()},
                 }
             )
@@ -328,7 +349,17 @@ class RunService:
         if record is None or record.status != str(RunStatus.RUNNING):
             return
         failed = self.store.upsert(
-            RunRecord(**{**record.__dict__, "status": str(RunStatus.FAILED), "updated_at": _now()})
+            RunRecord(
+                **{
+                    **record.__dict__,
+                    "status": str(RunStatus.FAILED),
+                    # 이 프로세스가 소유자일 때만 쓴다 — 기록의 소유자를 그대로 실으면 임대를
+                    # 가져간 새 소유자의 run 을 failed 로 덮고, 그 끝난 기록을 또 다른 재개가
+                    # 가져간다 (#723)
+                    "owner": self.submitter.manager.lease.owner,
+                    "updated_at": _now(),
+                }
+            )
         )
         if not failed:
             # 정리 경로다 — 다른 소유자의 기록이면 그쪽 상태가 맞다
@@ -355,8 +386,11 @@ class RunService:
             except asyncio.CancelledError:
                 raise
             except Exception as err:  # noqa: BLE001 — 드라이버의 예외는 여기서 끝난다 (05 Fail Gracefully)
-                # 제출 시점에 쓴 running 기록을 그대로 두면 영원히 "진행 중" 으로 보인다
-                self._fail(run_id)
+                # 제출 시점에 쓴 running 기록을 그대로 두면 영원히 "진행 중" 으로 보인다. 상태 충돌
+                # (GRAPH_006 — 임대를 잃었거나 여기서 아직 도는 run) 은 그 기록이 이 드라이버의 것이
+                # 아니라는 뜻이라 건드리지 않는다
+                if not (isinstance(err, AaestroError) and err.code == ErrorCode.GRAPH_006):
+                    self._fail(run_id)
                 log.error("run driver failed", run_id=run_id, exc_info=err)
                 raise
             finally:
