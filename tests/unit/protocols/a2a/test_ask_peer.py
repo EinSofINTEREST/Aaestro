@@ -337,7 +337,7 @@ async def test_a_delegation_the_peer_ended_canceled_reaches_the_model_as_an_erro
     from aaestro.core.agent import ModelUsage, TaskStatus
     from aaestro.protocols.a2a.allowlist import Allowlist, Edge
     from aaestro.protocols.a2a.client import A2AClient
-    from tests.fixtures.builders import make_task
+    from tests.fixtures.builders import async_render, make_task
     from tests.fixtures.fake_model import FakeModel, text
 
     class CanceledPeer:
@@ -355,7 +355,7 @@ async def test_a_delegation_the_peer_ended_canceled_reaches_the_model_as_an_erro
         agent="researcher",
         model=model,
         tools=AgentToolRegistry(agent="researcher", peers=client),
-        render=lambda task: "prompt",
+        render=async_render(lambda task: "prompt"),
     )
 
     result = await executor.execute(make_task())
