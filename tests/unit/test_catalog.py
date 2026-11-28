@@ -226,6 +226,7 @@ def test_a_module_missing_from_the_listing_is_rejected_by_single_lookup(workspac
         catalog.module(module_type, "bad", "0.1.0")
 
     assert excinfo.value.code == problem.code
+    assert excinfo.value.message == problem.message
 
 
 def test_module_types_are_the_read_only_ones():
