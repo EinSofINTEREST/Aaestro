@@ -16,8 +16,8 @@ import pytest
 import yaml
 from structlog.testing import capture_logs
 
-from aaestro.core.errors import AaestroError
-from aaestro.modules.promptset import LoadedPromptset, PromptsetLoader
+from aaestro.core.errors import AaestroError, ErrorCode
+from aaestro.modules.promptset import LoadedPromptset, PromptsetLoader, _check_source
 from aaestro.modules.registry import ModuleRegistry
 
 NOTICE = re.compile(
@@ -1278,3 +1278,58 @@ def test_a_non_system_template_may_require_variables(tmp_path):
     promptset = promptset_of(tmp_path, "{{ query }}", {"query": STRING}, name="t")
 
     assert "t" in promptset.template_names
+
+
+# --- 템플릿 본문 탓의 파싱 · 컴파일 실패는 부류째 typed 에러다 (#732) ------------------------
+
+STATIC_BLOCKS = "{% for i in x %}" * 21 + "{% endfor %}" * 21
+UNCOMPILABLE = {
+    "nesting": "{{ " + "(" * 80 + "1" + ")" * 80 + " }}",
+    "static-blocks": STATIC_BLOCKS,
+    "big-int": "{{ " + "9" * 5000 + " }}",
+}
+
+
+def test_static_block_overflow_is_mod_004_at_render(tmp_path):
+    """파싱은 통과하고 컴파일이 파이썬 한도에서 실패한다."""
+    promptset = promptset_of(tmp_path, STATIC_BLOCKS, {"x": ARRAY})
+
+    with pytest.raises(AaestroError) as exc_info:
+        promptset.render("t", x=[1])
+
+    err = exc_info.value
+    assert (err.category, err.code) == ("module", "MOD_004")
+    assert err.__cause__ is None
+
+
+def test_static_block_overflow_is_not_blamed_on_truncated_input(tmp_path):
+    """입력이 잘린 렌더에서도 컴파일 실패는 본문 탓이다 — VAL_002 (입력 탓) 가 아니다."""
+    promptset = promptset_of(tmp_path, STATIC_BLOCKS, {"q": STRING})
+
+    with pytest.raises(AaestroError) as exc_info:
+        promptset.render("t", q="x" * 10_000_000)
+
+    assert exc_info.value.code == "MOD_004"
+
+
+@pytest.mark.parametrize("name", ["nesting", "big-int"])
+@pytest.mark.parametrize("code", ["MOD_003", "MOD_004"])
+def test_unparseable_template_gets_the_callers_code(name, code):
+    """로드는 MOD_003, 렌더는 MOD_004 — 같은 검사가 부류째 가둔다."""
+    with pytest.raises(AaestroError) as exc_info:
+        _check_source(UNCOMPILABLE[name], "promptsets/p@1.0.0", "t", ErrorCode(code))
+
+    err = exc_info.value
+    assert (err.category, err.code) == ("module", code)
+    assert err.__cause__ is None
+    assert "(((" not in repr(err.details) and "9999" not in repr(err.details)
+
+
+@pytest.mark.parametrize("name", ["nesting", "big-int"])
+def test_unparseable_template_is_mod_003_at_load(tmp_path, name):
+    with pytest.raises(AaestroError) as exc_info:
+        promptset_of(tmp_path, UNCOMPILABLE[name], {})
+
+    err = exc_info.value
+    assert (err.category, err.code) == ("module", "MOD_003")
+    assert err.__cause__ is None
