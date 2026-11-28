@@ -157,6 +157,28 @@ async def test_overwriting_a_key_frees_its_old_size(tmp_path):
     assert exc_info.value.code == ErrorCode.ART_002
 
 
+async def test_an_overwrite_that_grows_past_the_limit_is_refused(tmp_path):
+    """옛 크기는 한 번만 뺀다 — 80 → 101 은 순증 21 로 한도 100 을 넘는다."""
+    access = scoped(tmp_path, quotas={ArtifactScope.LOCAL: 100})
+    await access.put("k", b"x" * 80)
+
+    with pytest.raises(AaestroError) as exc_info:
+        await access.put("k", b"y" * 101)
+
+    assert exc_info.value.code == ErrorCode.ART_002
+
+
+async def test_a_file_in_the_key_path_is_a_storage_error_under_quota(tmp_path):
+    """quota 스코프에서도 경로 조각이 파일이면 날 OSError 가 아니라 STOR_003 이다."""
+    access = scoped(tmp_path, quotas={ArtifactScope.LOCAL: 100})
+    await access.put("a", b"x")
+
+    with pytest.raises(AaestroError) as exc_info:
+        await access.put("a/b", b"y")
+
+    assert exc_info.value.code == ErrorCode.STOR_003
+
+
 async def test_leftover_temp_files_do_not_count_toward_quota(tmp_path):
     """쓰다 죽은 프로세스의 `.tmp-` 잔재가 한도를 갉지 않는다."""
     access = scoped(tmp_path, quotas={ArtifactScope.LOCAL: 100})
