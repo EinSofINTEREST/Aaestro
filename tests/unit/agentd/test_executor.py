@@ -32,7 +32,7 @@ from aaestro.core.events import DoneEvent, ErrorEvent, ToolCallEvent, ToolResult
 from aaestro.protocols.a2a.errors import task_rejected
 from aaestro.protocols.mcp.errors import tool_failed
 from aaestro.protocols.mcp.session import ToolResult as McpToolResult
-from tests.fixtures.builders import make_task
+from tests.fixtures.builders import async_render, make_task
 from tests.fixtures.fake_model import FakeModel, FakeTools, calls, text
 from tests.fixtures.waiting import until
 
@@ -47,7 +47,7 @@ def make_executor(
         agent="researcher",
         model=model,
         tools=registry,
-        render=lambda task: f"prompt:{task.template_name}",
+        render=async_render(lambda task: f"prompt:{task.template_name}"),
         config=ExecutorConfig(**config) if config else None,
         services=ExecutorServices(on_cleanup=on_cleanup),
     )
@@ -178,7 +178,7 @@ async def test_adapter_truncation_with_malformed_tool_call_reaches_the_executor(
         agent="researcher",
         model=adapter,
         tools=tools,
-        render=lambda task: "prompt",
+        render=async_render(lambda task: "prompt"),
     )
 
     with capture_logs() as logs:
@@ -425,7 +425,7 @@ async def test_unregistered_tool_returns_to_the_model():
         agent="researcher",
         model=model,
         tools=AgentToolRegistry(agent="researcher"),
-        render=lambda task: "prompt",
+        render=async_render(lambda task: "prompt"),
     )
 
     result = await executor.execute(make_task())
@@ -1299,7 +1299,7 @@ async def test_a_streamed_timeout_is_logged():
         agent="researcher",
         model=Stuck(),
         tools=FakeTools(),
-        render=lambda task: "prompt",
+        render=async_render(lambda task: "prompt"),
     )
 
     with capture_logs() as logs:
@@ -1315,7 +1315,11 @@ async def test_a_streamed_timeout_is_logged():
 async def test_the_system_instruction_is_sent_apart_from_the_task():
     model = FakeModel([text("done")])
     executor = Executor(
-        agent="a", model=model, tools=FakeTools(), render=lambda t: "task", system="rules"
+        agent="a",
+        model=model,
+        tools=FakeTools(),
+        render=async_render(lambda t: "task"),
+        system="rules",
     )
 
     await executor.execute(make_task())
@@ -1530,7 +1534,7 @@ async def test_only_the_recall_step_fails_as_mem_004_in_both_paths():
         agent="researcher",
         model=FakeModel([text("done")]),
         tools=FakeTools(),
-        render=lambda task: "prompt",
+        render=async_render(lambda task: "prompt"),
         services=ExecutorServices(recall=failing_recall),
     )
 
@@ -1581,7 +1585,7 @@ async def _recall_cancel_cleanups(*, streaming: bool) -> int:
         agent="researcher",
         model=FakeModel([text("done")]),
         tools=FakeTools(),
-        render=lambda task: "prompt",
+        render=async_render(lambda task: "prompt"),
         services=ExecutorServices(recall=hanging_recall, on_cleanup=cleanup),
     )
 

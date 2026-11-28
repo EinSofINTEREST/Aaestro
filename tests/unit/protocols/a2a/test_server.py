@@ -37,7 +37,7 @@ from aaestro.protocols.a2a.server import (
     read_task,
 )
 from aaestro.protocols.a2a.tool import delegation_id
-from tests.fixtures.builders import make_task
+from tests.fixtures.builders import async_render, make_task
 from tests.fixtures.fake_model import FakeModel, FakeTools, calls, text
 from tests.unit.protocols.a2a.test_sdk import (
     BASE_URL,
@@ -256,7 +256,7 @@ async def test_a_delegated_task_stops_when_the_caller_gives_up():
         agent="planner",
         model=model,
         tools=FakeTools().script("slow", delay=5),
-        render=lambda task: "prompt",
+        render=async_render(lambda task: "prompt"),
     )
 
     class DetachedPeer:
@@ -460,7 +460,7 @@ def executor_answering(*answers: str) -> tuple[Executor, FakeModel]:
         agent=CALLEE,
         model=model,
         tools=FakeTools(),
-        render=lambda task: str(task.input),
+        render=async_render(lambda task: str(task.input)),
     )
     return executor, model
 

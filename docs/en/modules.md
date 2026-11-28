@@ -326,8 +326,27 @@ Answer it.
 - Omission empties values only; the template text around them stays.
 - Only `*` and `**` are refused before computing. Other operations — widths (`center`, `ljust`,
   `format`), `join`, `replace('', …)`, accumulating concatenation, nested loops with no body —
-  still spend memory and CPU on intermediate results. Templates do not use a value as a width,
-  a separator or a repeat count (Promptset rule "No Logic in Templates").
+  are not bounded by the renderer itself. Templates do not use a value as a width,
+  a separator or a repeat count (Promptset rule "No Logic in Templates"). agentd therefore renders
+  each template in a child process of its own (`agentd/render.py`): the child may use 64 MiB of
+  address space beyond what it started with (`RENDER_MEMORY_HEADROOM`) and the parent stops it
+  after 2 seconds of wall time (`RENDER_TIMEOUT_S`). Either limit fails the task with `VAL_002`
+  (`details.kind: memory | time`) while the daemon keeps answering health checks, cancellations
+  and other tasks. A child that dies without replying, or replies beyond the size limit, is
+  `INTERNAL_001`; a task deadline or cancellation stops the child and stays `TO_001` /
+  canceled. The child receives the task input over a pipe only after its limits are set, and
+  serialising, starting, sending and rendering share one deadline. A serialised input larger than
+  `RENDER_INPUT_MAX_BYTES` (16 × the render limit, about 4 MB) is refused before any child starts
+  with `VAL_002` (`details.kind: input`, size and limit only; the size is the bytes written up to
+  the point the limit was crossed, or the character count of a string longer than the limit —
+  either way a lower bound of the real size) — a transfer limit, and the one exception to "values
+  are cut, not refused". Serialising stops at that limit, and a single string with more characters
+  than the limit is refused before serialising: the C pickler builds a string's whole UTF-8 buffer
+  before handing it over, so transient memory is at most 4 × the limit per string plus the limit. It runs in a thread,
+  but the C pickler keeps the GIL while it writes built-in types, so the event loop stands still
+  meanwhile — for at most the time it takes to produce the limit. agentd starts the fork server
+  before the first render, outside any render deadline. The task prompt and the `system` template both go this way. This isolates
+  resources, not permissions — the child runs as the same user on the same filesystem.
 
 These rules belong to the framework's renderer. Published modules are immutable and were not
 changed, but the prompt they effectively produce did change without a module version bump:

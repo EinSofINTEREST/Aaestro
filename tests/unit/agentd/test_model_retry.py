@@ -22,7 +22,7 @@ from aaestro.core.errors import (
     ErrorCategory,
     ErrorCode,
 )
-from tests.fixtures.builders import make_task
+from tests.fixtures.builders import async_render, make_task
 from tests.fixtures.fake_model import FakeModel, FakeTools, text
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -56,7 +56,7 @@ def executor(responses, waits: list[float], *, policies=MODEL_RETRY_POLICIES) ->
         agent="researcher",
         model=FakeModel(responses),
         tools=FakeTools(),
-        render=lambda _task: "prompt",
+        render=async_render(lambda _task: "prompt"),
         config=ExecutorConfig(retry_policies=policies, retry_sleep=sleep),
     )
 

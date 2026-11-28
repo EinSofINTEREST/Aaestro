@@ -10,7 +10,7 @@ from aaestro.core.agent import TaskConfig, TraceContext
 from aaestro.core.markers import NOTICE_PREFIX
 from aaestro.modules.boundary import BOUNDARY_NOTICE
 from aaestro.modules.promptset import PromptsetLoader
-from tests.fixtures.builders import make_task
+from tests.fixtures.builders import async_render, make_task
 from tests.fixtures.fake_model import FakeModel, FakeTools, calls, text
 from tests.fixtures.registry import fixture_registry
 
@@ -28,7 +28,7 @@ def _run(task, *, tools=None, responses=None, system="rules", clock=lambda: NOW,
         agent="researcher",
         model=model,
         tools=tools or FakeTools(),
-        render=render or (lambda t: "rendered"),
+        render=async_render(render or (lambda t: "rendered")),
         config=ExecutorConfig(max_turns=7),
         services=ExecutorServices(clock=clock),
         system=system,

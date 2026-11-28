@@ -32,7 +32,7 @@ from aaestro.core.manifest import (
     RetryDeclaration,
 )
 from aaestro.observability.metrics import Metrics
-from tests.fixtures.builders import make_task
+from tests.fixtures.builders import async_render, make_task
 from tests.fixtures.fake_model import FakeModel, FakeTools, text
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -115,7 +115,7 @@ class Rig:
             agent=AGENT,
             model=self.chains.for_config(config),
             tools=FakeTools(),
-            render=lambda _task: "prompt",
+            render=async_render(lambda _task: "prompt"),
             config=ExecutorConfig(retry_sleep=sleep),
             services=ExecutorServices(
                 chains=self.chains.for_config,
@@ -419,7 +419,9 @@ async def test_an_unbound_provider_in_the_task_declaration_fails_that_task():
 async def test_a_declaration_without_a_factory_is_not_silently_ignored():
     """팩토리가 없으면 기본 체인으로 돌되 WARN 을 남긴다 — override 가 왜 안 먹는지 보이게."""
     model = FakeModel([text("default")])
-    executor = Executor(agent=AGENT, model=model, tools=FakeTools(), render=lambda _t: "p")
+    executor = Executor(
+        agent=AGENT, model=model, tools=FakeTools(), render=async_render(lambda _t: "p")
+    )
 
     with capture_logs() as logs:
         result = await executor.execute(make_task(config=TaskConfig(model=declared())))

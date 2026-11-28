@@ -345,7 +345,7 @@ class ModuleBinding:
     """
 
     tools: ToolRegistry
-    render: Callable[[TaskRequest], str]
+    render: Callable[[TaskRequest], Awaitable[str]]
     tool_schemas: tuple[Any, ...] = ()
     output_keys: Callable[[TaskRequest], Sequence[str]] | None = None
     system: str = ""
@@ -366,7 +366,7 @@ class Executor:
         agent: str,
         model: Model | ModelChain,
         tools: ToolRegistry,
-        render: Callable[[TaskRequest], str],
+        render: Callable[[TaskRequest], Awaitable[str]],
         tool_schemas: Sequence[Any] = (),
         config: ExecutorConfig | None = None,
         services: ExecutorServices | None = None,
@@ -726,7 +726,7 @@ class Executor:
         """
         today = self._services.clock().astimezone(UTC).date().isoformat()
         head = TASK_CONTEXT.format(agent=self._agent, date=today, turns=self._max_turns(task))
-        prompt = binding.render(task)
+        prompt = await binding.render(task)
         if self._services.recall is None:
             return UserTurn(parts=(head, prompt))
 

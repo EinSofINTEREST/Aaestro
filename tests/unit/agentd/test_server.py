@@ -37,7 +37,7 @@ from aaestro.core.events import (
     ToolResultEvent,
 )
 from aaestro.core.markers import STEER_HEADER
-from tests.fixtures.builders import make_task
+from tests.fixtures.builders import async_render, make_task
 from tests.fixtures.fake_model import FakeModel, FakeTools, calls, text
 from tests.fixtures.waiting import reached, spin, until
 
@@ -488,7 +488,9 @@ async def test_a_steer_posted_mid_task_reaches_the_model(route):
     """
     model = FakeModel([calls("search"), text("done")])
     tools = SteeringTools()
-    executor = Executor(agent="researcher", model=model, tools=tools, render=lambda task: "prompt")
+    executor = Executor(
+        agent="researcher", model=model, tools=tools, render=async_render(lambda task: "prompt")
+    )
     app = create_app(AgentRuntime(agent="researcher", executor=executor), token=TOKEN)
     answers: list[tuple[int, dict]] = []
 
@@ -516,7 +518,9 @@ async def test_a_refused_steer_keeps_its_code_over_http():
     """상한 초과는 400(VAL_002) — 실행기의 거절이 그대로 나간다."""
     model = FakeModel([calls("search"), text("done")])
     tools = SteeringTools()
-    executor = Executor(agent="researcher", model=model, tools=tools, render=lambda task: "prompt")
+    executor = Executor(
+        agent="researcher", model=model, tools=tools, render=async_render(lambda task: "prompt")
+    )
     app = create_app(AgentRuntime(agent="researcher", executor=executor), token=TOKEN)
     answers: list[tuple[int, str]] = []
 
@@ -934,7 +938,7 @@ async def test_a_retry_right_after_the_last_caller_left_runs_instead_of_joining_
         agent="researcher",
         model=FakeModel([calls("post"), calls("post"), text("done")]),
         tools=tools,
-        render=lambda task: "prompt",
+        render=async_render(lambda task: "prompt"),
     )
     runtime = AgentRuntime(agent="researcher", executor=executor)
     task = make_task(task_id="t-retry")
@@ -1042,7 +1046,7 @@ async def test_the_cancel_endpoint_stops_a_streaming_task_and_ends_the_stream():
         agent="researcher",
         model=model,
         tools=tools,
-        render=lambda task: "prompt",
+        render=async_render(lambda task: "prompt"),
         services=ExecutorServices(on_cleanup=lambda: cleanups.append(None)),
     )
     app = create_app(AgentRuntime(agent="researcher", executor=executor), token=TOKEN)

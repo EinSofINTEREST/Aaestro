@@ -14,7 +14,7 @@ import pytest
 from aaestro.agentd.executor import Executor, ExecutorServices
 from aaestro.core.agent import TaskStatus
 from aaestro.core.errors import ErrorCode
-from tests.fixtures.builders import make_task
+from tests.fixtures.builders import async_render, make_task
 from tests.fixtures.fake_model import FakeModel, FakeTools, text
 
 
@@ -24,7 +24,7 @@ async def run_with(content: str, keys=(), *, node_id: str | None = "planner"):
         agent="planner",
         model=FakeModel([text(content)]),
         tools=FakeTools(),
-        render=lambda _task: "prompt",
+        render=async_render(lambda _task: "prompt"),
         services=ExecutorServices(output_keys=(lambda _task: keys) if keys else None),
     )
     return await executor.execute(make_task(node_id=node_id))
@@ -160,7 +160,7 @@ async def test_the_same_agent_yields_different_keys_per_node():
             agent="planner",
             model=FakeModel([text(content)]),
             tools=FakeTools(),
-            render=lambda _task: "prompt",
+            render=async_render(lambda _task: "prompt"),
             services=ExecutorServices(
                 output_keys=lambda task: per_node.get(task.template_name, ())
             ),
@@ -182,7 +182,7 @@ async def test_a_direct_request_follows_the_default_template():
         agent="planner",
         model=FakeModel([text("prose")]),
         tools=FakeTools(),
-        render=lambda _task: "prompt",
+        render=async_render(lambda _task: "prompt"),
         services=ExecutorServices(output_keys=lambda task: seen.append(task.template_name) or ()),
     )
 
@@ -275,7 +275,7 @@ async def stream_with(content: str, keys=(), *, node_id: str | None = "planner")
         agent="planner",
         model=FakeModel([text(content)]),
         tools=FakeTools(),
-        render=lambda _task: "prompt",
+        render=async_render(lambda _task: "prompt"),
         services=ExecutorServices(output_keys=(lambda _task: keys) if keys else None),
     )
     events = [event async for event in executor.stream(make_task(node_id=node_id))]

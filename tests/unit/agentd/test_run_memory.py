@@ -19,7 +19,7 @@ from aaestro.catalog import Catalog
 from aaestro.memory.client import MEMORY_RUN_HEADER, HttpMemoryAccess
 from aaestro.memory.tool import MEMORY_SEARCH_TOOL
 from aaestro.modules.registry import ModuleRegistry
-from tests.fixtures.builders import make_task
+from tests.fixtures.builders import async_render, make_task
 from tests.fixtures.fake_model import FakeModel, text
 from tests.unit.memory.test_run_header import REPO_ROOT, fact, watched
 
@@ -37,7 +37,7 @@ def executor_for(memory: HttpMemoryAccess, model: FakeModel) -> Executor:
         agent="planner",
         model=model,
         tools=AgentToolRegistry(agent="planner", memory=memory),
-        render=lambda task: f"prompt:{task.template_name}",
+        render=async_render(lambda task: f"prompt:{task.template_name}"),
     )
 
 

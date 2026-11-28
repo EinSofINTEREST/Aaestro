@@ -17,7 +17,7 @@ from aaestro.agentd.executor import Executor, ModuleBinding
 from aaestro.agentd.health import ModelHealth, agent_health
 from aaestro.core.agent import ComponentHealth, HealthState, TaskConfig
 from aaestro.core.errors import AaestroError, ErrorCategory
-from tests.fixtures.builders import make_manifest, make_task
+from tests.fixtures.builders import async_render, make_manifest, make_task
 from tests.fixtures.fake_model import FakeTools
 
 
@@ -93,7 +93,9 @@ class FailingModel:
 
 
 async def test_the_executor_records_model_failures_for_health():
-    executor = Executor(agent="a", model=FailingModel(), tools=FakeTools(), render=lambda t: "p")
+    executor = Executor(
+        agent="a", model=FailingModel(), tools=FakeTools(), render=async_render(lambda t: "p")
+    )
 
     await executor.execute(make_task())
 
@@ -123,10 +125,14 @@ def test_the_control_api_serves_the_live_health(state, expected):
 def test_health_follows_the_binding_a_reload_swapped_in():
     """리로드가 옵션 서버를 잃은 묶음으로 바꾸면 health 도 그것을 본다."""
     tools = FakeTools()
-    executor = Executor(agent="a", model=FailingModel(), tools=tools, render=lambda t: "p")
+    executor = Executor(
+        agent="a", model=FailingModel(), tools=tools, render=async_render(lambda t: "p")
+    )
     assert agent_health(executor).status is HealthState.HEALTHY
 
-    executor.rebind(ModuleBinding(tools=tools, render=lambda t: "p", degraded=("web",)))
+    executor.rebind(
+        ModuleBinding(tools=tools, render=async_render(lambda t: "p"), degraded=("web",))
+    )
 
     assert agent_health(executor).components["mcp:web"].state is HealthState.DEGRADED
 
@@ -138,7 +144,9 @@ class HangingModel:
 
 async def test_a_model_call_cut_by_the_task_deadline_degrades_the_model():
     """마감에 잘린 호출은 예외 경로를 타지 않는다 — 그래도 health 가 봐야 한다."""
-    executor = Executor(agent="a", model=HangingModel(), tools=FakeTools(), render=lambda t: "p")
+    executor = Executor(
+        agent="a", model=HangingModel(), tools=FakeTools(), render=async_render(lambda t: "p")
+    )
 
     result = await executor.execute(make_task(config=TaskConfig(timeout_s=0.01)))
 
@@ -148,7 +156,9 @@ async def test_a_model_call_cut_by_the_task_deadline_degrades_the_model():
 
 async def test_a_cancelled_task_does_not_count_against_the_model():
     """사용자가 취소한 태스크는 모델의 잘못이 아니다."""
-    executor = Executor(agent="a", model=HangingModel(), tools=FakeTools(), render=lambda t: "p")
+    executor = Executor(
+        agent="a", model=HangingModel(), tools=FakeTools(), render=async_render(lambda t: "p")
+    )
     running = asyncio.create_task(executor.execute(make_task()))
     await asyncio.sleep(0.01)
 
