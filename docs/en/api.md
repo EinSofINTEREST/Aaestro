@@ -690,8 +690,8 @@ Continues a run from where it stopped. What that means differs by mode:
   go, so the next attempt does not wait out the 30 seconds. A run recorded before leases existed
   has none and counts as expired — **during an upgrade, stop every old process before resuming**,
   or a run an old process is still driving is taken over under it. Starting a service run under
-  an id that already has a record — owned by another process, or ownerless (a mission, or a run
-  from before leases) — is `409` (`GRAPH_006`) rather than a run that stops at once or takes the
+  an id that already has a record — owned by another process (a mission or a service run), or
+  ownerless (a run from before leases) — is `409` (`GRAPH_006`) rather than a run that stops at once or takes the
   record over; only resume takes a run over.
   The guarantee that one iteration never runs twice is **timing, not fencing**: checkpoint writes
   carry no owner check. An owner that cannot renew stops itself, cancelling the iteration in
@@ -703,10 +703,19 @@ Continues a run from where it stopped. What that means differs by mode:
   5 seconds), plus any other stall of that loop, stays under those 10 seconds — outside that, an
   iteration can run twice. A run whose owner stopped itself this way still reads `running` (API,
   UI, run space access, metrics) until someone resumes it.
-- **Mission runs** resume from the last checkpoint and carry **no state guard** — the
-  checkpointer decides what continuing means, so resuming one that already finished re-drives
-  it from that checkpoint. Without a durable checkpointer there is nothing to continue from
-  (`STOR_002`).
+- **Mission runs** resume from the last checkpoint and use the **same lease** as service runs:
+  the process that submits or resumes a mission records itself as the owner, keeps pushing the
+  lease forward while it drives the run, and lets it go when the run ends. A resume takes the run
+  when it has ended, or when it is still `running` or `draining` but its owner's lease has expired
+  (the owner died) — with a single conditional update, so two resumes of the same run (two control
+  planes, or a control plane and the CLI) get one winner, and only the winner drives it. The run
+  keeps its run id. A run whose lease is still alive — in any process, this one included — is `409`
+  (`GRAPH_006`). A mission recorded before missions had leases has no owner and counts as expired,
+  so a run orphaned by an upgrade can be resumed — stop every old process first. The checkpointer
+  decides what continuing means, so resuming one that already finished re-drives it from that
+  checkpoint. An owner that loses its lease stops the run and leaves the record `running` for the
+  next owner; the same timing caveat as service runs applies. Without a durable checkpointer there
+  is nothing to continue from (`STOR_002`).
 
 `501` means this control plane has no deployment surface: it can read runs but does not drive
 them, and answering `200` would leave an operator believing a resume happened.

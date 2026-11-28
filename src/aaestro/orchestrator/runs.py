@@ -164,8 +164,18 @@ class RunService:
             # 재개된 run 은 새 id 다 — 그것을 다시 재개할 때도 같은 모델이어야 한다
             self._pin_models(resumed.run_id, topology, record.model_overrides)
         else:
+            # 재개 시작은 임대를 가져오는 조건부 갱신이다 — 끝난 run 이거나 소유자의 임대가 만료된
+            # run 만 가져오고, 동시에 재개해도 가져온 쪽만 구동한다. 같은 checkpoint thread 를
+            # 둘이 이어 쓰면 뒤엉킨다 (#723)
+            lease = self.submitter.manager.lease
+            if not self.store.reopen(run_id, lease.owner, lease.until(), now=lease.clock()):
+                raise AaestroError(
+                    category=ErrorCategory.GRAPH,
+                    code=ErrorCode.GRAPH_006,
+                    message="run is still running under a live lease",
+                    details={"run_id": run_id, "graph": record.graph},
+                )
             self.results.pop(run_id, None)
-            self._announce(run_id, topology)
             self._drive(run_id, lambda: self.submitter.resume(topology, run_id))
         log.info("run resumed", graph=record.graph, run_id=run_id, mode=record.mode)
         return self._record(run_id, topology)
@@ -261,6 +271,9 @@ class RunService:
     ) -> None:
         # 비워 보내도 저장소가 기존 override 를 보존한다 — resume 의 재공지가 지우지 않는다
         write = self.store.create if create else self.store.upsert
+        # 새 기록은 처음부터 이 프로세스의 임대를 쥔다 — 소유자 없는 running 은 만료로 보여
+        # 드라이버가 뜨기 전에 다른 프로세스의 재개가 가져갈 수 있다 (#723)
+        lease = self.submitter.manager.lease
         written = write(
             RunRecord(
                 run_id=run_id,
@@ -269,6 +282,8 @@ class RunService:
                 status=str(RunStatus.RUNNING),
                 updated_at=_now(),
                 model_overrides={k: dict(v) for k, v in (model_overrides or {}).items()},
+                owner=lease.owner,
+                lease_until=lease.until(),
                 # 저장소는 처음 기록에서만 받는다 — resume 의 재공지가 현재 그래프로 덮지 않는다
                 **participation(topology),
             )

@@ -29,6 +29,7 @@ from aaestro.orchestrator.run import (
     ServiceRunner,
     hold_lease,
     iteration_thread,
+    leased,
     run_generations,
     run_refused,
 )
@@ -633,7 +634,22 @@ class RunSubmitter:
             payload = (
                 None if initial_state is None else seed_state(initial_state, run_id=handle.run_id)
             )
-            final = await graph.ainvoke(payload, config=_thread_config(handle.run_id))
+            config = _thread_config(handle.run_id)
+            store = self.manager.store
+            if store is None:
+                final = await graph.ainvoke(payload, config=config)
+            else:
+                # 구동하는 동안 임대를 미룬다 — 소유자가 죽으면 다른 프로세스가 재개한다 (#723)
+                held = await leased(
+                    store,
+                    self.manager.lease,
+                    handle,
+                    lambda: graph.ainvoke(payload, config=config),
+                )
+                if held is None:
+                    # 임대를 잃었다 — 기록은 새 소유자의 것이라 쓰지 않는다 (release 가 거절한다)
+                    raise run_refused(handle.run_id, topology.metadata.name)
+                final = held
         except AaestroError as err:
             # GRAPH_003 은 어느 edge 의 조건인지가 원인 추적의 전부다 (#412) — 값은 노드 id 다
             edge = (

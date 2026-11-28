@@ -419,16 +419,16 @@ async def test_an_owner_sees_the_loss_at_the_iteration_boundary():
     assert (store.get("svc").owner, store.get("svc").iteration) == ("b", 0)
 
 
-def test_mission_records_carry_no_owner(store):
-    """mission 재개는 임대를 보지 않는다 — 소유자를 두면 다른 프로세스의 재개 공지가 막힌다."""
+def test_mission_records_carry_the_same_lease(store):
+    """mission 도 service 와 같은 소유자 · 임대를 쓴다 — 죽은 소유자의 mission 재개 근거 (#723)."""
     from tests.fixtures.topologies import make_mission
 
-    manager = RunManager(store=store, lease=RunLease(owner="a"))
+    manager = RunManager(store=store, lease=RunLease(owner="a", clock=Clock()))
     handle = manager.acquire(make_mission())
 
-    assert store.get(handle.run_id).owner == ""
-    assert manager.lease.owner == "a"
-    assert RunStatus(store.get(handle.run_id).status) is RunStatus.RUNNING
+    found = store.get(handle.run_id)
+    assert (found.owner, found.lease_until) == ("a", T0 + DEFAULT_RUN_LEASE_S)
+    assert RunStatus(found.status) is RunStatus.RUNNING
 
 
 # --- 시간 여유 · 조용한 거절 · 임대 놓기 · 옛 DB 읽기 (qa 피드백) ----------------------------
@@ -492,19 +492,18 @@ async def test_a_live_owner_that_cannot_renew_stops_before_anyone_can_claim(path
     assert len(inputs) == 1  # 회차 2 를 쓴 것은 이어받은 쪽 하나뿐이다
 
 
-def test_only_an_ownerless_service_record_takes_its_first_owner(store):
-    """소유자 없는 service 기록은 처음 쓰는 소유자를 받고, mission 기록은 소유자를 갖지 않는다."""
-    store.upsert(RunRecord(run_id="svc", graph="feed-monitor", mode="service", status="running"))
-    store.upsert(RunRecord(run_id="m1", graph="other", mode="mission", status="running"))
+@pytest.mark.parametrize("mode", ["mission", "service"])
+def test_an_ownerless_record_takes_its_first_owner(store, mode):
+    """소유자 없는 기록 (옛 기록 · 제출 공지) 은 처음 쓰는 소유자를 받는다 — 두 모드 공통 (#723)."""
+    store.upsert(RunRecord(run_id="r", graph="g", mode=mode, status="running"))
 
-    store.upsert(owned(lease_until=T0 + 30))
-    store.upsert(RunRecord(**{**owned(lease_until=T0 + 30).__dict__, "run_id": "m1"}))
+    first = RunRecord(run_id="r", graph="g", mode=mode, status="running", owner="a")
+    assert store.upsert(RunRecord(**{**first.__dict__, "lease_until": T0 + 30})) is True
 
-    assert (store.get("svc").owner, store.get("svc").lease_until) == ("a", T0 + 30)
-    assert (store.get("m1").owner, store.get("m1").lease_until) == ("", 0)
-    # mission 프로세스의 마지막 기록은 그대로 받는다
-    completed = RunRecord(run_id="m1", graph="other", mode="mission", status="completed")
-    assert store.upsert(completed) is True
+    assert (store.get("r").owner, store.get("r").lease_until) == ("a", T0 + 30)
+    # 그 뒤 다른 소유자 · 소유자 없는 쓰기는 받지 않는다
+    assert store.upsert(RunRecord(**{**first.__dict__, "owner": "b"})) is False
+    assert store.upsert(RunRecord(run_id="r", graph="g", mode=mode, status="failed")) is False
 
 
 @pytest.mark.parametrize("mode", ["mission", "service"])

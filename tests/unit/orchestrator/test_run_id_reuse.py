@@ -33,13 +33,15 @@ def test_a_restarted_process_refuses_a_finished_runs_id(tmp_path, make):
 
 
 def test_resuming_takes_a_finished_missions_id(tmp_path):
-    """service 재개는 임대 `claim` 을 거친다 — test_run_lease 가 본다."""
+    """재개는 임대를 먼저 가져온다 — mission 은 `reopen`, service 는 `claim` (#723 · #662)."""
     path = str(tmp_path / "runs.db")
     finished(path, make_mission())
+    store = SqliteRunStore(path=path)
+    manager = RunManager(store=store)
+    lease = manager.lease
+    assert store.reopen("r1", lease.owner, lease.until(), now=lease.clock())
 
-    handle = RunManager(store=SqliteRunStore(path=path)).acquire(
-        make_mission(), run_id="r1", resuming=True
-    )
+    handle = manager.acquire(make_mission(), run_id="r1", resuming=True)
 
     assert handle.run_id == "r1"
 

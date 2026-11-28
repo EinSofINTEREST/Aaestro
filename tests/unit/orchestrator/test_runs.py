@@ -56,18 +56,25 @@ class FakeSubmitter:
     topologies: list[Any] = field(default_factory=list)
     gate: asyncio.Event = field(default_factory=asyncio.Event)
     stopped: bool = False
+    manager: RunManager = field(init=False)
+
+    def __post_init__(self) -> None:
+        # RunService 는 재개 · 새 기록에 이 manager 의 임대를 쓴다 (#723)
+        self.manager = RunManager(store=self.store)
 
     async def submit(self, topology, initial_state, *, run_id=None, announced=False) -> RunResult:
         self.calls.append(("submit", run_id))
-        self.store.upsert(
-            RunRecord(run_id=run_id, graph=topology.metadata.name, mode="mission", status="running")
+        # 실제 manager 처럼 이 프로세스의 소유자로 쓴다 — 기록은 RunService 가 그 소유로 만들었다
+        record = RunRecord(
+            run_id=run_id,
+            graph=topology.metadata.name,
+            mode="mission",
+            status="running",
+            owner=self.manager.lease.owner,
         )
+        assert self.store.upsert(record)
         await self.gate.wait()
-        self.store.upsert(
-            RunRecord(
-                run_id=run_id, graph=topology.metadata.name, mode="mission", status="completed"
-            )
-        )
+        assert self.store.upsert(RunRecord(**{**record.__dict__, "status": "completed"}))
         return RunResult(
             run_id=run_id,
             graph=topology.metadata.name,

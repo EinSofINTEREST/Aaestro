@@ -104,10 +104,10 @@ class RunRecord:
     """상태가 바뀐 횟수 — 저장소가 센다 (쓰는 쪽이 준 값은 무시한다). 단조 증가라 한 폴링 주기
     안에 끝 → 재개 → 끝이 몰려도 ``liveness`` 가 달라진다 (#608)."""
     owner: str = ""
-    """run 을 구동하는 소유자 (``RunLease.owner``) — 빈 값은 소유자 없음 (mission · 옛 기록, #662).
+    """run 을 구동하는 소유자 (``RunLease.owner``) — 빈 값은 소유자 없음 (옛 기록, #662).
 
-    소유자가 없는 **service** 기록에 소유자가 있는 갱신이 오면 그 소유자가 처음 소유자가 된다
-    (임대도 같이 — mission 기록은 소유자를 갖지 않는다).
+    mission 과 service 가 같은 임대를 쓴다 (#723). 소유자가 없는 기록에 소유자가 있는 갱신이 오면
+    그 소유자가 처음 소유자가 된다 (임대도 같이).
     그 뒤로는 ``claim`` 만 바꾼다. 소유자가 있는 기록은 같은 소유자의 갱신만 받는다 — 임대를 잃은
     옛 소유자가 새 소유자의 기록을 덮지 못한다."""
     lease_until: float = 0.0
@@ -179,6 +179,16 @@ class RunStore(Protocol):
         """
         ...
 
+    def reopen(self, run_id: str, owner: str, lease_until: float, *, now: float) -> bool:
+        """mission run 을 ``running`` 으로 가져온다 — 재개의 시작, 원자적 조건부 갱신 (#723).
+
+        끝난 run 이거나 진행 중이어도 임대가 ``now`` 에 만료됐으면 (소유자가 죽었다, 임대 없는 옛
+        기록 포함) 상태를 ``running`` 으로, 소유자와 임대를 ``owner`` 로 바꾸고 True. 조건과 쓰기가
+        한 연산이라 같은 run 을 동시에 재개해도 하나만 이긴다. service 기록은 건드리지 않는다 —
+        소유자가 죽은 service 는 ``claim``, 정지한 service 는 새 id 로 잇는다.
+        """
+        ...
+
     def renew(self, run_id: str, owner: str, lease_until: float) -> bool:
         """임대를 미룬다 — ``owner`` 가 아직 소유자일 때만. False 면 임대를 잃었다."""
         ...
@@ -227,7 +237,7 @@ class InMemoryRunStore:
         ):
             return False
         owner, lease_until = record.owner, record.lease_until
-        if existing is not None and (existing.owner or existing.mode != "service"):
+        if existing is not None and existing.owner:
             owner, lease_until = existing.owner, existing.lease_until
         # 구동 프로세스의 갱신이 다른 프로세스의 drain 요청을 지우면
         # 그 요청은 영원히 전달되지 않는다
@@ -245,7 +255,7 @@ class InMemoryRunStore:
                 "memory_spaces": snapshot.memory_spaces,
                 "agents": snapshot.agents,
                 "transitions": transitions,
-                # 소유자 없는 service 기록만 처음 온 소유자가 넘겨받는다 — 그 뒤로는 claim 만 바꾼다
+                # 소유자 없는 기록만 처음 온 소유자가 넘겨받는다 — 그 뒤는 claim · reopen 만
                 "owner": owner,
                 "lease_until": lease_until,
                 "updated_at": _now(),
@@ -266,6 +276,25 @@ class InMemoryRunStore:
             return False
         self._records[run_id] = RunRecord(
             **{**existing.__dict__, "owner": owner, "lease_until": lease_until}
+        )
+        return True
+
+    def reopen(self, run_id: str, owner: str, lease_until: float, *, now: float) -> bool:
+        """mission 을 가져온다 — 한 프로세스 안이라 검사와 쓰기 사이에 끼어들 수 없다."""
+        existing = self._records.get(run_id)
+        if existing is None or existing.mode != "mission":
+            return False
+        if existing.live and existing.lease_until > now:
+            return False
+        self._records[run_id] = RunRecord(
+            **{
+                **existing.__dict__,
+                "status": "running",
+                "transitions": existing.transitions + (existing.status != "running"),
+                "owner": owner,
+                "lease_until": lease_until,
+                "updated_at": _now(),
+            }
         )
         return True
 
@@ -367,9 +396,9 @@ class SqliteRunStore:
                         THEN runs.model_overrides ELSE excluded.model_overrides END,
                     -- memory_spaces · agents 는 갱신하지 않는다 — run 시작 때의 스냅샷이다.
                     -- owner · lease_until 은 소유자 없는 기록만 넘겨받는다 (그 뒤는 claim · renew)
-                    owner = CASE WHEN runs.owner = '' AND runs.mode = 'service'
+                    owner = CASE WHEN runs.owner = ''
                         THEN excluded.owner ELSE runs.owner END,
-                    lease_until = CASE WHEN runs.owner = '' AND runs.mode = 'service'
+                    lease_until = CASE WHEN runs.owner = ''
                         THEN excluded.lease_until ELSE runs.lease_until END,
                     updated_at = excluded.updated_at
                 -- 임대를 잃은 옛 소유자의 갱신이 새 소유자의 기록을 덮지 않는다 (#662)
@@ -414,6 +443,24 @@ class SqliteRunStore:
                 )
         except sqlite3.Error as err:
             raise _storage_error("run could not be claimed", run_id=run_id) from err
+        return cursor.rowcount > 0
+
+    def reopen(self, run_id: str, owner: str, lease_until: float, *, now: float) -> bool:
+        """mission 을 가져온다 — 조건과 쓰기가 한 UPDATE 라 프로세스 사이에도 원자적."""
+        live = sorted(LIVE_STATUSES)
+        try:
+            with self._lock:
+                cursor = self._conn.execute(
+                    f"""
+                UPDATE runs SET transitions = transitions + (status <> 'running'),
+                                status = 'running', owner = ?, lease_until = ?, updated_at = ?
+                WHERE run_id = ? AND mode = 'mission'
+                    AND (status NOT IN ({", ".join("?" for _ in live)}) OR lease_until <= ?)
+                """,  # noqa: S608 — 자리표시자 개수만 만든다, 값은 바인딩
+                    (owner, lease_until, _now(), run_id, *live, now),
+                )
+        except sqlite3.Error as err:
+            raise _storage_error("run could not be reopened", run_id=run_id) from err
         return cursor.rowcount > 0
 
     def renew(self, run_id: str, owner: str, lease_until: float) -> bool:

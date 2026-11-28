@@ -187,8 +187,12 @@
      (동기 호출, sqlite 잠금 대기 최대 5초) + 이벤트 루프 정지가 margin 보다 작다는 것이다. 스스로
      멈춘 run 은 재개 전까지 `running` 으로 보인다. 임대 없는 옛 기록은 만료로 보므로 업그레이드
      중에는 옛 프로세스를 모두 멈춘 뒤 resume 한다. 새 제출 (mission · service) 이 이미 있는 기록
-     (소유자 · 상태와 무관) 을 만나면 `GRAPH_006` 이다 — 넘겨받는 것은 재개 (`claim`) 뿐이고, 끝난 run 의
-     id 는 다시 쓰지 않는다 (#663). 확인과 기록은 run 저장소의 원자적 생성 (`RunStore.create`, 없을 때만 만든다) 한 연산이라 프로세스 사이 (control plane 둘, control plane 과 CLI) 의 같은 id 동시 제출도 하나만 이긴다 (#711)
+     (소유자 · 상태와 무관) 을 만나면 `GRAPH_006` 이다 — 넘겨받는 것은 재개 (service `claim` · mission `reopen`) 뿐이고, 끝난 run 의
+     id 는 다시 쓰지 않는다 (#663). 확인과 기록은 run 저장소의 원자적 생성 (`RunStore.create`, 없을 때만 만든다) 한 연산이라 프로세스 사이 (control plane 둘, control plane 과 CLI) 의 같은 id 동시 제출도 하나만 이긴다 (#711).
+     **mission run 도 같은 임대를 쓴다** (#723): 제출 · 재개한 프로세스가 소유자가 되어 구동하는 동안 임대를
+     미루고, 끝나면 놓는다. 재개는 끝난 run 이거나 임대가 만료된 `running` · `draining` run 을 한 번의
+     조건부 갱신 (`RunStore.reopen`) 으로 가져와 같은 run id 로 잇는다 — 동시 재개는 하나만 이기고, 임대가
+     살아 있으면 (이 프로세스의 것이라도) `GRAPH_006` 이다. 소유자 없는 옛 mission 기록은 만료로 본다
    - 누적하는 리스트 state 는 그래프의 `state.compaction` 선언으로 **iteration 사이에서만**
      압축한다 — 끝난 iteration 의 state 를 압축한 것이 다음 iteration 의 입력이고, 끝난
      iteration 의 checkpoint 는 고치지 않는다
