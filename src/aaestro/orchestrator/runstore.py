@@ -183,7 +183,8 @@ class RunStore(Protocol):
         """mission run 을 ``running`` 으로 가져온다 — 재개의 시작, 원자적 조건부 갱신 (#723).
 
         끝난 run 이거나 진행 중이어도 임대가 ``now`` 에 만료됐으면 (소유자가 죽었다, 임대 없는 옛
-        기록 포함) 상태를 ``running`` 으로, 소유자와 임대를 ``owner`` 로 바꾸고 True. 조건과 쓰기가
+        기록 포함) 상태를 ``running`` 으로, 소유자와 임대를 ``owner`` 로 바꾸고 True. 앞선 구동의
+        drain 요청은 지운다. 조건과 쓰기가
         한 연산이라 같은 run 을 동시에 재개해도 하나만 이긴다. service 기록은 건드리지 않는다 —
         소유자가 죽은 service 는 ``claim``, 정지한 service 는 새 id 로 잇는다.
         """
@@ -290,6 +291,8 @@ class InMemoryRunStore:
             **{
                 **existing.__dict__,
                 "status": "running",
+                # 앞선 drain 요청은 끝난 (또는 죽은) 구동의 것이다 — 이어받으면 재개가 곧바로 멈춘다
+                "drain": False,
                 "transitions": existing.transitions + (existing.status != "running"),
                 "owner": owner,
                 "lease_until": lease_until,
@@ -453,7 +456,8 @@ class SqliteRunStore:
                 cursor = self._conn.execute(
                     f"""
                 UPDATE runs SET transitions = transitions + (status <> 'running'),
-                                status = 'running', owner = ?, lease_until = ?, updated_at = ?
+                                status = 'running', drain = 0,
+                                owner = ?, lease_until = ?, updated_at = ?
                 WHERE run_id = ? AND mode = 'mission'
                     AND (status NOT IN ({", ".join("?" for _ in live)}) OR lease_until <= ?)
                 """,  # noqa: S608 — 자리표시자 개수만 만든다, 값은 바인딩
