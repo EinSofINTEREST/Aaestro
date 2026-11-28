@@ -164,6 +164,95 @@ def test_a_non_utf8_template_only_drops_that_promptset(tmp_path, where):
     assert excinfo.value.__cause__ is None
 
 
+def _loop_nest(depth: int) -> str:
+    return "{% for i in [1] %}" * depth + "x" + "{% endfor %}" * depth
+
+
+def test_a_template_too_deep_for_the_compiler_only_drops_that_promptset(tmp_path):
+    # 정적 중첩 21 겹은 파싱을 지나 컴파일러의 SyntaxError 가 된다 — 20 겹까지는 게시된다
+    catalog = publish(tmp_path, _loop_nest(21))
+    good = tmp_path / "modules" / "promptsets" / "good" / "0.1.0"
+    good.mkdir(parents=True)
+    (good / "promptset.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "apiVersion": "aaestro/v1",
+                "kind": "Promptset",
+                "metadata": {"name": "good", "version": "0.1.0"},
+                "spec": {"engine": "jinja2", "templates": {"system": {"file": "s.j2"}}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (good / "s.j2").write_text(_loop_nest(20), encoding="utf-8")
+
+    listed = catalog.modules("promptsets")
+
+    assert listed.items == {"good": ("0.1.0",)}
+    assert [p.code for p in listed.problems] == [ErrorCode.MOD_003]
+    with pytest.raises(AaestroError) as excinfo:
+        catalog.module("promptsets", "solo", "0.1.0")
+    assert excinfo.value.code == ErrorCode.MOD_003
+    assert excinfo.value.__cause__ is None
+
+
+def test_an_unexpected_compiler_failure_only_drops_that_promptset(tmp_path):
+    # 정수 리터럴 한도 (4300 자리) 의 ValueError — 부류로 가둔다
+    catalog = publish(tmp_path, "{{ 1" + "0" * 5000 + " }}")
+    good = tmp_path / "modules" / "promptsets" / "good" / "0.1.0"
+    good.mkdir(parents=True)
+    (good / "promptset.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "apiVersion": "aaestro/v1",
+                "kind": "Promptset",
+                "metadata": {"name": "good", "version": "0.1.0"},
+                "spec": {"engine": "jinja2", "templates": {"system": {"file": "s.j2"}}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (good / "s.j2").write_text("ok", encoding="utf-8")
+
+    listed = catalog.modules("promptsets")
+
+    assert listed.items == {"good": ("0.1.0",)}
+    assert [p.code for p in listed.problems] == [ErrorCode.MOD_003]
+    with pytest.raises(AaestroError) as excinfo:
+        catalog.module("promptsets", "solo", "0.1.0")
+    assert excinfo.value.details["cause"] == "ValueError"
+    assert excinfo.value.__cause__ is None
+
+
+def test_a_refused_syntax_in_a_locale_names_the_locale_and_drops_the_cause(tmp_path):
+    catalog = publish(tmp_path, "{{ query }}", locale_body="{% include 'x' %}")
+
+    with pytest.raises(AaestroError) as excinfo:
+        catalog.module("promptsets", "solo", "0.1.0")
+
+    assert excinfo.value.code == ErrorCode.MOD_003
+    assert excinfo.value.details["locale"] == "ko"
+    assert excinfo.value.details["node"] == "Include"
+    assert excinfo.value.__cause__ is None
+
+
+def test_a_control_character_in_a_template_name_never_reaches_the_message(tmp_path):
+    catalog = publish(tmp_path, "{{ stranger }}")
+    module = tmp_path / "modules" / "promptsets" / "solo" / "0.1.0"
+    path = module / "promptset.yaml"
+    document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    templates = document["spec"]["templates"]
+    templates["bad\x1b[31mname"] = templates.pop("default")
+    path.write_text(yaml.safe_dump(document), encoding="utf-8")
+
+    with pytest.raises(AaestroError) as excinfo:
+        catalog.module("promptsets", "solo", "0.1.0")
+
+    assert excinfo.value.code == ErrorCode.MOD_003
+    assert "\x1b" not in excinfo.value.message
+    assert "\x1b" not in repr(excinfo.value.details)
+
+
 def test_every_promptset_in_the_repository_is_published():
     root = Path(__file__).resolve().parents[3]
 

@@ -671,9 +671,13 @@ def _vet_template(
     environment = GuardedEnvironment(
         output_limit=DEFAULT_RENDER_LIMIT, autoescape=False, undefined=StrictUndefined
     )
+    # 사유 · details 에 실리는 이름은 모두 정제한다 — 선언의 키는 제어 문자를 담을 수 있다
+    label = printable_label(template)
+    locale_details: dict[str, Any] = {} if locale is None else {"locale": printable_label(locale)}
     names: list[str] = []
+    cause: str | None = None
     try:
-        _check_source(source, ref, template, ErrorCode.MOD_003)
+        _check_source(source, ref, label, ErrorCode.MOD_003)
         tree = environment.parse(source)
         environment.compile(tree)
         # 컴파일은 조건 자리의 없는 test 를 지나친다 — AST 의 이름을 환경과 직접 대조한다
@@ -684,25 +688,43 @@ def _vet_template(
             not in (environment.filters if isinstance(node, nodes.Filter) else environment.tests)
         ]
         if names:
-            reason = f"template uses unknown filters or tests: {template}"
+            reason = f"template uses unknown filters or tests: {label}"
         else:
             names = sorted(
                 meta.find_undeclared_variables(tree) - declared - set(environment.globals)
             )
-            reason = f"template uses undeclared names: {template}"
+            reason = f"template uses undeclared names: {label}"
+    except AaestroError as err:
+        # 구문 거절 — 다른 게시 거절과 같이 locale 을 싣고 원인 (파서 예외) 은 끊는다
+        raise AaestroError(
+            category=err.category,
+            code=err.code,
+            message=err.message,
+            details={**err.details, **locale_details},
+        ) from None
     except TemplateSyntaxError as err:
-        reason = f"template syntax is invalid: {template} (line {err.lineno})"
+        reason = f"template syntax is invalid: {label} (line {err.lineno})"
     except RecursionError:
         # 깊은 중첩 — 파서 · 컴파일러가 던진다. 한 promptset 의 문제로 가둔다 (원인 체인은 끊는다)
-        reason = f"template nesting is too deep: {template}"
+        reason = f"template nesting is too deep: {label}"
+    except SyntaxError:
+        # 컴파일러가 만든 파이썬 코드가 언어 한도 (정적 중첩 블록 20) 를 넘는다
+        reason = f"template is too complex to compile: {label}"
+    except MemoryError:
+        raise
+    except Exception as err:
+        # 파서 · 컴파일러가 던지는 그 밖의 예외 (정수 리터럴 한도의 ValueError 등) — 한 promptset 의
+        # 문제로 가둔다. 예외 문자열에 템플릿 조각이 실릴 수 있어 종류 이름만 싣고 체인은 끊는다
+        reason = f"template could not be compiled: {label}"
+        cause = type(err).__name__
     else:
         if not names:
             return
-    details: dict[str, Any] = {"promptset": ref, "template": printable_label(template)}
+    details: dict[str, Any] = {"promptset": ref, "template": label, **locale_details}
+    if cause is not None:
+        details["cause"] = cause
     if names:
         details["names"] = [printable_label(n) for n in sorted(set(names))[:MAX_REPORTED_NAMES]]
-    if locale is not None:
-        details["locale"] = printable_label(locale)
     raise AaestroError(
         category=ErrorCategory.MODULE, code=ErrorCode.MOD_003, message=reason, details=details
     ) from None
