@@ -532,3 +532,65 @@ def test_provider_keys_in_event_fields_are_masked():
 @pytest.mark.parametrize("text", ["sk-learn is a library", "task-key", "sk-abc", "ask-" + "b" * 30])
 def test_ordinary_sk_words_are_left_intact(text):
     assert apply_mask({"event": text})["event"] == text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        repr({"msg": f"line1\n{ANTHROPIC_KEY}"}),  # repr 이스케이프 `\n` 바로 뒤
+        repr(f"a\t{OPENAI_KEY}"),
+        repr(f"a\r{OPENAI_KEY}"),
+        f"MY_{OPENAI_KEY}",
+        f"key-{ANTHROPIC_KEY}",
+        f"1{ANTHROPIC_KEY}",
+        "x\\\\sk-" + "A" * 30,  # 이스케이프된 백슬래시 뒤의 일반 sk-
+        "svc sk-svcacct-" + "A" * 30,
+        "adm sk-admin-" + "A" * 30,
+    ],
+)
+def test_provider_keys_after_escapes_or_word_chars_are_masked(text):
+    assert "A" * 20 not in apply_mask({"event": text})["event"]
+
+
+@pytest.mark.parametrize("key", ["x-api-key", "X-Api-Key", "x-aaestro-a2a-ticket"])
+def test_header_style_keys_are_masked(key):
+    assert apply_mask({key: "VALUE"})[key] == "***"
+
+
+@pytest.mark.parametrize(
+    "text", ["x-aaestro-a2a-ticket: VALUE", "ticket=VALUE", "x-api-key: VALUE"]
+)
+def test_header_style_strings_are_masked(text):
+    assert "VALUE" not in apply_mask({"event": text})["event"]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        ANTHROPIC_KEY.encode(),
+        {ANTHROPIC_KEY},
+        frozenset({OPENAI_KEY}),
+        ValueError(ANTHROPIC_KEY),
+        type("Obj", (), {"__repr__": lambda self: OPENAI_KEY})(),
+    ],
+)
+def test_non_json_values_are_masked(value, capsys):
+    configure(level="INFO", json_output=True)
+
+    get_logger("test").info("x", v=value)
+
+    assert "A" * 20 not in capsys.readouterr().out
+
+
+def test_long_input_is_masked_in_linear_time():
+    import time
+
+    text = "sk-" * 50_000 + "-" * 100_000 + "token=" + "x" * 100_000
+    start = time.perf_counter()
+    apply_mask({"event": text})
+    assert time.perf_counter() - start < 2
+
+
+def test_slug_with_sk_prefix_is_over_masked_by_design():
+    # shortcut 주석에 적은 한계 — 20자 이상 `sk-` slug 는 가려진다
+    assert apply_mask({"event": "sk-" + "a" * 25})["event"] == "***"
