@@ -78,6 +78,10 @@ def graph(
 @pytest.fixture
 def workspace(tmp_path: Path) -> Path:
     write(tmp_path / "modules" / "promptsets" / "solo" / "0.1.0" / "promptset.yaml", promptset())
+    for template in ("t", "s"):
+        (tmp_path / "modules" / "promptsets" / "solo" / "0.1.0" / f"{template}.j2").write_text(
+            "ok\n", encoding="utf-8"
+        )
     write(
         tmp_path / "agents" / "alpha" / "manifest.yaml",
         agent("alpha").model_dump(mode="json", by_alias=True, exclude_none=True),

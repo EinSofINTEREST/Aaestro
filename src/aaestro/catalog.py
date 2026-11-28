@@ -30,7 +30,7 @@ from aaestro.core.topology import GraphTopology
 from aaestro.core.yamlio import YamlReadError, load_yaml_file
 from aaestro.modules.decisionset import DecisionsetLoader
 from aaestro.modules.memoryset import MemorysetManifest
-from aaestro.modules.promptset import PromptsetManifest
+from aaestro.modules.promptset import PromptsetLoader, PromptsetManifest
 from aaestro.modules.registry import ModuleRegistry, RegistryRoots, inside
 from aaestro.modules.skillpack import SkillpackLoader
 from aaestro.modules.skillset import SkillsetManifest
@@ -421,6 +421,10 @@ class Catalog:
                     # 로더가 선언 무결성 검사 (load_document) 와 스키마 검증을 포함한다
                     loaded = SkillpackLoader(registry).load(ref)
                     warnings.extend(f"{ref}: {warning}" for warning in loaded.warnings)
+                elif module_type == "promptsets":
+                    # 템플릿 본문까지 읽어 agentd 기동과 같은 검사 (구문 · 컴파일 · 선언 밖 이름) 를
+                    # 통과한 것만 게시한다 — 렌더하지 않는다 (#716)
+                    PromptsetLoader(registry).load(ref, vet_names=True)
                 elif module_type == "decisionsets":
                     # calibration 라벨 세트까지 읽어 검증된 것만 게시한다 (실 provider 호출 없음)
                     DecisionsetLoader(registry).load(ref)
@@ -479,6 +483,8 @@ class Catalog:
             _path, document = registry.load_document(ref)
             if module_type == "decisionsets":
                 DecisionsetLoader(registry).load(ref)  # 목록과 같은 검증
+            elif module_type == "promptsets":
+                PromptsetLoader(registry).load(ref, vet_names=True)  # 목록과 같은 검증
         except AaestroError as err:
             if err.code == ErrorCode.MOD_001:
                 raise not_found("module", ref) from err
