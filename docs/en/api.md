@@ -856,11 +856,12 @@ In order, first match wins:
 A revocation therefore beats both the declaration and any grant. For memory, revoking with
 `mode: "rw"` removes writing only — reading stays.
 
-Step 2 counts only for a resource kind whose enforcement point is in place — today, all four:
-`memory`, `a2a`, `egress` and `mcp_tool`. For `a2a` the declaration is the `connections` of the graph
+Step 2 counts only for a resource kind whose enforcement point is in place — today, all five:
+`memory`, `a2a`, `egress`, `mcp_tool` and `model`. For `a2a` the declaration is the `connections` of the graph
 the caller is **currently deployed in**; a graph on disk that is not deployed grants nothing. For
-`egress` it is the manifest's `runtime.egress`, the model provider's host and any external MCP
-server's host. For `mcp_tool` (`server/tool`) it is every tool of a remote server the manifest
+`egress` it is the manifest's `runtime.egress`, the decision provider's name and any external MCP
+server's host. For `model` (the provider name — `anthropic`, `openai-compat`) it is the providers in
+the manifest's `spec.model`, fallbacks included; `runtime.egress` never declares one (#399). For `mcp_tool` (`server/tool`) it is every tool of a remote server the manifest
 declares, or only its `allowed_tools` when those are listed.
 Each kind's declaration check is wired together with the enforcement point that uses it, so the
 declaration and its enforcement cannot drift apart. Until then, a declaration contributes
@@ -906,7 +907,8 @@ curl -X POST -H "Authorization: Bearer $AAESTRO_ACCESS_CREDENTIAL" \
   http://127.0.0.1:8700/v1/access/grants
 ```
 
-`kind` is `memory`, `egress`, `mcp_tool` or `a2a`; `mode` (`ro`/`rw`) is required for memory
+`kind` is `memory`, `egress`, `mcp_tool`, `a2a` or `model` (operators may revoke `model`; no
+ceiling lists it, so a permission agent's `model` grant is always `403 ACC_003`); `mode` (`ro`/`rw`) is required for memory
 and must be absent otherwise. A mode that does not fit the kind is `400` (`VAL_002`) on every
 access route, including revocations and decisions. `201` returns the record:
 
@@ -1069,7 +1071,7 @@ Everything the operator needs to narrow one agent's permissions, in one answer �
     {"kind": "memory", "target": "local:researcher:longterm", "mode": "rw"},
     {"kind": "memory", "target": "global:global:org", "mode": "ro"},
     {"kind": "a2a", "target": "planner", "mode": null},
-    {"kind": "egress", "target": "api.anthropic.com", "mode": null},
+    {"kind": "model", "target": "anthropic", "mode": null},
     {"kind": "mcp_tool", "target": "corp/*", "mode": null}
   ],
   "ceilings": [
@@ -1189,7 +1191,7 @@ to anything outside. It hosts no tools; it decides and forwards.
 | Listener | What agents send | Decided as |
 |---|---|---|
 | CONNECT (`8080`) | HTTPS through `HTTPS_PROXY`, identity as proxy credentials | `egress` on `host[:port]` — `:443` is left out |
-| Provider (`8081`) | model API calls to `ANTHROPIC_BASE_URL` / `OPENAI_COMPAT_BASE_URL`, identity in place of the key | `egress` on the provider's logical host (`api.anthropic.com`, `openai-compat.invalid`) |
+| Provider (`8081`) | model API calls to `ANTHROPIC_BASE_URL` / `OPENAI_COMPAT_BASE_URL`, identity in place of the key | `model` on the provider name (`anthropic`, `openai-compat`) |
 
 The proxy never looks inside TLS. For model calls it removes the agent's identity, adds the key it
 holds, and streams the provider's answer back, so **the agent's environment never has the model key**
@@ -1228,10 +1230,13 @@ not retried) and a registry outage with `ACC_002` (`network`, retried by the age
 the model fallback or the model circuit breaker. The header is outside the response allowlist, so an
 upstream that sends it, or an error body shaped like the proxy's, is still read as a provider answer.
 
-`openai-compat` is decided under `openai-compat.invalid`, not under the upstream's address: what an
-operator revokes is "the model API", wherever this deployment points it. The name is synthetic —
-`.invalid` is reserved, and the CONNECT listener refuses any `.invalid` destination with
-`403 ACC_001` before asking the registry, so declaring the provider never opens a tunnel.
+Model calls are decided as `model` on the provider name, not as `egress` on a host (#399): what an
+operator revokes is "this provider's model API", wherever this deployment points it. The two are
+separate spaces — `runtime.egress: [api.anthropic.com]` does not open the termination (where the
+operator's key is attached), and declaring a provider does not open a CONNECT tunnel to its host.
+Only `spec.model` declares a provider, and no expansion ceiling lists one, so a permission agent
+cannot hand out model access either. Upgrading from before #399: see
+[Model provider records from before #399](runbooks/access-control.md#model-provider-records-from-before-399).
 
 Turn it on in the control plane:
 

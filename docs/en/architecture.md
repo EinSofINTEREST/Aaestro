@@ -101,6 +101,7 @@ controlled container, on every request**:
 | memory access | Memory Service | `memory` on a space id, `ro` / `rw` |
 | outside calls | egress proxy | `egress` on `host[:port]` |
 | remote MCP tools | egress proxy (terminates the server) | `mcp_tool` on `server/tool` |
+| model API calls (the operator's key) | egress proxy (terminates the provider) | `model` on the provider name |
 | a caller's A2A calls | the callee's A2A server | `a2a` on the callee |
 
 - **Declarations are the baseline.** Manifests, groups and deployed graphs give the default

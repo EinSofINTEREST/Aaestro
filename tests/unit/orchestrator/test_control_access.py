@@ -356,16 +356,19 @@ async def test_the_change_feed_takes_an_enforcer_token_or_a_live_agent_identity(
 
 async def test_the_operator_view_shows_declarations_ceilings_and_recent_denials(registry, api):
     """권한 화면이 한 번에 보는 것 — 기본 권한, 확장 상한, 최근 거부 (#283)."""
-    from aaestro.access.baselines import EgressBaseline
+    from aaestro.access.baselines import EgressBaseline, ModelBaseline
     from aaestro.access.model import ResourceKind
 
-    registry.baselines = {ResourceKind.EGRESS: EgressBaseline(registry.catalog)}
+    registry.baselines = {
+        ResourceKind.EGRESS: EgressBaseline(registry.catalog),
+        ResourceKind.MODEL: ModelBaseline(registry.catalog),
+    }
     registry.decide("worker", ResourceKind.EGRESS, "evil.example.com")
-    registry.decide("worker", ResourceKind.EGRESS, "api.anthropic.com")
+    registry.decide("worker", ResourceKind.MODEL, "anthropic")
 
     view = (await api.get("/v1/access/agents/worker", headers=bearer(CONTROL))).json()
 
-    assert {"kind": "egress", "target": "api.anthropic.com", "mode": None} in view["declared"]
+    assert {"kind": "model", "target": "anthropic", "mode": None} in view["declared"]
     assert {c["group"] for c in view["ceilings"]} == {"global", "research"}
     research = next(c for c in view["ceilings"] if c["group"] == "research")
     assert research["max_ttl_s"] == 600 and research["egress"] == ["api.search.example.com"]

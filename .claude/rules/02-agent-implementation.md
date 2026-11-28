@@ -217,8 +217,8 @@ spec:
    다른 fallback 과 달라야 한다. 모르는 키는 거부된다. 해석은 가까운 쪽이 이긴다 —
    manifest → 그래프 노드 `model` → 배포 요청 `model_overrides` 순으로 덮고, override 는 부분
    선언이며 명시한 빈 값 · null 은 아래 계층 값을 지운다 (`provider` 를 적으면 `name` 도 적는다).
-   노드 · 배포 override 는 manifest 가 선언한 provider 집합 안에서만 provider 를 바꾼다 — 이그레스
-   판정 기본값이 manifest 에서 도출된다. 배포 검증은 모르는 provider 와
+   노드 · 배포 override 는 manifest 가 선언한 provider 집합 안에서만 provider 를 바꾼다 — 모델
+   판정 (`model`, 01 Access Control) 기본값이 manifest 에서 도출된다. 배포 검증은 모르는 provider 와
    `runtime.egress_proxy.providers` 에 없는 provider 를 `VAL_002` 로 거절한다.
    해석된 선언은 태스크 시작 시 고정된다 (Hot Reload 와 같은 규칙)
 

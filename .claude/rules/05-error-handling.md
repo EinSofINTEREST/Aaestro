@@ -241,7 +241,7 @@ STOR_003: Registry 저장소 오류
 CFG_001: 설정 파싱/검증 실패
 CFG_002: 그룹 정의 오류 / 스코프 해석 실패 (secrets 미해석 포함)
 
-ACC_001: 권한 판정 거부 — 이그레스 목적지·원격 MCP 도구 (category: forbidden, HTTP 403).
+ACC_001: 권한 판정 거부 — 이그레스 목적지·원격 MCP 도구·모델 provider (category: forbidden, HTTP 403).
          메모리와 A2A 거부는 각 도메인 코드(MEM_001, A2A_004)를 쓴다
 ACC_002: 권한 판정 불가 — 레지스트리 도달 불가 + 캐시 없음 → 거부 (category: network, retryable, HTTP 503)
 ACC_003: 부여 거절 — 확장 상한 초과, 권한 에이전트의 자기 부여·자기 상한 변경, 작업 에이전트의
@@ -416,8 +416,8 @@ log.info(f"task {task_id} done in {elapsed}ms")
 | `iteration`     | int    | Service run 의 iteration 회차 |
 | `mode`          | str    | Run 모드 (`mission`/`service`/`direct`) |
 | `port`          | int    | 포트 |
-| `resource`      | str    | 권한 자원 종류 (`memory`/`egress`/`mcp_tool`/`a2a`, 부여 거절만 `unknown` — 아래 메트릭) |
-| `target`        | str    | 권한 대상 (space id, 목적지 host, `server/tool`, 피호출자, 본문을 읽기 전의 부여 거절은 `unknown` — `resource` 와 같다) |
+| `resource`      | str    | 권한 자원 종류 (`memory`/`egress`/`mcp_tool`/`a2a`/`model`, 부여 거절만 `unknown` — 아래 메트릭) |
+| `target`        | str    | 권한 대상 (space id, 목적지 host, `server/tool`, 피호출자, 모델 provider 이름, 본문을 읽기 전의 부여 거절은 `unknown` — `resource` 와 같다) |
 | `decision`      | str    | 판정 결과 (`allow`/`deny`) |
 | `decision_source` | str  | 판정 출처 (`fresh`/`cache`/`unreachable`, 레지스트리에 묻지 않는 토큰 모드의 메모리 접근은 `token`) |
 | `grant_id`      | str    | 부여 기록 id |

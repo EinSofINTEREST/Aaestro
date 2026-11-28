@@ -363,11 +363,11 @@ COMPAT_ENV = {
 }
 
 
-def test_model_adapters_and_logical_hosts_name_the_same_providers():
-    """어댑터만 있으면 배포 검증이 거절하고, 논리 호스트만 있으면 기동에서 CFG_001 이다."""
-    from aaestro.access.baselines import PROVIDER_HOSTS
+def test_model_adapters_and_terminated_providers_name_the_same_providers():
+    """어댑터만 있으면 배포 검증이 거절하고, 판정 대상만 있으면 기동에서 CFG_001 이다."""
+    from aaestro.access.baselines import MODEL_PROVIDERS
 
-    assert set(MODEL_ADAPTERS) == set(PROVIDER_HOSTS)
+    assert set(MODEL_ADAPTERS) == MODEL_PROVIDERS
 
 
 def test_the_proxy_terminates_only_providers_that_have_an_adapter():

@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import structlog
 
-from aaestro.access.baselines import MemoryBaseline
+from aaestro.access.baselines import LEGACY_PROVIDER_HOSTS, MemoryBaseline
 from aaestro.access.model import (
     DECLARATION,
     OPERATOR,
@@ -278,7 +278,10 @@ class AccessRegistry:
         self._sync_declarations()
         now = self.clock()
         active = [
-            r for r in self.store.rules(agent) if r.active(now) and r.covers(kind, target, mode)
+            r
+            for r in self.store.rules(agent)
+            if r.active(now)
+            and (r.covers(kind, target, mode) or _legacy_revocation(r, kind, target))
         ]
         version = self.store.version()
         valid_until = min((r.expires_at for r in active if r.expires_at is not None), default=None)
@@ -736,6 +739,16 @@ class AccessRegistry:
             ).inc()
 
 
+def _legacy_revocation(rule: Rule, kind: ResourceKind, target: str) -> bool:
+    """#399 전의 ``egress`` 모델 호스트 회수가 ``model`` 판정에도 닿는가 — 회수만, 부여는 아니다."""
+    host = LEGACY_PROVIDER_HOSTS.get(target) if kind is ResourceKind.MODEL else None
+    return (
+        host is not None
+        and rule.effect is Effect.DENY
+        and rule.covers(ResourceKind.EGRESS, host, None)
+    )
+
+
 def _ceiling_covers(
     ceiling: AccessCeiling, kind: ResourceKind, target: str, mode: Mode | None
 ) -> bool:
@@ -748,7 +761,8 @@ def _ceiling_covers(
         ResourceKind.EGRESS: ceiling.egress,
         ResourceKind.MCP_TOOL: ceiling.mcp_tool,
         ResourceKind.A2A: ceiling.a2a,
-    }[kind]
+    }.get(kind, ())
+    # model 은 상한에 없다 — 운영자 키를 쓰는 provider 는 manifest 선언으로만 열린다 (#399)
     return target in listed
 
 

@@ -178,7 +178,7 @@ class Stack:
             {
                 "openai-compat": Upstream(
                     base_url=f"https://{LOGICAL_HOST}",
-                    logical_host=LOGICAL_HOST,
+                    target=LOGICAL_HOST,
                     api_key=PROVIDER_KEY,
                     key_header=OPENAI_COMPAT_KEY_HEADER,
                     key_scheme=OPENAI_COMPAT_KEY_SCHEME,
@@ -186,7 +186,7 @@ class Stack:
                 ),
                 "anthropic": Upstream(
                     base_url=f"https://{ANTHROPIC_HOST}",
-                    logical_host=ANTHROPIC_HOST,
+                    target=ANTHROPIC_HOST,
                     api_key=PROVIDER_KEY,
                     request_headers=ANTHROPIC_REQUEST_HEADERS,
                     endpoints=ANTHROPIC_ENDPOINTS,

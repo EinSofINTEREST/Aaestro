@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 from pydantic import ValidationError
 
-from aaestro.access.baselines import PROVIDER_HOSTS
+from aaestro.access.baselines import MODEL_PROVIDERS
 from aaestro.core.decision import QuestionKind
 from aaestro.core.errors import AaestroError, ErrorCategory, ErrorCode, field_problems
 from aaestro.core.manifest import RESERVED_GLOBAL_GROUP, agent_name, agent_ref_parts
@@ -974,7 +974,7 @@ class DeployValidator:
 
     def _provider_problem(self, provider: str) -> str | None:
         """provider 하나가 배포 가능한지 — 문제가 있으면 그 메시지."""
-        if provider not in PROVIDER_HOSTS:
+        if provider not in MODEL_PROVIDERS:
             return f"unknown model provider: {provider}"
         if self.providers is not None and provider not in self.providers:
             return f"model provider is not an egress proxy upstream: {provider}"

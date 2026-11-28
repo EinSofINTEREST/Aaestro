@@ -156,12 +156,12 @@ def egress_workspace(tmp_path: Path) -> Catalog:
         ("researcher", "api.search.example.com", True, "매니페스트에 선언한 목적지"),
         ("researcher", "feeds.example.com:8443", True, "포트까지 선언한 목적지"),
         ("researcher", "feeds.example.com", False, "선언한 포트가 아닌 443"),
-        ("researcher", "api.anthropic.com", True, "모델 provider 는 선언에서 나온다"),
+        ("researcher", "api.anthropic.com", False, "모델 provider 는 egress 가 아니다 (#399)"),
         ("researcher", "mcp.corp.example.com", True, "external MCP 서버 호스트"),
         ("researcher", "lab.internal:9000", True, "비표준 포트의 MCP 서버"),
         ("researcher", "evil.example.com", False, "선언 밖"),
         ("quiet", "api.search.example.com", False, "남의 선언은 내 권한이 아니다"),
-        ("quiet", "api.anthropic.com", True, "모든 anthropic 에이전트는 모델 API 에 닿는다"),
+        ("quiet", "api.anthropic.com", False, "provider 선언이 CONNECT 터널을 열지 않는다"),
         ("ghost", "api.anthropic.com", False, "없는 에이전트"),
     ],
 )
@@ -193,7 +193,7 @@ def test_a_broken_mcp_url_that_slipped_past_validation_does_not_break_decisions(
 
     declared = EgressBaseline.declared(manifest)
 
-    assert "api.anthropic.com" in declared and not any(t.startswith("x") for t in declared)
+    assert declared == frozenset()
 
 
 # --- 원격 MCP 도구 (#282) ---------------------------------------------------------------
@@ -340,9 +340,9 @@ def _with_fallback(name: str, provider: str) -> dict:
     return document
 
 
-def test_a_fallback_providers_logical_host_is_declared(tmp_path):
-    """빠지면 전환한 호출을 프록시가 거부한다 — 선언 목록과 판정 둘 다 본다."""
-    from aaestro.access.baselines import EgressBaseline
+def test_a_fallback_provider_is_declared_for_the_model_termination(tmp_path):
+    """빠지면 전환한 호출을 프록시가 거부한다 — 선언 목록과 판정 둘 다 본다 (#358, #399)."""
+    from aaestro.access.baselines import EgressBaseline, ModelBaseline
 
     write(
         tmp_path / "agents" / "planner" / "manifest.yaml",
@@ -350,57 +350,41 @@ def test_a_fallback_providers_logical_host_is_declared(tmp_path):
     )
     write(tmp_path / "agents" / "plain" / "manifest.yaml", agent("plain"))
     catalog = Catalog.under(tmp_path)
-    baseline = EgressBaseline(catalog)
+    baseline = ModelBaseline(catalog)
 
-    declared = EgressBaseline.declared(catalog.agent("planner"))
-
-    assert {"api.anthropic.com", "openai-compat.invalid"} <= declared
-    assert baseline.allows("planner", "openai-compat.invalid", None) is True
+    assert ModelBaseline.declared(catalog.agent("planner")) == {"anthropic", "openai-compat"}
+    assert baseline.allows("planner", "openai-compat", None) is True
     # 남의 fallback 은 내 권한이 아니다
-    assert baseline.allows("plain", "openai-compat.invalid", None) is False
+    assert baseline.allows("plain", "openai-compat", None) is False
+    # 모델 provider 는 egress 판정 공간에 들어가지 않는다
+    assert EgressBaseline.declared(catalog.agent("planner")) == frozenset()
 
 
-async def test_the_openai_compat_logical_host_cannot_be_opened_as_a_tunnel(tmp_path):
-    """선언이 baseline 에 넣은 합성 이름은 판정용이다 — 같은 이름의 CONNECT 는 프록시가 닫는다."""
-    from aaestro.access.baselines import PROVIDER_HOSTS, EgressBaseline
-    from aaestro.egress.connect import ConnectProxy
-    from tests.unit.egress.test_connect import Registry, basic, connect, running
+def test_runtime_egress_does_not_declare_a_model_provider(tmp_path):
+    """egress 에 provider 의 호스트를 적어도 운영자 키를 쓰는 종단은 열리지 않는다 (#399)."""
+    from aaestro.access.baselines import ModelBaseline
 
-    write(
-        tmp_path / "agents" / "planner" / "manifest.yaml",
-        _with_fallback("planner", "openai-compat"),
-    )
-    logical = PROVIDER_HOSTS["openai-compat"]
-    declared = EgressBaseline.declared(Catalog.under(tmp_path).agent("planner"))
-    assert logical in declared, "프록시 종단 판정에는 이 이름이 있어야 한다"
-    registry = Registry()
-    registry.allowed |= declared
-    opened: list[str] = []
+    sneaky = agent("sneaky")
+    sneaky["spec"]["model"] = {"provider": "openai-compat", "name": "m"}
+    sneaky["spec"]["runtime"] = {"egress": ["api.anthropic.com", "openai-compat.invalid"]}
+    write(tmp_path / "agents" / "sneaky" / "manifest.yaml", sneaky)
+    baseline = ModelBaseline(Catalog.under(tmp_path))
 
-    async def never(host, port):
-        opened.append(host)
-        raise AssertionError("a reserved name was resolved or opened")
-
-    proxy = ConnectProxy(access=registry, resolver=never, opener=never)
-    async with running(proxy) as port:
-        status, _, _, writer = await connect(
-            port, f"{logical}:443", basic("planner", "cred-researcher")
-        )
-        writer.close()
-
-    assert status == 403 and opened == [] and registry.asked == []
+    assert baseline.allows("sneaky", "anthropic", None) is False
+    assert baseline.declared_for("sneaky") == [("openai-compat", None)]
+    assert baseline.allows("ghost", "anthropic", None) is False
 
 
 def test_an_unknown_fallback_provider_is_silently_left_out_of_the_declaration(tmp_path):
-    """논리 호스트를 모르는 provider 는 선언에서 빠질 뿐 판정이 터지지 않는다 (검증은 배포가)."""
-    from aaestro.access.baselines import EgressBaseline
+    """프록시가 종단하지 않는 provider 는 선언에서 빠질 뿐 판정이 터지지 않는다 (검증은 배포가)."""
+    from aaestro.access.baselines import ModelBaseline
 
     write(tmp_path / "agents" / "planner" / "manifest.yaml", _with_fallback("planner", "mystery"))
     catalog = Catalog.under(tmp_path)
 
-    declared = EgressBaseline.declared(catalog.agent("planner"))
+    declared = ModelBaseline.declared(catalog.agent("planner"))
 
-    assert declared == frozenset({"api.anthropic.com"})
+    assert declared == frozenset({"anthropic"})
 
 
 def test_a_declared_decision_providers_logical_name_is_declared(tmp_path):

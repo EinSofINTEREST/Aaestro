@@ -42,8 +42,8 @@ UNKNOWN_IDENTITY = "unknown-identity"
 RESERVED_TLD = "invalid"
 """RFC 2606 예약 TLD — 정당한 목적지가 될 수 없다.
 
-provider 의 합성 논리 호스트(``openai-compat.invalid``)가 선언 목적지에 들어가므로, 이 이름의
-CONNECT 는 판정이 allow 다. 열리지 않는 근거가 "리졸버가 못 푼다" 뿐이면 split DNS · NXDOMAIN
+결정 provider 의 논리 이름(``<provider>.decision.invalid``, #595)이 선언 목적지에 들어가므로, 이
+이름의 CONNECT 는 판정이 allow 다. 열리지 않는 근거가 "리졸버가 못 푼다" 뿐이면 split DNS · NXDOMAIN
 하이재킹 · 네트워크 alias 에 안전성을 맡기게 된다 — 판정 전에 여기서 닫는다."""
 
 

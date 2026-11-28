@@ -61,14 +61,14 @@ def proxy_app(echo: Echo) -> FastAPI:
         {
             "anthropic": Upstream(
                 base_url="https://api.anthropic.com",
-                logical_host="api.anthropic.com",
+                target="api.anthropic.com",
                 api_key=KEY,
                 endpoints=ANTHROPIC_ENDPOINTS,
                 request_headers=ANTHROPIC_REQUEST_HEADERS,
             ),
             "openai-compat": Upstream(
                 base_url=f"https://{COMPAT_HOST}",
-                logical_host=COMPAT_HOST,
+                target=COMPAT_HOST,
                 api_key=KEY,
                 key_header=OPENAI_COMPAT_KEY_HEADER,
                 key_scheme=OPENAI_COMPAT_KEY_SCHEME,

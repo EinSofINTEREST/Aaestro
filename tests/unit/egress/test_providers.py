@@ -47,7 +47,7 @@ def app_for(registry: Registry, provider: Provider, mode: EgressMode = EgressMod
         {
             "anthropic": Upstream(
                 base_url="https://api.anthropic.com",
-                logical_host="api.anthropic.com",
+                target="api.anthropic.com",
                 api_key=KEY,
                 endpoints=ANTHROPIC_ENDPOINTS,
                 request_headers=ANTHROPIC_REQUEST_HEADERS,
@@ -179,7 +179,7 @@ def plaintext_app(provider: Provider, addresses: list[str]):
         {
             "anthropic": Upstream(
                 base_url="http://fake-provider:8000",
-                logical_host="api.anthropic.com",
+                target="api.anthropic.com",
                 api_key=KEY,
                 endpoints=ANTHROPIC_ENDPOINTS,
                 request_headers=ANTHROPIC_REQUEST_HEADERS,
@@ -227,7 +227,7 @@ def compat_asgi(registry: Registry, provider: Provider):
         {
             "openai-compat": Upstream(
                 base_url=f"https://{COMPAT_HOST}",
-                logical_host=COMPAT_HOST,
+                target=COMPAT_HOST,
                 api_key=COMPAT_KEY,
                 key_header=OPENAI_COMPAT_KEY_HEADER,
                 key_scheme=OPENAI_COMPAT_KEY_SCHEME,
@@ -457,7 +457,7 @@ async def test_an_upstream_cookie_is_not_carried_into_another_agents_call():
         {
             "openai-compat": Upstream(
                 base_url=f"https://{COMPAT_HOST}",
-                logical_host=COMPAT_HOST,
+                target=COMPAT_HOST,
                 api_key=COMPAT_KEY,
                 key_header=OPENAI_COMPAT_KEY_HEADER,
                 key_scheme=OPENAI_COMPAT_KEY_SCHEME,
@@ -573,7 +573,7 @@ async def test_anthropic_keeps_its_protocol_headers_and_drops_the_rest():
 
 
 def test_an_upstream_passes_only_the_common_headers_unless_it_declares_more():
-    bare = Upstream(base_url="https://x.example", logical_host="x.example", api_key="k")
+    bare = Upstream(base_url="https://x.example", target="x.example", api_key="k")
 
     assert bare.request_headers == {"content-type", "accept", "accept-encoding", "user-agent"}
     assert ANTHROPIC_REQUEST_HEADERS - bare.request_headers == {
@@ -655,10 +655,8 @@ async def test_the_provider_list_names_only_providers_with_an_upstream():
 
 async def test_the_provider_list_names_decision_upstreams_under_their_own_key():
     """결정 목록은 별도 키 — 기존 소비자가 읽는 ``providers`` 는 모델만 그대로다 (#713)."""
-    model = Upstream(
-        base_url="https://api.anthropic.com", logical_host="api.anthropic.com", api_key=KEY
-    )
-    decision = Upstream(base_url="https://jev.example", logical_host="decision:jev", api_key=KEY)
+    model = Upstream(base_url="https://api.anthropic.com", target="api.anthropic.com", api_key=KEY)
+    decision = Upstream(base_url="https://jev.example", target="decision:jev", api_key=KEY)
     app = create_provider_app(
         Registry(), {"anthropic": model}, decision_upstreams={"posek": decision, "jev": decision}
     )
@@ -673,7 +671,7 @@ async def test_the_provider_list_names_decision_upstreams_under_their_own_key():
 async def test_the_provider_list_is_routed_before_the_provider_catch_all():
     """catch-all 이 먼저 잡으면 ``v1`` 이라는 provider 의 404 가 된다."""
     upstream = Upstream(
-        base_url="https://api.anthropic.com", logical_host="api.anthropic.com", api_key=KEY
+        base_url="https://api.anthropic.com", target="api.anthropic.com", api_key=KEY
     )
     app = create_provider_app(Registry(), {"openai-compat": upstream, "anthropic": upstream})
     async with httpx.AsyncClient(

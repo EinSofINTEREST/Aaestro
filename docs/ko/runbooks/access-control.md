@@ -28,6 +28,7 @@
    | 원격 MCP 도구 하나 | `mcp_tool` | `server/tool` | 생략 |
    | 원격 MCP 서버 전체 | `egress` | 그 서버의 호스트 | 생략 |
    | 다른 에이전트 호출 | `a2a` | 피호출자 이름 | 생략 |
+   | 모델 API 호출 (운영자 키) | `model` | provider 이름, 예: `anthropic` | 생략 |
 
    회수는 선언과 부여를 모두 이기고, 그 에이전트의 **다음 요청**부터 적용된다. 재시작도 재배포도
    없다.
@@ -100,6 +101,27 @@ sudo deployments/docker/isolate-agent-network.sh status aaestro-net
 
 프록시를 켰는데 control plane 이 루프백이 아닌 주소에 바인드하면 기동 시 경고한다 (`control plane is
 reachable from isolated agents through the network gateway`). 루프백에 바인드하거나 규칙을 적용한다.
+
+## #399 이전의 모델 provider 기록
+
+#399 전에는 모델 종단을 provider 의 논리 호스트(`api.anthropic.com`, `openai-compat.invalid`) 에 대한
+`egress` 로 판정했다. 지금은 provider 이름에 대한 `model` 이다. 권한 저장소에 이미 있는 기록은 고쳐 쓰지
+않는다:
+
+- 두 호스트에 대한 `egress` **회수** (`effect: deny`) 는 여전히 모델 종단을 끊는다 — 레지스트리가 그것을
+  그 provider 의 `model` 회수로 세므로 업그레이드가 회수를 조용히 풀지 않는다. `api.anthropic.com` 으로의
+  CONNECT 터널도 여전히 끊는다. 새 형식으로 옮기려면 같은 에이전트에 `model` / `anthropic`
+  (또는 `openai-compat`) 을 회수한 뒤 옛 기록을 되돌린다 (**되돌리기** 또는
+  `DELETE /v1/access/rules/{rule_id}`).
+- 두 호스트에 대한 `egress` **부여** (`effect: allow`) 는 더 이상 모델 종단을 열지 않는다 — 그것이 결함이었다.
+  부여는 모두 만료가 있어 스스로 끝나고, 그때까지는 예전처럼 `api.anthropic.com` 으로의 CONNECT 터널만
+  연다. 할 일은 없지만 터널이 필요 없으면 되돌린다.
+- `spec.model` 에 provider 를 선언하지 않고 `runtime.egress` 나 그런 부여로만 모델에 닿던 에이전트는 이제
+  모델 호출이 `403 ACC_001` 이다. provider 를 선언하고 재배포한다.
+- 상한의 `egress` 에 `api.anthropic.com` / `openai-compat.invalid` 가 있으면, CONNECT 터널을 뜻한 것이 아니라면
+  지운다 — 이제 모델 접근과 무관하다.
+
+기록 찾기: `GET /v1/access/agents/{name}` 의 `rules` 에서 kind 가 `egress` 이고 target 이 두 호스트 중 하나인 것.
 
 ## 권한을 넓힐 때
 

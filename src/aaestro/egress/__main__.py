@@ -362,9 +362,8 @@ async def run(config: dict[str, Any], *, metrics: Metrics | None = None) -> None
 def provider_upstreams(config: Mapping[str, Any]) -> dict[str, Any]:
     """The providers this proxy terminates — 키가 설정된 것만.
 
-    판정 대상은 upstream 주소가 아니라 논리 호스트다 (access/baselines.py ``PROVIDER_HOSTS``).
+    판정 대상은 upstream 주소가 아니라 ``model`` 자원의 provider 이름이다 (#399).
     """
-    from aaestro.access.baselines import PROVIDER_HOSTS
     from aaestro.egress.providers import (
         ANTHROPIC_ENDPOINTS,
         ANTHROPIC_REQUEST_HEADERS,
@@ -378,7 +377,7 @@ def provider_upstreams(config: Mapping[str, Any]) -> dict[str, Any]:
     if config["anthropic_key"]:
         upstreams["anthropic"] = Upstream(
             base_url=config["anthropic_upstream"],
-            logical_host=PROVIDER_HOSTS["anthropic"],
+            target="anthropic",
             api_key=config["anthropic_key"],
             endpoints=ANTHROPIC_ENDPOINTS,
             request_headers=ANTHROPIC_REQUEST_HEADERS,
@@ -386,7 +385,7 @@ def provider_upstreams(config: Mapping[str, Any]) -> dict[str, Any]:
     if config["openai_compat_key"]:
         upstreams["openai-compat"] = Upstream(
             base_url=config["openai_compat_upstream"],
-            logical_host=PROVIDER_HOSTS["openai-compat"],
+            target="openai-compat",
             api_key=config["openai_compat_key"],
             key_header=OPENAI_COMPAT_KEY_HEADER,
             key_scheme=OPENAI_COMPAT_KEY_SCHEME,
@@ -402,12 +401,14 @@ def decision_upstreams(config: Mapping[str, Any]) -> dict[str, Any]:
     것뿐이다 — 같은 키로 닿는 provider 의 다른 API 를 열지 않는다.
     """
     from aaestro.access.baselines import decision_target
+    from aaestro.access.model import ResourceKind
     from aaestro.egress.providers import DECISION_ENDPOINTS, Upstream
 
     return {
         name: Upstream(
             base_url=provider.base_url.rstrip("/"),
-            logical_host=decision_target(name),
+            target=decision_target(name),
+            resource=ResourceKind.EGRESS,
             api_key=key,
             # shortcut: 자격 자리는 Jev 와이어 (Authorization: Bearer) 하나다, 다른 kind 가 오면
             # DECISION_ENDPOINTS 처럼 kind 별 표로 옮긴다

@@ -807,10 +807,11 @@ SHA-256 해시만 저장하며, 값은 어떤 API 응답에도 실리지 않는�
 따라서 회수는 선언과 부여를 모두 이긴다. 메모리에 `mode: "rw"` 로 회수하면 쓰기만 막고 읽기는
 남는다.
 
-2단계는 강제 지점이 갖춰진 자원 종류에만 적용된다 — 지금은 넷 모두: `memory`, `a2a`, `egress`,
-`mcp_tool`. `a2a` 의 선언은 호출자가 **지금 배포된** 그래프의 `connections` 다. 저장소에 있어도 배포되지
-않은 그래프는 아무것도 허용하지 않는다. `egress` 의 선언은 매니페스트의 `runtime.egress`, 모델 provider
-호스트, external MCP 서버 호스트다. `mcp_tool`(`server/tool`) 의 선언은 매니페스트가 선언한 원격 서버의
+2단계는 강제 지점이 갖춰진 자원 종류에만 적용된다 — 지금은 다섯 모두: `memory`, `a2a`, `egress`,
+`mcp_tool`, `model`. `a2a` 의 선언은 호출자가 **지금 배포된** 그래프의 `connections` 다. 저장소에 있어도 배포되지
+않은 그래프는 아무것도 허용하지 않는다. `egress` 의 선언은 매니페스트의 `runtime.egress`, 결정 provider
+이름, external MCP 서버 호스트다. `model`(provider 이름 — `anthropic`, `openai-compat`) 의 선언은
+매니페스트 `spec.model` 의 provider (fallback 포함) 뿐이고, `runtime.egress` 는 그것을 선언하지 않는다 (#399). `mcp_tool`(`server/tool`) 의 선언은 매니페스트가 선언한 원격 서버의
 모든 도구, `allowed_tools` 를 적었으면 그 목록이다. 종류별 선언 판정은 그것을
 쓰는 강제 지점과 함께 연결되므로, 선언과 강제가 따로 놀 수 없다. 그 전까지는 해당 종류에서 선언이
 아무것도 허용하지 않고, 부여가 없는 요청은 `decided_by: "default"` 로 `deny` 된다.
@@ -853,7 +854,8 @@ curl -X POST -H "Authorization: Bearer $AAESTRO_ACCESS_CREDENTIAL" \
   http://127.0.0.1:8700/v1/access/grants
 ```
 
-`kind` 는 `memory`, `egress`, `mcp_tool`, `a2a` 중 하나다. `mode`(`ro`/`rw`)는 메모리에는 필수,
+`kind` 는 `memory`, `egress`, `mcp_tool`, `a2a`, `model` 중 하나다 (`model` 은 운영자가 회수할 수
+있고, 어떤 상한에도 없으므로 권한 에이전트의 `model` 부여는 언제나 `403 ACC_003` 이다). `mode`(`ro`/`rw`)는 메모리에는 필수,
 나머지에는 없어야 한다. 종류에 맞지 않는 mode 는 회수·판정을 포함한 모든 권한 라우트에서 `400`
 (`VAL_002`) 이다. `201` 로 기록을 돌려준다:
 
@@ -1007,7 +1009,7 @@ Service 가 이것으로 run space 후보를 만든다 (#609). 권한이 아니�
     {"kind": "memory", "target": "local:researcher:longterm", "mode": "rw"},
     {"kind": "memory", "target": "global:global:org", "mode": "ro"},
     {"kind": "a2a", "target": "planner", "mode": null},
-    {"kind": "egress", "target": "api.anthropic.com", "mode": null},
+    {"kind": "model", "target": "anthropic", "mode": null},
     {"kind": "mcp_tool", "target": "corp/*", "mode": null}
   ],
   "ceilings": [
@@ -1117,7 +1119,7 @@ Memory Service 는 그 space 를 조용히 뺀 채 뜨지 않고 기동에서 �
 | 창구 | 에이전트가 보내는 것 | 판정 |
 |---|---|---|
 | CONNECT (`8080`) | `HTTPS_PROXY` 를 통한 HTTPS, 프록시 자격으로 신원 | `host[:port]` 에 대한 `egress` — `:443` 은 생략 |
-| Provider (`8081`) | `ANTHROPIC_BASE_URL` / `OPENAI_COMPAT_BASE_URL` 로 가는 모델 API 호출, 키 자리에 신원 | provider 의 논리 호스트(`api.anthropic.com`, `openai-compat.invalid`) 에 대한 `egress` |
+| Provider (`8081`) | `ANTHROPIC_BASE_URL` / `OPENAI_COMPAT_BASE_URL` 로 가는 모델 API 호출, 키 자리에 신원 | provider 이름(`anthropic`, `openai-compat`) 에 대한 `model` |
 
 프록시는 TLS 안을 보지 않는다. 모델 호출에서는 에이전트 신원을 떼고 자기가 쥔 키를 붙인 뒤 provider 의
 응답을 그대로 흘려보내므로, **에이전트 환경에는 모델 키가 없고** 모델 접근 회수에 재배포가 필요 없다.
@@ -1152,10 +1154,12 @@ Provider 리스너에서 프록시 **자신이** 판정으로 거절한 응답�
 움직이지 않는다. 이 헤더는 응답 허용 목록 밖이라, upstream 이 같은 헤더나 프록시와 같은 모양의 에러 본문을
 보내도 provider 의 응답으로 읽힌다.
 
-`openai-compat` 의 판정 대상은 upstream 주소가 아니라 `openai-compat.invalid` 다: 운영자가 회수하는
-것은 이 배치가 어디를 가리키든 "모델 API" 다. 합성 이름이다 — `.invalid` 는 예약 TLD 이고, CONNECT
-창구는 `.invalid` 목적지를 레지스트리에 묻기 전에 `403 ACC_001` 로 거절하므로 provider 선언이 터널을
-열지 않는다.
+모델 호출은 호스트에 대한 `egress` 가 아니라 provider 이름에 대한 `model` 로 판정한다 (#399): 운영자가
+회수하는 것은 이 배치가 어디를 가리키든 "그 provider 의 모델 API" 다. 두 판정 공간은 갈려 있다 —
+`runtime.egress: [api.anthropic.com]` 은 (운영자 키가 붙는) 종단을 열지 않고, provider 선언은 그 호스트로의
+CONNECT 터널을 열지 않는다. provider 를 선언하는 것은 `spec.model` 뿐이고 어떤 확장 상한에도 없으므로
+권한 에이전트도 모델 접근을 내주지 못한다. #399 이전에서 올리는 경우는
+[#399 이전의 모델 provider 기록](runbooks/access-control.md#399-이전의-모델-provider-기록) 참조.
 
 control plane 에서 켠다:
 

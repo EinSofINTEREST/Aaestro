@@ -172,7 +172,7 @@ the tab says the registry is off. Pick an agent to see four things:
 
 | Section | What it shows |
 |---|---|
-| 선언 권한 | what the manifest, the agent's group, `global`, and the graphs it is deployed in give it — memory spaces with their mode, A2A callees, egress destinations, remote MCP tools |
+| 선언 권한 | what the manifest, the agent's group, `global`, and the graphs it is deployed in give it — memory spaces with their mode, A2A callees, egress destinations, remote MCP tools, model providers |
 | 부여·회수 기록 | every revocation and grant, with who decided (`operator` or a permission agent), who asked, why, until when, and whether it is `active`, `expired` or `lifted` |
 | 확장 상한 | the most a permission agent may grant this agent, from its group and `global` |
 | 최근 거부 | the latest refusals the registry decided for this agent |

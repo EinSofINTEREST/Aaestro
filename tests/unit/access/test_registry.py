@@ -181,6 +181,7 @@ def test_a_read_grant_does_not_open_writes(registry, steward):
         ({"kind": ResourceKind.EGRESS, "target": "evil.example.com"}, "상한에 없는 목적지"),
         ({"kind": ResourceKind.MEMORY, "target": KNOWLEDGE, "mode": Mode.RW}, "상한은 ro 까지"),
         ({"kind": ResourceKind.MCP_TOOL, "target": "fs/write_file"}, "상한에 없는 종류"),
+        ({"kind": ResourceKind.MODEL, "target": "anthropic"}, "model 은 상한에 없다 (#399)"),
         (
             {"kind": ResourceKind.EGRESS, "target": "api.search.example.com", "ttl_s": 601},
             "TTL 초과",
