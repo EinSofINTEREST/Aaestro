@@ -132,6 +132,10 @@ _BEARER_PATTERN: Final = re.compile(
     re.IGNORECASE,
 )
 
+# provider 키 형태 (`sk-ant-api03-…`, `sk-proj-…`) — 키 이름이 없는 자유 문자열 (예외 메시지 ·
+# 트레이스백) 에서도 가린다. 접두사 뒤 20자 이상이라 `sk-learn` · `task-key` 는 건드리지 않는다.
+_PROVIDER_KEY_PATTERN: Final = re.compile(r"(?<![A-Za-z0-9_-])sk-[A-Za-z0-9_-]{20,}")
+
 
 def _looks_secret(key: str) -> bool:
     """키 이름이 secret 을 담는 것으로 보이는지."""
@@ -145,7 +149,8 @@ def _redact_text(text: str) -> str:
     잡히지 않는다 — 값 패턴으로 한 번 더 훑는다.
     """
     redacted = _SECRET_VALUE_PATTERN.sub(lambda m: f"{m.group('prefix')}{REDACTED}", text)
-    return _BEARER_PATTERN.sub(lambda m: f"{m.group('scheme')} {REDACTED}", redacted)
+    redacted = _BEARER_PATTERN.sub(lambda m: f"{m.group('scheme')} {REDACTED}", redacted)
+    return _PROVIDER_KEY_PATTERN.sub(REDACTED, redacted)
 
 
 def _redact(value: Any, depth: int = 0) -> Any:

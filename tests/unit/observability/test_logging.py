@@ -493,3 +493,42 @@ def test_reconfiguring_keeps_one_bridge(capsys):
     logging.getLogger("uvicorn.error").error("once")
 
     assert len(capsys.readouterr().out.splitlines()) == 1
+
+
+# --- provider 키 형태 (#725) --------------------------------------------------
+
+ANTHROPIC_KEY = "sk-ant-api03-" + "A" * 40
+OPENAI_KEY = "sk-proj-" + "A" * 40
+
+
+def test_exc_info_provider_key_is_masked(capsys):
+    configure(level="INFO", json_output=True)
+
+    try:
+        raise ValueError(f"401 from provider for key {ANTHROPIC_KEY}")
+    except ValueError as err:
+        get_logger("test").error("model call failed", exc_info=err)
+
+    assert "A" * 20 not in capsys.readouterr().out
+
+
+def test_stdlib_bridge_exception_provider_key_is_masked(capsys):
+    configure(level="INFO", json_output=True)
+
+    try:
+        raise ValueError(f"bad key {ANTHROPIC_KEY}")
+    except ValueError:
+        logging.getLogger("uvicorn.error").exception("failed with %s", OPENAI_KEY)
+
+    assert "A" * 20 not in capsys.readouterr().out
+
+
+def test_provider_keys_in_event_fields_are_masked():
+    masked = apply_mask({"event": f"using {OPENAI_KEY}", "detail": ANTHROPIC_KEY})
+
+    assert "A" * 20 not in str(masked)
+
+
+@pytest.mark.parametrize("text", ["sk-learn is a library", "task-key", "sk-abc", "ask-" + "b" * 30])
+def test_ordinary_sk_words_are_left_intact(text):
+    assert apply_mask({"event": text})["event"] == text
