@@ -12,7 +12,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
 import structlog
-from jinja2 import StrictUndefined, TemplateSyntaxError, meta, nodes
+from jinja2 import StrictUndefined, TemplateAssertionError, TemplateSyntaxError, meta, nodes
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -287,6 +287,7 @@ class LoadedPromptset(BaseModel):
         chosen = locale or self.manifest.spec.default_locale
 
         failure: AaestroError | None = None
+        compiling = False
         try:
             boundary = Boundary(
                 f"{self.ref}#{template}@{chosen}", guarded, output_budget=self.value_budget
@@ -299,7 +300,9 @@ class LoadedPromptset(BaseModel):
                 keep_trailing_newline=True,
                 finalize=boundary,
             )
+            compiling = True
             compiled = environment.from_string(source)
+            compiling = False
             boundary.arm()
             body = self._collect(compiled.generate(**guarded))
         except MemoryError:
@@ -308,7 +311,12 @@ class LoadedPromptset(BaseModel):
         # 템플릿은 임의 표현식을 평가한다 (0 나누기, 타입 불일치) — 어떤 실패든 typed 에러로
         # 나가야 한다
         except Exception as err:
-            failure = self._render_failure(template, err, truncated)
+            # 컴파일 실패는 템플릿 본문 탓이다 — 입력 탓 분류 (VAL_002) 로 가지 않는다
+            failure = (
+                _uncompilable(err, self.ref, template, ErrorCode.MOD_004)
+                if compiling
+                else self._render_failure(template, err, truncated)
+            )
         if failure is not None:
             # except 밖에서 올린다 — 원인 체인을 일부러 끊는다 (07 "원인 체인 보존" 의 예외).
             # 표현식 예외의 문자열에는 값이 실리고, __cause__ · __context__ 로 남으면 로그에 샌다
@@ -638,22 +646,57 @@ def _check_source(source: str, ref: str, template: str, code: ErrorCode) -> None
 
     같은 검사를 로드 (``MOD_003`` — 모듈이 잘못 게시됐다) 와 렌더 (``MOD_004``) 가 쓴다.
     """
+    label = printable_label(template)
     try:
         check_syntax(source)
     except UnsupportedSyntaxError as err:
         raise AaestroError(
             category=ErrorCategory.MODULE,
             code=code,
-            message=f"template uses unsupported syntax: {template}",
-            details={"promptset": ref, "template": template, "node": err.kind, "line": err.line},
+            message=f"template uses unsupported syntax: {label}",
+            details={"promptset": ref, "template": label, "node": err.kind, "line": err.line},
         ) from err
     except TemplateSyntaxError as err:
         raise AaestroError(
             category=ErrorCategory.MODULE,
             code=code,
-            message=f"template syntax is invalid: {template}",
-            details={"promptset": ref, "template": template, "line": err.lineno},
+            message=f"template syntax is invalid: {label}",
+            details={"promptset": ref, "template": label, "line": err.lineno},
         ) from err
+    except MemoryError:
+        raise
+    except Exception as err:
+        raise _uncompilable(err, ref, template, code) from None
+
+
+def _uncompilable_reason(err: Exception, label: str) -> tuple[str, str | None]:
+    """파서 · 컴파일러가 던진 예외를 (사유, 원인 종류 이름) 으로 — 예외 문자열은 쓰지 않는다.
+
+    예외 문자열에 템플릿 조각이 실릴 수 있어 종류 이름만 싣는다.
+    """
+    if isinstance(err, TemplateAssertionError):
+        # 컴파일이 이름을 해석하다 만난 없는 필터 · test — 구문 오류가 아니다
+        return f"template uses unknown filters or tests: {label}", None
+    if isinstance(err, TemplateSyntaxError):
+        return f"template syntax is invalid: {label} (line {err.lineno})", None
+    if isinstance(err, RecursionError):
+        # 깊은 중첩 — 파서 · 컴파일러가 던진다
+        return f"template nesting is too deep: {label}", None
+    if isinstance(err, SyntaxError):
+        # 컴파일러가 만든 파이썬 코드가 언어 한도 (정적 중첩 블록 20) 를 넘는다
+        return f"template is too complex to compile: {label}", None
+    # 정수 리터럴 한도의 ValueError 등
+    return f"template could not be compiled: {label}", type(err).__name__
+
+
+def _uncompilable(err: Exception, ref: str, template: str, code: ErrorCode) -> AaestroError:
+    """파싱 · 컴파일 실패를 typed 에러로 — 로드는 MOD_003, 렌더는 MOD_004."""
+    label = printable_label(template)
+    reason, cause = _uncompilable_reason(err, label)
+    details: dict[str, Any] = {"promptset": ref, "template": label}
+    if cause is not None:
+        details["cause"] = cause
+    return AaestroError(category=ErrorCategory.MODULE, code=code, message=reason, details=details)
 
 
 MAX_REPORTED_NAMES = 10
@@ -702,21 +745,10 @@ def _vet_template(
             message=err.message,
             details={**err.details, **locale_details},
         ) from None
-    except TemplateSyntaxError as err:
-        reason = f"template syntax is invalid: {label} (line {err.lineno})"
-    except RecursionError:
-        # 깊은 중첩 — 파서 · 컴파일러가 던진다. 한 promptset 의 문제로 가둔다 (원인 체인은 끊는다)
-        reason = f"template nesting is too deep: {label}"
-    except SyntaxError:
-        # 컴파일러가 만든 파이썬 코드가 언어 한도 (정적 중첩 블록 20) 를 넘는다
-        reason = f"template is too complex to compile: {label}"
     except MemoryError:
         raise
     except Exception as err:
-        # 파서 · 컴파일러가 던지는 그 밖의 예외 (정수 리터럴 한도의 ValueError 등) — 한 promptset 의
-        # 문제로 가둔다. 예외 문자열에 템플릿 조각이 실릴 수 있어 종류 이름만 싣고 체인은 끊는다
-        reason = f"template could not be compiled: {label}"
-        cause = type(err).__name__
+        reason, cause = _uncompilable_reason(err, label)
     else:
         if not names:
             return
