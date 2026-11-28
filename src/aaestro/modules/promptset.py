@@ -12,7 +12,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
 import structlog
-from jinja2 import StrictUndefined, TemplateSyntaxError
+from jinja2 import StrictUndefined, TemplateAssertionError, TemplateSyntaxError, meta, nodes
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -287,6 +287,7 @@ class LoadedPromptset(BaseModel):
         chosen = locale or self.manifest.spec.default_locale
 
         failure: AaestroError | None = None
+        compiling = False
         try:
             boundary = Boundary(
                 f"{self.ref}#{template}@{chosen}", guarded, output_budget=self.value_budget
@@ -299,7 +300,9 @@ class LoadedPromptset(BaseModel):
                 keep_trailing_newline=True,
                 finalize=boundary,
             )
+            compiling = True
             compiled = environment.from_string(source)
+            compiling = False
             boundary.arm()
             body = self._collect(compiled.generate(**guarded))
         except MemoryError:
@@ -308,7 +311,12 @@ class LoadedPromptset(BaseModel):
         # 템플릿은 임의 표현식을 평가한다 (0 나누기, 타입 불일치) — 어떤 실패든 typed 에러로
         # 나가야 한다
         except Exception as err:
-            failure = self._render_failure(template, err, truncated)
+            # 컴파일 실패는 템플릿 본문 탓이다 — 입력 탓 분류 (VAL_002) 로 가지 않는다
+            failure = (
+                _uncompilable(err, self.ref, template, ErrorCode.MOD_004)
+                if compiling
+                else self._render_failure(template, err, truncated)
+            )
         if failure is not None:
             # except 밖에서 올린다 — 원인 체인을 일부러 끊는다 (07 "원인 체인 보존" 의 예외).
             # 표현식 예외의 문자열에는 값이 실리고, __cause__ · __context__ 로 남으면 로그에 샌다
@@ -499,6 +507,18 @@ class LoadedPromptset(BaseModel):
                     message="failed to read template file",
                     details={"promptset": self.ref, "template": template},
                 ) from err
+            except UnicodeDecodeError as err:
+                # 예외 문자열에 파일 바이트가 실리므로 원인 체인을 끊고 종류 이름만 싣는다
+                raise AaestroError(
+                    category=ErrorCategory.MODULE,
+                    code=ErrorCode.MOD_004,
+                    message="failed to read template file",
+                    details={
+                        "promptset": self.ref,
+                        "template": template,
+                        "cause": type(err).__name__,
+                    },
+                ) from None
 
         raise AaestroError(
             category=ErrorCategory.MODULE,
@@ -514,13 +534,15 @@ class PromptsetLoader:
     def __init__(self, registry: ModuleRegistry) -> None:
         self._registry = registry
 
-    def load(self, ref: str) -> LoadedPromptset:
+    def load(self, ref: str, *, vet_names: bool = False) -> LoadedPromptset:
         """Load a promptset declaration.
 
         프롬프트셋을 로드합니다.
 
         Args:
             ref: Promptset reference (``promptsets/{name}@{version}``).
+            vet_names: 게시 검증용 — 템플릿을 렌더 환경으로 컴파일하고 선언 밖의 이름을 거절한다
+                (#716). agentd 기동은 켜지 않는다 (선언 밖 변수는 렌더의 ``MOD_004``, 04 Rules 1).
 
         Returns:
             The loaded promptset.
@@ -535,11 +557,13 @@ class PromptsetLoader:
         except ValidationError as err:
             reject_module(ref, err)
 
-        _check_template_files(manifest, path, ref)
+        _check_template_files(manifest, path, ref, vet_names=vet_names)
         return LoadedPromptset(ref=ref, manifest=manifest, root=path.root)
 
 
-def _check_template_files(manifest: PromptsetManifest, path: ModulePath, ref: str) -> None:
+def _check_template_files(
+    manifest: PromptsetManifest, path: ModulePath, ref: str, *, vet_names: bool = False
+) -> None:
     """선언된 템플릿 파일이 실재하고 경계를 우회하지 않는지 로드 시점에 확인한다.
 
     본문은 렌더할 때마다 다시 읽으므로 강제 지점은 렌더다 — 여기서는 같은 검사로 일찍 알린다.
@@ -574,7 +598,23 @@ def _check_template_files(manifest: PromptsetManifest, path: ModulePath, ref: st
                     message="failed to read template file",
                     details={"promptset": ref, "template": printable_label(name)},
                 ) from err
-            _check_source(source, ref, name, ErrorCode.MOD_003)
+            except UnicodeDecodeError as err:
+                # 예외 문자열에 파일 바이트가 실리므로 원인 체인을 끊고 종류 이름만 싣는다
+                raise AaestroError(
+                    category=ErrorCategory.MODULE,
+                    code=ErrorCode.MOD_003,
+                    message="failed to read template file",
+                    details={
+                        "promptset": ref,
+                        "template": printable_label(name),
+                        "cause": type(err).__name__,
+                    },
+                ) from None
+            if vet_names:
+                locale = None if candidate is default else candidate.parent.name
+                _vet_template(source, ref, name, frozenset(spec.variables), locale)
+            else:
+                _check_source(source, ref, name, ErrorCode.MOD_003)
 
 
 def _inside_root(root: Path, candidate: Path) -> Path | None:
@@ -606,19 +646,117 @@ def _check_source(source: str, ref: str, template: str, code: ErrorCode) -> None
 
     같은 검사를 로드 (``MOD_003`` — 모듈이 잘못 게시됐다) 와 렌더 (``MOD_004``) 가 쓴다.
     """
+    label = printable_label(template)
     try:
         check_syntax(source)
     except UnsupportedSyntaxError as err:
         raise AaestroError(
             category=ErrorCategory.MODULE,
             code=code,
-            message=f"template uses unsupported syntax: {template}",
-            details={"promptset": ref, "template": template, "node": err.kind, "line": err.line},
+            message=f"template uses unsupported syntax: {label}",
+            details={"promptset": ref, "template": label, "node": err.kind, "line": err.line},
         ) from err
     except TemplateSyntaxError as err:
         raise AaestroError(
             category=ErrorCategory.MODULE,
             code=code,
-            message=f"template syntax is invalid: {template}",
-            details={"promptset": ref, "template": template, "line": err.lineno},
+            message=f"template syntax is invalid: {label}",
+            details={"promptset": ref, "template": label, "line": err.lineno},
         ) from err
+    except MemoryError:
+        raise
+    except Exception as err:
+        raise _uncompilable(err, ref, template, code) from None
+
+
+def _uncompilable_reason(err: Exception, label: str) -> tuple[str, str | None]:
+    """파서 · 컴파일러가 던진 예외를 (사유, 원인 종류 이름) 으로 — 예외 문자열은 쓰지 않는다.
+
+    예외 문자열에 템플릿 조각이 실릴 수 있어 종류 이름만 싣는다.
+    """
+    if isinstance(err, TemplateAssertionError):
+        # 컴파일이 이름을 해석하다 만난 없는 필터 · test — 구문 오류가 아니다
+        return f"template uses unknown filters or tests: {label}", None
+    if isinstance(err, TemplateSyntaxError):
+        return f"template syntax is invalid: {label} (line {err.lineno})", None
+    if isinstance(err, RecursionError):
+        # 깊은 중첩 — 파서 · 컴파일러가 던진다
+        return f"template nesting is too deep: {label}", None
+    if isinstance(err, SyntaxError):
+        # 컴파일러가 만든 파이썬 코드가 언어 한도 (정적 중첩 블록 20) 를 넘는다
+        return f"template is too complex to compile: {label}", None
+    # 정수 리터럴 한도의 ValueError 등
+    return f"template could not be compiled: {label}", type(err).__name__
+
+
+def _uncompilable(err: Exception, ref: str, template: str, code: ErrorCode) -> AaestroError:
+    """파싱 · 컴파일 실패를 typed 에러로 — 로드는 MOD_003, 렌더는 MOD_004."""
+    label = printable_label(template)
+    reason, cause = _uncompilable_reason(err, label)
+    details: dict[str, Any] = {"promptset": ref, "template": label}
+    if cause is not None:
+        details["cause"] = cause
+    return AaestroError(category=ErrorCategory.MODULE, code=code, message=reason, details=details)
+
+
+MAX_REPORTED_NAMES = 10
+"""거절 사유에 싣는 이름의 상한 — 템플릿이 만든 이름이라 개수와 길이를 묶는다."""
+
+
+def _vet_template(
+    source: str, ref: str, template: str, declared: frozenset[str], locale: str | None
+) -> None:
+    """게시 검증 — 구문 검사에 더해 렌더 환경으로 컴파일하고 선언 밖의 이름을 거절한다 (#716).
+
+    ``check_syntax`` 는 파싱까지다 — 없는 필터 · 테스트와 제거된 전역 (``lipsum``) · 선언하지 않은
+    변수는 이름 해석에서 드러난다. 렌더하지 않는다 (코드 실행 없음). 값 · 원문은 싣지 않는다.
+    """
+    environment = GuardedEnvironment(
+        output_limit=DEFAULT_RENDER_LIMIT, autoescape=False, undefined=StrictUndefined
+    )
+    # 사유 · details 에 실리는 이름은 모두 정제한다 — 선언의 키는 제어 문자를 담을 수 있다
+    label = printable_label(template)
+    locale_details: dict[str, Any] = {} if locale is None else {"locale": printable_label(locale)}
+    names: list[str] = []
+    cause: str | None = None
+    try:
+        _check_source(source, ref, label, ErrorCode.MOD_003)
+        tree = environment.parse(source)
+        environment.compile(tree)
+        # 컴파일은 조건 자리의 없는 test 를 지나친다 — AST 의 이름을 환경과 직접 대조한다
+        names = [
+            node.name
+            for node in tree.find_all((nodes.Filter, nodes.Test))
+            if node.name
+            not in (environment.filters if isinstance(node, nodes.Filter) else environment.tests)
+        ]
+        if names:
+            reason = f"template uses unknown filters or tests: {label}"
+        else:
+            names = sorted(
+                meta.find_undeclared_variables(tree) - declared - set(environment.globals)
+            )
+            reason = f"template uses undeclared names: {label}"
+    except AaestroError as err:
+        # 구문 거절 — 다른 게시 거절과 같이 locale 을 싣고 원인 (파서 예외) 은 끊는다
+        raise AaestroError(
+            category=err.category,
+            code=err.code,
+            message=err.message,
+            details={**err.details, **locale_details},
+        ) from None
+    except MemoryError:
+        raise
+    except Exception as err:
+        reason, cause = _uncompilable_reason(err, label)
+    else:
+        if not names:
+            return
+    details: dict[str, Any] = {"promptset": ref, "template": label, **locale_details}
+    if cause is not None:
+        details["cause"] = cause
+    if names:
+        details["names"] = [printable_label(n) for n in sorted(set(names))[:MAX_REPORTED_NAMES]]
+    raise AaestroError(
+        category=ErrorCategory.MODULE, code=ErrorCode.MOD_003, message=reason, details=details
+    ) from None

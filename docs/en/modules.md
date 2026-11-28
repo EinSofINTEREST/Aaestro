@@ -264,9 +264,12 @@ Answer it.
   description.
 - **Syntax that bypasses the fence is refused**, when the promptset is loaded (`MOD_003` — the
   module was published broken, like a missing template file) and again on every render
-  (`MOD_004`). The load-time check goes as far as parsing (syntax and refused statements); what
+  (`MOD_004`). The agentd load-time check goes as far as parsing (syntax and refused statements); what
   only shows when a template is compiled or run — an unknown filter, a removed global — is
-  `MOD_004` at render time. Refused: `{% filter %}`, `{% call %}` (and with it `caller()`), `{% autoescape %}`,
+  `MOD_004` at render time. The publish check (the catalog listing deployment validation resolves
+  refs from) goes further without rendering: it compiles every template and locale override in the
+  render environment and refuses names that are not declared variables (removed globals such as
+  `lipsum`, undeclared variables). A violation is `MOD_003` and the promptset is not published; an undeclared name is refused even when wrapped in `is defined`. Refused: `{% filter %}`, `{% call %}` (and with it `caller()`), `{% autoescape %}`,
   `{% block %}`, `{% include %}`, `{% import %}`, `{% from %}`, `{% extends %}`. These write
   output without passing the fence, or rewrite text that is already fenced. The open list is
   closed: `{{ … }}`, `{% for %}`, `{% if %}`, `{% with %}`, `{% set %}` and `{% macro %}`. The

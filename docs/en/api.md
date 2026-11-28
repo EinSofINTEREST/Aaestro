@@ -183,8 +183,9 @@ whose declaration is fine but whose skill breaks the standard appears under `pro
 
 One module document. Versions are exact — there is no `latest`.
 
-A skillpack goes through the same validation as the listing, so a pack listed under `problems`
-answers here with the same `MOD_003` error (`400`) instead of `200`. Its declaration has no
+Every module type goes through the same validation as the listing, so a module listed under
+`problems` answers here with the same error instead of `200` (a schema violation is `MOD_003`,
+`400`; an unresolvable ref is `NF_001`, `404`). A skillpack's declaration has no
 skill list — the directories are the list — so the response adds one from the validated pack:
 
 ```json

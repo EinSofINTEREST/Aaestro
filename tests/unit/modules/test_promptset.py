@@ -388,3 +388,23 @@ def test_template_paths_resolving_inside_root_stay_allowed(tmp_path):
 def test_template_file_that_names_no_file_is_rejected_by_schema(file):
     with pytest.raises(ValidationError):
         TemplateSpec(file=file)
+
+
+def test_render_non_utf8_template_raises_mod_004_without_the_bytes(tmp_path):
+    loader = _write_promptset(
+        tmp_path,
+        yaml_body=HEADER + "    a:\n      file: templates/a.j2\n",
+        files={"a.j2": "ok"},
+    )
+    loaded = loader.load("promptsets/custom@0.1.0")
+    (tmp_path / "modules/promptsets/custom/0.1.0/templates/a.j2").write_bytes(
+        b"\xff\xfe secret_marker_xyz"
+    )
+
+    with pytest.raises(AaestroError) as exc_info:
+        loaded.render("a")
+
+    assert exc_info.value.code == "MOD_004"
+    assert exc_info.value.details["cause"] == "UnicodeDecodeError"
+    assert exc_info.value.__cause__ is None
+    assert "secret_marker_xyz" not in repr(exc_info.value.details)

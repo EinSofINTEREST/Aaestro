@@ -51,6 +51,9 @@ def workspace(tmp_path: Path) -> Path:
             },
         },
     )
+    (tmp_path / "modules" / "promptsets" / "solo" / "0.1.0" / "t.j2").write_text(
+        "ok\n", encoding="utf-8"
+    )
     (tmp_path / "graphs").mkdir()
     (tmp_path / "groups").mkdir()
     return tmp_path
@@ -149,6 +152,7 @@ def test_modules_group_versions_by_name(workspace):
             },
         },
     )
+    (workspace / "modules" / "promptsets" / "solo" / "0.2.0" / "t.j2").write_text("ok\n")
 
     assert Catalog.under(workspace).modules("promptsets").items == {"solo": ("0.1.0", "0.2.0")}
 
@@ -173,6 +177,56 @@ def test_only_module_types_are_browsable_as_modules(workspace, module_type):
         Catalog.under(workspace).modules(module_type)
 
     assert excinfo.value.code == ErrorCode.NF_001
+
+
+_KINDS = {
+    "skillsets": ("Skillset", "skillset.yaml"),
+    "promptsets": ("Promptset", "promptset.yaml"),
+    "memorysets": ("Memoryset", "memoryset.yaml"),
+    "decisionsets": ("Decisionset", "decisionset.yaml"),
+    "skillpacks": ("Skillpack", "skillpack.yaml"),
+}
+
+
+def _write_broken_module(workspace: Path, module_type: str) -> str:
+    """타입마다 대표 깨짐 하나 — 선언 헤더는 맞고 내용만 스키마를 어긴다."""
+    kind, filename = _KINDS[module_type]
+    directory = workspace / "modules" / module_type / "bad" / "0.1.0"
+    spec: dict = {"unknown_key": 1}
+    if module_type == "promptsets":
+        spec = {"engine": "jinja2", "templates": {"default": {"file": "t.j2"}}}
+        (directory).mkdir(parents=True)
+        (directory / "t.j2").write_text("{{ nope | no_such_filter }}\n", encoding="utf-8")
+    if module_type == "skillpacks":
+        spec = None
+        (directory / "skills" / "x").mkdir(parents=True)
+        (directory / "skills" / "x" / "SKILL.md").write_text("no frontmatter\n", encoding="utf-8")
+    document = {
+        "apiVersion": "aaestro/v1",
+        "kind": kind,
+        "metadata": {"name": "bad", "version": "0.1.0"},
+    }
+    if spec is not None:
+        document["spec"] = spec
+    write(directory / filename, document)
+    return f"modules/{module_type}/bad/0.1.0"
+
+
+@pytest.mark.parametrize("module_type", MODULE_TYPES)
+def test_a_module_missing_from_the_listing_is_rejected_by_single_lookup(workspace, module_type):
+    """목록에서 빠진 깨진 모듈은 단건도 같은 코드로 거절한다 (#731)."""
+    suffix = _write_broken_module(workspace, module_type)
+    catalog = Catalog.under(workspace)
+
+    listed = catalog.modules(module_type)
+    assert "bad" not in listed.items
+    problem = next(p for p in listed.problems if p.path.endswith(suffix))
+    assert problem.code != ErrorCode.MOD_001
+    with pytest.raises(AaestroError) as excinfo:
+        catalog.module(module_type, "bad", "0.1.0")
+
+    assert excinfo.value.code == problem.code
+    assert excinfo.value.message == problem.message
 
 
 def test_module_types_are_the_read_only_ones():
@@ -368,6 +422,7 @@ def test_a_module_with_an_outside_link_is_not_published(workspace, tmp_path):
     outside = tmp_path / "outside.j2"
     outside.write_text("outside\n", encoding="utf-8")
     module = workspace / "modules" / "promptsets" / "solo" / "0.1.0"
+    (module / "t.j2").unlink()  # fixture 가 둔 실제 파일을 링크로 바꾼다
     (module / "t.j2").symlink_to(outside)
 
     listed = Catalog.under(workspace).modules("promptsets")

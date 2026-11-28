@@ -30,9 +30,9 @@ from aaestro.core.topology import GraphTopology
 from aaestro.core.yamlio import YamlReadError, load_yaml_file
 from aaestro.modules.decisionset import DecisionsetLoader
 from aaestro.modules.memoryset import MemorysetManifest
-from aaestro.modules.promptset import PromptsetManifest
+from aaestro.modules.promptset import PromptsetLoader, PromptsetManifest
 from aaestro.modules.registry import ModuleRegistry, RegistryRoots, inside
-from aaestro.modules.skillpack import SkillpackLoader
+from aaestro.modules.skillpack import LoadedSkillpack, SkillpackLoader
 from aaestro.modules.skillset import SkillsetManifest
 
 MODULE_TYPES: tuple[str, ...] = (
@@ -193,6 +193,45 @@ def _validate_module(module_type: str, ref: str, document: dict[str, Any]) -> No
                 details={"module_ref": ref, "errors": field_problems(err)},
             )
         )
+
+
+def _validate_ref(
+    registry: ModuleRegistry, module_type: str, ref: str
+) -> dict[str, Any] | LoadedSkillpack:
+    """모듈 하나를 종류별로 검증한다 — 목록과 단건이 **같은 함수**를 지난다.
+
+    둘이 따로 분기하면 타입이 늘 때마다 어긋난다 (목록에서 빠진 모듈이 단건에서 200).
+    선언 문서 (skillpack 은 로드 결과) 를 돌려준다.
+    """
+    if module_type == "skillpacks":
+        # 읽기만 해서 전부 검증된다 (코드를 실행하지 않는다) — 선언만 맞고 담긴 skill 이
+        # 표준을 어긴 팩을 게시된 것으로 넘기지 않는다
+        return SkillpackLoader(registry).load(ref)
+    _path, document = registry.load_document(ref)
+    if module_type == "promptsets":
+        # 템플릿 본문까지 읽어 agentd 기동과 같은 검사를 통과한 것만 게시한다 — 렌더 없음 (#716)
+        PromptsetLoader(registry).load(ref, vet_names=True)
+    elif module_type == "decisionsets":
+        # calibration 라벨 세트까지 읽어 검증한다 (실 provider 호출 없음)
+        DecisionsetLoader(registry).load(ref)
+    else:
+        # yaml 스키마 검증만이다 — 스킬 코드는 control plane 에서 실행하지 않는다 (04)
+        _validate_module(module_type, ref, document)
+    return document
+
+
+def _skillpack_document(loaded: LoadedSkillpack) -> dict[str, Any]:
+    """skillpack 단건 문서 — 선언에 skill 목록이 없어 (디렉토리가 곧 목록) 검증 결과에서 싣는다.
+
+    `description` 같은 frontmatter 값은 싣지 않는다 — 신뢰하지 않는 입력이다 (#374).
+    """
+    document: dict[str, Any] = loaded.manifest.model_dump(
+        mode="json", by_alias=True, exclude_none=True
+    )
+    document["skills"] = [
+        {"name": skill.name, "files": len(skill.files)} for skill in loaded.skills
+    ]
+    return document
 
 
 def parse_declaration[T: BaseModel](path: Path, model: type[T]) -> T:
@@ -415,22 +454,9 @@ class Catalog:
                 continue
             ref = f"{module_type}/{version_dir.parent.name}@{version_dir.name}"
             try:
-                if module_type == "skillpacks":
-                    # skillpack 은 읽기만 해서 전부 검증된다 (코드를 실행하지 않는다) — 선언만
-                    # 맞고 담긴 skill 이 표준을 어긴 팩을 게시된 것으로 넘기지 않는다.
-                    # 로더가 선언 무결성 검사 (load_document) 와 스키마 검증을 포함한다
-                    loaded = SkillpackLoader(registry).load(ref)
-                    warnings.extend(f"{ref}: {warning}" for warning in loaded.warnings)
-                elif module_type == "decisionsets":
-                    # calibration 라벨 세트까지 읽어 검증된 것만 게시한다 (실 provider 호출 없음)
-                    DecisionsetLoader(registry).load(ref)
-                else:
-                    # 선언 문서를 스키마로 읽는다 — 오타 난 키가 배포를 통과해 컨테이너나 Memory
-                    # Service 기동에서야 터지지 않게. yaml 스키마 검증만이다: 스킬 코드는 control
-                    # plane 에서 실행하지 않고 소유 에이전트 컨테이너 안에서만 로드된다
-                    # (04 Loading Isolation)
-                    _path, document = registry.load_document(ref)
-                    _validate_module(module_type, ref, document)
+                result = _validate_ref(registry, module_type, ref)
+                if isinstance(result, LoadedSkillpack):
+                    warnings.extend(f"{ref}: {warning}" for warning in result.warnings)
             except AaestroError as err:
                 problems.append(_problem(str(version_dir), err))
                 continue
@@ -473,34 +499,14 @@ class Catalog:
             raise not_found("module type", module_type)
         ref = f"{module_type}/{name}@{version}"
         try:
-            if module_type == "skillpacks":
-                return self._skillpack(ref)
-            registry = ModuleRegistry(self.roots)
-            _path, document = registry.load_document(ref)
-            if module_type == "decisionsets":
-                DecisionsetLoader(registry).load(ref)  # 목록과 같은 검증
+            result = _validate_ref(ModuleRegistry(self.roots), module_type, ref)
         except AaestroError as err:
             if err.code == ErrorCode.MOD_001:
                 raise not_found("module", ref) from err
             raise
-        return document
-
-    def _skillpack(self, ref: str) -> dict[str, Any]:
-        """skillpack 단건 — 목록과 **같은 검증**을 지난다.
-
-        선언만 읽어 돌려주면 목록은 "게시 안 됨" 인데 단건은 200 이 된다. 선언에 skill 목록이
-        없으므로 (디렉토리가 곧 목록) 검증한 결과에서 이름과 파일 수를 함께 싣는다.
-        `description` 같은 frontmatter 값은 싣지 않는다 — 받아 온 skill 의 내용은 신뢰하지
-        않는 입력이고, 그것을 어디에 어떻게 보일지는 #374 가 정한다.
-        """
-        loaded = SkillpackLoader(ModuleRegistry(self.roots)).load(ref)
-        document: dict[str, Any] = loaded.manifest.model_dump(
-            mode="json", by_alias=True, exclude_none=True
-        )
-        document["skills"] = [
-            {"name": skill.name, "files": len(skill.files)} for skill in loaded.skills
-        ]
-        return document
+        if isinstance(result, LoadedSkillpack):
+            return _skillpack_document(result)
+        return result
 
 
 __all__ = [

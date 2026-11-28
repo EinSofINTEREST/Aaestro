@@ -110,6 +110,10 @@ def workspace(tmp_path: Path) -> Path:
             },
         },
     )
+    for template in ("t", "a", "b"):
+        (tmp_path / "modules" / "promptsets" / "solo" / "0.1.0" / f"{template}.j2").write_text(
+            "ok\n", encoding="utf-8"
+        )
     for name in ("alpha", "beta"):
         write(tmp_path / "agents" / name / "manifest.yaml", agent_doc(name))
     global_group = yaml.safe_load(
