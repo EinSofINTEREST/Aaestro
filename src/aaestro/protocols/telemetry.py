@@ -6,6 +6,7 @@ MCP/A2A 원격 호출과 circuit breaker 상태의 메트릭 집계. 주입하�
 
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import TYPE_CHECKING, Final
 
 if TYPE_CHECKING:
@@ -48,4 +49,43 @@ class A2aTelemetry:
         """peer 호출 결과를 집계한다 — allowlist 거부도 실패로 남긴다."""
         self._metrics.counter("aaestro_a2a_calls_total").labels(
             caller=self._caller, callee=callee, status=status
+        ).inc()
+
+
+class A2aRefusal(StrEnum):
+    """Why the callee turned an inbound A2A request away — a closed set (``reason`` label).
+
+    수신 측 거절 사유. 호출자 이름은 라벨로 쓰지 않는다 — 확인되지 않은 값이라 위조되고 요청마다
+    새 시계열이 생긴다 (09 의 ``undeclared`` 와 같은 결).
+    """
+
+    NO_CREDENTIAL = "no_credential"
+    """자격 (토큰 · 표) 을 싣지 않았다."""
+    DENIED = "denied"
+    """자격이 틀렸거나 판정이 거부했다 (A2A_004)."""
+    UNREACHABLE = "unreachable"
+    """레지스트리에 닿지 못하고 캐시도 없어 판정하지 못했다 — 거부와 대응이 다르다 (인프라 장애)."""
+    MALFORMED = "malformed"
+    """본문이 계약에 맞지 않는다 (VAL_001 · VAL_002)."""
+    TOO_DEEP = "too_deep"
+    """위임 깊이 초과 (A2A_005)."""
+    UNSUPPORTED = "unsupported"
+    """열지 않은 요청 — 태스크 조회 · 구독 · 취소 · push · 확장 카드 · 기존 태스크에 잇는 메시지."""
+
+
+class A2aInboundTelemetry:
+    """Counts inbound A2A refusals on the callee side.
+
+    피호출자 쪽 거절을 셉니다 — 자격 없는 요청이 몰려도 ``aaestro_a2a_calls_total`` (호출자 쪽
+    집계) 에는 잡히지 않습니다 (#420).
+    """
+
+    def __init__(self, metrics: Metrics, *, callee: str) -> None:
+        self._metrics = metrics
+        self._callee = callee
+
+    def refused(self, reason: A2aRefusal) -> None:
+        """거절 하나를 센다."""
+        self._metrics.counter("aaestro_a2a_refusals_total").labels(
+            callee=self._callee, reason=reason.value
         ).inc()

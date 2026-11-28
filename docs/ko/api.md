@@ -1172,10 +1172,12 @@ runtime:
 
 배포 검증은 `providers` 에 없는 모델 provider(primary·fallback)를 거절한다 (`400 VAL_001`, finding `model_providers`).
 이 목록은 선언일 뿐 프록시가 provider 마다 키를 쥐었다는 증거가 아니다. 그래서 배포마다 프록시에도 묻는다:
-`control_url` (없으면 `providers_url`) 의 `GET /v1/providers` 가 `{"providers": [...]}` — 지금 upstream (키) 이 있는 provider 를 정렬해 —
+`control_url` (없으면 `providers_url`) 의 `GET /v1/providers` 가 `{"providers": [...], "decision_providers": [...]}` — 지금 upstream (키) 이 있는 모델 · 결정 provider 를 각각 정렬해 —
 로 답한다. 신원이 필요 없고 키는 싣지 않는다. 배포가 쓰는 provider (primary · fallback · 노드 `model` · 배포
 `model_overrides`) 가 그 답에 없으면 컨테이너를 띄우기 전에 거절한다 (`400 VAL_002`, `details.agent` ·
-`details.provider`). 프록시가 답하지 못해도 거절한다 — 선언 목록으로 물러나지 않는다: 연결 거부
+`details.provider`). `spec.decision.provider` 가 `decision_providers` 에 없는 에이전트도 같게 거절한다
+(`400 VAL_002`). `decision_providers` 키가 없는 옛 프록시는 중계하지 않는 것으로 보고, 메시지가 프록시가 결정 upstream 을 알리지 않는다고 말한다. 프록시가 없으면 `spec.decision` 은 거절하지 않고 배포 검증이 경고하며 원래 경로로 돈다.
+프록시가 답하지 못해도 거절한다 — 선언 목록으로 물러나지 않는다: 연결 거부
 `503 NET_001` 과 timeout `503 NET_002` (둘 다 retryable — 조회 전체에 5초 마감이 있다), `5xx` 는 `503 NET_001`
 (retryable), 그 밖의 상태나 모양이 틀리거나 64 KiB 를 넘거나 압축된 본문 (control plane 은 `identity` 를
 청하고 받은 바이트 그대로 세므로 응답을 풀지 않는다) 은 `500 NET_001` (retryable 아님 —
@@ -1438,8 +1440,14 @@ runtime 이 에이전트보다 먼저 `aaestro-<agent>--mcp-<server>` 라는 이
 - **기존 태스크에 메시지를 이을 수 없다.** `taskId` 를 지정한 send 도 같은 응답으로 거절한다. 위임은
   늘 새 태스크다.
 - **태스크 store 는 끝난 태스크를 쥐지 않는다.** 태스크를 실행 중에만 들고, 완료·실패·거부되면
-  store 에서 버린다 — 결과는 응답으로만 간다. 알려진 한계: 에이전트 실행이 취소로 끝난 태스크는
-  SDK 내부의 활성 태스크 레지스트리에 남을 수 있다 (SDK 동작, 별도 이슈).
+  store 에서 버린다 — 결과는 응답으로만 간다. 에이전트 안에서 취소로 끝난 실행은 `canceled` 태스크로
+  답하므로 SDK 내부의 활성 태스크 레지스트리에도 남지 않는다 (#420).
+- **거절은 피호출자가 센다.** `aaestro_a2a_refusals_total{callee, reason}` 이 프레임워크의 검사가
+  돌려보낸 요청을 사유별로 센다 — `no_credential`, `denied`, `unreachable` (레지스트리에 닿지 못함),
+  `malformed`, `too_deep`, `unsupported`. 검사에 닿기 전에 SDK 가 거절한 요청 (해석할 수 없는 JSON,
+  없는 메서드, 잘못된 params, 틀린 `A2A-Version`) 은 세지 않는다. 호출자 이름은 라벨이 아니다 —
+  확인되지 않은 주장이다. Control API 와 A2A 포트의 에이전트 카드는 둘 다 push 알림을
+  광고하지 않는다 — 서버가 push 설정 요청을 전부 거절한다.
 
 ### `POST /v1/access/a2a/tickets` — 모든 에이전트
 

@@ -207,7 +207,7 @@ def test_the_served_app_reloads_the_standard_executor(root, tmp_path, monkeypatc
     monkeypatch.setattr(agentd, "_configure_logging", lambda: None)
     served = {}
 
-    async def serve(app, manifest, invoke, bind_host):
+    async def serve(app, manifest, invoke, bind_host, *, metrics=None):
         served.update(app=app, executor=app.state.runtime.executor)
 
     monkeypatch.setattr(agentd, "_serve", serve)
@@ -289,7 +289,7 @@ def test_a_custom_entrypoint_is_not_given_the_standard_reload(root, tmp_path, mo
     monkeypatch.setattr(agentd, "build_executor", build)
     served = {}
 
-    async def serve(app, manifest, executor, bind_host):
+    async def serve(app, manifest, executor, bind_host, *, metrics=None):
         served.update(app=app)
 
     monkeypatch.setattr(agentd, "_serve", serve)

@@ -780,7 +780,7 @@ async def _run(manifest: AgentManifest, metrics: Metrics, serving: Serving) -> N
             port=CONTROL_PORT,
         )
         # A2A 로 받은 태스크도 Control 태스크와 같은 상한 · 추적 · drain 을 지난다 (#416)
-        await _serve(app, manifest, app.state.runtime.run, serving.bind_host)
+        await _serve(app, manifest, app.state.runtime.run, serving.bind_host, metrics=metrics)
     finally:
         await _close_wiring(executor)
 
@@ -805,6 +805,8 @@ async def _serve(
     manifest: AgentManifest,
     invoke: Callable[[TaskRequest], Awaitable[TaskResult]],
     bind_host: str,
+    *,
+    metrics: Metrics | None = None,
 ) -> None:
     """Control API 를 서빙하고, 선언되어 있으면 A2A 도 함께 띄운다.
 
@@ -813,7 +815,8 @@ async def _serve(
     """
     from aaestro.agentd.a2a_server import a2a_port, build_a2a_app
 
-    peer_app = build_a2a_app(manifest, invoke)
+    # 거절은 A2A 포트에서 센다 — metrics 를 넘기지 않으면 aaestro_a2a_refusals_total 이 비어 있다
+    peer_app = build_a2a_app(manifest, invoke, metrics=metrics)
     port = a2a_port()
     if peer_app is None or port is None:
         config = uvicorn.Config(app, host=bind_host, port=CONTROL_PORT, log_config=None)
