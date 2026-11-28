@@ -144,6 +144,96 @@ async def test_quota_counts_what_is_already_stored(tmp_path):
     assert exc_info.value.details["used_bytes"] == "100"
 
 
+async def test_overwriting_a_key_frees_its_old_size(tmp_path):
+    """한도 100 에 80바이트 key 를 90바이트로 덮어쓰면 순증은 10 이다."""
+    access = scoped(tmp_path, quotas={ArtifactScope.LOCAL: 100})
+    await access.put("k", b"x" * 80)
+
+    ref = await access.put("k", b"y" * 90)
+
+    assert await access.get(ref) == b"y" * 90
+    with pytest.raises(AaestroError) as exc_info:
+        await access.put("other", b"z" * 90)
+    assert exc_info.value.code == ErrorCode.ART_002
+
+
+async def test_an_overwrite_that_grows_past_the_limit_is_refused(tmp_path):
+    """옛 크기는 한 번만 뺀다 — 80 → 101 은 순증 21 로 한도 100 을 넘는다."""
+    access = scoped(tmp_path, quotas={ArtifactScope.LOCAL: 100})
+    await access.put("k", b"x" * 80)
+
+    with pytest.raises(AaestroError) as exc_info:
+        await access.put("k", b"y" * 101)
+
+    assert exc_info.value.code == ErrorCode.ART_002
+
+
+async def test_a_file_in_the_key_path_is_a_storage_error_under_quota(tmp_path):
+    """quota 스코프에서도 경로 조각이 파일이면 날 OSError 가 아니라 STOR_003 이다."""
+    access = scoped(tmp_path, quotas={ArtifactScope.LOCAL: 100})
+    await access.put("a", b"x")
+
+    with pytest.raises(AaestroError) as exc_info:
+        await access.put("a/b", b"y")
+
+    assert exc_info.value.code == ErrorCode.STOR_003
+
+
+async def test_a_file_deleted_while_sizing_the_overwrite_counts_as_absent(tmp_path, monkeypatch):
+    """delete 는 quota 잠금을 잡지 않는다 — 크기를 읽는 사이 지워져도 쓰기는 성공한다."""
+    access = scoped(tmp_path, quotas={ArtifactScope.LOCAL: 100})
+    await access.put("k", b"x" * 10)
+    store = FilesystemArtifactStore(root=tmp_path, scope="researcher")
+    real = store._plain_path
+
+    def plain_then_deleted(key):
+        path = real(key)
+        path.unlink()  # `_plain_path` 가 돌아온 직후 다른 쪽이 지운다
+        return path
+
+    monkeypatch.setattr(
+        FilesystemArtifactStore, "_plain_path", lambda self, key: plain_then_deleted(key)
+    )
+
+    assert store.size_of("k") == 0
+
+
+async def test_a_file_deleted_while_measuring_usage_is_skipped(tmp_path, monkeypatch):
+    """rglob 이 본 파일이 stat 전에 지워지면 건너뛴다."""
+    access = scoped(tmp_path, quotas={ArtifactScope.LOCAL: 100})
+    await access.put("gone", b"x" * 50)
+    await access.put("kept", b"y" * 30)
+    real_stat = Path.stat
+    seen = []
+
+    def racy_stat(self, *args, **kwargs):
+        if self.name == "gone":
+            seen.append(self)
+            if len(seen) > 1:  # 첫 호출은 is_file — 그 뒤 크기를 읽을 때 지워진 것으로 본다
+                raise FileNotFoundError(self)
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", racy_stat)
+
+    ref = await access.put("new", b"z" * 60)  # 30 + 60 <= 100
+
+    monkeypatch.undo()
+    assert len(seen) > 1
+    assert await access.get(ref) == b"z" * 60
+
+
+async def test_leftover_temp_files_do_not_count_toward_quota(tmp_path):
+    """쓰다 죽은 프로세스의 `.tmp-` 잔재가 한도를 갉지 않는다."""
+    access = scoped(tmp_path, quotas={ArtifactScope.LOCAL: 100})
+    scope_dir = tmp_path / "researcher"
+    scope_dir.mkdir(parents=True, exist_ok=True)
+    (scope_dir / ".tmp-dead").write_bytes(b"x" * 100)
+
+    ref = await access.put("k", b"y" * 100)
+
+    assert await access.get(ref) == b"y" * 100
+
+
 async def test_no_quota_means_no_limit(tmp_path):
     access = scoped(tmp_path)
 

@@ -220,8 +220,9 @@ class ScopedArtifacts:
         """flock 을 쥔 채 quota 검사와 쓰기를 하고, 끝나면 fd 를 닫아 잠금을 푼다."""
         try:
             limit = self.quotas[scope]
+            # 같은 key 덮어쓰기는 옛 크기를 비우므로 그만큼 뺀다
             used = store.used_bytes()
-            if used + len(data) > limit:
+            if used - store.size_of(key) + len(data) > limit:
                 raise over_quota(str(scope), used=used, limit=limit, incoming=len(data))
             return store.put_blocking(key, data)
         finally:
