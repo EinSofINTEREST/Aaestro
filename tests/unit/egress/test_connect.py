@@ -23,9 +23,11 @@ class Registry:
         self.identities = {"cred-researcher": "researcher"}
         self.down = False
         self.asked: list[tuple[str, str]] = []
+        self.kinds: list[str] = []
 
     async def decide(self, credential, kind, target, mode=None) -> Verdict:
         self.asked.append((credential, target))
+        self.kinds.append(kind)
         if self.down:
             return Verdict(None, False, "unreachable", DecisionSource.UNREACHABLE)
         agent = self.identities.get(credential)

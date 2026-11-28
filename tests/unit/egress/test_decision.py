@@ -263,7 +263,7 @@ def test_plaintext_decision_upstream_with_opt_in_and_private_listing_is_accepted
     environ = env({"jev": declared}, AAESTRO_EGRESS_PRIVATE_DESTINATIONS=private)
     [(name, upstream)] = decision_upstreams(settings(environ)).items()
     assert name == "jev" and upstream.base_url == declared["base_url"]
-    assert upstream.logical_host == TARGET
+    assert upstream.target == TARGET
 
 
 def test_every_adapter_kind_has_proxy_endpoints():

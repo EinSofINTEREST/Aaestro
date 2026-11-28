@@ -874,7 +874,7 @@ An unparseable response (`LLM_004`) and configuration errors never trigger a swi
 The check is named `model_providers`; its findings carry code `VAL_002`, and the HTTP response is
 `400 VAL_001` with the findings in `details.findings`. If any check fails, nothing is started:
 
-- the provider must be one the framework knows (one with a logical host)
+- the provider must be one the framework knows (one the egress proxy terminates)
 - with an egress proxy, the provider must appear in `runtime.egress_proxy.providers` — otherwise a
   fallback would hit a proxy 404 at runtime, silently
 - node and deployment overrides may change the provider only **within the set the manifest

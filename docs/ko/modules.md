@@ -804,7 +804,7 @@ nodes:
 검사 이름은 `model_providers` 이고, finding 코드는 `VAL_002` 이며, HTTP 응답은 `400 VAL_001` 에
 finding 이 `details.findings` 로 실립니다. 하나라도 걸리면 아무것도 기동하지 않습니다:
 
-- provider 는 프레임워크가 아는 것(논리 호스트가 있는 것)이어야 합니다
+- provider 는 프레임워크가 아는 것(이그레스 프록시가 종단하는 것)이어야 합니다
 - 이그레스 프록시를 쓰면 provider 가 `runtime.egress_proxy.providers` 에 있어야 합니다 — 아니면
   런타임에 fallback 이 프록시 404 를 맞는 조용한 실패가 됩니다
 - 노드·배포 override 는 **manifest 가 선언한 provider 집합(primary + fallbacks) 안에서만**

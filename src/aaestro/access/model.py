@@ -23,6 +23,9 @@ class ResourceKind(StrEnum):
     EGRESS = "egress"
     MCP_TOOL = "mcp_tool"
     A2A = "a2a"
+    MODEL = "model"
+    """모델 API 종단 — 대상은 provider 이름 (#399). 호스트가 아니라 CONNECT 목적지와 섞이지
+    않는다."""
 
 
 class Mode(StrEnum):

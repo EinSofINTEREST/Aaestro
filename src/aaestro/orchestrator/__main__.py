@@ -383,6 +383,7 @@ def _access_registry(
         EgressBaseline,
         McpToolBaseline,
         MemoryBaseline,
+        ModelBaseline,
     )
     from aaestro.access.model import ResourceKind
     from aaestro.access.registry import AccessRegistry
@@ -394,7 +395,8 @@ def _access_registry(
         catalog=catalog,
         stewards=frozenset(orchestrator.access_stewards),
         # 선언 판정은 그것을 쓰는 강제 지점과 함께 연결한다 — memory 는 Memory Service (#278),
-        # a2a 는 피호출자의 A2A 서버 (#281), egress 와 원격 MCP 도구는 이그레스 프록시 (#293, #282)
+        # a2a 는 피호출자의 A2A 서버 (#281), egress · 원격 MCP 도구 · 모델 API 는 이그레스
+        # 프록시 (#293, #282, #399)
         baselines={
             ResourceKind.MEMORY: MemoryBaseline(catalog, runs=runs),
             ResourceKind.A2A: A2ABaseline(
@@ -402,6 +404,7 @@ def _access_registry(
             ),
             ResourceKind.EGRESS: EgressBaseline(catalog),
             ResourceKind.MCP_TOOL: McpToolBaseline(catalog),
+            ResourceKind.MODEL: ModelBaseline(catalog),
         },
         metrics=metrics,
         runs=runs,

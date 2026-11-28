@@ -269,7 +269,7 @@ Network). 외부로 나가는 호출은 전부 **egress proxy** 를 거치고, �
 
 | 대상 | 프록시 동작 | 판정 단위 |
 |---|---|---|
-| 모델 API | base URL 로 **종단** — 에이전트는 프록시를 provider 로 부른다 | 요청, 자격증명 주입 |
+| 모델 API | base URL 로 **종단** — 에이전트는 프록시를 provider 로 부른다 | 요청 — provider 이름 (`model`, #399 — `egress` 와 다른 판정 공간이라 `runtime.egress` 의 호스트가 종단을 열지 않고, provider 선언이 같은 호스트의 CONNECT 를 열지 않는다), 자격증명 주입 |
 | 결정 모델 API | **HTTPS** base URL 로 종단 — 모델 API 와 같은 규칙 ([01](01-architecture.md) Decision Models). HTTP 는 명시된 private 목적지와 명시적 plaintext opt-in(테스트 대역·내부망)에서만 — 둘 다 있어야 하고 루프백도 예외가 아니다 (#595) | 요청 — 논리 이름 `<provider>.decision.invalid` (`egress`), 자격증명 주입 |
 | 원격 MCP (sidecar / external) | base URL 로 **종단** | **도구 이름** (`mcp_tool`), 자격증명 주입 |
 | 그 밖의 외부 HTTPS | CONNECT 터널 | 목적지 호스트 (`egress`) |
@@ -329,7 +329,7 @@ v0.1 은 **전달 전용 공유 프록시** 하나로 시작한다. 격리 요�
 | A2A 호출 깊이 초과 | `a2a` | `A2A_005` | 아니오 |
 | A2A 본문 필수 필드 누락 (callee 측 거절) | `validation` | `VAL_001` | 아니오 |
 | A2A 본문 · 식별자 형식 오류 (callee 측 거절) | `validation` | `VAL_002` | 아니오 |
-| 이그레스 목적지·원격 MCP 도구 판정 거부 | `forbidden` | `ACC_001` | 아니오 |
+| 이그레스 목적지·원격 MCP 도구·모델 provider 판정 거부 | `forbidden` | `ACC_001` | 아니오 |
 | 판정 불가 (레지스트리 도달 불가, 캐시 없음) | `network` | `ACC_002` | 예 |
 
 ## Version Pinning

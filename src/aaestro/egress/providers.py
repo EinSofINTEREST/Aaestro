@@ -4,8 +4,9 @@
 신원으로 판정한 뒤 신원을 떼고 진짜 키를 붙여 provider 로 보낸다 — 에이전트 컨테이너에는 키가
 없으므로 키 회수가 재배포 없이 된다 (02 Secrets Injection).
 
-판정 대상은 provider 의 **논리 호스트**(``api.anthropic.com``)다: 운영자가 회수하는 것은
-"모델 API" 이지 그 배치의 upstream 주소가 아니다.
+판정은 ``model`` 자원의 **provider 이름**(``anthropic``)이다 (#399): 운영자가 회수하는 것은
+"그 provider 의 모델 API" 이지 그 배치의 upstream 주소가 아니고, ``egress`` (CONNECT 목적지) 와
+판정 공간이 갈려 있다. 결정 provider 는 ``egress`` 의 논리 이름으로 판정한다 (#595).
 """
 
 from __future__ import annotations
@@ -96,7 +97,7 @@ class Upstream:
 
     Attributes:
         base_url: provider 주소 (예: ``https://api.anthropic.com``).
-        logical_host: 판정 대상 이름.
+        target: 판정 대상 이름 — 모델은 provider 이름, 결정 provider 는 ``decision_target``.
         api_key: 프록시만 쥐는 키.
         key_header: 키를 싣는 헤더.
         key_scheme: 키 앞에 붙는 인증 스킴 (``Bearer``) — 비우면 키만 싣는다.
@@ -104,11 +105,13 @@ class Upstream:
     """
 
     base_url: str
-    logical_host: str
+    target: str
     api_key: str
     key_header: str = "x-api-key"
     key_scheme: str = ""
     request_headers: frozenset[str] = COMMON_REQUEST_HEADERS
+    resource: ResourceKind = ResourceKind.MODEL
+    """판정 자원 종류 — 모델 API 는 ``model``, 결정 provider 는 ``egress`` (#595)."""
     endpoints: frozenset[tuple[str, str]] = frozenset()
     """키를 붙여 보내도 되는 ``(METHOD, path)`` — 모델 API 만. 여기 없는 경로는 보내지 않는다.
 
@@ -199,8 +202,8 @@ async def _forward(
     credential = _credential(request)
     if not credential:  # 미들웨어 없이 라우터를 쓰는 경우의 다층 방어
         return _error(401, "agent identity required")
-    verdict = await access.decide(credential, ResourceKind.EGRESS, upstream.logical_host)
-    refusal = _refusal(verdict, upstream.logical_host, mode)
+    verdict = await access.decide(credential, upstream.resource, upstream.target)
+    refusal = _refusal(verdict, upstream, mode)
     if refusal is not None:
         return refusal
 
@@ -210,8 +213,8 @@ async def _forward(
         log.warning(
             "provider endpoint not allowed",
             agent=verdict.agent or "",
-            resource=ResourceKind.EGRESS.value,
-            target=f"{upstream.logical_host}/{path}",
+            resource=upstream.resource.value,
+            target=f"{upstream.target}/{path}",
             error_code="ACC_001",
         )
         return _error(403, "provider endpoint not allowed through the proxy", code="ACC_001")
@@ -225,7 +228,7 @@ async def _forward(
     base = await _pinned_base(upstream.base_url, resolver, headers)
     if base is None:
         log.error("provider plaintext to a public address refused", agent=verdict.agent or "",
-                  resource=ResourceKind.EGRESS.value, target=upstream.logical_host)  # fmt: skip
+                  resource=upstream.resource.value, target=upstream.target)  # fmt: skip
         return _error(502, "plain http is sent only to an upstream that resolves privately")
     outbound = client.build_request(
         request.method,
@@ -240,8 +243,8 @@ async def _forward(
         log.warning(
             "provider upstream unreachable",
             agent=verdict.agent or "",
-            resource=ResourceKind.EGRESS.value,
-            target=upstream.logical_host,
+            resource=upstream.resource.value,
+            target=upstream.target,
             exc_info=err,
         )
         return _error(502, "provider unreachable")
@@ -294,11 +297,11 @@ async def _pinned_base(base_url: str, resolver: Resolver, headers: dict[str, str
     return urlunsplit(("http", f"{host}:{port}", parts.path.rstrip("/"), "", ""))
 
 
-def _refusal(verdict: Any, target: str, mode: EgressMode) -> Response | None:
+def _refusal(verdict: Any, upstream: Upstream, mode: EgressMode) -> Response | None:
     fields = {
         "agent": verdict.agent or "",
-        "resource": ResourceKind.EGRESS.value,
-        "target": target,
+        "resource": upstream.resource.value,
+        "target": upstream.target,
         "decision": "allow" if verdict.allowed else "deny",
         "decision_source": verdict.source.value,
         "decided_by": verdict.decided_by,

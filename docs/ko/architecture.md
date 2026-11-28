@@ -99,6 +99,7 @@ local   ─ 개별 에이전트            (agents/<name>/manifest.yaml)
 | 메모리 접근 | Memory Service | space id 에 대한 `memory`, `ro` / `rw` |
 | 외부 호출 | 이그레스 프록시 | `host[:port]` 에 대한 `egress` |
 | 원격 MCP 도구 | 이그레스 프록시 (서버를 종단) | `server/tool` 에 대한 `mcp_tool` |
+| 모델 API 호출 (운영자 키) | 이그레스 프록시 (provider 를 종단) | provider 이름에 대한 `model` |
 | 호출자의 A2A 호출 | 피호출자의 A2A 서버 | 피호출자에 대한 `a2a` |
 
 - **선언이 기본 권한입니다.** 매니페스트·그룹·배포된 그래프가 기본값을 주고, 운영자는 언제든 좁힙니다

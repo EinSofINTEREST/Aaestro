@@ -28,6 +28,7 @@ tool, a connection to another agent.
    | one remote MCP tool | `mcp_tool` | `server/tool` | omit |
    | a whole remote MCP server | `egress` | the server's host | omit |
    | calls to another agent | `a2a` | the callee's name | omit |
+   | model API calls (the operator's key) | `model` | the provider name, e.g. `anthropic` | omit |
 
    A revocation beats declarations and grants, and applies to the agent's **next request**. No
    restart, no redeploy.
@@ -108,6 +109,36 @@ sudo deployments/docker/isolate-agent-network.sh status aaestro-net
 The control plane warns at startup (`control plane is reachable from isolated agents through the
 network gateway`) when the proxy is on and it binds anything but loopback. Bind it to loopback, or
 apply the rule.
+
+## Model Provider Records from Before #399
+
+Before #399 the model termination was decided as `egress` on the provider's logical host
+(`api.anthropic.com`, `openai-compat.invalid`). It is now `model` on the provider name. Records already in
+the access store are not rewritten:
+
+- **Revocations** (`effect: deny`) of `egress` on one of those two hosts still cut the model
+  termination — the registry counts them as a `model` revocation of that provider, so an upgrade does
+  not silently lift them. They also still cut a CONNECT tunnel to `api.anthropic.com`. To move to the
+  new form, revoke `model` / `anthropic` (or `openai-compat`) for the same agent, then lift the old
+  record (**되돌리기** or `DELETE /v1/access/rules/{rule_id}`).
+- **Grants** (`effect: allow`) of `egress` on those hosts no longer open the model termination — that
+  was the defect. They expire on their own (every grant has a TTL); until then they only open a CONNECT
+  tunnel to `api.anthropic.com`, as before. Nothing to do, but lift them if the tunnel is not wanted.
+- An agent that reached the model only through `runtime.egress` or such a grant, without declaring the
+  provider in `spec.model`, now gets `403 ACC_001` on its model calls. Declare the provider and redeploy.
+- Remove `api.anthropic.com` / `openai-compat.invalid` from a ceiling's `egress` unless the CONNECT
+  tunnel is what you mean — it no longer has anything to do with model access.
+
+This holds for an `egress` revocation on `api.anthropic.com` or `openai-compat.invalid` **whenever it
+was made**, before or after the upgrade: it also cuts that provider's `model` decision. There is no
+revocation that cuts only the tunnel. To stop just the tunnel, take the host out of the agent's
+`runtime.egress` (a declaration change) and lift any grant of it — and leave the model alone.
+
+When a model call is refused and you look for the cause: **최근 거부** / `denials` show kind `model`,
+target the provider name, `decided_by: operator`, but `rules` has no `model` record — the revocation
+is the `egress` record on the provider's old host.
+
+To find the records: `GET /v1/access/agents/{name}` → `rules`, kind `egress`, target one of the two hosts.
 
 ## Widening a Permission
 

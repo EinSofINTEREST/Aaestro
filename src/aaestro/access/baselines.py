@@ -274,18 +274,22 @@ ALL_TOOLS = "*"
 HTTPS_PORT = 443
 HTTP_PORT = 80
 
-PROVIDER_HOSTS = {
+MODEL_PROVIDERS = frozenset({"anthropic", "openai-compat"})
+"""이그레스 프록시가 종단하는 모델 provider — ``model`` 판정의 대상 이름이다 (#399).
+
+호스트가 아니라 provider 이름으로 판정한다: 운영자가 회수하는 것은 "그 provider 의 모델 API" 이고,
+``egress`` (CONNECT 목적지) 와 판정 공간이 갈려 ``runtime.egress`` 의 호스트 목록으로 운영자 키를
+쓰는 종단이 열리지 않는다. 반대로 provider 선언이 같은 이름의 CONNECT 터널을 열지도 않는다."""
+
+LEGACY_PROVIDER_HOSTS = {
     "anthropic": "api.anthropic.com",
     "openai-compat": "openai-compat.invalid",
 }
-"""모델 provider 의 논리 호스트 — 이그레스 프록시가 종단하는 호출은 이 이름으로 판정한다.
+"""#399 전에 모델 API 종단을 판정하던 ``egress`` 대상 — 그 이름의 운영자 회수를 잇는 데만 쓴다.
 
-실제 upstream(대역 provider 등)이 달라도 판정 대상은 이 이름이다: 운영자가 회수하는 것은 "모델 API"
-이지 테스트 배치의 주소가 아니다.
-
-``openai-compat`` 은 upstream 이 설정에서 와서 자연스러운 호스트가 없다 — 합성 이름을 쓴다.
-``.invalid`` 는 예약 TLD(RFC 2606)라 풀리지 않는다: 이 이름이 선언 목적지에 들어가도 같은 이름의
-CONNECT 터널이 열리지 않는다. 판정 문자열일 뿐 어디서도 연결 대상으로 쓰지 않는다."""
+그 이름에 대한 ``egress`` 회수는 만든 시점과 무관하게 ``model`` 판정에서도 거부로 센다 (업그레이드가
+회수를 조용히 풀지 않게 — 시점을 가르지 않으므로 터널만 막는 회수는 없다). 부여는 잇지 않는다 —
+``egress`` 부여로 모델 키를 쓰게 되는 것이 #399 의 결함이다."""
 
 
 def decision_target(provider: str) -> str:
@@ -294,7 +298,7 @@ def decision_target(provider: str) -> str:
     모델 API 와 같이 upstream 주소가 아니라 논리 이름으로 판정한다 — 운영자가 회수하는 것은
     "그 결정 provider" 다. provider 는 설정 ``decision.providers`` 의 이름이고, 레지스트리는 설정을
     읽지 않으므로 매니페스트의 ``spec.decision.provider`` 만으로 정해지는 이름이어야 한다.
-    ``.invalid`` 라 CONNECT 목적지로는 풀리지 않는다 (``openai-compat`` 과 같은 결).
+    ``.invalid`` 라 CONNECT 목적지로는 풀리지 않는다.
     """
     return f"{provider}.decision.invalid"
 
@@ -315,9 +319,10 @@ class EgressBaseline:
     """Declared egress destinations.
 
     - 매니페스트 ``runtime.egress``
-    - 모델 provider 의 논리 호스트 (프록시가 종단해 키를 주입하는 호출) — fallback 포함
     - 결정 provider 의 논리 이름 (``spec.decision.provider`` — ``decision_target``)
     - external MCP 서버 ``url`` 의 호스트
+
+    모델 provider 는 여기 없다 — 모델 API 종단은 ``model`` 판정이다 (``ModelBaseline``, #399).
 
     선언을 요청마다 읽는다 — 목적지 추가·삭제가 재시작 없이 다음 판정에 반영된다.
     """
@@ -342,11 +347,6 @@ class EgressBaseline:
     @staticmethod
     def declared(manifest: AgentManifest) -> frozenset[str]:
         targets = {_declared_target(entry) for entry in manifest.spec.runtime.egress}
-        # fallback provider 도 선언이다 — 빠지면 전환한 호출을 프록시가 거부한다
-        for provider in manifest.spec.model.providers():
-            host = PROVIDER_HOSTS.get(provider)
-            if host is not None:
-                targets.add(host)
         if manifest.spec.decision is not None:
             targets.add(decision_target(manifest.spec.decision.provider))
         for server in manifest.spec.mcp.servers:
@@ -354,6 +354,32 @@ class EgressBaseline:
             if target is not None:
                 targets.add(target)
         return frozenset(targets)
+
+
+@dataclass(frozen=True)
+class ModelBaseline:
+    """Declared model providers — ``spec.model`` (primary and fallbacks) only (#399).
+
+    노드 · 배포 override 는 manifest 가 선언한 provider 집합 안에서만 provider 를 바꾸므로
+    (02 Manifest Rules 9) 이 집합이 곧 override 까지 덮는다. ``runtime.egress`` 는 보지 않는다.
+    """
+
+    catalog: Catalog
+
+    def allows(
+        self, agent: str, target: str, mode: Mode | None, identity: Identity | None = None
+    ) -> bool:
+        manifest = _manifest(self.catalog, agent)
+        return manifest is not None and target in self.declared(manifest)
+
+    def declared_for(self, agent: str) -> list[tuple[str, Mode | None]]:
+        manifest = _manifest(self.catalog, agent)
+        return [] if manifest is None else [(t, None) for t in sorted(self.declared(manifest))]
+
+    @staticmethod
+    def declared(manifest: AgentManifest) -> frozenset[str]:
+        # fallback provider 도 선언이다 — 빠지면 전환한 호출을 프록시가 거부한다
+        return manifest.spec.model.providers() & MODEL_PROVIDERS
 
 
 def url_target(url: str) -> str | None:
@@ -422,12 +448,14 @@ def _terminated(server: McpServerSpec) -> bool:
 
 __all__ = [
     "DIRECT_RUN_PREFIX",
-    "PROVIDER_HOSTS",
+    "LEGACY_PROVIDER_HOSTS",
+    "MODEL_PROVIDERS",
     "RUN_SPACE_ID",
     "SPACE_ID",
     "A2ABaseline",
     "EgressBaseline",
     "McpToolBaseline",
+    "ModelBaseline",
     "MemoryBaseline",
     "RunParticipation",
     "RunRecords",

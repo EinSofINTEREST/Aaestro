@@ -330,6 +330,7 @@ A2A 에서 피호출자는 통제받는 쪽이 아니라 **보호받는 쪽**이
 | `memory` | space (별칭이 해석된 space id. run scope 는 `run:<run_id>:<alias>` — run 기록으로 판정, 09 Access Enforcement) | `ro` / `rw` | Memory Service |
 | `egress` | 목적지 `host[:port]` | — | Egress Proxy |
 | `mcp_tool` | `server/tool` (원격 MCP 만) | — | Egress Proxy (base URL 종단) |
+| `model` | 모델 provider 이름 (`anthropic`, `openai-compat`) — 선언은 manifest `spec.model` (primary · fallback) 뿐, `runtime.egress` 와 확장 상한은 열지 못한다 (#399) | — | Egress Proxy (base URL 종단, 운영자 키 주입) |
 | `a2a` | 피호출자 에이전트 | — | 피호출자 A2A 서버 |
 
 1. **선언이 기본 권한이다**: 매니페스트·그룹·그래프(`connections`)가 선언한 권한이 배포 시점의
@@ -816,7 +817,7 @@ observability:
    decisionset 의 `locale` 을 지원하는가. 그래프 decision 노드의 `output_map` 이 `decision.` 키만
    읽는가 — manifest 쓰임은 alias · 질문 해석 `MOD_001`, 질문 종류 · locale `MOD_003`, 설정에 없는
    provider `VAL_002` (02 Manifest Rules 8)
-10. 모든 모델 provider (primary · fallback · 노드/배포 override) 가 알려진 논리 호스트를 갖고,
+10. 모든 모델 provider (primary · fallback · 노드/배포 override) 가 프록시가 종단하는 provider 이고 (`MODEL_PROVIDERS`),
     프록시를 쓰면 `runtime.egress_proxy.providers` 에 있으며, override 의 provider 는 manifest 가
     선언한 집합 안인가. 프록시를 쓰면 그 provider 에 프록시의 **실제 upstream** 이 있는가 — 배포마다
     프록시의 `GET /v1/providers` (`runtime.egress_proxy.control_url`, 없으면 `providers_url`) 에 묻고, 없으면 `VAL_002`, 답하지 못하면 `NET_001` / `NET_002` 로

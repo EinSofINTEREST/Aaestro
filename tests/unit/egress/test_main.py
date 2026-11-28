@@ -192,7 +192,8 @@ def test_openai_compat_is_not_terminated_unless_configured():
     assert sorted(provider_upstreams(found)) == ["anthropic"]
 
 
-def test_openai_compat_upstream_carries_the_bearer_key_under_its_logical_host():
+def test_openai_compat_upstream_carries_the_bearer_key_under_its_provider_name():
+    from aaestro.access.model import ResourceKind
     from aaestro.egress.__main__ import provider_upstreams
     from aaestro.egress.providers import OPENAI_COMPAT_ENDPOINTS
 
@@ -201,8 +202,8 @@ def test_openai_compat_upstream_carries_the_bearer_key_under_its_logical_host():
     assert name == "openai-compat"
     assert (upstream.base_url, upstream.api_key) == ("https://api.openai.com", "sk-compat")
     assert (upstream.key_header, upstream.key_scheme) == ("authorization", "Bearer")
-    # 판정 대상은 upstream 주소가 아니라 논리 호스트다
-    assert upstream.logical_host == "openai-compat.invalid"
+    # 판정 대상은 upstream 주소가 아니라 model 자원의 provider 이름이다 (#399)
+    assert (upstream.resource, upstream.target) == (ResourceKind.MODEL, "openai-compat")
     assert upstream.endpoints == OPENAI_COMPAT_ENDPOINTS
 
 
